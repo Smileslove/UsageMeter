@@ -1,0 +1,580 @@
+import type { AppLocale } from '../types'
+
+interface TranslationNode {
+  [key: string]: string | TranslationNode
+}
+
+const messages: Record<AppLocale, TranslationNode> = {
+  'zh-CN': {
+    app: {
+      name: 'UsageMeter',
+      subtitle: 'Usage Monitor'
+    },
+    common: {
+      refresh: '刷新',
+      toggleTheme: '切换主题',
+      syncing: '同步中',
+      dashboard: '面板',
+      settings: '设置',
+      source: '来源',
+      updatedAt: '更新',
+      unknown: '未知',
+      safe: '安全',
+      warning: '警告',
+      critical: '严重',
+      enabled: '启用',
+      save: '保存设置',
+      saving: '保存中...',
+      noData: '暂无数据',
+      token: 'Token',
+      requests: '请求',
+      remaining: '剩余',
+      seconds: '秒',
+      inputTokens: '输入',
+      outputTokens: '输出',
+      totalTokens: '总计',
+      cost: '费用',
+      unlimited: '无限制',
+      avgRate: '速率',
+      underDevelopment: '功能开发中'
+    },
+    source: {
+      ccusageApi: 'ccusage',
+      localJsonl: '本地日志回退',
+      noData: '无可用数据',
+      simulated: '模拟数据',
+      unknown: '未知来源'
+    },
+    metrics: {
+      summary: '5h Token {tokens} | Requests {requests}',
+      tokenRemaining: 'Token 剩余',
+      requestRemaining: 'Requests 剩余',
+      currentRisk: '当前风险',
+      windowSuffix: '窗口',
+      tokenUsageRate: 'Token 使用率',
+      requestUsageRate: 'Requests 使用率',
+      shortTrend: '短期趋势',
+      samples: '{count} 个样本',
+      tokenLimit: 'Token 限额',
+      requestLimit: '请求限额',
+      modelDistribution: '模型分布',
+      statusCodeDistribution: '状态码分布',
+      successRate: '成功率',
+      clientError: '客户端错误',
+      serverError: '服务端错误',
+      success: '成功',
+      tokenGenerationRate: 'Token 生成速率',
+      modelRateRanking: '模型速率排行',
+      avgSpeed: '平均速度',
+      tokensPerSecond: 't/s',
+      noRateData: '暂无速率数据',
+      rateRange: '速率范围',
+      totalOutput: '总输出',
+      totalDuration: '总耗时',
+      ttft: '首 Token 生成时间',
+      avgTtft: '平均响应',
+      minTtft: '最小',
+      maxTtft: '最大',
+      modelTtftRanking: '模型响应速度排行'
+    },
+    alerts: {
+      title: '告警',
+      empty: '当前暂无告警，状态稳定。',
+      levelPrefix: {
+        warning: '警告',
+        critical: '严重'
+      },
+      fromSource: '当前窗口已达到阈值（{source}）'
+    },
+    backendNote: {
+      simulatedData: '当前使用模拟数据；请安装并配置 ccusage 与 Claude 数据目录。',
+      localJsonlFallback: 'ccusage 失败，已回退到本地 JSONL 解析结果。',
+      noRealData: '未获取到真实数据，请确认 Claude Code 已产生会话。'
+    },
+    backendError: {
+      invokeFailed: '调用失败',
+      readSettings: '读取配置失败',
+      parseSettings: '解析配置失败',
+      createSettingsDir: '创建配置目录失败',
+      serializeSettings: '序列化配置失败',
+      writeSettings: '写入配置失败',
+      snapshotTaskFailed: '后台任务执行失败',
+      ccusageScriptFailed: 'ccusage 脚本执行失败',
+      ccusageEmpty: 'ccusage 输出为空',
+      localJsonlNotFound: '未找到 Claude 本地 JSONL 会话文件',
+      unknown: '未知错误'
+    },
+    settings: {
+      locale: '语言',
+      timezone: '时区',
+      timezonePlaceholder: 'UTC',
+      refreshInterval: '刷新间隔（秒）',
+      warningThreshold: 'Warning 阈值（%）',
+      criticalThreshold: 'Critical 阈值（%）',
+      quotaTitle: '窗口配额',
+      general: '通用设置',
+      thresholds: '阈值设置',
+      zhCN: '简体中文',
+      zhTW: '繁體中文',
+      enUS: 'English',
+      billingType: '计费类型',
+      billingTypeToken: 'Token 计费',
+      billingTypeRequest: '请求次数计费',
+      billingTypeBoth: '两者同时',
+      windowEnabled: '启用',
+      tokenLimitPlaceholder: 'Token 限额',
+      requestLimitPlaceholder: '请求限额',
+      window5h: '5小时',
+      window1d: '1天',
+      window7d: '7天',
+      window30d: '30天',
+      windowCurrentMonth: '本月',
+      window1m: '1个月',
+      unlimited: '无限制',
+      setLimit: '设置限额',
+      summaryWindow: '汇总展示窗口',
+      dataSource: '数据统计方式',
+      dataSourceCcusage: 'ccusage + 本地文件',
+      dataSourceProxy: '本地代理',
+      dataSourceCcusageDesc: '基础统计和模型分布功能完整',
+      dataSourceProxyDesc: '支持生成速率、状态码等实时统计功能',
+      theme: '主题',
+      themeLight: '明亮',
+      themeDark: '暗黑',
+      themeSystem: '跟随系统',
+      interceptRequests: '拦截网络请求',
+      proxyRunning: '运行中',
+      port: '端口',
+      startProxyHint: '请启动代理以收集数据',
+      configTakenOver: '已接管配置',
+      configNotTakenOver: '配置未接管',
+      requestCount: '请求数',
+      recordCount: '记录数',
+      activeConnections: '活跃连接',
+      includeErrorRequests: '包含错误请求',
+      includeErrorRequestsDesc: '在请求数统计中包含 4xx/5xx 响应'
+    }
+  },
+  'zh-TW': {
+    app: {
+      name: 'UsageMeter',
+      subtitle: 'Usage Monitor'
+    },
+    common: {
+      refresh: '重新整理',
+      toggleTheme: '切換主題',
+      syncing: '同步中',
+      dashboard: '面板',
+      settings: '設定',
+      source: '來源',
+      updatedAt: '更新',
+      unknown: '未知',
+      safe: '安全',
+      warning: '警告',
+      critical: '嚴重',
+      enabled: '啟用',
+      save: '儲存設定',
+      saving: '儲存中...',
+      noData: '暫無資料',
+      token: 'Token',
+      requests: '請求',
+      remaining: '剩餘',
+      seconds: '秒',
+      inputTokens: '輸入',
+      outputTokens: '輸出',
+      totalTokens: '總計',
+      cost: '費用',
+      unlimited: '無限制',
+      avgRate: '速率',
+      underDevelopment: '功能開發中'
+    },
+    source: {
+      ccusageApi: 'ccusage',
+      localJsonl: '本地日誌回退',
+      noData: '無可用資料',
+      simulated: '模擬資料',
+      unknown: '未知來源'
+    },
+    metrics: {
+      summary: '5h Token {tokens} | Requests {requests}',
+      tokenRemaining: 'Token 剩餘',
+      requestRemaining: 'Requests 剩餘',
+      currentRisk: '目前風險',
+      windowSuffix: '視窗',
+      tokenUsageRate: 'Token 使用率',
+      requestUsageRate: 'Requests 使用率',
+      shortTrend: '短期趨勢',
+      samples: '{count} 個樣本',
+      tokenLimit: 'Token 限額',
+      requestLimit: '請求限額',
+      modelDistribution: '模型分佈',
+      statusCodeDistribution: '狀態碼分佈',
+      successRate: '成功率',
+      clientError: '客戶端錯誤',
+      serverError: '伺服器錯誤',
+      success: '成功',
+      tokenGenerationRate: 'Token 生成速率',
+      modelRateRanking: '模型速率排行',
+      avgSpeed: '平均速度',
+      tokensPerSecond: 't/s',
+      noRateData: '暫無速率資料',
+      rateRange: '速率範圍',
+      totalOutput: '總輸出',
+      totalDuration: '總耗時',
+      ttft: '首 Token 生成時間',
+      avgTtft: '平均響應',
+      minTtft: '最小',
+      maxTtft: '最大',
+      modelTtftRanking: '模型響應速度排行'
+    },
+    alerts: {
+      title: '警告',
+      empty: '目前暫無警告，狀態穩定。',
+      levelPrefix: {
+        warning: '警告',
+        critical: '嚴重'
+      },
+      fromSource: '目前視窗已達到閾值（{source}）'
+    },
+    backendNote: {
+      simulatedData: '目前使用模擬資料；請安裝並設定 ccusage 與 Claude 資料目錄。',
+      localJsonlFallback: 'ccusage 失敗，已回退到本地 JSONL 解析結果。',
+      noRealData: '未獲取到真實資料，請確認 Claude Code 已產生會話。'
+    },
+    backendError: {
+      invokeFailed: '調用失敗',
+      readSettings: '讀取設定失敗',
+      parseSettings: '解析設定失敗',
+      createSettingsDir: '建立設定目錄失敗',
+      serializeSettings: '序列化設定失敗',
+      writeSettings: '寫入設定失敗',
+      snapshotTaskFailed: '背景任務執行失敗',
+      ccusageScriptFailed: 'ccusage 腳本執行失敗',
+      ccusageEmpty: 'ccusage 輸出為空',
+      localJsonlNotFound: '未找到 Claude 本地 JSONL 會話檔案',
+      unknown: '未知錯誤'
+    },
+    settings: {
+      locale: '語言',
+      timezone: '時區',
+      timezonePlaceholder: 'UTC',
+      refreshInterval: '重新整理間隔（秒）',
+      warningThreshold: 'Warning 閾值（%）',
+      criticalThreshold: 'Critical 閾值（%）',
+      quotaTitle: '視窗配額',
+      general: '一般設定',
+      thresholds: '閾值設定',
+      zhCN: '简体中文',
+      zhTW: '繁體中文',
+      enUS: 'English',
+      billingType: '計費類型',
+      billingTypeToken: 'Token 計費',
+      billingTypeRequest: '請求次數計費',
+      billingTypeBoth: '兩者同時',
+      windowEnabled: '啟用',
+      tokenLimitPlaceholder: 'Token 限額',
+      requestLimitPlaceholder: '請求限額',
+      window5h: '5小時',
+      window1d: '1天',
+      window7d: '7天',
+      window30d: '30天',
+      windowCurrentMonth: '本月',
+      window1m: '1個月',
+      unlimited: '無限制',
+      setLimit: '設定限額',
+      summaryWindow: '彙總展示視窗',
+      dataSource: '資料統計方式',
+      dataSourceCcusage: 'ccusage + 本地檔案',
+      dataSourceProxy: '本地代理',
+      dataSourceCcusageDesc: '基礎統計和模型分佈功能完整',
+      dataSourceProxyDesc: '支援生成速率、狀態碼等即時統計功能',
+      theme: '主題',
+      themeLight: '明亮',
+      themeDark: '暗黑',
+      themeSystem: '跟隨系統',
+      interceptRequests: '攔截網路請求',
+      proxyRunning: '運行中',
+      port: '端口',
+      startProxyHint: '請啟動代理以收集資料',
+      configTakenOver: '已接管配置',
+      configNotTakenOver: '配置未接管',
+      requestCount: '請求數',
+      recordCount: '記錄數',
+      activeConnections: '活躍連接',
+      includeErrorRequests: '包含錯誤請求',
+      includeErrorRequestsDesc: '在請求數統計中包含 4xx/5xx 響應'
+    }
+  },
+  'en-US': {
+    app: {
+      name: 'UsageMeter',
+      subtitle: 'Usage Monitor'
+    },
+    common: {
+      refresh: 'Refresh',
+      toggleTheme: 'Toggle Theme',
+      syncing: 'Syncing',
+      dashboard: 'Dashboard',
+      settings: 'Settings',
+      source: 'Source',
+      updatedAt: 'Updated',
+      unknown: 'Unknown',
+      safe: 'Safe',
+      warning: 'Warning',
+      critical: 'Critical',
+      enabled: 'Enabled',
+      save: 'Save Settings',
+      saving: 'Saving...',
+      noData: 'No data',
+      token: 'Token',
+      requests: 'Requests',
+      remaining: 'left',
+      seconds: 's',
+      inputTokens: 'Input',
+      outputTokens: 'Output',
+      totalTokens: 'Total',
+      cost: 'Cost',
+      unlimited: 'Unlimited',
+      avgRate: 'Rate',
+      underDevelopment: 'Under Development'
+    },
+    source: {
+      ccusageApi: 'ccusage',
+      localJsonl: 'Local JSONL fallback',
+      noData: 'No available data',
+      simulated: 'Simulated data',
+      unknown: 'Unknown source'
+    },
+    metrics: {
+      summary: '5h Token {tokens} | Requests {requests}',
+      tokenRemaining: 'Token Remaining',
+      requestRemaining: 'Request Remaining',
+      currentRisk: 'Current Risk',
+      windowSuffix: 'Window',
+      tokenUsageRate: 'Token Usage',
+      requestUsageRate: 'Requests Usage',
+      shortTrend: 'Short-term Trend',
+      samples: '{count} samples',
+      tokenLimit: 'Token Limit',
+      requestLimit: 'Request Limit',
+      modelDistribution: 'Model Distribution',
+      statusCodeDistribution: 'Status Code Distribution',
+      successRate: 'Success Rate',
+      clientError: 'Client Error',
+      serverError: 'Server Error',
+      success: 'Success',
+      tokenGenerationRate: 'Token Generation Rate',
+      modelRateRanking: 'Model Rate Ranking',
+      avgSpeed: 'Avg Speed',
+      tokensPerSecond: 't/s',
+      noRateData: 'No rate data available',
+      rateRange: 'Rate Range',
+      totalOutput: 'Total Output',
+      totalDuration: 'Total Duration',
+      ttft: 'Time to First Token',
+      avgTtft: 'Avg Response',
+      minTtft: 'Min',
+      maxTtft: 'Max',
+      modelTtftRanking: 'Model Response Speed'
+    },
+    alerts: {
+      title: 'Alerts',
+      empty: 'No active alerts. Everything looks stable.',
+      levelPrefix: {
+        warning: 'Warning',
+        critical: 'Critical'
+      },
+      fromSource: 'Current window reached threshold ({source})'
+    },
+    backendNote: {
+      simulatedData: 'Using simulated data. Please install and configure ccusage and Claude data directory.',
+      localJsonlFallback: 'ccusage failed, using local JSONL fallback.',
+      noRealData: 'No real data available. Please confirm Claude Code has generated sessions.'
+    },
+    backendError: {
+      invokeFailed: 'Invocation failed',
+      readSettings: 'Failed to read settings',
+      parseSettings: 'Failed to parse settings',
+      createSettingsDir: 'Failed to create settings directory',
+      serializeSettings: 'Failed to serialize settings',
+      writeSettings: 'Failed to write settings',
+      snapshotTaskFailed: 'Background task execution failed',
+      ccusageScriptFailed: 'ccusage script execution failed',
+      ccusageEmpty: 'ccusage output is empty',
+      localJsonlNotFound: 'Claude local JSONL session files not found',
+      unknown: 'Unknown error'
+    },
+    settings: {
+      locale: 'Language',
+      timezone: 'Timezone',
+      timezonePlaceholder: 'UTC',
+      refreshInterval: 'Refresh Interval (sec)',
+      warningThreshold: 'Warning Threshold (%)',
+      criticalThreshold: 'Critical Threshold (%)',
+      quotaTitle: 'Window Quotas',
+      general: 'General',
+      thresholds: 'Thresholds',
+      zhCN: '简体中文',
+      zhTW: '繁體中文',
+      enUS: 'English',
+      billingType: 'Billing Type',
+      billingTypeToken: 'Token Billing',
+      billingTypeRequest: 'Request Billing',
+      billingTypeBoth: 'Both',
+      windowEnabled: 'Enabled',
+      tokenLimitPlaceholder: 'Token Limit',
+      requestLimitPlaceholder: 'Request Limit',
+      window5h: '5 Hours',
+      window1d: '1 Day',
+      window7d: '7 Days',
+      window30d: '30 Days',
+      windowCurrentMonth: 'Current Month',
+      window1m: '1 Month',
+      unlimited: 'Unlimited',
+      setLimit: 'Set Limit',
+      summaryWindow: 'Summary Display Window',
+      dataSource: 'Data Collection Method',
+      dataSourceCcusage: 'ccusage + Local Files',
+      dataSourceProxy: 'Local Proxy',
+      dataSourceCcusageDesc: 'Basic stats and model distribution fully supported',
+      dataSourceProxyDesc: 'Supports generation rate, status codes and real-time statistics',
+      theme: 'Theme',
+      themeLight: 'Light',
+      themeDark: 'Dark',
+      themeSystem: 'System',
+      interceptRequests: 'Intercept Network Requests',
+      proxyRunning: 'Running',
+      port: 'Port',
+      startProxyHint: 'Start proxy to collect data',
+      configTakenOver: 'Config taken over',
+      configNotTakenOver: 'Config not taken over',
+      requestCount: 'Requests',
+      recordCount: 'Records',
+      activeConnections: 'Active Connections',
+      includeErrorRequests: 'Include Error Requests',
+      includeErrorRequestsDesc: 'Include 4xx/5xx responses in request count'
+    }
+  }
+}
+
+const SOURCE_KEY_MAP: Record<string, string> = {
+  'ccusage-api': 'source.ccusageApi',
+  'local-jsonl': 'source.localJsonl',
+  'no-data': 'source.noData',
+  simulated: 'source.simulated',
+  unknown: 'source.unknown'
+}
+
+function getByPath(obj: TranslationNode, path: string): string | TranslationNode | undefined {
+  return path.split('.').reduce<string | TranslationNode | undefined>((acc, part) => {
+    if (!acc || typeof acc === 'string') {
+      return undefined
+    }
+    return acc[part]
+  }, obj)
+}
+
+function interpolate(template: string, params?: Record<string, string | number>): string {
+  if (!params) return template
+  return template.replace(/\{(\w+)\}/g, (_, key) => String(params[key] ?? `{${key}}`))
+}
+
+export function normalizeLocale(locale: string | undefined): AppLocale {
+  if (locale === 'en-US') return 'en-US'
+  if (locale === 'zh-TW') return 'zh-TW'
+  return 'zh-CN'
+}
+
+export function t(locale: string | undefined, key: string, params?: Record<string, string | number>): string {
+  const resolvedLocale = normalizeLocale(locale)
+  const value = getByPath(messages[resolvedLocale], key)
+  if (typeof value === 'string') {
+    return interpolate(value, params)
+  }
+
+  const fallback = getByPath(messages['en-US'], key)
+  if (typeof fallback === 'string') {
+    return interpolate(fallback, params)
+  }
+
+  return key
+}
+
+export function sourceLabel(locale: string | undefined, source: string | undefined): string {
+  const key = SOURCE_KEY_MAP[source ?? 'unknown'] ?? 'source.unknown'
+  return t(locale, key)
+}
+
+export function riskLabel(locale: string | undefined, risk: 'safe' | 'warning' | 'critical'): string {
+  if (risk === 'critical') return t(locale, 'common.critical')
+  if (risk === 'warning') return t(locale, 'common.warning')
+  return t(locale, 'common.safe')
+}
+
+export function alertMessage(locale: string | undefined, level: 'warning' | 'critical', source: string): string {
+  const prefix = t(locale, `alerts.levelPrefix.${level}`)
+  const body = t(locale, 'alerts.fromSource', { source: sourceLabel(locale, source) })
+  return `${prefix}: ${body}`
+}
+
+const NOTE_KEY_MAP: Record<string, string> = {
+  NOTE_SIMULATED_DATA: 'backendNote.simulatedData',
+  NOTE_LOCAL_JSONL_FALLBACK: 'backendNote.localJsonlFallback',
+  NOTE_NO_REAL_DATA: 'backendNote.noRealData'
+}
+
+const ERROR_KEY_MAP: Record<string, string> = {
+  ERR_INVOKE_FAILED: 'backendError.invokeFailed',
+  ERR_READ_SETTINGS: 'backendError.readSettings',
+  ERR_PARSE_SETTINGS: 'backendError.parseSettings',
+  ERR_CREATE_SETTINGS_DIR: 'backendError.createSettingsDir',
+  ERR_SERIALIZE_SETTINGS: 'backendError.serializeSettings',
+  ERR_WRITE_SETTINGS: 'backendError.writeSettings',
+  ERR_SNAPSHOT_TASK_FAILED: 'backendError.snapshotTaskFailed',
+  ERR_CCUSAGE_SCRIPT_FAILED: 'backendError.ccusageScriptFailed',
+  ERR_CCUSAGE_OUTPUT_EMPTY: 'backendError.ccusageEmpty',
+  ERR_LOCAL_JSONL_NOT_FOUND: 'backendError.localJsonlNotFound'
+}
+
+function parseCodeAndDetail(raw: string): { code: string; detail: string } {
+  const idx = raw.indexOf(':')
+  if (idx < 0) return { code: raw.trim(), detail: '' }
+  return {
+    code: raw.slice(0, idx).trim(),
+    detail: raw.slice(idx + 1).trim()
+  }
+}
+
+export function backendNoteLabel(locale: string | undefined, rawNote: string | null | undefined): string {
+  if (!rawNote) return ''
+  const { code, detail } = parseCodeAndDetail(rawNote)
+  const key = NOTE_KEY_MAP[code]
+  if (!key) return rawNote
+  const base = t(locale, key)
+  return detail ? `${base} (${detail})` : base
+}
+
+export function backendErrorLabel(locale: string | undefined, rawError: string | null | undefined): string {
+  if (!rawError) return ''
+  const { code, detail } = parseCodeAndDetail(rawError)
+  const key = ERROR_KEY_MAP[code] ?? 'backendError.unknown'
+  const base = t(locale, key)
+  return detail ? `${base}: ${detail}` : base
+}
+
+/// 获取时间窗口名称的国际化显示（使用 settings.window* 键）
+export function windowNameLabel(locale: string | undefined, window: string): string {
+  const keyMap: Record<string, string> = {
+    '5h': 'settings.window5h',
+    '1d': 'settings.window1d',
+    '7d': 'settings.window7d',
+    '30d': 'settings.window30d',
+    current_month: 'settings.windowCurrentMonth',
+    '1m': 'settings.window1m'
+  }
+  const key = keyMap[window]
+  if (key) {
+    return t(locale, key)
+  }
+  return window
+}

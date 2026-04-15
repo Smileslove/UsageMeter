@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- macOS 深邃暗夜背景渐变 -->
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#18181b" />   <!-- Zinc 900 -->
+      <stop offset="100%" stop-color="#09090b" /> <!-- Zinc 950 -->
+    </linearGradient>
+
+    <!-- Token 消耗渐变 (外环)：翠绿到青蓝，代表自然与流动的数据流 -->
+    <linearGradient id="tokenGradient" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#10b981" />   <!-- Emerald 500 -->
+      <stop offset="100%" stop-color="#0ea5e9" /> <!-- Sky 500 -->
+    </linearGradient>
+
+    <!-- Request 次数渐变 (内环)：紫粉科技色，代表高频请求打点 -->
+    <linearGradient id="requestGradient" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#8b5cf6" />   <!-- Violet 500 -->
+      <stop offset="100%" stop-color="#d946ef" /> <!-- Fuchsia 500 -->
+    </linearGradient>
+
+    <!-- 全局发光滤镜，制造屏幕和仪表的科技质感 -->
+    <filter id="neon-glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="12" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- 指针高亮晕影 -->
+    <filter id="glow-bright" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- ================= 底座 ================= -->
+  <!-- macOS 标准圆角矩形 (Squircle) 的近似实现 -->
+  <rect width="512" height="512" rx="115" fill="url(#bg)" />
+  <!-- 内描边增加高光质感 -->
+  <rect width="508" height="508" x="2" y="2" rx="113" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="4" />
+
+  <!-- ================= 仪表盘底纹 ================= -->
+  <g transform="translate(256, 256)">
+    <!-- 外侧暗色虚线轨道 -->
+    <circle cx="0" cy="0" r="150" fill="none" stroke="#27272a" stroke-width="6" stroke-dasharray="8 12" />
+    <!-- 内侧暗色实线轨道 -->
+    <circle cx="0" cy="0" r="100" fill="none" stroke="#27272a" stroke-width="16" stroke-opacity="0.5" />
+    <!-- 指针走过的阴影拖尾 -->
+    <circle cx="0" cy="0" r="150" fill="none" stroke="#000000" stroke-width="24" stroke-opacity="0.2" filter="url(#neon-glow)" />
+  </g>
+
+  <!-- ================= 核心读数轨道 (构成字母 Q 的圆环部分) ================= -->
+  <g transform="translate(256, 256) rotate(135)">
+    <!--
+      说明：旋转 135度 后，起点在右下角。
+      外环半径 150，周长约 942，dasharray 设置留下约 90度 的缺口给指针。
+    -->
+    <!-- 外环：Token 消耗进度 -->
+    <circle cx="0" cy="0" r="150" fill="none" stroke="url(#tokenGradient)" stroke-width="24"
+            stroke-linecap="round" stroke-dasharray="720 1000" filter="url(#neon-glow)" />
+
+    <!-- 内环：Request 请求进度 -->
+    <!-- 内环半径 100，周长约 628，进度占比不同 -->
+    <circle cx="0" cy="0" r="100" fill="none" stroke="url(#requestGradient)" stroke-width="16"
+            stroke-linecap="round" stroke-dasharray="400 800" filter="url(#neon-glow)" />
+  </g>
+
+  <!-- ================= 指针枢纽与 Q 的尾巴 ================= -->
+  <g transform="translate(256, 256)">
+    <!-- 指针主轴向右下方延展，这就构成了字母 "Q" 的那一撇 -->
+    <line x1="0" y1="0" x2="110" y2="110" stroke="#ffffff" stroke-width="20" stroke-linecap="round" filter="url(#glow-bright)" />
+
+    <!-- 装饰性指针尖端发光点 -->
+    <circle cx="110" cy="110" r="8" fill="#a855f7" filter="url(#neon-glow)" />
+
+    <!-- 中心枢轴/转盘底座 -->
+    <circle cx="0" cy="0" r="32" fill="#18181b" stroke="#ffffff" stroke-width="8" stroke-opacity="0.9" />
+    <!-- 转盘内部的脉冲核心小点 -->
+    <circle cx="0" cy="0" r="10" fill="#0ea5e9" filter="url(#neon-glow)" />
+  </g>
+
+</svg>
