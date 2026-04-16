@@ -69,6 +69,11 @@ export const useMonitorStore = defineStore('monitor', {
           this.settings.proxy.enabled = false
         }
       }
+
+      // 如果是代理模式，获取速率数据（解决初始化时序问题）
+      if (this.settings.dataSource === 'proxy' && this.settings.summaryWindow) {
+        await this.fetchRateSummary(this.settings.summaryWindow)
+      }
     },
     async loadSettings() {
       try {
@@ -115,6 +120,7 @@ export const useMonitorStore = defineStore('monitor', {
       }
 
       this.loading = true
+      const startTime = Date.now()
       try {
         this.error = ''
 
@@ -127,9 +133,20 @@ export const useMonitorStore = defineStore('monitor', {
         this.lastUpdatedEpoch = this.snapshot.generatedAtEpoch
         this.updateTrendHistory(this.snapshot)
         this.evaluateAlerts(this.snapshot)
+
+        // 如果是代理模式，刷新速率数据
+        if (this.settings.dataSource === 'proxy' && this.settings.summaryWindow) {
+          await this.fetchRateSummary(this.settings.summaryWindow)
+        }
       } catch (e) {
         this.error = String(e)
       } finally {
+        // 确保最小加载时间为 300ms，让用户能看到刷新动画反馈
+        const elapsed = Date.now() - startTime
+        const minLoadingMs = 300
+        if (elapsed < minLoadingMs) {
+          await new Promise(resolve => setTimeout(resolve, minLoadingMs - elapsed))
+        }
         this.loading = false
       }
     },
