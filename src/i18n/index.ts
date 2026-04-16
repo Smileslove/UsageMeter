@@ -15,6 +15,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       toggleTheme: '切换主题',
       syncing: '同步中',
       dashboard: '面板',
+      statistics: '统计',
       settings: '设置',
       source: '来源',
       updatedAt: '更新',
@@ -36,7 +37,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       cost: '费用',
       unlimited: '无限制',
       avgRate: '速率',
-      underDevelopment: '功能开发中'
+      underDevelopment: '功能开发中',
+      noMore: '没有更多了'
     },
     source: {
       ccusageApi: 'ccusage',
@@ -153,6 +155,35 @@ const messages: Record<AppLocale, TranslationNode> = {
       activeConnections: '活跃连接',
       includeErrorRequests: '包含错误请求',
       includeErrorRequestsDesc: '在请求数统计中包含 4xx/5xx 响应'
+    },
+    sessions: {
+      title: '会话',
+      tabs: {
+        recent: '最近会话',
+        projects: '项目统计'
+      },
+      proxyRequired: '会话统计需要启用代理模式',
+      noData: '暂无会话数据',
+      totalTokens: '总 Token',
+      estimatedCost: '估算费用',
+      avgRate: '平均速率',
+      duration: '耗时',
+      ttft: 'TTFT',
+      requests: '请求',
+      model: '模型',
+      viewDetail: '查看详情',
+      inputOutput: '输入 / 输出',
+      firstToken: '首字',
+      totalDuration: '总耗时',
+      input: '输入',
+      output: '输出',
+      cost: '费用',
+      startTime: '开始时间',
+      endTime: '结束时间',
+      lastPrompt: '最后提示',
+      cwd: '工作目录',
+      error: '错误',
+      jsonlSource: '数据来自本地文件，启用代理可获取速率统计'
     }
   },
   'zh-TW': {
@@ -165,6 +196,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       toggleTheme: '切換主題',
       syncing: '同步中',
       dashboard: '面板',
+      statistics: '統計',
       settings: '設定',
       source: '來源',
       updatedAt: '更新',
@@ -186,7 +218,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       cost: '費用',
       unlimited: '無限制',
       avgRate: '速率',
-      underDevelopment: '功能開發中'
+      underDevelopment: '功能開發中',
+      noMore: '沒有更多了'
     },
     source: {
       ccusageApi: 'ccusage',
@@ -303,6 +336,35 @@ const messages: Record<AppLocale, TranslationNode> = {
       activeConnections: '活躍連接',
       includeErrorRequests: '包含錯誤請求',
       includeErrorRequestsDesc: '在請求數統計中包含 4xx/5xx 響應'
+    },
+    sessions: {
+      title: '會話',
+      tabs: {
+        recent: '最近會話',
+        projects: '專案統計'
+      },
+      proxyRequired: '會話統計需要啟用代理模式',
+      noData: '暫無會話資料',
+      totalTokens: '總 Token',
+      estimatedCost: '估算費用',
+      avgRate: '平均速率',
+      duration: '耗時',
+      ttft: 'TTFT',
+      requests: '請求',
+      model: '模型',
+      viewDetail: '查看詳情',
+      inputOutput: '輸入 / 輸出',
+      firstToken: '首字',
+      totalDuration: '總耗時',
+      input: '輸入',
+      output: '輸出',
+      cost: '費用',
+      startTime: '開始時間',
+      endTime: '結束時間',
+      lastPrompt: '最後提示',
+      cwd: '工作目錄',
+      error: '錯誤',
+      jsonlSource: '資料來自本地檔案，啟用代理可獲取速率統計'
     }
   },
   'en-US': {
@@ -315,6 +377,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       toggleTheme: 'Toggle Theme',
       syncing: 'Syncing',
       dashboard: 'Dashboard',
+      statistics: 'Statistics',
       settings: 'Settings',
       source: 'Source',
       updatedAt: 'Updated',
@@ -336,7 +399,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       cost: 'Cost',
       unlimited: 'Unlimited',
       avgRate: 'Rate',
-      underDevelopment: 'Under Development'
+      underDevelopment: 'Under Development',
+      noMore: 'No more sessions'
     },
     source: {
       ccusageApi: 'ccusage',
@@ -453,6 +517,35 @@ const messages: Record<AppLocale, TranslationNode> = {
       activeConnections: 'Active Connections',
       includeErrorRequests: 'Include Error Requests',
       includeErrorRequestsDesc: 'Include 4xx/5xx responses in request count'
+    },
+    sessions: {
+      title: 'Sessions',
+      tabs: {
+        recent: 'Recent Sessions',
+        projects: 'Projects'
+      },
+      proxyRequired: 'Session statistics requires proxy mode',
+      noData: 'No session data',
+      totalTokens: 'Total Tokens',
+      estimatedCost: 'Estimated Cost',
+      avgRate: 'Avg Rate',
+      duration: 'Duration',
+      ttft: 'TTFT',
+      requests: 'Requests',
+      model: 'Model',
+      viewDetail: 'View Details',
+      inputOutput: 'Input / Output',
+      firstToken: 'First',
+      totalDuration: 'Time',
+      input: 'In',
+      output: 'Out',
+      cost: 'Cost',
+      startTime: 'Start Time',
+      endTime: 'End Time',
+      lastPrompt: 'Last Prompt',
+      cwd: 'Working Dir',
+      error: 'Error',
+      jsonlSource: 'Data from local files. Enable proxy for rate stats.'
     }
   }
 }

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AlertEvent, AppSettings, ProxyStatus, ProxyUsageSnapshot, UsageSnapshot, WindowQuota, WindowRateSummary } from '../types'
+import type { AlertEvent, AppSettings, ProxyStatus, ProxyUsageSnapshot, SessionStats, UsageSnapshot, WindowQuota, WindowRateSummary } from '../types'
 
 const defaultQuotas: WindowQuota[] = [
   { window: '5h', enabled: true, tokenLimit: 500000, requestLimit: 500 },
@@ -46,7 +46,11 @@ export const useMonitorStore = defineStore('monitor', {
     trendHistory: {} as Record<string, number[]>,
     lastAlertLevel: 'safe' as 'safe' | 'warning' | 'critical',
     lastAlertEpoch: 0,
-    alertCooldownSeconds: 300
+    alertCooldownSeconds: 300,
+    // 会话相关状态
+    sessions: [] as SessionStats[],
+    sessionsLoading: false,
+    selectedSession: null as SessionStats | null
   }),
   getters: {
     hasData: state => !!state.snapshot,
@@ -329,6 +333,50 @@ export const useMonitorStore = defineStore('monitor', {
           // 即使失败也继续退出，下次启动时会通过孤立状态恢复
         }
       }
+    },
+    // 会话相关操作
+    /**
+     * 获取会话列表
+     * 支持分页：每次加载 limit 个，offset 为偏移量
+     */
+    async fetchSessions(limit: number = 50, offset: number = 0, append: boolean = false) {
+      if (offset === 0) {
+        this.sessionsLoading = true
+      }
+      try {
+        const newSessions = await invoke<SessionStats[]>('get_sessions', { limit, offset })
+        if (append) {
+          this.sessions = [...this.sessions, ...newSessions]
+        } else {
+          this.sessions = newSessions
+        }
+        return newSessions.length
+      } catch (e) {
+        console.error('Failed to fetch sessions:', e)
+        if (!append) {
+          this.sessions = []
+        }
+        return 0
+      } finally {
+        this.sessionsLoading = false
+      }
+    },
+    /**
+     * 获取会话详情
+     */
+    async fetchSessionDetail(sessionId: string) {
+      try {
+        this.selectedSession = await invoke<SessionStats | null>('get_session_detail', { sessionId })
+      } catch (e) {
+        console.error('Failed to fetch session detail:', e)
+        this.selectedSession = null
+      }
+    },
+    /**
+     * 清除选中会话
+     */
+    clearSelectedSession() {
+      this.selectedSession = null
     }
   }
 })

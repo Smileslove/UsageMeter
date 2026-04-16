@@ -177,3 +177,45 @@ export interface ModelTtftStats {
   minTtftMs: number
   maxTtftMs: number
 }
+
+// 会话统计
+export interface SessionStats {
+  sessionId: string
+  totalRequests: number
+  totalInputTokens: number
+  totalOutputTokens: number
+  totalCacheCreateTokens: number
+  totalCacheReadTokens: number
+  totalDurationMs: number
+  avgOutputTokensPerSecond: number
+  firstRequestTime: number
+  lastRequestTime: number
+  models: string[]
+  // 扩展字段（Phase 2 添加）
+  avgTtftMs?: number
+  successRequests?: number
+  errorRequests?: number
+  estimatedCost?: number
+  isCostEstimated?: boolean
+  // JSONL 元信息（Phase 4 添加）
+  cwd?: string
+  projectName?: string  // 项目名称（从 cwd 提取）
+  topic?: string        // 首个有意义用户消息
+  lastPrompt?: string
+  sessionName?: string  // 自定义会话名（customTitle 或 slug）
+}
+
+// 会话请求记录
+export interface SessionRequest {
+  timestamp: number
+  messageId: string
+  inputTokens: number
+  outputTokens: number
+  cacheCreateTokens: number
+  cacheReadTokens: number
+  model: string
+  durationMs: number
+  outputTokensPerSecond: number | null
+  ttftMs: number | null
+  statusCode: number
+}

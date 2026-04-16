@@ -5,6 +5,7 @@
 mod commands;
 mod models;
 mod proxy;
+mod session;
 mod utils;
 
 use tauri::menu::{Menu, MenuItem};
@@ -189,6 +190,9 @@ pub fn run() {
             // 用量命令
             commands::get_usage_snapshot,
             commands::get_window_rate_summary,
+            // 会话命令
+            commands::get_sessions,
+            commands::get_session_detail,
             // 代理命令
             commands::start_proxy,
             commands::stop_proxy,

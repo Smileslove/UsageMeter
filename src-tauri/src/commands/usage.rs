@@ -1,7 +1,7 @@
 //! 用量相关 Tauri 命令
 
 use crate::models::{compute_percent, risk_level, AppSettings, ModelRateStats, ModelTtftStats, OverallRateStats, TtftStats, UsageSnapshot, WindowRateSummary, WindowUsage};
-use crate::proxy::ProxyServer;
+use crate::proxy::{ProxyServer, SessionStats};
 use chrono::{Datelike, Local, TimeZone};
 use std::collections::VecDeque;
 use std::fs;
@@ -1010,4 +1010,219 @@ pub async fn get_window_rate_summary(
             ttft_by_model: Vec::new(),
         })
     }
+}
+
+/// 获取会话列表（按最后修改时间倒序，支持分页）
+/// 数据源逻辑：
+/// - 会话列表始终从 JSONL 文件获取（主数据源）
+/// - 如果代理数据库中有对应会话的统计，合并代理的独有数据（速率、TTFT、状态码等）
+#[tauri::command]
+pub async fn get_sessions(
+    limit: i64,
+    offset: i64,
+    proxy_state: tauri::State<'_, ProxyState>,
+) -> Result<Vec<SessionStats>, String> {
+    eprintln!("[get_sessions] fetching sessions from JSONL files (limit: {}, offset: {})", limit, offset);
+
+    // 1. 从 JSONL 文件获取会话列表（主数据源）
+    let all_meta = crate::session::get_all_session_meta_raw();
+    eprintln!("[get_sessions] found {} total sessions from JSONL", all_meta.len());
+
+    // 2. 应用分页
+    let meta_list: Vec<_> = all_meta
+        .into_iter()
+        .skip(offset as usize)
+        .take(limit as usize)
+        .collect();
+    eprintln!("[get_sessions] returning {} sessions for page", meta_list.len());
+
+    // 3. 获取代理的会话统计数据（如果有）
+    let proxy_stats_map = {
+        let server_guard = proxy_state.server.read().await;
+        if let Some(server) = server_guard.as_ref() {
+            eprintln!("[get_sessions] proxy is running, checking for proxy stats");
+            let collector = server.get_collector();
+            let proxy_sessions = collector.get_all_sessions(1000).await;
+            proxy_sessions
+                .into_iter()
+                .map(|s| (s.session_id.clone(), s))
+                .collect::<std::collections::HashMap<String, SessionStats>>()
+        } else {
+            std::collections::HashMap::new()
+        }
+    };
+
+    // 4. 构建 SessionStats，合并 JSONL 数据和代理数据
+    let sessions: Vec<SessionStats> = meta_list
+        .into_iter()
+        .map(|meta| {
+            let first_model = meta.models.first().map(|s| s.as_str()).unwrap_or("");
+            let estimated_cost = crate::models::estimate_session_cost(
+                meta.total_input_tokens,
+                meta.total_output_tokens,
+                meta.total_cache_create_tokens,
+                meta.total_cache_read_tokens,
+                first_model,
+            );
+
+            // 尝试匹配代理数据
+            let proxy_stats = proxy_stats_map.get(&meta.session_id).or_else(|| {
+                let id_suffix = meta.session_id.split("::").last().unwrap_or(&meta.session_id);
+                proxy_stats_map.iter()
+                    .find(|(k, _)| k.ends_with(id_suffix) || k.split("::").last().unwrap_or(k) == id_suffix)
+                    .map(|(_, v)| v)
+            });
+
+            if let Some(proxy) = proxy_stats {
+                SessionStats {
+                    session_id: meta.session_id,
+                    total_requests: proxy.total_requests,
+                    total_input_tokens: proxy.total_input_tokens,
+                    total_output_tokens: proxy.total_output_tokens,
+                    total_cache_create_tokens: proxy.total_cache_create_tokens,
+                    total_cache_read_tokens: proxy.total_cache_read_tokens,
+                    total_duration_ms: proxy.total_duration_ms,
+                    avg_output_tokens_per_second: proxy.avg_output_tokens_per_second,
+                    first_request_time: proxy.first_request_time,
+                    last_request_time: proxy.last_request_time,
+                    models: proxy.models.clone(),
+                    avg_ttft_ms: proxy.avg_ttft_ms,
+                    success_requests: proxy.success_requests,
+                    error_requests: proxy.error_requests,
+                    estimated_cost: proxy.estimated_cost,
+                    is_cost_estimated: proxy.is_cost_estimated,
+                    cwd: meta.cwd,
+                    project_name: meta.project_name,
+                    topic: meta.topic,
+                    last_prompt: meta.last_prompt,
+                    session_name: meta.session_name,
+                }
+            } else {
+                SessionStats {
+                    session_id: meta.session_id,
+                    total_requests: meta.message_count,
+                    total_input_tokens: meta.total_input_tokens,
+                    total_output_tokens: meta.total_output_tokens,
+                    total_cache_create_tokens: meta.total_cache_create_tokens,
+                    total_cache_read_tokens: meta.total_cache_read_tokens,
+                    total_duration_ms: 0,
+                    avg_output_tokens_per_second: 0.0,
+                    first_request_time: meta.start_time,
+                    last_request_time: meta.end_time,
+                    models: meta.models,
+                    avg_ttft_ms: 0.0,
+                    success_requests: 0,
+                    error_requests: 0,
+                    estimated_cost,
+                    is_cost_estimated: true,
+                    cwd: meta.cwd,
+                    project_name: meta.project_name,
+                    topic: meta.topic,
+                    last_prompt: meta.last_prompt,
+                    session_name: meta.session_name,
+                }
+            }
+        })
+        .collect();
+
+    Ok(sessions)
+}
+
+/// 获取单个会话详情
+/// 数据源逻辑：
+/// - 会话基础信息从 JSONL 文件获取
+/// - 如果代理有对应会话的统计，合并代理的独有数据
+#[tauri::command]
+pub async fn get_session_detail(
+    session_id: String,
+    proxy_state: tauri::State<'_, ProxyState>,
+) -> Result<Option<SessionStats>, String> {
+    eprintln!("[get_session_detail] fetching session: {}", session_id);
+
+    // 1. 从 JSONL 获取会话元信息
+    let meta = match crate::session::get_session_meta_by_id(&session_id) {
+        Some(m) => m,
+        None => {
+            eprintln!("[get_session_detail] session not found in JSONL");
+            return Ok(None);
+        }
+    };
+
+    // 2. 计算费用
+    let first_model = meta.models.first().map(|s| s.as_str()).unwrap_or("");
+    let estimated_cost = crate::models::estimate_session_cost(
+        meta.total_input_tokens,
+        meta.total_output_tokens,
+        meta.total_cache_create_tokens,
+        meta.total_cache_read_tokens,
+        first_model,
+    );
+
+    // 3. 尝试从代理获取统计数据
+    let proxy_stats = {
+        let server_guard = proxy_state.server.read().await;
+        if let Some(server) = server_guard.as_ref() {
+            let collector = server.get_collector();
+            collector.get_session_stats(&session_id).await
+        } else {
+            None
+        }
+    };
+
+    // 4. 合并数据
+    let stats = if let Some(proxy) = proxy_stats {
+        eprintln!("[get_session_detail] found proxy stats, merging");
+        SessionStats {
+            session_id: meta.session_id,
+            // 代理统计数据
+            total_requests: proxy.total_requests,
+            total_input_tokens: proxy.total_input_tokens,
+            total_output_tokens: proxy.total_output_tokens,
+            total_cache_create_tokens: proxy.total_cache_create_tokens,
+            total_cache_read_tokens: proxy.total_cache_read_tokens,
+            total_duration_ms: proxy.total_duration_ms,
+            avg_output_tokens_per_second: proxy.avg_output_tokens_per_second,
+            first_request_time: proxy.first_request_time,
+            last_request_time: proxy.last_request_time,
+            models: proxy.models,
+            avg_ttft_ms: proxy.avg_ttft_ms,
+            success_requests: proxy.success_requests,
+            error_requests: proxy.error_requests,
+            estimated_cost: proxy.estimated_cost,
+            is_cost_estimated: proxy.is_cost_estimated,
+            // JSONL 元信息
+            cwd: meta.cwd,
+            project_name: meta.project_name,
+            topic: meta.topic,
+            last_prompt: meta.last_prompt,
+            session_name: meta.session_name,
+        }
+    } else {
+        eprintln!("[get_session_detail] no proxy stats, using JSONL only");
+        SessionStats {
+            session_id: meta.session_id,
+            total_requests: meta.message_count,
+            total_input_tokens: meta.total_input_tokens,
+            total_output_tokens: meta.total_output_tokens,
+            total_cache_create_tokens: meta.total_cache_create_tokens,
+            total_cache_read_tokens: meta.total_cache_read_tokens,
+            total_duration_ms: 0,
+            avg_output_tokens_per_second: 0.0,
+            first_request_time: meta.start_time,
+            last_request_time: meta.end_time,
+            models: meta.models,
+            avg_ttft_ms: 0.0,
+            success_requests: 0,
+            error_requests: 0,
+            estimated_cost,
+            is_cost_estimated: true,
+            cwd: meta.cwd,
+            project_name: meta.project_name,
+            topic: meta.topic,
+            last_prompt: meta.last_prompt,
+            session_name: meta.session_name,
+        }
+    };
+
+    Ok(Some(stats))
 }

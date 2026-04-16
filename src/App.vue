@@ -15,10 +15,10 @@ const store = useMonitorStore()
 
 const currentView = ref('overview')
 const navItems = [
-  { id: 'overview', name: '概览' },
-  { id: 'statistics', name: '统计' },
-  { id: 'sessions', name: '会话' },
-  { id: 'settings', name: '设置' }
+  { id: 'overview', key: 'common.dashboard' },
+  { id: 'statistics', key: 'common.statistics' },
+  { id: 'sessions', key: 'sessions.title' },
+  { id: 'settings', key: 'common.settings' }
 ]
 
 // 主题相关逻辑
@@ -148,7 +148,7 @@ onUnmounted(() => {
           @click="currentView = item.id"
           :class="['flex-1 flex justify-center items-center py-1 rounded-md text-xs font-medium transition-all', currentView === item.id ? 'bg-white text-gray-900 shadow-sm dark:bg-[#1C1C1E] dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300']"
         >
-          {{ item.name }}
+          {{ t(store.settings.locale, item.key) }}
         </button>
       </nav>
     </header>

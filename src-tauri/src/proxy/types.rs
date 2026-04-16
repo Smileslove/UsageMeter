@@ -178,7 +178,7 @@ pub struct WindowStats {
 
 /// 会话统计信息
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[allow(dead_code)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionStats {
     /// 会话 ID
     pub session_id: String,
@@ -202,6 +202,37 @@ pub struct SessionStats {
     pub last_request_time: i64,
     /// 使用的模型列表（去重）
     pub models: Vec<String>,
+    /// 平均 TTFT（首 Token 生成时间，毫秒）
+    #[serde(default)]
+    pub avg_ttft_ms: f64,
+    /// 成功请求数（status < 400）
+    #[serde(default)]
+    pub success_requests: u64,
+    /// 错误请求数（status >= 400）
+    #[serde(default)]
+    pub error_requests: u64,
+    /// 估算费用（美元）
+    #[serde(default)]
+    pub estimated_cost: f64,
+    /// 是否为估算费用
+    #[serde(default)]
+    pub is_cost_estimated: bool,
+    // === JSONL 元信息（可选） ===
+    /// 工作目录
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// 项目名称（从 cwd 提取）
+    #[serde(default)]
+    pub project_name: Option<String>,
+    /// 会话主题
+    #[serde(default)]
+    pub topic: Option<String>,
+    /// 最后用户提示
+    #[serde(default)]
+    pub last_prompt: Option<String>,
+    /// 自定义会话名称
+    #[serde(default)]
+    pub session_name: Option<String>,
 }
 
 /// 代理状态（在处理器之间共享）

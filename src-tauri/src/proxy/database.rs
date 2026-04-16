@@ -441,7 +441,10 @@ impl ProxyDatabase {
                     COALESCE(SUM(duration_ms), 0) as total_duration_ms,
                     MIN(request_start_time) as first_request_time,
                     MAX(request_end_time) as last_request_time,
-                    GROUP_CONCAT(DISTINCT model) as models
+                    GROUP_CONCAT(DISTINCT model) as models,
+                    AVG(ttft_ms) as avg_ttft_ms,
+                    SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END) as success_requests,
+                    SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) as error_requests
                 FROM usage_records
                 WHERE session_id = ?1
                 GROUP BY session_id
@@ -454,6 +457,9 @@ impl ProxyDatabase {
                 let total_output_tokens: i64 = row.get(3)?;
                 let total_duration_ms: i64 = row.get(6)?;
                 let models_str: String = row.get::<_, String>(9)?;
+                let total_input_tokens: i64 = row.get(2)?;
+                let total_cache_create_tokens: i64 = row.get(4)?;
+                let total_cache_read_tokens: i64 = row.get(5)?;
 
                 // 计算平均生成速率
                 let avg_rate = if total_duration_ms > 0 {
@@ -462,13 +468,25 @@ impl ProxyDatabase {
                     0.0
                 };
 
+                // 获取第一个模型用于定价
+                let first_model = models_str.split(',').next().unwrap_or("");
+
+                // 计算估算费用
+                let estimated_cost = crate::models::estimate_session_cost(
+                    total_input_tokens as u64,
+                    total_output_tokens as u64,
+                    total_cache_create_tokens as u64,
+                    total_cache_read_tokens as u64,
+                    first_model,
+                );
+
                 Ok(SessionStats {
                     session_id: row.get(0)?,
                     total_requests: row.get::<_, i64>(1)? as u64,
-                    total_input_tokens: row.get::<_, i64>(2)? as u64,
+                    total_input_tokens: total_input_tokens as u64,
                     total_output_tokens: total_output_tokens as u64,
-                    total_cache_create_tokens: row.get::<_, i64>(4)? as u64,
-                    total_cache_read_tokens: row.get::<_, i64>(5)? as u64,
+                    total_cache_create_tokens: total_cache_create_tokens as u64,
+                    total_cache_read_tokens: total_cache_read_tokens as u64,
                     total_duration_ms: total_duration_ms as u64,
                     avg_output_tokens_per_second: avg_rate,
                     first_request_time: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
@@ -478,6 +496,16 @@ impl ProxyDatabase {
                     } else {
                         models_str.split(',').map(|s| s.to_string()).collect()
                     },
+                    avg_ttft_ms: row.get::<_, Option<f64>>(10)?.unwrap_or(0.0),
+                    success_requests: row.get::<_, i64>(11)? as u64,
+                    error_requests: row.get::<_, i64>(12)? as u64,
+                    estimated_cost,
+                    is_cost_estimated: true,
+                    cwd: None,
+                    project_name: None,
+                    topic: None,
+                    last_prompt: None,
+                    session_name: None,
                 })
             });
 
@@ -506,7 +534,10 @@ impl ProxyDatabase {
                     COALESCE(SUM(duration_ms), 0) as total_duration_ms,
                     MIN(request_start_time) as first_request_time,
                     MAX(request_end_time) as last_request_time,
-                    GROUP_CONCAT(DISTINCT model) as models
+                    GROUP_CONCAT(DISTINCT model) as models,
+                    AVG(ttft_ms) as avg_ttft_ms,
+                    SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END) as success_requests,
+                    SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) as error_requests
                 FROM usage_records
                 WHERE session_id IS NOT NULL AND session_id != ''
                 GROUP BY session_id
@@ -521,6 +552,9 @@ impl ProxyDatabase {
                 let total_output_tokens: i64 = row.get(3)?;
                 let total_duration_ms: i64 = row.get(6)?;
                 let models_str: String = row.get::<_, String>(9)?;
+                let total_input_tokens: i64 = row.get(2)?;
+                let total_cache_create_tokens: i64 = row.get(4)?;
+                let total_cache_read_tokens: i64 = row.get(5)?;
 
                 let avg_rate = if total_duration_ms > 0 {
                     (total_output_tokens as f64) / (total_duration_ms as f64 / 1000.0)
@@ -528,13 +562,25 @@ impl ProxyDatabase {
                     0.0
                 };
 
+                // 获取第一个模型用于定价
+                let first_model = models_str.split(',').next().unwrap_or("");
+
+                // 计算估算费用
+                let estimated_cost = crate::models::estimate_session_cost(
+                    total_input_tokens as u64,
+                    total_output_tokens as u64,
+                    total_cache_create_tokens as u64,
+                    total_cache_read_tokens as u64,
+                    first_model,
+                );
+
                 Ok(SessionStats {
                     session_id: row.get(0)?,
                     total_requests: row.get::<_, i64>(1)? as u64,
-                    total_input_tokens: row.get::<_, i64>(2)? as u64,
+                    total_input_tokens: total_input_tokens as u64,
                     total_output_tokens: total_output_tokens as u64,
-                    total_cache_create_tokens: row.get::<_, i64>(4)? as u64,
-                    total_cache_read_tokens: row.get::<_, i64>(5)? as u64,
+                    total_cache_create_tokens: total_cache_create_tokens as u64,
+                    total_cache_read_tokens: total_cache_read_tokens as u64,
                     total_duration_ms: total_duration_ms as u64,
                     avg_output_tokens_per_second: avg_rate,
                     first_request_time: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
@@ -544,6 +590,16 @@ impl ProxyDatabase {
                     } else {
                         models_str.split(',').map(|s| s.to_string()).collect()
                     },
+                    avg_ttft_ms: row.get::<_, Option<f64>>(10)?.unwrap_or(0.0),
+                    success_requests: row.get::<_, i64>(11)? as u64,
+                    error_requests: row.get::<_, i64>(12)? as u64,
+                    estimated_cost,
+                    is_cost_estimated: true,
+                    cwd: None,
+                    project_name: None,
+                    topic: None,
+                    last_prompt: None,
+                    session_name: None,
                 })
             })
             .map_err(|e| format!("Failed to query sessions: {}", e))?
