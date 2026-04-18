@@ -42,15 +42,15 @@ jobs:
 
       - name: Build Tauri app (Apple Silicon)
         uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
-          releaseName: 'UsageMeter ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}'
+          releaseName: "UsageMeter ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}"
           releaseBody: 'See [CHANGELOG.md](./CHANGELOG.md) for details.'
           releaseDraft: true
           prerelease: false
           args: --target aarch64-apple-darwin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-macos-intel:
     needs: build-macos-arm
@@ -80,12 +80,12 @@ jobs:
 
       - name: Build Tauri app (Intel)
         uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
-          releaseName: 'UsageMeter ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}'
+          releaseName: "UsageMeter ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}"
           releaseBody: 'See [CHANGELOG.md](./CHANGELOG.md) for details.'
           releaseDraft: true
           prerelease: false
           args: --target x86_64-apple-darwin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
