@@ -1,6 +1,7 @@
 //! SQLite 数据库，用于持久化代理使用数据
 
 use super::types::{SessionStats, UsageRecord};
+use crate::models::ModelPricingConfig;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -35,6 +36,9 @@ impl ProxyDatabase {
 
         // 迁移旧表结构（添加新字段）
         Self::migrate_schema(&conn)?;
+
+        // 创建模型价格表
+        Self::create_model_pricing_table_static(&conn)?;
 
         Ok(Self {
             conn: Arc::new(std::sync::Mutex::new(conn)),
@@ -124,6 +128,30 @@ impl ProxyDatabase {
         )
         .map_err(|e| format!("Failed to create tables: {}", e))?;
 
+        Ok(())
+    }
+
+    /// 创建模型价格表（静态方法）
+    fn create_model_pricing_table_static(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            r#"
+            -- 模型价格表
+            CREATE TABLE IF NOT EXISTS model_pricing (
+                model_id TEXT PRIMARY KEY,
+                display_name TEXT,
+                input_price REAL NOT NULL,
+                output_price REAL NOT NULL,
+                cache_read_price REAL,
+                cache_write_price REAL,
+                source TEXT NOT NULL DEFAULT 'api',
+                last_updated INTEGER NOT NULL
+            );
+
+            -- 创建索引加速搜索
+            CREATE INDEX IF NOT EXISTS idx_model_pricing_search ON model_pricing(model_id, display_name);
+            "#,
+        )
+        .map_err(|e| format!("Failed to create model_pricing table: {}", e))?;
         Ok(())
     }
 
@@ -425,7 +453,7 @@ impl ProxyDatabase {
 
     /// 获取会话统计信息
     #[allow(dead_code)]
-    pub async fn get_session_stats(&self, session_id: &str) -> Result<Option<SessionStats>, String> {
+    pub async fn get_session_stats(&self, session_id: &str, pricings: &[ModelPricingConfig], match_mode: &str) -> Result<Option<SessionStats>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Failed to lock connection: {}", e))?;
 
         let mut stmt = conn
@@ -478,6 +506,8 @@ impl ProxyDatabase {
                     total_cache_create_tokens as u64,
                     total_cache_read_tokens as u64,
                     first_model,
+                    pricings,
+                    match_mode,
                 );
 
                 Ok(SessionStats {
@@ -518,7 +548,7 @@ impl ProxyDatabase {
 
     /// 获取所有会话列表（按最后请求时间倒序）
     #[allow(dead_code)]
-    pub async fn get_all_sessions(&self, limit: i64) -> Result<Vec<SessionStats>, String> {
+    pub async fn get_all_sessions(&self, limit: i64, pricings: &[ModelPricingConfig], match_mode: &str) -> Result<Vec<SessionStats>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Failed to lock connection: {}", e))?;
 
         let mut stmt = conn
@@ -572,6 +602,8 @@ impl ProxyDatabase {
                     total_cache_create_tokens as u64,
                     total_cache_read_tokens as u64,
                     first_model,
+                    pricings,
+                    match_mode,
                 );
 
                 Ok(SessionStats {
@@ -927,5 +959,272 @@ impl ProxyDatabase {
             .map_err(|e| format!("Failed to collect model TTFT stats: {}", e))?;
 
         Ok(models)
+    }
+
+    // ========== 模型价格相关操作 ==========
+
+    /// 创建模型价格表
+    pub fn create_model_pricing_table(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        conn.execute_batch(
+            r#"
+            -- 模型价格表
+            CREATE TABLE IF NOT EXISTS model_pricing (
+                model_id TEXT PRIMARY KEY,
+                display_name TEXT,
+                input_price REAL NOT NULL,
+                output_price REAL NOT NULL,
+                cache_read_price REAL,
+                cache_write_price REAL,
+                source TEXT NOT NULL DEFAULT 'api',
+                last_updated INTEGER NOT NULL
+            );
+
+            -- 创建索引加速搜索
+            CREATE INDEX IF NOT EXISTS idx_model_pricing_search ON model_pricing(model_id, display_name);
+            "#,
+        )
+        .map_err(|e| format!("Failed to create model_pricing table: {}", e))?;
+        Ok(())
+    }
+
+    /// 批量插入/更新模型价格（用于同步 API 数据）
+    pub fn upsert_model_pricings(&self, pricings: &[ModelPricingConfig]) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let mut count = 0;
+
+        for pricing in pricings {
+            let result = conn.execute(
+                r#"
+                INSERT INTO model_pricing (model_id, display_name, input_price, output_price, cache_read_price, cache_write_price, source, last_updated)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                ON CONFLICT(model_id) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    input_price = excluded.input_price,
+                    output_price = excluded.output_price,
+                    cache_read_price = excluded.cache_read_price,
+                    cache_write_price = excluded.cache_write_price,
+                    source = excluded.source,
+                    last_updated = excluded.last_updated
+                "#,
+                rusqlite::params![
+                    pricing.model_id,
+                    pricing.display_name,
+                    pricing.input_price,
+                    pricing.output_price,
+                    pricing.cache_read_price,
+                    pricing.cache_write_price,
+                    pricing.source,
+                    pricing.last_updated,
+                ],
+            );
+            if result.is_ok() {
+                count += 1;
+            }
+        }
+
+        Ok(count)
+    }
+
+    /// 搜索模型价格（支持分页和关键词搜索）
+    pub fn search_model_pricings(&self, query: Option<&str>, limit: i64, offset: i64) -> Result<Vec<ModelPricingConfig>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+        let pricings = if let Some(q) = query {
+            let search_pattern = format!("%{}%", q.to_lowercase());
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT model_id, display_name, input_price, output_price, cache_read_price, cache_write_price, source, last_updated
+                FROM model_pricing
+                WHERE model_id LIKE ?1 OR LOWER(display_name) LIKE ?1
+                ORDER BY model_id
+                LIMIT ?2 OFFSET ?3
+                "#
+            ).map_err(|e| format!("Failed to prepare statement: {}", e))?;
+
+            let rows = stmt.query_map(
+                rusqlite::params![search_pattern, limit, offset],
+                |row| {
+                    Ok(ModelPricingConfig {
+                        model_id: row.get(0)?,
+                        display_name: row.get(1)?,
+                        input_price: row.get(2)?,
+                        output_price: row.get(3)?,
+                        cache_read_price: row.get(4)?,
+                        cache_write_price: row.get(5)?,
+                        source: row.get(6)?,
+                        last_updated: row.get(7)?,
+                    })
+                },
+            ).map_err(|e| format!("Failed to search model pricings: {}", e))?;
+
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to collect results: {}", e))?
+        } else {
+            let mut stmt = conn.prepare(
+                r#"
+                SELECT model_id, display_name, input_price, output_price, cache_read_price, cache_write_price, source, last_updated
+                FROM model_pricing
+                ORDER BY model_id
+                LIMIT ?1 OFFSET ?2
+                "#
+            ).map_err(|e| format!("Failed to prepare statement: {}", e))?;
+
+            let rows = stmt.query_map(
+                rusqlite::params![limit, offset],
+                |row| {
+                    Ok(ModelPricingConfig {
+                        model_id: row.get(0)?,
+                        display_name: row.get(1)?,
+                        input_price: row.get(2)?,
+                        output_price: row.get(3)?,
+                        cache_read_price: row.get(4)?,
+                        cache_write_price: row.get(5)?,
+                        source: row.get(6)?,
+                        last_updated: row.get(7)?,
+                    })
+                },
+            ).map_err(|e| format!("Failed to query model pricings: {}", e))?;
+
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to collect results: {}", e))?
+        };
+
+        Ok(pricings)
+    }
+
+    /// 获取模型价格总数
+    pub fn count_model_pricings(&self, query: Option<&str>) -> Result<i64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+        let count = if let Some(q) = query {
+            let search_pattern = format!("%{}%", q.to_lowercase());
+            conn.query_row(
+                "SELECT COUNT(*) FROM model_pricing WHERE model_id LIKE ?1 OR LOWER(display_name) LIKE ?1",
+                rusqlite::params![search_pattern],
+                |row| row.get(0),
+            )
+        } else {
+            conn.query_row("SELECT COUNT(*) FROM model_pricing", [], |row| row.get(0))
+        }
+        .map_err(|e| format!("Failed to count model pricings: {}", e))?;
+
+        Ok(count)
+    }
+
+    /// 添加自定义模型价格
+    pub fn add_custom_pricing(&self, pricing: &ModelPricingConfig) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        conn.execute(
+            r#"
+            INSERT INTO model_pricing (model_id, display_name, input_price, output_price, cache_read_price, cache_write_price, source, last_updated)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+            rusqlite::params![
+                pricing.model_id,
+                pricing.display_name,
+                pricing.input_price,
+                pricing.output_price,
+                pricing.cache_read_price,
+                pricing.cache_write_price,
+                "custom",
+                pricing.last_updated,
+            ],
+        )
+        .map_err(|e| format!("Failed to add custom pricing: {}", e))?;
+        Ok(())
+    }
+
+    /// 更新自定义模型价格
+    pub fn update_custom_pricing(&self, pricing: &ModelPricingConfig) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        conn.execute(
+            r#"
+            UPDATE model_pricing SET
+                display_name = ?2,
+                input_price = ?3,
+                output_price = ?4,
+                cache_read_price = ?5,
+                cache_write_price = ?6,
+                last_updated = ?7
+            WHERE model_id = ?1
+            "#,
+            rusqlite::params![
+                pricing.model_id,
+                pricing.display_name,
+                pricing.input_price,
+                pricing.output_price,
+                pricing.cache_read_price,
+                pricing.cache_write_price,
+                pricing.last_updated,
+            ],
+        )
+        .map_err(|e| format!("Failed to update custom pricing: {}", e))?;
+        Ok(())
+    }
+
+    /// 删除模型价格
+    pub fn delete_model_pricing(&self, model_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        conn.execute(
+            "DELETE FROM model_pricing WHERE model_id = ?1",
+            rusqlite::params![model_id],
+        )
+        .map_err(|e| format!("Failed to delete model pricing: {}", e))?;
+        Ok(())
+    }
+
+    /// 根据 model_id 查找价格配置
+    #[allow(dead_code)]
+    pub fn get_model_pricing(&self, model_id: &str) -> Result<Option<ModelPricingConfig>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let mut stmt = conn.prepare(
+            "SELECT model_id, display_name, input_price, output_price, cache_read_price, cache_write_price, source, last_updated FROM model_pricing WHERE model_id = ?1"
+        ).map_err(|e| format!("Failed to prepare statement: {}", e))?;
+
+        let result = stmt.query_row(rusqlite::params![model_id], |row| {
+            Ok(ModelPricingConfig {
+                model_id: row.get(0)?,
+                display_name: row.get(1)?,
+                input_price: row.get(2)?,
+                output_price: row.get(3)?,
+                cache_read_price: row.get(4)?,
+                cache_write_price: row.get(5)?,
+                source: row.get(6)?,
+                last_updated: row.get(7)?,
+            })
+        });
+
+        match result {
+            Ok(pricing) => Ok(Some(pricing)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(format!("Failed to get model pricing: {}", e)),
+        }
+    }
+
+    /// 获取所有模型价格配置（用于费用计算）
+    pub fn get_all_model_pricings(&self) -> Result<Vec<ModelPricingConfig>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let mut stmt = conn.prepare(
+            "SELECT model_id, display_name, input_price, output_price, cache_read_price, cache_write_price, source, last_updated FROM model_pricing ORDER BY model_id"
+        ).map_err(|e| format!("Failed to prepare statement: {}", e))?;
+
+        let pricings = stmt.query_map([], |row| {
+            Ok(ModelPricingConfig {
+                model_id: row.get(0)?,
+                display_name: row.get(1)?,
+                input_price: row.get(2)?,
+                output_price: row.get(3)?,
+                cache_read_price: row.get(4)?,
+                cache_write_price: row.get(5)?,
+                source: row.get(6)?,
+                last_updated: row.get(7)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query model pricings: {}", e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to collect results: {}", e))?;
+
+        Ok(pricings)
     }
 }

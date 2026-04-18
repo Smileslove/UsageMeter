@@ -22,6 +22,25 @@ export interface WindowQuota {
   requestLimit: number | null
 }
 
+// 模型价格配置
+export interface ModelPricingConfig {
+  modelId: string           // 模型ID，如 "claude-3-sonnet-20240229" 或 "minimax-m2-5"
+  displayName?: string      // 显示名称（可选）
+  inputPrice: number        // 输入价格 $/M tokens
+  outputPrice: number       // 输出价格 $/M tokens
+  cacheWritePrice?: number  // 缓存写入价格 $/M（可选）
+  cacheReadPrice?: number   // 缓存读取价格 $/M（可选）
+  source: 'api' | 'custom'  // 来源：API获取或用户自定义
+  lastUpdated: number       // 最后更新时间戳
+}
+
+// 模型价格设置
+export interface ModelPricingSettings {
+  matchMode: 'fuzzy' | 'exact'        // 匹配方式：模糊或精确
+  lastSyncTime: number | null         // 最后同步时间
+  pricings: ModelPricingConfig[]      // 价格配置列表
+}
+
 export interface AppSettings {
   locale: AppLocale
   timezone: string
@@ -34,6 +53,7 @@ export interface AppSettings {
   dataSource: DataSource     // 数据统计方式：ccusage 或 proxy
   proxy: ProxyConfig         // 代理配置
   theme: ThemeMode           // 主题模式：light/dark/system
+  modelPricing: ModelPricingSettings  // 模型价格设置
 }
 
 export interface WindowUsage {
@@ -203,6 +223,16 @@ export interface SessionStats {
   topic?: string        // 首个有意义用户消息
   lastPrompt?: string
   sessionName?: string  // 自定义会话名（customTitle 或 slug）
+}
+
+// 项目统计（聚合多个会话）
+export interface ProjectStats {
+  name: string
+  sessionCount: number
+  totalInputTokens: number
+  totalOutputTokens: number
+  totalCost: number
+  lastActive: number
 }
 
 // 会话请求记录

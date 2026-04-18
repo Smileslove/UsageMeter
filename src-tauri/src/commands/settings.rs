@@ -21,6 +21,9 @@ pub fn load_settings() -> Result<AppSettings, String> {
     // 确保代理配置有效（迁移旧配置）
     migrate_proxy_config(&mut settings);
 
+    // 确保模型价格配置存在（迁移旧配置）
+    migrate_model_pricing(&mut settings);
+
     Ok(settings)
 }
 
@@ -58,5 +61,12 @@ fn migrate_proxy_config(settings: &mut AppSettings) {
     // 修复端口为 0 或无效的情况
     if settings.proxy.port == 0 {
         settings.proxy.port = crate::models::default_proxy_port();
+    }
+}
+
+/// 确保模型价格配置存在
+fn migrate_model_pricing(settings: &mut AppSettings) {
+    if settings.model_pricing.match_mode.is_empty() {
+        settings.model_pricing.match_mode = "fuzzy".to_string();
     }
 }

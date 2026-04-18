@@ -16,17 +16,6 @@ const store = useMonitorStore()
 
 const models = computed(() => store.snapshot?.modelDistribution ?? [])
 
-// 格式化模型名称（简化长名称）
-const formatModelName = (name: string): string => {
-  if (name.includes('claude')) {
-    const parts = name.split('-')
-    const modelPart = parts[1] || ''
-    const version = parts[2] || ''
-    return `${modelPart.charAt(0).toUpperCase() + modelPart.slice(1)} ${version}`.trim()
-  }
-  return name.charAt(0).toUpperCase() + name.slice(1)
-}
-
 // 定义明亮的图表色彩（匹配参考图）
 const chartColors = [
   '#F45B69', // 珊瑚红
@@ -43,7 +32,7 @@ const chartOptions = computed(() => {
   const data = models.value
     .filter(m => m.percent > 0)
     .map(m => ({
-      name: formatModelName(m.modelName),
+      name: m.modelName,
       value: Number(m.percent.toFixed(1)), // 保留一位小数
       requestCount: m.requestCount
     }))

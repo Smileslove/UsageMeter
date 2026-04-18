@@ -20,11 +20,8 @@ pub fn scan_session_files() -> Vec<SessionFile> {
 
     for root in roots {
         if !root.exists() {
-            eprintln!("[Session] Root does not exist: {:?}", root);
             continue;
         }
-
-        eprintln!("[Session] Scanning root: {:?}", root);
 
         if let Ok(entries) = fs::read_dir(&root) {
             for entry in entries.flatten() {
@@ -82,8 +79,6 @@ pub fn scan_session_files() -> Vec<SessionFile> {
             }
         }
     }
-
-    eprintln!("[Session] Found {} session files", sessions.len());
 
     // Sort by modification time (newest first)
     sessions.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
@@ -318,15 +313,28 @@ fn extract_token_usage(json: &serde_json::Value) -> Option<TokenUsage> {
 /// Extract model name from JSON
 fn extract_model(json: &serde_json::Value) -> Option<String> {
     // Try message.model first
-    json.get("message")
+    let model = json.get("message")
         .and_then(|m| m.get("model"))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
         .or_else(|| {
             json.get("model")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        })
+        });
+
+    // Filter out synthetic/internal model names
+    if let Some(m) = model {
+        // Skip synthetic models (internal messages with no response)
+        if m.starts_with('<') && m.ends_with('>') {
+            return None;
+        }
+        // Skip empty or placeholder model names
+        if m.is_empty() || m == "unknown" {
+            return None;
+        }
+        return Some(m.to_string());
+    }
+
+    None
 }
 
 /// Extract timestamp from JSON
@@ -389,6 +397,7 @@ pub fn get_session_meta_by_id(session_id: &str) -> Option<SessionMeta> {
 }
 
 /// Get all session metadata (limited)
+#[allow(dead_code)]
 pub fn get_all_session_meta(limit: usize) -> Vec<SessionMeta> {
     scan_session_files()
         .into_iter()

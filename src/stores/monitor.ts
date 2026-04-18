@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AlertEvent, AppSettings, ProxyStatus, ProxyUsageSnapshot, SessionStats, UsageSnapshot, WindowQuota, WindowRateSummary } from '../types'
+import type { AlertEvent, AppSettings, ModelPricingSettings, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, UsageSnapshot, WindowQuota, WindowRateSummary } from '../types'
 
 const defaultQuotas: WindowQuota[] = [
   { window: '5h', enabled: true, tokenLimit: 500000, requestLimit: 500 },
@@ -9,6 +9,12 @@ const defaultQuotas: WindowQuota[] = [
   { window: '30d', enabled: true, tokenLimit: 20000000, requestLimit: 20000 },
   { window: 'current_month', enabled: true, tokenLimit: 30000000, requestLimit: 30000 }
 ]
+
+const defaultModelPricing: ModelPricingSettings = {
+  matchMode: 'fuzzy',
+  lastSyncTime: null,
+  pricings: []
+}
 
 const defaultSettings: AppSettings = {
   locale: 'zh-CN',
@@ -26,7 +32,8 @@ const defaultSettings: AppSettings = {
     autoStart: false,
     includeErrorRequests: true
   },
-  theme: 'system'
+  theme: 'system',
+  modelPricing: defaultModelPricing
 }
 
 export const useMonitorStore = defineStore('monitor', {
@@ -50,7 +57,10 @@ export const useMonitorStore = defineStore('monitor', {
     // 会话相关状态
     sessions: [] as SessionStats[],
     sessionsLoading: false,
-    selectedSession: null as SessionStats | null
+    selectedSession: null as SessionStats | null,
+    // 项目统计（基于所有会话聚合，不受分页影响）
+    projectStats: [] as ProjectStats[],
+    projectStatsLoading: false
   }),
   getters: {
     hasData: state => !!state.snapshot,
@@ -102,6 +112,18 @@ export const useMonitorStore = defineStore('monitor', {
             this.settings.proxy.includeErrorRequests = true
           }
         }
+
+        // 确保模型价格配置存在（迁移兼容）
+        if (!this.settings.modelPricing) {
+          this.settings.modelPricing = defaultModelPricing
+        } else {
+          if (this.settings.modelPricing.matchMode === undefined) {
+            this.settings.modelPricing.matchMode = 'fuzzy'
+          }
+          if (!this.settings.modelPricing.pricings) {
+            this.settings.modelPricing.pricings = []
+          }
+        }
       } catch (e) {
         this.error = String(e)
       }
@@ -111,7 +133,7 @@ export const useMonitorStore = defineStore('monitor', {
       try {
         this.error = ''
         await invoke('save_settings', { settings: this.settings })
-        this.startAutoRefresh()
+        // 不在这里调用 startAutoRefresh()，避免在设置页面时触发刷新
       } catch (e) {
         this.error = String(e)
       } finally {
@@ -344,7 +366,7 @@ export const useMonitorStore = defineStore('monitor', {
         this.sessionsLoading = true
       }
       try {
-        const newSessions = await invoke<SessionStats[]>('get_sessions', { limit, offset })
+        const newSessions = await invoke<SessionStats[]>('get_sessions', { limit, offset, settings: this.settings })
         if (append) {
           this.sessions = [...this.sessions, ...newSessions]
         } else {
@@ -366,7 +388,7 @@ export const useMonitorStore = defineStore('monitor', {
      */
     async fetchSessionDetail(sessionId: string) {
       try {
-        this.selectedSession = await invoke<SessionStats | null>('get_session_detail', { sessionId })
+        this.selectedSession = await invoke<SessionStats | null>('get_session_detail', { sessionId, settings: this.settings })
       } catch (e) {
         console.error('Failed to fetch session detail:', e)
         this.selectedSession = null
@@ -377,6 +399,20 @@ export const useMonitorStore = defineStore('monitor', {
      */
     clearSelectedSession() {
       this.selectedSession = null
+    },
+    /**
+     * 获取项目统计（基于所有会话聚合，不受分页影响）
+     */
+    async fetchProjectStats() {
+      this.projectStatsLoading = true
+      try {
+        this.projectStats = await invoke<ProjectStats[]>('get_project_stats', { settings: this.settings })
+      } catch (e) {
+        console.error('Failed to fetch project stats:', e)
+        this.projectStats = []
+      } finally {
+        this.projectStatsLoading = false
+      }
     }
   }
 })

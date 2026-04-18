@@ -45,10 +45,14 @@ const formatTokens = (tokens: number) => {
   return tokens.toString()
 }
 
-// 格式化费用
+// 格式化费用（智能精度）
 const formatCost = (cost: number | undefined) => {
   if (cost === undefined || cost === null) return '-'
-  return `$${cost.toFixed(2)}`
+  if (cost >= 1) return `$${cost.toFixed(2)}`
+  if (cost >= 0.01) return `$${cost.toFixed(3)}`
+  if (cost >= 0.001) return `$${cost.toFixed(4)}`
+  if (cost > 0) return `$${cost.toFixed(6)}`
+  return '$0.00'
 }
 
 // 计算输入输出比例

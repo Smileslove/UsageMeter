@@ -2,6 +2,7 @@
 
 use super::database::{ModelDistribution, ProxyDatabase, WindowRateStats, WindowRateSummary};
 use super::types::{SessionStats, UsageRecord, WindowStats};
+use crate::models::ModelPricingConfig;
 use chrono::{Datelike, Duration, Local, TimeZone};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -245,8 +246,8 @@ impl UsageCollector {
 
     /// 获取会话统计信息
     #[allow(dead_code)]
-    pub async fn get_session_stats(&self, session_id: &str) -> Option<SessionStats> {
-        match self.database.get_session_stats(session_id).await {
+    pub async fn get_session_stats(&self, session_id: &str, pricings: &[ModelPricingConfig], match_mode: &str) -> Option<SessionStats> {
+        match self.database.get_session_stats(session_id, pricings, match_mode).await {
             Ok(stats) => stats,
             Err(e) => {
                 eprintln!("Failed to get session stats: {}", e);
@@ -255,10 +256,16 @@ impl UsageCollector {
         }
     }
 
+    /// 获取数据库引用（用于模型价格等操作）
+    #[allow(dead_code)]
+    pub fn get_database(&self) -> Arc<ProxyDatabase> {
+        self.database.clone()
+    }
+
     /// 获取所有会话列表（按最后请求时间倒序）
     #[allow(dead_code)]
-    pub async fn get_all_sessions(&self, limit: i64) -> Vec<SessionStats> {
-        match self.database.get_all_sessions(limit).await {
+    pub async fn get_all_sessions(&self, limit: i64, pricings: &[ModelPricingConfig], match_mode: &str) -> Vec<SessionStats> {
+        match self.database.get_all_sessions(limit, pricings, match_mode).await {
             Ok(sessions) => sessions,
             Err(e) => {
                 eprintln!("Failed to get all sessions: {}", e);

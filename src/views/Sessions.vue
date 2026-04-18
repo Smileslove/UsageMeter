@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
-import { onMounted, onUnmounted, ref, computed } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import type { SessionStats } from '../types'
 import SessionDetailModal from '../components/SessionDetailModal.vue'
 
@@ -14,43 +14,11 @@ const activeTab = ref<'recent' | 'projects'>('recent')
 const selectedSession = ref<SessionStats | null>(null)
 const showModal = ref(false)
 
-// 构建项目维度的聚合数据统计
-const projectStats = computed(() => {
-  const cmap = new Map<
-    string,
-    {
-      name: string
-      sessionCount: number
-      totalInputTokens: number
-      totalOutputTokens: number
-      totalCost: number
-      lastActive: number
-    }
-  >()
-
-  for (const s of store.sessions) {
-    const pName = s.projectName || '未命名项目'
-    if (!cmap.has(pName)) {
-      cmap.set(pName, {
-        name: pName,
-        sessionCount: 0,
-        totalInputTokens: 0,
-        totalOutputTokens: 0,
-        totalCost: 0,
-        lastActive: 0
-      })
-    }
-    const pc = cmap.get(pName)!
-    pc.sessionCount += 1
-    pc.totalInputTokens += s.totalInputTokens || 0
-    pc.totalOutputTokens += s.totalOutputTokens || 0
-    pc.totalCost += s.estimatedCost || 0
-    if (s.lastRequestTime > pc.lastActive) {
-      pc.lastActive = s.lastRequestTime
-    }
+// 切换 tab 时加载项目统计
+watch(activeTab, async (newTab) => {
+  if (newTab === 'projects' && store.projectStats.length === 0) {
+    await store.fetchProjectStats()
   }
-
-  return Array.from(cmap.values()).sort((a, b) => b.lastActive - a.lastActive)
 })
 
 // 分页状态
@@ -94,25 +62,14 @@ const formatTokens = (tokens: number) => {
   return tokens.toString()
 }
 
-// 格式化费用
+// 格式化费用（智能精度）
 const formatCost = (cost: number | undefined) => {
   if (cost === undefined || cost === null) return '-'
   if (cost >= 1) return `$${cost.toFixed(2)}`
   if (cost >= 0.01) return `$${cost.toFixed(3)}`
-  return `$${cost.toFixed(4)}`
-}
-
-// 简化模型名
-const shortModel = (model: string) => {
-  if (!model) return ''
-  const parts = model.split('-')
-  // claude-3-5-sonnet -> sonnet
-  if (parts.length >= 3) {
-    const last = parts[parts.length - 1]
-    if (['sonnet', 'opus', 'haiku'].includes(last)) return last
-    return parts.slice(-2).join('-')
-  }
-  return model
+  if (cost >= 0.001) return `$${cost.toFixed(4)}`
+  if (cost > 0) return `$${cost.toFixed(6)}`
+  return '$0.00'
 }
 
 // 打开会话详情
@@ -141,8 +98,7 @@ const loadMore = async () => {
   loadingMore.value = false
 }
 
-// 滚动处理
-const scrollContainer = ref<HTMLElement | null>(null)
+// 触底加载触发元素
 const loadMoreTrigger = ref<HTMLElement | null>(null)
 let observer: IntersectionObserver | null = null
 
@@ -183,10 +139,10 @@ onUnmounted(() => {
     <!-- 顶部视图切换 Tabs -->
     <div class="flex p-0.5 bg-gray-100/80 dark:bg-[#1E2024]/80 rounded-lg backdrop-blur-md sticky top-0 z-10 mb-2">
       <button @click="activeTab = 'recent'" :class="['flex-1 py-1.5 text-[12px] font-medium rounded-md transition-all', activeTab === 'recent' ? 'bg-white dark:bg-[#2A2D32] shadow-sm text-gray-800 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300']">
-        {{ t(store.settings.locale, 'sessions.tabs.recent', '最近会话') }}
+        {{ t(store.settings.locale, 'sessions.tabs.recent') }}
       </button>
       <button @click="activeTab = 'projects'" :class="['flex-1 py-1.5 text-[12px] font-medium rounded-md transition-all', activeTab === 'projects' ? 'bg-white dark:bg-[#2A2D32] shadow-sm text-gray-800 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300']">
-        {{ t(store.settings.locale, 'sessions.tabs.projects', '项目级统计') }}
+        {{ t(store.settings.locale, 'sessions.tabs.projects') }}
       </button>
     </div>
 
@@ -229,7 +185,7 @@ onUnmounted(() => {
                     d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"
                   />
                 </svg>
-                <span>{{ shortModel(session.models[0] || 'Unknown') }}</span>
+                <span>{{ session.models[0] || 'Unknown' }}</span>
               </div>
             </div>
 
@@ -303,7 +259,19 @@ onUnmounted(() => {
 
     <!-- 2. 项目维度的聚合视图 -->
     <template v-else-if="activeTab === 'projects'">
-      <div v-for="project in projectStats" :key="project.name" class="bg-white dark:bg-[#1E2024] rounded-xl border border-gray-100 dark:border-white/5 py-2.5 px-2.5 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors flex flex-col gap-1.5">
+      <!-- 加载状态 -->
+      <div v-if="store.projectStatsLoading" class="flex justify-center py-8">
+        <div class="animate-spin w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full"></div>
+      </div>
+
+      <!-- 空状态 -->
+      <div v-else-if="store.projectStats.length === 0" class="text-center py-8 text-gray-400 text-sm">
+        {{ t(store.settings.locale, 'sessions.noData') }}
+      </div>
+
+      <!-- 项目列表 -->
+      <template v-else>
+        <div v-for="project in store.projectStats" :key="project.name" class="bg-white dark:bg-[#1E2024] rounded-xl border border-gray-100 dark:border-white/5 py-2.5 px-2.5 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors flex flex-col gap-1.5">
         <!-- 顶部：项目名称与最后活跃时间 -->
         <div class="flex items-center justify-between w-full pb-0.5 mb-0.5 border-b border-gray-50 dark:border-white/5 px-0.5">
           <div class="flex items-center gap-2">
@@ -356,6 +324,7 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
+      </template>
     </template>
 
     <!-- 会话详情模态框 -->

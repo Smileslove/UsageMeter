@@ -235,6 +235,24 @@ pub struct SessionStats {
     pub session_name: Option<String>,
 }
 
+/// 项目统计信息（聚合多个会话）
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectStats {
+    /// 项目名称
+    pub name: String,
+    /// 会话数量
+    pub session_count: u64,
+    /// 总输入 Token
+    pub total_input_tokens: u64,
+    /// 总输出 Token
+    pub total_output_tokens: u64,
+    /// 总费用
+    pub total_cost: f64,
+    /// 最后活跃时间（Unix 时间戳）
+    pub last_active: i64,
+}
+
 /// 代理状态（在处理器之间共享）
 #[allow(dead_code)]
 pub struct ProxyState {

@@ -3,8 +3,31 @@ import { ref, watch, computed } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import type { BillingType, WindowName, DataSource, ThemeMode } from '../types'
+import ModelPricingSettings from '../components/ModelPricingSettings.vue'
 
 const store = useMonitorStore()
+
+// 子页面状态
+const subView = ref<'main' | 'model-pricing'>('main')
+
+// 监听 subView 变化，触发子组件刷新
+const modelPricingKey = ref(0)
+watch(subView, (newVal) => {
+  if (newVal === 'model-pricing') {
+    // 强制重新创建组件
+    modelPricingKey.value++
+  }
+})
+
+// 返回主设置
+const goBack = () => {
+  subView.value = 'main'
+}
+
+// 进入模型价格设置
+const openModelPricing = () => {
+  subView.value = 'model-pricing'
+}
 
 // 本地状态用于双向绑定
 const localLocale = ref(store.settings.locale)
@@ -224,7 +247,16 @@ const formatUptime = (seconds: number): string => {
 </script>
 
 <template>
-  <div class="space-y-5 animate-in fade-in zoom-in-95 duration-300 pb-6">
+  <div class="relative">
+    <!-- 模型价格子页面 -->
+    <ModelPricingSettings
+      v-show="subView === 'model-pricing'"
+      :key="modelPricingKey"
+      @back="goBack"
+    />
+
+    <!-- 主设置页面 -->
+    <div v-show="subView !== 'model-pricing'" class="space-y-5 animate-in fade-in zoom-in-95 duration-300 pb-6">
     <div class="space-y-2">
       <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.general') }}</h3>
       <div class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 overflow-hidden divide-y divide-gray-50 dark:divide-neutral-800/50 shadow-sm">
@@ -269,6 +301,36 @@ const formatUptime = (seconds: number): string => {
               {{ t(store.settings.locale, getWindowLabelKey(window)) }}
             </option>
           </select>
+        </div>
+        <div class="p-3 px-4 flex items-center justify-between text-[13px]">
+          <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.warningThreshold') }}</span>
+          <div class="flex items-center gap-1">
+            <input
+              type="number"
+              v-model.number="localWarningThreshold"
+              @blur="handleWarningThresholdChange"
+              @keyup.enter="handleWarningThresholdChange"
+              min="0"
+              max="99"
+              class="w-12 bg-transparent text-gray-500 dark:text-gray-400 text-sm font-mono outline-none text-right p-0"
+            />
+            <span class="text-xs text-gray-400">%</span>
+          </div>
+        </div>
+        <div class="p-3 px-4 flex items-center justify-between text-[13px]">
+          <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.criticalThreshold') }}</span>
+          <div class="flex items-center gap-1">
+            <input
+              type="number"
+              v-model.number="localCriticalThreshold"
+              @blur="handleCriticalThresholdChange"
+              @keyup.enter="handleCriticalThresholdChange"
+              min="1"
+              max="100"
+              class="w-12 bg-transparent text-gray-500 dark:text-gray-400 text-sm font-mono outline-none text-right p-0"
+            />
+            <span class="text-xs text-gray-400">%</span>
+          </div>
         </div>
       </div>
     </div>
@@ -393,38 +455,21 @@ const formatUptime = (seconds: number): string => {
       </div>
     </div>
 
+    <!-- 模型价格设置入口 -->
     <div class="space-y-2">
-      <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.thresholds') }}</h3>
-      <div class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 overflow-hidden divide-y divide-gray-50 dark:divide-neutral-800/50 shadow-sm">
-        <div class="p-3 px-4 flex items-center justify-between text-[13px]">
-          <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.warningThreshold') }}</span>
-          <div class="flex items-center gap-1">
-            <input
-              type="number"
-              v-model.number="localWarningThreshold"
-              @blur="handleWarningThresholdChange"
-              @keyup.enter="handleWarningThresholdChange"
-              min="0"
-              max="99"
-              class="w-12 bg-transparent text-gray-500 dark:text-gray-400 text-sm font-mono outline-none text-right p-0"
-            />
-            <span class="text-xs text-gray-400">%</span>
+      <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.modelPricing') }}</h3>
+      <div
+        @click="openModelPricing"
+        class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors shadow-sm"
+      >
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.modelPricing') }}</div>
+            <div class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.modelPricingDesc') }}</div>
           </div>
-        </div>
-        <div class="p-3 px-4 flex items-center justify-between text-[13px]">
-          <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.criticalThreshold') }}</span>
-          <div class="flex items-center gap-1">
-            <input
-              type="number"
-              v-model.number="localCriticalThreshold"
-              @blur="handleCriticalThresholdChange"
-              @keyup.enter="handleCriticalThresholdChange"
-              min="1"
-              max="100"
-              class="w-12 bg-transparent text-gray-500 dark:text-gray-400 text-sm font-mono outline-none text-right p-0"
-            />
-            <span class="text-xs text-gray-400">%</span>
-          </div>
+          <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+          </svg>
         </div>
       </div>
     </div>
@@ -535,5 +580,6 @@ const formatUptime = (seconds: number): string => {
     <div v-if="store.error" class="text-center text-xs text-red-500">
       {{ store.error }}
     </div>
+  </div>
   </div>
 </template>

@@ -41,6 +41,16 @@ const formatRate = (rate: number): string => {
   return rate.toFixed(1)
 }
 
+// 智能格式化费用（根据金额大小选择精度）
+const formatCost = (cost: number | undefined): string => {
+  if (cost === undefined || cost === null) return '$0.00'
+  if (cost >= 1) return `$${cost.toFixed(2)}`
+  if (cost >= 0.01) return `$${cost.toFixed(3)}`
+  if (cost >= 0.001) return `$${cost.toFixed(4)}`
+  if (cost > 0) return `$${cost.toFixed(6)}`
+  return '$0.00'
+}
+
 // 获取窗口标签
 const getWindowLabel = (window: string): string => {
   return windowNameLabel(store.settings.locale, window)
@@ -155,7 +165,7 @@ onMounted(() => {
           <div class="flex flex-col items-center">
             <Coins class="w-3.5 h-3.5 text-amber-500 mb-0.5" />
             <span class="text-[9px] font-semibold text-amber-600 dark:text-amber-400 leading-tight">{{ t(store.settings.locale, 'common.cost') }}</span>
-            <span class="text-sm font-bold text-gray-800 dark:text-gray-100 font-mono leading-tight">${{ store.snapshot?.summary?.totalCost?.toFixed(2) || '0.00' }}</span>
+            <span class="text-sm font-bold text-gray-800 dark:text-gray-100 font-mono leading-tight">{{ formatCost(store.snapshot?.summary?.totalCost) }}</span>
           </div>
         </div>
       </div>
@@ -190,7 +200,7 @@ onMounted(() => {
           <div class="flex flex-col items-center">
             <Coins class="w-3.5 h-3.5 text-amber-500 mb-0.5" />
             <span class="text-[9px] font-semibold text-amber-600 dark:text-amber-400 leading-tight">{{ t(store.settings.locale, 'common.cost') }}</span>
-            <span class="text-sm font-bold text-gray-800 dark:text-gray-100 font-mono leading-tight">${{ store.snapshot?.summary?.totalCost?.toFixed(2) || '0.00' }}</span>
+            <span class="text-sm font-bold text-gray-800 dark:text-gray-100 font-mono leading-tight">{{ formatCost(store.snapshot?.summary?.totalCost) }}</span>
           </div>
         </div>
       </div>

@@ -135,27 +135,18 @@ async fn get_proxy_usage_snapshot(
         let total_client_error_requests: u64 = windows.iter().map(|w| w.client_error_requests).sum();
         let total_server_error_requests: u64 = windows.iter().map(|w| w.server_error_requests).sum();
 
-        let summary = crate::models::UsageSummary {
-            total_tokens: windows.iter().map(|w| w.token_used).sum(),
-            total_requests: windows.iter().map(|w| w.request_used).sum(),
-            total_input_tokens: windows.iter().map(|w| w.input_tokens).sum(),
-            total_output_tokens: windows.iter().map(|w| w.output_tokens).sum(),
-            total_cache_create_tokens: windows.iter().map(|w| w.cache_create_tokens).sum(),
-            total_cache_read_tokens: windows.iter().map(|w| w.cache_read_tokens).sum(),
-            total_cost: 0.0, // 代理模式不跟踪费用
-            overall_risk_level,
-            total_success_requests,
-            total_client_error_requests,
-            total_server_error_requests,
-        };
-
         // 从收集器获取模型分布
         let model_distribution_raw = collector.get_model_distribution(&settings.summary_window).await;
 
         // 计算总 token 用于百分比
         let total_model_tokens: i64 = model_distribution_raw.iter().map(|m| m.total_tokens).sum();
 
-        // 转换为前端 ModelUsage 格式
+        // 获取价格配置
+        let pricings = &settings.model_pricing.pricings;
+        let match_mode = &settings.model_pricing.match_mode;
+
+        // 转换为前端 ModelUsage 格式，同时计算总费用
+        let mut total_cost = 0.0;
         let model_distribution: Vec<crate::models::ModelUsage> = model_distribution_raw
             .into_iter()
             .map(|m| {
@@ -167,6 +158,19 @@ async fn get_proxy_usage_snapshot(
                 // 解析状态码 JSON
                 let status_codes: Vec<crate::models::StatusCodeCount> =
                     serde_json::from_str(&m.status_codes_json).unwrap_or_default();
+
+                // 计算该模型的费用
+                let model_cost = crate::models::estimate_session_cost(
+                    m.input_tokens as u64,
+                    m.output_tokens as u64,
+                    m.cache_create_tokens as u64,
+                    m.cache_read_tokens as u64,
+                    &m.model,
+                    pricings,
+                    match_mode,
+                );
+                total_cost += model_cost;
+
                 crate::models::ModelUsage {
                     model_name: m.model,
                     token_used: m.total_tokens as u64,
@@ -180,6 +184,21 @@ async fn get_proxy_usage_snapshot(
                 }
             })
             .collect();
+
+        // 更新 summary 中的总费用
+        let summary = crate::models::UsageSummary {
+            total_tokens: windows.iter().map(|w| w.token_used).sum(),
+            total_requests: windows.iter().map(|w| w.request_used).sum(),
+            total_input_tokens: windows.iter().map(|w| w.input_tokens).sum(),
+            total_output_tokens: windows.iter().map(|w| w.output_tokens).sum(),
+            total_cache_create_tokens: windows.iter().map(|w| w.cache_create_tokens).sum(),
+            total_cache_read_tokens: windows.iter().map(|w| w.cache_read_tokens).sum(),
+            total_cost,
+            overall_risk_level,
+            total_success_requests,
+            total_client_error_requests,
+            total_server_error_requests,
+        };
 
         Ok(UsageSnapshot {
             generated_at_epoch: now,
@@ -389,12 +408,25 @@ fn snapshot_from_ccusage(settings: &AppSettings) -> Result<UsageSnapshot, String
         .unwrap_or(&"safe".to_string())
         .clone();
 
-    // 从 ccusage 输出获取总费用
-    let total_cost = value
-        .get("totalCost")
-        .or_else(|| value.get("total_cost"))
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
+    // 计算总费用：优先使用数据库价格配置，其次使用 ccusage 提供的费用
+    let pricings = &settings.model_pricing.pricings;
+    let match_mode = &settings.model_pricing.match_mode;
+
+    // 计算基于模型分布的费用
+    let total_cost: f64 = model_distribution
+        .iter()
+        .map(|m| {
+            crate::models::estimate_session_cost(
+                m.input_tokens,
+                m.output_tokens,
+                m.cache_create_tokens,
+                m.cache_read_tokens,
+                &m.model_name,
+                pricings,
+                match_mode,
+            )
+        })
+        .sum();
 
     let summary = crate::models::UsageSummary {
         total_tokens: windows.iter().map(|w| w.token_used).sum(),
@@ -716,22 +748,29 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
         .unwrap_or(&"safe".to_string())
         .clone();
 
-    let summary = crate::models::UsageSummary {
-        total_tokens: windows.iter().map(|w| w.token_used).sum(),
-        total_requests: windows.iter().map(|w| w.request_used).sum(),
-        total_input_tokens: windows.iter().map(|w| w.input_tokens).sum(),
-        total_output_tokens: windows.iter().map(|w| w.output_tokens).sum(),
-        total_cache_create_tokens: windows.iter().map(|w| w.cache_create_tokens).sum(),
-        total_cache_read_tokens: windows.iter().map(|w| w.cache_read_tokens).sum(),
-        total_cost: 0.0,
-        overall_risk_level,
-        total_success_requests: 0,
-        total_client_error_requests: 0,
-        total_server_error_requests: 0,
-    };
-
     // 计算模型分布
     let total_model_tokens: u64 = model_stats.values().map(|(t, _, _, _, _, _)| t).sum();
+
+    // 获取价格配置
+    let pricings = &settings.model_pricing.pricings;
+    let match_mode = &settings.model_pricing.match_mode;
+
+    // 计算总费用（在截断之前，基于所有模型计算）
+    let total_cost: f64 = model_stats
+        .iter()
+        .map(|(model_name, (_tokens, input, output, cache_create, cache_read, _requests))| {
+            crate::models::estimate_session_cost(
+                *input,
+                *output,
+                *cache_create,
+                *cache_read,
+                model_name,
+                pricings,
+                match_mode,
+            )
+        })
+        .sum();
+
     let mut model_distribution: Vec<crate::models::ModelUsage> = model_stats
         .into_iter()
         .map(|(model_name, (tokens, input, output, cache_create, cache_read, requests))| {
@@ -753,9 +792,23 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             }
         })
         .collect();
-    // 按 token 使用量降序排序，取 Top 5
+    // 按 token 使用量降序排序，取 Top 5（仅用于显示，不影响费用计算）
     model_distribution.sort_by(|a, b| b.token_used.cmp(&a.token_used));
     model_distribution.truncate(5);
+
+    let summary = crate::models::UsageSummary {
+        total_tokens: windows.iter().map(|w| w.token_used).sum(),
+        total_requests: windows.iter().map(|w| w.request_used).sum(),
+        total_input_tokens: windows.iter().map(|w| w.input_tokens).sum(),
+        total_output_tokens: windows.iter().map(|w| w.output_tokens).sum(),
+        total_cache_create_tokens: windows.iter().map(|w| w.cache_create_tokens).sum(),
+        total_cache_read_tokens: windows.iter().map(|w| w.cache_read_tokens).sum(),
+        total_cost,
+        overall_risk_level,
+        total_success_requests: 0,
+        total_client_error_requests: 0,
+        total_server_error_requests: 0,
+    };
 
     Ok(UsageSnapshot {
         generated_at_epoch: now,
@@ -1020,13 +1073,15 @@ pub async fn get_window_rate_summary(
 pub async fn get_sessions(
     limit: i64,
     offset: i64,
+    settings: AppSettings,
     proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<Vec<SessionStats>, String> {
-    eprintln!("[get_sessions] fetching sessions from JSONL files (limit: {}, offset: {})", limit, offset);
+    // 获取价格配置
+    let pricings = &settings.model_pricing.pricings;
+    let match_mode = &settings.model_pricing.match_mode;
 
     // 1. 从 JSONL 文件获取会话列表（主数据源）
     let all_meta = crate::session::get_all_session_meta_raw();
-    eprintln!("[get_sessions] found {} total sessions from JSONL", all_meta.len());
 
     // 2. 应用分页
     let meta_list: Vec<_> = all_meta
@@ -1034,15 +1089,13 @@ pub async fn get_sessions(
         .skip(offset as usize)
         .take(limit as usize)
         .collect();
-    eprintln!("[get_sessions] returning {} sessions for page", meta_list.len());
 
     // 3. 获取代理的会话统计数据（如果有）
     let proxy_stats_map = {
         let server_guard = proxy_state.server.read().await;
         if let Some(server) = server_guard.as_ref() {
-            eprintln!("[get_sessions] proxy is running, checking for proxy stats");
             let collector = server.get_collector();
-            let proxy_sessions = collector.get_all_sessions(1000).await;
+            let proxy_sessions = collector.get_all_sessions(1000, pricings, match_mode).await;
             proxy_sessions
                 .into_iter()
                 .map(|s| (s.session_id.clone(), s))
@@ -1063,6 +1116,8 @@ pub async fn get_sessions(
                 meta.total_cache_create_tokens,
                 meta.total_cache_read_tokens,
                 first_model,
+                pricings,
+                match_mode,
             );
 
             // 尝试匹配代理数据
@@ -1135,9 +1190,14 @@ pub async fn get_sessions(
 #[tauri::command]
 pub async fn get_session_detail(
     session_id: String,
+    settings: AppSettings,
     proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<Option<SessionStats>, String> {
     eprintln!("[get_session_detail] fetching session: {}", session_id);
+
+    // 获取价格配置
+    let pricings = &settings.model_pricing.pricings;
+    let match_mode = &settings.model_pricing.match_mode;
 
     // 1. 从 JSONL 获取会话元信息
     let meta = match crate::session::get_session_meta_by_id(&session_id) {
@@ -1156,6 +1216,8 @@ pub async fn get_session_detail(
         meta.total_cache_create_tokens,
         meta.total_cache_read_tokens,
         first_model,
+        pricings,
+        match_mode,
     );
 
     // 3. 尝试从代理获取统计数据
@@ -1163,7 +1225,7 @@ pub async fn get_session_detail(
         let server_guard = proxy_state.server.read().await;
         if let Some(server) = server_guard.as_ref() {
             let collector = server.get_collector();
-            collector.get_session_stats(&session_id).await
+            collector.get_session_stats(&session_id, pricings, match_mode).await
         } else {
             None
         }
@@ -1225,4 +1287,82 @@ pub async fn get_session_detail(
     };
 
     Ok(Some(stats))
+}
+
+/// 获取项目统计（基于所有会话数据聚合）
+/// 不依赖分页，扫描所有 JSONL 文件进行聚合
+#[tauri::command]
+pub async fn get_project_stats(
+    settings: AppSettings,
+    proxy_state: tauri::State<'_, ProxyState>,
+) -> Result<Vec<crate::proxy::ProjectStats>, String> {
+    // 获取价格配置
+    let pricings = &settings.model_pricing.pricings;
+    let match_mode = &settings.model_pricing.match_mode;
+
+    // 1. 从 JSONL 文件获取所有会话元信息
+    let all_meta = crate::session::get_all_session_meta_raw();
+
+    // 2. 获取代理的会话统计数据（用于获取更准确的费用）
+    let proxy_stats_map = {
+        let server_guard = proxy_state.server.read().await;
+        if let Some(server) = server_guard.as_ref() {
+            let collector = server.get_collector();
+            let proxy_sessions = collector.get_all_sessions(10000, pricings, match_mode).await;
+            proxy_sessions
+                .into_iter()
+                .map(|s| (s.session_id.clone(), s))
+                .collect::<std::collections::HashMap<String, SessionStats>>()
+        } else {
+            std::collections::HashMap::new()
+        }
+    };
+
+    // 3. 按项目名称聚合
+    let mut project_map: std::collections::HashMap<String, crate::proxy::ProjectStats> =
+        std::collections::HashMap::new();
+
+    for meta in all_meta {
+        let project_name = meta.project_name.clone().unwrap_or_else(|| "未命名项目".to_string());
+
+        // 计算费用（优先使用代理的准确费用，否则估算）
+        let cost = if let Some(proxy) = proxy_stats_map.get(&meta.session_id) {
+            proxy.estimated_cost
+        } else {
+            let first_model = meta.models.first().map(|s| s.as_str()).unwrap_or("");
+            crate::models::estimate_session_cost(
+                meta.total_input_tokens,
+                meta.total_output_tokens,
+                meta.total_cache_create_tokens,
+                meta.total_cache_read_tokens,
+                first_model,
+                pricings,
+                match_mode,
+            )
+        };
+
+        let entry = project_map.entry(project_name).or_insert(crate::proxy::ProjectStats {
+            name: String::new(),
+            session_count: 0,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_cost: 0.0,
+            last_active: 0,
+        });
+
+        entry.name = meta.project_name.clone().unwrap_or_else(|| "未命名项目".to_string());
+        entry.session_count += 1;
+        entry.total_input_tokens += meta.total_input_tokens;
+        entry.total_output_tokens += meta.total_output_tokens;
+        entry.total_cost += cost;
+        if meta.end_time > entry.last_active {
+            entry.last_active = meta.end_time;
+        }
+    }
+
+    // 4. 按最后活跃时间倒序排序
+    let mut projects: Vec<_> = project_map.into_values().collect();
+    projects.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+
+    Ok(projects)
 }

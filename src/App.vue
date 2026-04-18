@@ -154,13 +154,11 @@ onUnmounted(() => {
     </header>
 
     <!-- View Content -->
-    <div class="flex-1 overflow-y-auto px-4 pb-4 pt-1.5 transition-opacity duration-300 relative no-scrollbar">
-      <Transition name="fade" mode="out-in">
-        <Overview v-if="currentView === 'overview'" />
-        <Statistics v-else-if="currentView === 'statistics'" />
-        <Sessions v-else-if="currentView === 'sessions'" />
-        <Settings v-else-if="currentView === 'settings'" />
-      </Transition>
+    <div class="flex-1 overflow-y-auto px-4 pb-4 pt-1.5 relative no-scrollbar">
+      <Overview v-if="currentView === 'overview'" />
+      <Statistics v-else-if="currentView === 'statistics'" />
+      <Sessions v-else-if="currentView === 'sessions'" />
+      <Settings v-else-if="currentView === 'settings'" />
     </div>
   </main>
 </template>

@@ -193,12 +193,20 @@ pub fn run() {
             // 会话命令
             commands::get_sessions,
             commands::get_session_detail,
+            commands::get_project_stats,
             // 代理命令
             commands::start_proxy,
             commands::stop_proxy,
             commands::get_proxy_status,
             commands::is_proxy_running,
             commands::get_proxy_usage,
+            // 模型价格命令
+            commands::sync_model_pricing_from_api,
+            commands::search_model_pricing,
+            commands::add_custom_model_pricing,
+            commands::update_custom_model_pricing,
+            commands::delete_model_pricing,
+            commands::get_all_model_pricings,
             // 退出命令
             commands::prepare_exit,
             commands::confirm_exit,

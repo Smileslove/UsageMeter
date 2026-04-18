@@ -43,6 +43,60 @@ pub struct WindowQuota {
     pub request_limit: Option<u64>,
 }
 
+/// 模型价格配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPricingConfig {
+    /// 模型ID，如 "claude-3-sonnet-20240229" 或 "minimax-m2-5"
+    pub model_id: String,
+    /// 显示名称（可选）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// 输入价格 $/M tokens
+    pub input_price: f64,
+    /// 输出价格 $/M tokens
+    pub output_price: f64,
+    /// 缓存写入价格 $/M（可选）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_price: Option<f64>,
+    /// 缓存读取价格 $/M（可选）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_price: Option<f64>,
+    /// 来源：api 或 custom
+    pub source: String,
+    /// 最后更新时间戳
+    pub last_updated: i64,
+}
+
+/// 模型价格设置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelPricingSettings {
+    /// 匹配方式：fuzzy 或 exact
+    #[serde(default = "default_match_mode")]
+    pub match_mode: String,
+    /// 最后同步时间
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_sync_time: Option<i64>,
+    /// 价格配置列表
+    #[serde(default)]
+    pub pricings: Vec<ModelPricingConfig>,
+}
+
+fn default_match_mode() -> String {
+    "fuzzy".to_string()
+}
+
+impl Default for ModelPricingSettings {
+    fn default() -> Self {
+        Self {
+            match_mode: "fuzzy".to_string(),
+            last_sync_time: None,
+            pricings: vec![],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -68,6 +122,8 @@ pub struct AppSettings {
     pub proxy: ProxyConfig,
     #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default)]
+    pub model_pricing: ModelPricingSettings,
 }
 
 pub fn default_locale() -> String {
@@ -155,6 +211,7 @@ impl Default for AppSettings {
             data_source: default_data_source(),
             proxy: ProxyConfig::default_config(),
             theme: default_theme(),
+            model_pricing: ModelPricingSettings::default(),
         }
     }
 }

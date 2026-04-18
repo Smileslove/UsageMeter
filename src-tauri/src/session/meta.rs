@@ -63,6 +63,7 @@ pub struct SessionMeta {
 
 /// Session file information (used for scanning)
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SessionFile {
     /// Session ID (unique identifier)
     pub session_id: String,
