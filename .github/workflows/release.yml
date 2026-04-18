@@ -89,36 +89,37 @@ jobs:
           prerelease: false
           args: --target x86_64-apple-darwin
 
-  build-windows:
-    runs-on: windows-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: './src-tauri -> target'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
-          releaseName: 'UsageMeter ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}'
-          releaseBody: 'See [CHANGELOG.md](./CHANGELOG.md) for details.'
-          releaseDraft: true
-          prerelease: false
+  # Windows build disabled - pending testing
+  # build-windows:
+  #   runs-on: windows-latest
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v4
+  #
+  #     - name: Setup Node.js
+  #       uses: actions/setup-node@v4
+  #       with:
+  #         node-version: '20'
+  #         cache: 'npm'
+  #
+  #     - name: Setup Rust
+  #       uses: dtolnay/rust-toolchain@stable
+  #
+  #     - name: Rust cache
+  #       uses: swatinem/rust-cache@v2
+  #       with:
+  #         workspaces: './src-tauri -> target'
+  #
+  #     - name: Install dependencies
+  #       run: npm ci
+  #
+  #     - name: Build Tauri app
+  #       uses: tauri-apps/tauri-action@v0
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #       with:
+  #         tagName: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
+  #         releaseName: 'UsageMeter ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}'
+  #         releaseBody: 'See [CHANGELOG.md](./CHANGELOG.md) for details.'
+  #         releaseDraft: true
+  #         prerelease: false
