@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Proxy mode rate panel initialization and refresh feedback issues
 
+### Note
+
+- Windows build is not included in this release as it has not been fully tested yet
+
 ---
 
 ### 新增
@@ -44,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### 修复
 
 - 代理模式速率面板初始化及刷新反馈问题
+
+### 说明
+
+- 本次发布暂不包含 Windows 版本，Windows 支持尚在测试中
 
 ---
 
