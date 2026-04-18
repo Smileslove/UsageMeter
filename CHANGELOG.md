@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] - 2025-04-18
+
+### Added
+
+- **Sessions Panel**: Real-time session list with status indicators, model information, and usage metrics
+- **Projects Panel**: Project-based usage aggregation with visual breakdown and filtering
+- **Session Detail Modal**: Detailed session information including request history, token consumption, and cost breakdown
+- **Dynamic Model Pricing System**:
+  - Migrated from hardcoded prices to database storage
+  - API-based price synchronization with automatic updates
+  - User-defined custom pricing support
+  - Model price management page with search, edit, and delete operations
+  - Flexible matching modes: fuzzy and exact pattern matching
+- **Enhanced Settings Panel**: Integrated model pricing configuration with visual management interface
+
+### Fixed
+
+- Proxy mode rate panel initialization and refresh feedback issues
+
+---
+
+### 新增
+
+- **会话面板**：实时会话列表，支持状态指示器、模型信息和用量指标展示
+- **项目面板**：基于项目的用量聚合，支持可视化分解和筛选功能
+- **会话详情弹窗**：详细会话信息，包含请求历史、Token 消耗和费用明细
+- **动态模型价格系统**：
+  - 从硬编码价格迁移到数据库存储
+  - 支持 API 自动同步更新价格
+  - 用户自定义价格支持
+  - 模型价格管理页面，支持搜索、编辑、删除操作
+  - 灵活匹配模式：模糊匹配和精确匹配
+- **增强设置面板**：集成模型价格配置，提供可视化管理界面
+
+### 修复
+
+- 代理模式速率面板初始化及刷新反馈问题
+
+---
+
 ## [0.1.0] - 2025-04-15
 
 ### Added
@@ -63,5 +103,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.2.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.2.0
 [0.1.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.1.0
 
