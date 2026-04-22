@@ -1,7 +1,9 @@
 //! 请求转发器，用于将请求代理到 Anthropic API
 
 use super::collector::UsageCollector;
-use super::stream_processor::{create_database_collector, create_passthrough_stream, StreamContext};
+use super::stream_processor::{
+    create_database_collector, create_passthrough_stream, StreamContext,
+};
 use super::types::{RequestContext, SseEvent, UsageRecord};
 use bytes::Bytes;
 use futures::TryStreamExt;
@@ -64,7 +66,10 @@ impl RequestForwarder {
                 let manager = super::config_manager::ClaudeConfigManager::new();
                 manager.get_api_key()
             })
-            .ok_or_else(|| "No API key found. Please configure ANTHROPIC_API_KEY in Claude settings.".to_string())
+            .ok_or_else(|| {
+                "No API key found. Please configure ANTHROPIC_API_KEY in Claude settings."
+                    .to_string()
+            })
     }
 
     /// 将请求转发到 Anthropic API
@@ -78,25 +83,35 @@ impl RequestForwarder {
 
         // 解析请求体以提取元数据
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) {
-            context.model = json.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
-            context.stream = json.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+            context.model = json
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            context.stream = json
+                .get("stream")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             // 如果可用，从请求中提取使用量信息
             if let Some(usage) = json.get("usage") {
-                context.input_tokens = usage.get("input_tokens")
+                context.input_tokens = usage
+                    .get("input_tokens")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
-                context.cache_create_tokens = usage.get("cache_creation_input_tokens")
+                context.cache_create_tokens = usage
+                    .get("cache_creation_input_tokens")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
-                context.cache_read_tokens = usage.get("cache_read_input_tokens")
+                context.cache_read_tokens = usage
+                    .get("cache_read_input_tokens")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
             }
         }
 
         // 构建请求
-        let mut request = self.client
+        let mut request = self
+            .client
             .post(&url)
             .header("Content-Type", "application/json")
             .header("x-api-key", &api_key)
@@ -187,11 +202,8 @@ impl RequestForwarder {
         };
 
         // 创建使用量收集器，用于记录到数据库
-        let collector = create_database_collector(
-            self.usage_collector.clone(),
-            stream_context,
-            start_time,
-        );
+        let collector =
+            create_database_collector(self.usage_collector.clone(), stream_context, start_time);
 
         // 获取响应的字节流
         let stream = response.bytes_stream();
@@ -224,38 +236,46 @@ impl RequestForwarder {
         let duration_ms = request_end_time - request_start_time;
         let status_code = response.status().as_u16();
 
-        let body = response.bytes().await
+        let body = response
+            .bytes()
+            .await
             .map_err(|e| format!("Failed to read response body: {}", e))?;
 
         // 解析响应以提取使用量
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) {
-            let message_id = json.get("id")
+            let message_id = json
+                .get("id")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
                 .unwrap_or_default();
 
-            let model = json.get("model")
+            let model = json
+                .get("model")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
                 .unwrap_or_default();
 
             // 从响应的 usage 中提取各项 Token
-            let input_tokens = json.get("usage")
+            let input_tokens = json
+                .get("usage")
                 .and_then(|u| u.get("input_tokens"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
 
-            let output_tokens = json.get("usage")
+            let output_tokens = json
+                .get("usage")
                 .and_then(|u| u.get("output_tokens"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
 
-            let cache_create = json.get("usage")
+            let cache_create = json
+                .get("usage")
                 .and_then(|u| u.get("cache_creation_input_tokens"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
 
-            let cache_read = json.get("usage")
+            let cache_read = json
+                .get("usage")
                 .and_then(|u| u.get("cache_read_input_tokens"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
@@ -291,7 +311,9 @@ impl RequestForwarder {
             self.usage_collector.record(record).await;
         }
 
-        Ok(ForwardResult::NonStreaming { content: body.to_vec() })
+        Ok(ForwardResult::NonStreaming {
+            content: body.to_vec(),
+        })
     }
 }
 
@@ -299,8 +321,7 @@ impl RequestForwarder {
 #[allow(dead_code)]
 fn parse_sse_event(text: &str) -> Option<SseEvent> {
     for line in text.lines() {
-        if line.starts_with("data: ") {
-            let json_str = &line[6..];
+        if let Some(json_str) = line.strip_prefix("data: ") {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str) {
                 let event_type = json.get("type")?.as_str()?;
 
@@ -333,7 +354,8 @@ fn parse_sse_event(text: &str) -> Option<SseEvent> {
                     }
                     "content_block_delta" => {
                         let delta = json.get("delta")?;
-                        let delta_text = delta.get("text")
+                        let delta_text = delta
+                            .get("text")
                             .and_then(|v| v.as_str())
                             .unwrap_or("")
                             .to_string();
@@ -341,15 +363,20 @@ fn parse_sse_event(text: &str) -> Option<SseEvent> {
                     }
                     "error" => {
                         let error = json.get("error")?;
-                        let error_type = error.get("type")
+                        let error_type = error
+                            .get("type")
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown")
                             .to_string();
-                        let message = error.get("message")
+                        let message = error
+                            .get("message")
                             .and_then(|v| v.as_str())
                             .unwrap_or("Unknown error")
                             .to_string();
-                        return Some(SseEvent::Error { error_type, message });
+                        return Some(SseEvent::Error {
+                            error_type,
+                            message,
+                        });
                     }
                     _ => {}
                 }
@@ -374,6 +401,9 @@ mod tests {
     fn test_parse_sse_message_delta() {
         let event = r#"data: {"type":"message_delta","usage":{"output_tokens":50}}"#;
         let result = parse_sse_event(event);
-        assert!(matches!(result, Some(SseEvent::MessageDelta { output_tokens: 50 })));
+        assert!(matches!(
+            result,
+            Some(SseEvent::MessageDelta { output_tokens: 50 })
+        ));
     }
 }

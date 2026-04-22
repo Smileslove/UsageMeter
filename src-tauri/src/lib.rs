@@ -10,8 +10,11 @@ mod utils;
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{ActivationPolicy, Emitter, Manager};
+use tauri::{Emitter, Manager};
 use tauri::{PhysicalPosition, Position, WindowEvent};
+
+#[cfg(target_os = "macos")]
+use tauri::ActivationPolicy;
 
 fn menu_labels(locale: &str) -> (&'static str, &'static str) {
     if locale == "en-US" {
@@ -23,11 +26,9 @@ fn menu_labels(locale: &str) -> (&'static str, &'static str) {
 
 #[cfg(target_os = "macos")]
 fn make_window_rounded(window: &tauri::WebviewWindow) {
-    use objc2::runtime::AnyClass;
     use objc2::msg_send;
-    use objc2_app_kit::{
-        NSColor, NSWindow, NSWindowButton, NSWindowStyleMask,
-    };
+    use objc2::runtime::AnyClass;
+    use objc2_app_kit::{NSColor, NSWindow, NSWindowButton, NSWindowStyleMask};
 
     let ns_window = window.ns_window().unwrap() as *mut AnyClass;
     unsafe {
@@ -107,11 +108,9 @@ pub fn run() {
                 }
             }
 
+            #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
-                #[cfg(target_os = "macos")]
-                {
-                    make_window_rounded(&window);
-                }
+                make_window_rounded(&window);
             }
 
             let locale = commands::load_settings()

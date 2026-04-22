@@ -46,7 +46,10 @@ impl UsageCollector {
                 if let Some(existing) = recent.iter().find(|r| r.message_id == record.message_id) {
                     // 如果新记录有更多 token，则更新现有记录
                     if record.total_tokens > existing.total_tokens {
-                        if let Some(idx) = recent.iter().position(|r| r.message_id == record.message_id) {
+                        if let Some(idx) = recent
+                            .iter()
+                            .position(|r| r.message_id == record.message_id)
+                        {
                             recent[idx] = record.clone();
                         }
                     }
@@ -112,10 +115,17 @@ impl UsageCollector {
         let cutoff_ms = Self::calculate_window_cutoff(window);
         let now = Self::current_timestamp();
 
-        match self.database.get_window_stats_filtered(cutoff_ms, include_errors).await {
+        match self
+            .database
+            .get_window_stats_filtered(cutoff_ms, include_errors)
+            .await
+        {
             Ok(aggregate) => WindowStats {
                 window: window.to_string(),
-                token_used: (aggregate.input_tokens + aggregate.cache_create_tokens + aggregate.cache_read_tokens + aggregate.output_tokens) as u64,
+                token_used: (aggregate.input_tokens
+                    + aggregate.cache_create_tokens
+                    + aggregate.cache_read_tokens
+                    + aggregate.output_tokens) as u64,
                 input_tokens: aggregate.input_tokens as u64,
                 output_tokens: aggregate.output_tokens as u64,
                 cache_create_tokens: aggregate.cache_create_tokens as u64,
@@ -155,14 +165,20 @@ impl UsageCollector {
             "1d" => {
                 // 自然日：今天 00:00:00
                 let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
-                Local.from_local_datetime(&today_start).unwrap().timestamp_millis()
+                Local
+                    .from_local_datetime(&today_start)
+                    .unwrap()
+                    .timestamp_millis()
             }
             "7d" => {
                 // 自然周：本周一 00:00:00
                 let weekday = now.weekday().num_days_from_monday();
                 let monday = now.date_naive() - Duration::days(weekday as i64);
                 let week_start = monday.and_hms_opt(0, 0, 0).unwrap();
-                Local.from_local_datetime(&week_start).unwrap().timestamp_millis()
+                Local
+                    .from_local_datetime(&week_start)
+                    .unwrap()
+                    .timestamp_millis()
             }
             "30d" => {
                 // 滑动窗口：当前时间往前推 30 天
@@ -177,7 +193,10 @@ impl UsageCollector {
                     .unwrap()
                     .and_hms_opt(0, 0, 0)
                     .unwrap();
-                Local.from_local_datetime(&month_start).unwrap().timestamp_millis()
+                Local
+                    .from_local_datetime(&month_start)
+                    .unwrap()
+                    .timestamp_millis()
             }
             _ => {
                 // 默认：1 天滑动窗口
@@ -191,10 +210,16 @@ impl UsageCollector {
     ///
     /// # 参数
     /// - `include_errors`: 是否包含错误请求（4xx/5xx）
-    pub async fn get_all_window_stats(&self, include_errors: bool) -> std::collections::HashMap<String, WindowStats> {
+    pub async fn get_all_window_stats(
+        &self,
+        include_errors: bool,
+    ) -> std::collections::HashMap<String, WindowStats> {
         let mut result = std::collections::HashMap::new();
         for window in &["5h", "1d", "7d", "30d", "current_month"] {
-            result.insert(window.to_string(), self.get_window_stats(window, include_errors).await);
+            result.insert(
+                window.to_string(),
+                self.get_window_stats(window, include_errors).await,
+            );
         }
         result
     }
@@ -246,8 +271,17 @@ impl UsageCollector {
 
     /// 获取会话统计信息
     #[allow(dead_code)]
-    pub async fn get_session_stats(&self, session_id: &str, pricings: &[ModelPricingConfig], match_mode: &str) -> Option<SessionStats> {
-        match self.database.get_session_stats(session_id, pricings, match_mode).await {
+    pub async fn get_session_stats(
+        &self,
+        session_id: &str,
+        pricings: &[ModelPricingConfig],
+        match_mode: &str,
+    ) -> Option<SessionStats> {
+        match self
+            .database
+            .get_session_stats(session_id, pricings, match_mode)
+            .await
+        {
             Ok(stats) => stats,
             Err(e) => {
                 eprintln!("Failed to get session stats: {}", e);
@@ -264,8 +298,17 @@ impl UsageCollector {
 
     /// 获取所有会话列表（按最后请求时间倒序）
     #[allow(dead_code)]
-    pub async fn get_all_sessions(&self, limit: i64, pricings: &[ModelPricingConfig], match_mode: &str) -> Vec<SessionStats> {
-        match self.database.get_all_sessions(limit, pricings, match_mode).await {
+    pub async fn get_all_sessions(
+        &self,
+        limit: i64,
+        pricings: &[ModelPricingConfig],
+        match_mode: &str,
+    ) -> Vec<SessionStats> {
+        match self
+            .database
+            .get_all_sessions(limit, pricings, match_mode)
+            .await
+        {
             Ok(sessions) => sessions,
             Err(e) => {
                 eprintln!("Failed to get all sessions: {}", e);
@@ -317,7 +360,10 @@ impl UsageCollector {
 
     /// 获取状态码分布
     #[allow(dead_code)]
-    pub async fn get_status_code_distribution(&self, window: &str) -> Vec<super::database::StatusCodeDistribution> {
+    pub async fn get_status_code_distribution(
+        &self,
+        window: &str,
+    ) -> Vec<super::database::StatusCodeDistribution> {
         let cutoff_ms = Self::calculate_window_cutoff(window);
 
         match self.database.get_status_code_distribution(cutoff_ms).await {
@@ -341,7 +387,10 @@ impl UsageCollector {
     }
 
     /// 获取窗口内按模型分组的 TTFT 统计
-    pub async fn get_model_ttft_stats(&self, cutoff_ms: i64) -> Vec<super::database::ModelTtftStats> {
+    pub async fn get_model_ttft_stats(
+        &self,
+        cutoff_ms: i64,
+    ) -> Vec<super::database::ModelTtftStats> {
         match self.database.get_model_ttft_stats(cutoff_ms).await {
             Ok(models) => models,
             Err(e) => {
@@ -376,7 +425,10 @@ mod tests {
         // 1d 自然日：应该是今天 00:00:00
         let cutoff_1d = UsageCollector::calculate_window_cutoff("1d");
         let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
-        let expected_1d = Local.from_local_datetime(&today_start).unwrap().timestamp_millis();
+        let expected_1d = Local
+            .from_local_datetime(&today_start)
+            .unwrap()
+            .timestamp_millis();
         assert_eq!(cutoff_1d, expected_1d);
 
         // 7d 自然周：应该是本周一 00:00:00
@@ -384,7 +436,10 @@ mod tests {
         let weekday = now.weekday().num_days_from_monday();
         let monday = now.date_naive() - Duration::days(weekday as i64);
         let week_start = monday.and_hms_opt(0, 0, 0).unwrap();
-        let expected_7d = Local.from_local_datetime(&week_start).unwrap().timestamp_millis();
+        let expected_7d = Local
+            .from_local_datetime(&week_start)
+            .unwrap()
+            .timestamp_millis();
         assert_eq!(cutoff_7d, expected_7d);
 
         // 30d 滑动窗口：应该约为 30 天前
@@ -400,7 +455,10 @@ mod tests {
             .unwrap()
             .and_hms_opt(0, 0, 0)
             .unwrap();
-        let expected_current_month = Local.from_local_datetime(&month_start).unwrap().timestamp_millis();
+        let expected_current_month = Local
+            .from_local_datetime(&month_start)
+            .unwrap()
+            .timestamp_millis();
         assert_eq!(cutoff_current_month, expected_current_month);
     }
 

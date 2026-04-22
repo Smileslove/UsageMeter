@@ -174,7 +174,9 @@ pub fn risk_level(
     warning: u8,
     critical: u8,
 ) -> String {
-    let max_percent = token_percent.unwrap_or(0.0).max(request_percent.unwrap_or(0.0));
+    let max_percent = token_percent
+        .unwrap_or(0.0)
+        .max(request_percent.unwrap_or(0.0));
     if max_percent >= critical as f64 {
         "critical".to_string()
     } else if max_percent >= warning as f64 {

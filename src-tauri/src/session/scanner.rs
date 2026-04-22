@@ -43,10 +43,7 @@ pub fn scan_session_files() -> Vec<SessionFile> {
                             continue;
                         }
 
-                        let session_id = path
-                            .file_stem()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("");
+                        let session_id = path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
 
                         // Generate unique ID: project_name::session_id
                         let unique_id = format!("{}::{}", project_name, session_id);
@@ -81,7 +78,7 @@ pub fn scan_session_files() -> Vec<SessionFile> {
     }
 
     // Sort by modification time (newest first)
-    sessions.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+    sessions.sort_by_key(|b| std::cmp::Reverse(b.last_modified));
     sessions
 }
 
@@ -271,27 +268,33 @@ struct TokenUsage {
 /// Extract token usage from JSON message
 fn extract_token_usage(json: &serde_json::Value) -> Option<TokenUsage> {
     // Try message.usage first
-    let usage = json.get("message").and_then(|m| m.get("usage"))
+    let usage = json
+        .get("message")
+        .and_then(|m| m.get("usage"))
         .or_else(|| json.get("usage"));
 
     if let Some(usage) = usage {
-        let input = usage.get("input_tokens")
+        let input = usage
+            .get("input_tokens")
             .or_else(|| usage.get("inputTokens"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
 
-        let output = usage.get("output_tokens")
+        let output = usage
+            .get("output_tokens")
             .or_else(|| usage.get("outputTokens"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
 
-        let cache_create = usage.get("cache_creation_input_tokens")
+        let cache_create = usage
+            .get("cache_creation_input_tokens")
             .or_else(|| usage.get("cacheCreationInputTokens"))
             .or_else(|| usage.get("cache_create_tokens"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
 
-        let cache_read = usage.get("cache_read_input_tokens")
+        let cache_read = usage
+            .get("cache_read_input_tokens")
             .or_else(|| usage.get("cacheReadInputTokens"))
             .or_else(|| usage.get("cache_read_tokens"))
             .and_then(|v| v.as_u64())
@@ -313,13 +316,11 @@ fn extract_token_usage(json: &serde_json::Value) -> Option<TokenUsage> {
 /// Extract model name from JSON
 fn extract_model(json: &serde_json::Value) -> Option<String> {
     // Try message.model first
-    let model = json.get("message")
+    let model = json
+        .get("message")
         .and_then(|m| m.get("model"))
         .and_then(|v| v.as_str())
-        .or_else(|| {
-            json.get("model")
-                .and_then(|v| v.as_str())
-        });
+        .or_else(|| json.get("model").and_then(|v| v.as_str()));
 
     // Filter out synthetic/internal model names
     if let Some(m) = model {
@@ -340,7 +341,8 @@ fn extract_model(json: &serde_json::Value) -> Option<String> {
 /// Extract timestamp from JSON
 fn extract_timestamp(json: &serde_json::Value) -> Option<i64> {
     // Try various timestamp fields
-    let ts = json.get("timestamp")
+    let ts = json
+        .get("timestamp")
         .or_else(|| json.get("createdAt"))
         .or_else(|| json.get("created_at"))
         .or_else(|| json.get("time"));
@@ -349,7 +351,11 @@ fn extract_timestamp(json: &serde_json::Value) -> Option<i64> {
         // Try as number (could be seconds or milliseconds)
         if let Some(num) = ts.as_u64() {
             // If > 10 billion, assume milliseconds
-            return Some(if num > 10_000_000_000 { (num / 1000) as i64 } else { num as i64 });
+            return Some(if num > 10_000_000_000 {
+                (num / 1000) as i64
+            } else {
+                num as i64
+            });
         }
         // Try as string (ISO format)
         if let Some(s) = ts.as_str() {
@@ -387,7 +393,11 @@ pub fn get_session_meta_by_id(session_id: &str) -> Option<SessionMeta> {
     // Try matching by the last part of session_id (after ::)
     let id_suffix = session_id.split("::").last().unwrap_or(session_id);
     for file in &files {
-        let file_suffix = file.session_id.split("::").last().unwrap_or(&file.session_id);
+        let file_suffix = file
+            .session_id
+            .split("::")
+            .last()
+            .unwrap_or(&file.session_id);
         if file_suffix == id_suffix {
             return Some(extract_session_meta(file));
         }
@@ -430,8 +440,12 @@ mod tests {
         assert!(is_system_message("<local-command-caveat>some text"));
         assert!(is_system_message("prefix <local-command-caveat> content"));
         assert!(is_system_message("<command-name>/model</command-name>"));
-        assert!(is_system_message("<local-command-stdout>Set model to...</local-command-stdout>"));
-        assert!(is_system_message("<system-reminder>Some reminder</system-reminder>"));
+        assert!(is_system_message(
+            "<local-command-stdout>Set model to...</local-command-stdout>"
+        ));
+        assert!(is_system_message(
+            "<system-reminder>Some reminder</system-reminder>"
+        ));
         assert!(is_system_message("ab")); // too short
 
         // Should NOT skip real user messages
@@ -442,9 +456,18 @@ mod tests {
 
     #[test]
     fn test_extract_project_name() {
-        assert_eq!(extract_project_name("/Users/test/projects/my-app"), Some("my-app".to_string()));
-        assert_eq!(extract_project_name("/home/user/code/UsageMeter"), Some("UsageMeter".to_string()));
-        assert_eq!(extract_project_name("C:\\Users\\test\\project"), Some("project".to_string()));
+        assert_eq!(
+            extract_project_name("/Users/test/projects/my-app"),
+            Some("my-app".to_string())
+        );
+        assert_eq!(
+            extract_project_name("/home/user/code/UsageMeter"),
+            Some("UsageMeter".to_string())
+        );
+        assert_eq!(
+            extract_project_name("C:\\Users\\test\\project"),
+            Some("project".to_string())
+        );
         assert_eq!(extract_project_name(""), None);
         assert_eq!(extract_project_name("/"), None);
     }

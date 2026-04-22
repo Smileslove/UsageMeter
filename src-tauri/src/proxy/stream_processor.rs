@@ -188,8 +188,11 @@ fn parse_usage_from_events(events: &[Value]) -> Option<UsageData> {
     }
 
     // 只要有任何 token 使用就认为是有效记录
-    if usage.input_tokens > 0 || usage.output_tokens > 0
-        || usage.cache_create_tokens > 0 || usage.cache_read_tokens > 0 {
+    if usage.input_tokens > 0
+        || usage.output_tokens > 0
+        || usage.cache_create_tokens > 0
+        || usage.cache_read_tokens > 0
+    {
         Some(usage)
     } else {
         None
@@ -289,7 +292,10 @@ pub fn create_database_collector(
         };
 
         // 计算总 Token：input + cache_create + cache_read + output（含缓存）
-        let total_tokens = usage.input_tokens + usage.cache_create_tokens + usage.cache_read_tokens + usage.output_tokens;
+        let total_tokens = usage.input_tokens
+            + usage.cache_create_tokens
+            + usage.cache_read_tokens
+            + usage.output_tokens;
 
         // 计算输出 Token 生成速率（tokens/s）
         let output_tokens_per_second = if duration_ms > 0 {
@@ -394,10 +400,10 @@ mod tests {
         let usage = parse_usage_from_events(&events).unwrap();
         assert_eq!(usage.message_id, "msg_123");
         assert_eq!(usage.model, "claude-sonnet-4");
-        assert_eq!(usage.input_tokens, 100);  // 来自 message_delta
-        assert_eq!(usage.output_tokens, 50);  // 来自 message_delta
-        assert_eq!(usage.cache_read_tokens, 20);  // 来自 message_start
-        assert_eq!(usage.cache_create_tokens, 10);  // 来自 message_start
+        assert_eq!(usage.input_tokens, 100); // 来自 message_delta
+        assert_eq!(usage.output_tokens, 50); // 来自 message_delta
+        assert_eq!(usage.cache_read_tokens, 20); // 来自 message_start
+        assert_eq!(usage.cache_create_tokens, 10); // 来自 message_start
     }
 
     #[test]

@@ -16,7 +16,9 @@ use tokio::net::TcpListener;
 use tokio::sync::{oneshot, RwLock};
 
 /// 辅助函数：创建完整响应体
-fn full<T: Into<bytes::Bytes>>(chunk: T) -> http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, std::io::Error> {
+fn full<T: Into<bytes::Bytes>>(
+    chunk: T,
+) -> http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, std::io::Error> {
     http_body_util::Full::new(chunk.into())
         .map_err(|never| match never {})
         .boxed_unsync()
@@ -79,12 +81,8 @@ impl ProxyServer {
 
         // 创建转发器
         let forwarder = Arc::new(
-            RequestForwarder::new(
-                self.state.usage_collector.clone(),
-                target_base_url,
-                api_key,
-            )
-            .map_err(|e| format!("Failed to create forwarder: {}", e))?,
+            RequestForwarder::new(self.state.usage_collector.clone(), target_base_url, api_key)
+                .map_err(|e| format!("Failed to create forwarder: {}", e))?,
         );
 
         // 绑定地址
@@ -155,9 +153,7 @@ impl ProxyServer {
                     let service = service_fn(move |req: Request<hyper::body::Incoming>| {
                         let forwarder = forwarder.clone();
                         let state = state_for_conn.clone();
-                        async move {
-                            handle_request(req, forwarder, state).await
-                        }
+                        async move { handle_request(req, forwarder, state).await }
                     });
 
                     if let Err(e) = http1::Builder::new().serve_connection(io, service).await {
@@ -250,7 +246,10 @@ async fn handle_request(
     req: Request<hyper::body::Incoming>,
     forwarder: Arc<RequestForwarder>,
     state: Arc<ProxyState>,
-) -> Result<Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, std::io::Error>>, hyper::Error> {
+) -> Result<
+    Response<http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, std::io::Error>>,
+    hyper::Error,
+> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
@@ -318,13 +317,11 @@ async fn handle_request(
                             .body(body)
                             .unwrap())
                     }
-                    ForwardResult::NonStreaming { content } => {
-                        Ok(Response::builder()
-                            .status(StatusCode::OK)
-                            .header("Content-Type", "application/json")
-                            .body(full(content))
-                            .unwrap())
-                    }
+                    ForwardResult::NonStreaming { content } => Ok(Response::builder()
+                        .status(StatusCode::OK)
+                        .header("Content-Type", "application/json")
+                        .body(full(content))
+                        .unwrap()),
                 }
             }
             Err(e) => {
@@ -353,7 +350,9 @@ async fn handle_request(
         Ok(Response::builder()
             .status(StatusCode::NOT_FOUND)
             .header("Content-Type", "application/json")
-            .body(full(r#"{"error":{"type":"not_found","message":"Endpoint not found"}}"#))
+            .body(full(
+                r#"{"error":{"type":"not_found","message":"Endpoint not found"}}"#,
+            ))
             .unwrap())
     }
 }

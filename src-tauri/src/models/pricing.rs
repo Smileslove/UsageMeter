@@ -6,8 +6,8 @@
 //!
 //! No built-in pricing data - users should sync from API or add custom pricing.
 
-use serde::{Deserialize, Serialize};
 use super::ModelPricingConfig;
+use serde::{Deserialize, Serialize};
 
 /// Model pricing configuration ($/M tokens)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,11 +40,7 @@ impl Default for ModelPricing {
 /// Get pricing for a model from database/custom pricing configuration
 ///
 /// Priority: custom > api > default (0.0)
-pub fn get_pricing(
-    model: &str,
-    pricings: &[ModelPricingConfig],
-    match_mode: &str,
-) -> ModelPricing {
+pub fn get_pricing(model: &str, pricings: &[ModelPricingConfig], match_mode: &str) -> ModelPricing {
     // Try to find a matching pricing
     let matched = if match_mode == "exact" {
         // Exact match
@@ -52,9 +48,7 @@ pub fn get_pricing(
     } else {
         // Fuzzy match: support bidirectional containment
         pricings.iter().find(|p| {
-            model == p.model_id ||
-            model.contains(&p.model_id) ||
-            p.model_id.contains(model)
+            model == p.model_id || model.contains(&p.model_id) || p.model_id.contains(model)
         })
     };
 
@@ -63,10 +57,16 @@ pub fn get_pricing(
             input: pricing.input_price,
             output: pricing.output_price,
             // Use cache_write_price if available, otherwise estimate
-            cache_write_5m: pricing.cache_write_price.unwrap_or(pricing.input_price * 1.25),
-            cache_write_1h: pricing.cache_write_price.unwrap_or(pricing.input_price * 0.5),
+            cache_write_5m: pricing
+                .cache_write_price
+                .unwrap_or(pricing.input_price * 1.25),
+            cache_write_1h: pricing
+                .cache_write_price
+                .unwrap_or(pricing.input_price * 0.5),
             // Use cache_read_price if available, otherwise estimate
-            cache_read: pricing.cache_read_price.unwrap_or(pricing.input_price * 0.1),
+            cache_read: pricing
+                .cache_read_price
+                .unwrap_or(pricing.input_price * 0.1),
         };
     }
 
@@ -197,10 +197,13 @@ mod tests {
         }];
 
         let cost = estimate_session_cost(
-            1_000_000, 500_000, 100_000, 200_000,
+            1_000_000,
+            500_000,
+            100_000,
+            200_000,
             "claude-3-5-sonnet",
             &pricings,
-            "fuzzy"
+            "fuzzy",
         );
         // input: 1M * 3 = $3
         // output: 0.5M * 15 = $7.5
@@ -214,10 +217,13 @@ mod tests {
     fn test_cost_estimation_without_pricing() {
         let pricings: Vec<ModelPricingConfig> = vec![];
         let cost = estimate_session_cost(
-            1_000_000, 500_000, 100_000, 200_000,
+            1_000_000,
+            500_000,
+            100_000,
+            200_000,
             "unknown-model",
             &pricings,
-            "fuzzy"
+            "fuzzy",
         );
         // No pricing = $0 cost
         assert!((cost - 0.0).abs() < 0.01);

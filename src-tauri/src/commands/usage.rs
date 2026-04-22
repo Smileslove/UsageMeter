@@ -1,6 +1,9 @@
 //! 用量相关 Tauri 命令
 
-use crate::models::{compute_percent, risk_level, AppSettings, ModelRateStats, ModelTtftStats, OverallRateStats, TtftStats, UsageSnapshot, WindowRateSummary, WindowUsage};
+use crate::models::{
+    compute_percent, risk_level, AppSettings, ModelRateStats, ModelTtftStats, OverallRateStats,
+    TtftStats, UsageSnapshot, WindowRateSummary, WindowUsage,
+};
 use crate::proxy::{ProxyServer, SessionStats};
 use chrono::{Datelike, Local, TimeZone};
 use std::collections::VecDeque;
@@ -132,11 +135,15 @@ async fn get_proxy_usage_snapshot(
 
         // 计算汇总（含状态码统计）
         let total_success_requests: u64 = windows.iter().map(|w| w.success_requests).sum();
-        let total_client_error_requests: u64 = windows.iter().map(|w| w.client_error_requests).sum();
-        let total_server_error_requests: u64 = windows.iter().map(|w| w.server_error_requests).sum();
+        let total_client_error_requests: u64 =
+            windows.iter().map(|w| w.client_error_requests).sum();
+        let total_server_error_requests: u64 =
+            windows.iter().map(|w| w.server_error_requests).sum();
 
         // 从收集器获取模型分布
-        let model_distribution_raw = collector.get_model_distribution(&settings.summary_window).await;
+        let model_distribution_raw = collector
+            .get_model_distribution(&settings.summary_window)
+            .await;
 
         // 计算总 token 用于百分比
         let total_model_tokens: i64 = model_distribution_raw.iter().map(|m| m.total_tokens).sum();
@@ -362,7 +369,7 @@ fn snapshot_from_ccusage(settings: &AppSettings) -> Result<UsageSnapshot, String
                 settings.warning_threshold,
                 settings.critical_threshold,
             ),
-            success_requests: 0,  // ccusage 模式不包含状态码信息
+            success_requests: 0, // ccusage 模式不包含状态码信息
             client_error_requests: 0,
             server_error_requests: 0,
         });
@@ -380,10 +387,12 @@ fn snapshot_from_ccusage(settings: &AppSettings) -> Result<UsageSnapshot, String
                         token_used: parse_u64_from_value(item.get("tokenUsed")?)?,
                         input_tokens: parse_u64_from_value(item.get("inputTokens")?)?,
                         output_tokens: parse_u64_from_value(item.get("outputTokens")?)?,
-                        cache_create_tokens: item.get("cacheCreateTokens")
+                        cache_create_tokens: item
+                            .get("cacheCreateTokens")
                             .and_then(parse_u64_from_value)
                             .unwrap_or(0),
-                        cache_read_tokens: item.get("cacheReadTokens")
+                        cache_read_tokens: item
+                            .get("cacheReadTokens")
                             .and_then(parse_u64_from_value)
                             .unwrap_or(0),
                         request_count: parse_u64_from_value(item.get("requestCount")?)?,
@@ -437,7 +446,7 @@ fn snapshot_from_ccusage(settings: &AppSettings) -> Result<UsageSnapshot, String
         total_cache_read_tokens: windows.iter().map(|w| w.cache_read_tokens).sum(),
         total_cost,
         overall_risk_level,
-        total_success_requests: 0,  // ccusage 模式不包含状态码信息
+        total_success_requests: 0, // ccusage 模式不包含状态码信息
         total_client_error_requests: 0,
         total_server_error_requests: 0,
     };
@@ -592,8 +601,12 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
 
     // 计算当前月份起始时间戳（本月第1天，00:00:00 本地时间）
     let current_month_start = {
-        let now_dt = Local.timestamp_opt(now as i64, 0).single().unwrap_or_else(Local::now);
-        Local.with_ymd_and_hms(now_dt.year(), now_dt.month(), 1, 0, 0, 0)
+        let now_dt = Local
+            .timestamp_opt(now as i64, 0)
+            .single()
+            .unwrap_or_else(Local::now);
+        Local
+            .with_ymd_and_hms(now_dt.year(), now_dt.month(), 1, 0, 0, 0)
             .single()
             .map(|dt| dt.timestamp() as u64)
             .unwrap_or(0)
@@ -639,7 +652,9 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
 
             // 累计模型统计
             if !record.model.is_empty() {
-                let entry = model_stats.entry(record.model.clone()).or_insert((0, 0, 0, 0, 0, 0));
+                let entry = model_stats
+                    .entry(record.model.clone())
+                    .or_insert((0, 0, 0, 0, 0, 0));
                 entry.0 += record.tokens;
                 entry.1 += record.input_tokens;
                 entry.2 += record.output_tokens;
@@ -665,7 +680,14 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             continue;
         }
 
-        let (token_used, input_tokens, output_tokens, cache_create_tokens, cache_read_tokens, request_used) = match quota.window.as_str() {
+        let (
+            token_used,
+            input_tokens,
+            output_tokens,
+            cache_create_tokens,
+            cache_read_tokens,
+            request_used,
+        ) = match quota.window.as_str() {
             "5h" => (
                 total_5h_tokens,
                 total_5h_input_tokens,
@@ -730,7 +752,7 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
                 settings.warning_threshold,
                 settings.critical_threshold,
             ),
-            success_requests: 0,  // 本地 JSONL 模式不包含状态码信息
+            success_requests: 0, // 本地 JSONL 模式不包含状态码信息
             client_error_requests: 0,
             server_error_requests: 0,
         });
@@ -758,42 +780,46 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
     // 计算总费用（在截断之前，基于所有模型计算）
     let total_cost: f64 = model_stats
         .iter()
-        .map(|(model_name, (_tokens, input, output, cache_create, cache_read, _requests))| {
-            crate::models::estimate_session_cost(
-                *input,
-                *output,
-                *cache_create,
-                *cache_read,
-                model_name,
-                pricings,
-                match_mode,
-            )
-        })
+        .map(
+            |(model_name, (_tokens, input, output, cache_create, cache_read, _requests))| {
+                crate::models::estimate_session_cost(
+                    *input,
+                    *output,
+                    *cache_create,
+                    *cache_read,
+                    model_name,
+                    pricings,
+                    match_mode,
+                )
+            },
+        )
         .sum();
 
     let mut model_distribution: Vec<crate::models::ModelUsage> = model_stats
         .into_iter()
-        .map(|(model_name, (tokens, input, output, cache_create, cache_read, requests))| {
-            let percent = if total_model_tokens > 0 {
-                (tokens as f64 / total_model_tokens as f64) * 100.0
-            } else {
-                0.0
-            };
-            crate::models::ModelUsage {
-                model_name,
-                token_used: tokens,
-                input_tokens: input,
-                output_tokens: output,
-                cache_create_tokens: cache_create,
-                cache_read_tokens: cache_read,
-                request_count: requests,
-                percent,
-                status_codes: Vec::new(), // 本地 JSONL 模式不包含状态码信息
-            }
-        })
+        .map(
+            |(model_name, (tokens, input, output, cache_create, cache_read, requests))| {
+                let percent = if total_model_tokens > 0 {
+                    (tokens as f64 / total_model_tokens as f64) * 100.0
+                } else {
+                    0.0
+                };
+                crate::models::ModelUsage {
+                    model_name,
+                    token_used: tokens,
+                    input_tokens: input,
+                    output_tokens: output,
+                    cache_create_tokens: cache_create,
+                    cache_read_tokens: cache_read,
+                    request_count: requests,
+                    percent,
+                    status_codes: Vec::new(), // 本地 JSONL 模式不包含状态码信息
+                }
+            },
+        )
         .collect();
     // 按 token 使用量降序排序，取 Top 5（仅用于显示，不影响费用计算）
-    model_distribution.sort_by(|a, b| b.token_used.cmp(&a.token_used));
+    model_distribution.sort_by_key(|b| std::cmp::Reverse(b.token_used));
     model_distribution.truncate(5);
 
     let summary = crate::models::UsageSummary {
@@ -823,12 +849,12 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
 // 辅助类型和函数
 struct RequestRecord {
     timestamp: u64,
-    tokens: u64,            // 总 Token = input + cache_create + cache_read + output
-    input_tokens: u64,      // 实际输入（不含缓存）
+    tokens: u64,       // 总 Token = input + cache_create + cache_read + output
+    input_tokens: u64, // 实际输入（不含缓存）
     output_tokens: u64,
     cache_create_tokens: u64,
     cache_read_tokens: u64,
-    model: String,          // 模型名称
+    model: String, // 模型名称
 }
 
 fn collect_claude_jsonl_files() -> Vec<PathBuf> {
@@ -887,15 +913,29 @@ fn extract_event_epoch(value: &serde_json::Value) -> Option<u64> {
             _ => None,
         });
 
-    raw_ts.map(|num| if num > 10_000_000_000 { num / 1000 } else { num })
+    raw_ts.map(|num| {
+        if num > 10_000_000_000 {
+            num / 1000
+        } else {
+            num
+        }
+    })
 }
 
 fn extract_total_tokens(value: &serde_json::Value) -> Option<u64> {
     // 计算总 Token：input + cache_create + cache_read + output（含缓存）
     let in_keys = ["input_tokens", "inputTokens", "input"];
     let out_keys = ["output_tokens", "outputTokens", "output"];
-    let cache_create_keys = ["cache_creation_input_tokens", "cacheCreationInputTokens", "cache_create_tokens"];
-    let cache_read_keys = ["cache_read_input_tokens", "cacheReadInputTokens", "cache_read_tokens"];
+    let cache_create_keys = [
+        "cache_creation_input_tokens",
+        "cacheCreationInputTokens",
+        "cache_create_tokens",
+    ];
+    let cache_read_keys = [
+        "cache_read_input_tokens",
+        "cacheReadInputTokens",
+        "cache_read_tokens",
+    ];
 
     let input = find_number_by_keys(value, &in_keys).unwrap_or(0);
     let output = find_number_by_keys(value, &out_keys).unwrap_or(0);
@@ -1125,9 +1165,16 @@ pub async fn get_sessions(
 
             // 尝试匹配代理数据
             let proxy_stats = proxy_stats_map.get(&meta.session_id).or_else(|| {
-                let id_suffix = meta.session_id.split("::").last().unwrap_or(&meta.session_id);
-                proxy_stats_map.iter()
-                    .find(|(k, _)| k.ends_with(id_suffix) || k.split("::").last().unwrap_or(k) == id_suffix)
+                let id_suffix = meta
+                    .session_id
+                    .split("::")
+                    .last()
+                    .unwrap_or(&meta.session_id);
+                proxy_stats_map
+                    .iter()
+                    .find(|(k, _)| {
+                        k.ends_with(id_suffix) || k.split("::").last().unwrap_or(k) == id_suffix
+                    })
                     .map(|(_, v)| v)
             });
 
@@ -1228,7 +1275,9 @@ pub async fn get_session_detail(
         let server_guard = proxy_state.server.read().await;
         if let Some(server) = server_guard.as_ref() {
             let collector = server.get_collector();
-            collector.get_session_stats(&session_id, pricings, match_mode).await
+            collector
+                .get_session_stats(&session_id, pricings, match_mode)
+                .await
         } else {
             None
         }
@@ -1311,7 +1360,9 @@ pub async fn get_project_stats(
         let server_guard = proxy_state.server.read().await;
         if let Some(server) = server_guard.as_ref() {
             let collector = server.get_collector();
-            let proxy_sessions = collector.get_all_sessions(10000, pricings, match_mode).await;
+            let proxy_sessions = collector
+                .get_all_sessions(10000, pricings, match_mode)
+                .await;
             proxy_sessions
                 .into_iter()
                 .map(|s| (s.session_id.clone(), s))
@@ -1326,7 +1377,10 @@ pub async fn get_project_stats(
         std::collections::HashMap::new();
 
     for meta in all_meta {
-        let project_name = meta.project_name.clone().unwrap_or_else(|| "未命名项目".to_string());
+        let project_name = meta
+            .project_name
+            .clone()
+            .unwrap_or_else(|| "未命名项目".to_string());
 
         // 计算费用（优先使用代理的准确费用，否则估算）
         let cost = if let Some(proxy) = proxy_stats_map.get(&meta.session_id) {
@@ -1344,16 +1398,21 @@ pub async fn get_project_stats(
             )
         };
 
-        let entry = project_map.entry(project_name).or_insert(crate::proxy::ProjectStats {
-            name: String::new(),
-            session_count: 0,
-            total_input_tokens: 0,
-            total_output_tokens: 0,
-            total_cost: 0.0,
-            last_active: 0,
-        });
+        let entry = project_map
+            .entry(project_name)
+            .or_insert(crate::proxy::ProjectStats {
+                name: String::new(),
+                session_count: 0,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                total_cost: 0.0,
+                last_active: 0,
+            });
 
-        entry.name = meta.project_name.clone().unwrap_or_else(|| "未命名项目".to_string());
+        entry.name = meta
+            .project_name
+            .clone()
+            .unwrap_or_else(|| "未命名项目".to_string());
         entry.session_count += 1;
         entry.total_input_tokens += meta.total_input_tokens;
         entry.total_output_tokens += meta.total_output_tokens;
@@ -1365,7 +1424,7 @@ pub async fn get_project_stats(
 
     // 4. 按最后活跃时间倒序排序
     let mut projects: Vec<_> = project_map.into_values().collect();
-    projects.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+    projects.sort_by_key(|b| std::cmp::Reverse(b.last_active));
 
     Ok(projects)
 }

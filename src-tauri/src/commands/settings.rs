@@ -35,8 +35,8 @@ pub fn save_settings(settings: AppSettings) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| format!("ERR_CREATE_SETTINGS_DIR: {e}"))?;
     }
 
-    let content =
-        serde_json::to_string_pretty(&settings).map_err(|e| format!("ERR_SERIALIZE_SETTINGS: {e}"))?;
+    let content = serde_json::to_string_pretty(&settings)
+        .map_err(|e| format!("ERR_SERIALIZE_SETTINGS: {e}"))?;
     fs::write(path, content).map_err(|e| format!("ERR_WRITE_SETTINGS: {e}"))
 }
 
@@ -45,8 +45,7 @@ fn migrate_quotas(settings: &mut AppSettings) {
     use std::collections::HashSet;
 
     let defaults = crate::models::default_quotas();
-    let existing_windows: HashSet<_> =
-        settings.quotas.iter().map(|q| q.window.as_str()).collect();
+    let existing_windows: HashSet<_> = settings.quotas.iter().map(|q| q.window.as_str()).collect();
 
     let missing: Vec<WindowQuota> = defaults
         .into_iter()

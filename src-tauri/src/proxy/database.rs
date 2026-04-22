@@ -24,11 +24,11 @@ impl ProxyDatabase {
                 .map_err(|e| format!("Failed to create database directory: {}", e))?;
         }
 
-        let conn = Connection::open(&db_path)
-            .map_err(|e| format!("Failed to open database: {}", e))?;
+        let conn =
+            Connection::open(&db_path).map_err(|e| format!("Failed to open database: {}", e))?;
 
         // 启用 WAL 模式以获得更好的并发性
-        conn.pragma_update(None, "journal_mode", &"WAL")
+        conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| format!("Failed to enable WAL mode: {}", e))?;
 
         // 创建表
@@ -178,7 +178,10 @@ impl ProxyDatabase {
 
     /// 插入使用记录
     pub async fn insert_record(&self, record: &UsageRecord) -> Result<i64, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Failed to lock connection: {}", e))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
         conn.execute(
             r#"
@@ -214,7 +217,10 @@ impl ProxyDatabase {
     /// 获取时间窗口内的记录
     #[allow(dead_code)]
     pub async fn get_records_since(&self, cutoff_ms: i64) -> Result<Vec<UsageRecord>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Failed to lock connection: {}", e))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
         let mut stmt = conn
             .prepare(
@@ -263,7 +269,10 @@ impl ProxyDatabase {
 
     /// 获取总记录数
     pub async fn get_record_count(&self) -> Result<usize, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Failed to lock connection: {}", e))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
@@ -276,7 +285,10 @@ impl ProxyDatabase {
     #[allow(dead_code)]
     pub async fn cleanup_old_records(&self, days: i64) -> Result<usize, String> {
         let cutoff = chrono::Utc::now().timestamp_millis() - (days * 24 * 60 * 60 * 1000);
-        let conn = self.conn.lock().map_err(|e| format!("Failed to lock connection: {}", e))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
         let affected = conn
             .execute("DELETE FROM usage_records WHERE timestamp < ?1", [cutoff])
@@ -301,7 +313,10 @@ impl ProxyDatabase {
         cutoff_ms: i64,
         include_errors: bool,
     ) -> Result<WindowAggregate, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Failed to lock connection: {}", e))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
         let stats = if include_errors {
             // 包含所有请求
@@ -379,7 +394,10 @@ impl ProxyDatabase {
         &self,
         cutoff_ms: i64,
     ) -> Result<Vec<ModelDistribution>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Failed to lock connection: {}", e))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
         // 先查询基础数据
         let mut stmt = conn
@@ -419,7 +437,16 @@ impl ProxyDatabase {
 
         // 为每个模型查询状态码分布
         let mut result = Vec::new();
-        for (model, request_count, total_tokens, input_tokens, output_tokens, cache_create_tokens, cache_read_tokens) in models {
+        for (
+            model,
+            request_count,
+            total_tokens,
+            input_tokens,
+            output_tokens,
+            cache_create_tokens,
+            cache_read_tokens,
+        ) in models
+        {
             // 查询该模型的状态码分布
             let status_codes: Vec<(i64, i64)> = conn
                 .prepare(
@@ -433,10 +460,12 @@ impl ProxyDatabase {
 
             // 转换为 JSON
             let status_codes_json = serde_json::to_string(
-                &status_codes.iter()
+                &status_codes
+                    .iter()
                     .map(|(code, count)| serde_json::json!({"statusCode": code, "count": count}))
-                    .collect::<Vec<_>>()
-            ).unwrap_or_else(|_| "[]".to_string());
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap_or_else(|_| "[]".to_string());
 
             result.push(ModelDistribution {
                 model,
@@ -455,8 +484,16 @@ impl ProxyDatabase {
 
     /// 获取会话统计信息
     #[allow(dead_code)]
-    pub async fn get_session_stats(&self, session_id: &str, pricings: &[ModelPricingConfig], match_mode: &str) -> Result<Option<SessionStats>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Failed to lock connection: {}", e))?;
+    pub async fn get_session_stats(
+        &self,
+        session_id: &str,
+        pricings: &[ModelPricingConfig],
+        match_mode: &str,
+    ) -> Result<Option<SessionStats>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
         let mut stmt = conn
             .prepare(
@@ -482,64 +519,63 @@ impl ProxyDatabase {
             )
             .map_err(|e| format!("Failed to prepare statement: {}", e))?;
 
-        let result = stmt
-            .query_row([session_id], |row| {
-                let total_output_tokens: i64 = row.get(3)?;
-                let total_duration_ms: i64 = row.get(6)?;
-                let models_str: String = row.get::<_, String>(9)?;
-                let total_input_tokens: i64 = row.get(2)?;
-                let total_cache_create_tokens: i64 = row.get(4)?;
-                let total_cache_read_tokens: i64 = row.get(5)?;
+        let result = stmt.query_row([session_id], |row| {
+            let total_output_tokens: i64 = row.get(3)?;
+            let total_duration_ms: i64 = row.get(6)?;
+            let models_str: String = row.get::<_, String>(9)?;
+            let total_input_tokens: i64 = row.get(2)?;
+            let total_cache_create_tokens: i64 = row.get(4)?;
+            let total_cache_read_tokens: i64 = row.get(5)?;
 
-                // 计算平均生成速率
-                let avg_rate = if total_duration_ms > 0 {
-                    (total_output_tokens as f64) / (total_duration_ms as f64 / 1000.0)
+            // 计算平均生成速率
+            let avg_rate = if total_duration_ms > 0 {
+                (total_output_tokens as f64) / (total_duration_ms as f64 / 1000.0)
+            } else {
+                0.0
+            };
+
+            // 获取第一个模型用于定价
+            let first_model = models_str.split(',').next().unwrap_or("");
+
+            // 计算估算费用
+            let estimated_cost = crate::models::estimate_session_cost(
+                total_input_tokens as u64,
+                total_output_tokens as u64,
+                total_cache_create_tokens as u64,
+                total_cache_read_tokens as u64,
+                first_model,
+                pricings,
+                match_mode,
+            );
+
+            Ok(SessionStats {
+                session_id: row.get(0)?,
+                total_requests: row.get::<_, i64>(1)? as u64,
+                total_input_tokens: total_input_tokens as u64,
+                total_output_tokens: total_output_tokens as u64,
+                total_cache_create_tokens: total_cache_create_tokens as u64,
+                total_cache_read_tokens: total_cache_read_tokens as u64,
+                total_duration_ms: total_duration_ms as u64,
+                avg_output_tokens_per_second: avg_rate,
+                first_request_time: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
+                last_request_time: row.get::<_, Option<i64>>(8)?.unwrap_or(0),
+                models: if models_str.is_empty() {
+                    Vec::new()
                 } else {
-                    0.0
-                };
-
-                // 获取第一个模型用于定价
-                let first_model = models_str.split(',').next().unwrap_or("");
-
-                // 计算估算费用
-                let estimated_cost = crate::models::estimate_session_cost(
-                    total_input_tokens as u64,
-                    total_output_tokens as u64,
-                    total_cache_create_tokens as u64,
-                    total_cache_read_tokens as u64,
-                    first_model,
-                    pricings,
-                    match_mode,
-                );
-
-                Ok(SessionStats {
-                    session_id: row.get(0)?,
-                    total_requests: row.get::<_, i64>(1)? as u64,
-                    total_input_tokens: total_input_tokens as u64,
-                    total_output_tokens: total_output_tokens as u64,
-                    total_cache_create_tokens: total_cache_create_tokens as u64,
-                    total_cache_read_tokens: total_cache_read_tokens as u64,
-                    total_duration_ms: total_duration_ms as u64,
-                    avg_output_tokens_per_second: avg_rate,
-                    first_request_time: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
-                    last_request_time: row.get::<_, Option<i64>>(8)?.unwrap_or(0),
-                    models: if models_str.is_empty() {
-                        Vec::new()
-                    } else {
-                        models_str.split(',').map(|s| s.to_string()).collect()
-                    },
-                    avg_ttft_ms: row.get::<_, Option<f64>>(10)?.unwrap_or(0.0),
-                    success_requests: row.get::<_, i64>(11)? as u64,
-                    error_requests: row.get::<_, i64>(12)? as u64,
-                    estimated_cost,
-                    is_cost_estimated: true,
-                    cwd: None,
-                    project_name: None,
-                    topic: None,
-                    last_prompt: None,
-                    session_name: None,
-                })
-            });
+                    models_str.split(',').map(|s| s.to_string()).collect()
+                },
+                avg_ttft_ms: row.get::<_, Option<f64>>(10)?.unwrap_or(0.0),
+                success_requests: row.get::<_, i64>(11)? as u64,
+                error_requests: row.get::<_, i64>(12)? as u64,
+                estimated_cost,
+                is_cost_estimated: true,
+                cwd: None,
+                project_name: None,
+                topic: None,
+                last_prompt: None,
+                session_name: None,
+            })
+        });
 
         match result {
             Ok(stats) => Ok(Some(stats)),
@@ -550,8 +586,16 @@ impl ProxyDatabase {
 
     /// 获取所有会话列表（按最后请求时间倒序）
     #[allow(dead_code)]
-    pub async fn get_all_sessions(&self, limit: i64, pricings: &[ModelPricingConfig], match_mode: &str) -> Result<Vec<SessionStats>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Failed to lock connection: {}", e))?;
+    pub async fn get_all_sessions(
+        &self,
+        limit: i64,
+        pricings: &[ModelPricingConfig],
+        match_mode: &str,
+    ) -> Result<Vec<SessionStats>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
         let mut stmt = conn
             .prepare(
@@ -649,7 +693,10 @@ impl ProxyDatabase {
     /// 使用加权平均计算整体速率：total_output_tokens * 1000.0 / total_duration_ms
     /// 这比简单 AVG 更能反映真实的总体吞吐效率
     pub async fn get_window_rate_stats(&self, cutoff_ms: i64) -> Result<WindowRateStats, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Failed to lock connection: {}", e))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
         let stats = conn
             .query_row(
@@ -688,8 +735,14 @@ impl ProxyDatabase {
     ///
     /// 只统计 duration_ms > 0 且 output_tokens_per_second IS NOT NULL 的记录
     /// 结果按平均速率降序排列
-    pub async fn get_model_rate_stats(&self, cutoff_ms: i64) -> Result<Vec<ModelRateStats>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Failed to lock connection: {}", e))?;
+    pub async fn get_model_rate_stats(
+        &self,
+        cutoff_ms: i64,
+    ) -> Result<Vec<ModelRateStats>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
         let mut stmt = conn
             .prepare(
@@ -745,14 +798,14 @@ impl Default for ProxyDatabase {
 pub struct WindowAggregate {
     pub request_count: i64,
     #[allow(dead_code)]
-    pub total_tokens: i64,        // 总 Token = input + cache_create + cache_read + output
-    pub input_tokens: i64,        // 实际输入（不含缓存）
+    pub total_tokens: i64, // 总 Token = input + cache_create + cache_read + output
+    pub input_tokens: i64, // 实际输入（不含缓存）
     pub output_tokens: i64,
     pub cache_create_tokens: i64,
     pub cache_read_tokens: i64,
-    pub status_2xx: i64,          // 成功请求数
-    pub status_4xx: i64,          // 客户端错误数
-    pub status_5xx: i64,          // 服务端错误数
+    pub status_2xx: i64, // 成功请求数
+    pub status_4xx: i64, // 客户端错误数
+    pub status_5xx: i64, // 服务端错误数
 }
 
 /// 模型分布统计
@@ -760,8 +813,8 @@ pub struct WindowAggregate {
 pub struct ModelDistribution {
     pub model: String,
     pub request_count: i64,
-    pub total_tokens: i64,        // 总 Token = input + cache_create + cache_read + output
-    pub input_tokens: i64,        // 实际输入（不含缓存）
+    pub total_tokens: i64, // 总 Token = input + cache_create + cache_read + output
+    pub input_tokens: i64, // 实际输入（不含缓存）
     pub output_tokens: i64,
     pub cache_create_tokens: i64,
     pub cache_read_tokens: i64,
@@ -816,7 +869,7 @@ pub struct WindowRateSummary {
 pub struct StatusCodeDistribution {
     pub status_code: i64,
     pub count: i64,
-    pub category: String,  // "success", "client_error", "server_error"
+    pub category: String, // "success", "client_error", "server_error"
 }
 
 /// TTFT 统计（首 Token 生成时间）
@@ -847,8 +900,14 @@ pub struct ModelTtftStats {
 impl ProxyDatabase {
     /// 获取状态码分布
     #[allow(dead_code)]
-    pub async fn get_status_code_distribution(&self, cutoff_ms: i64) -> Result<Vec<StatusCodeDistribution>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Failed to lock connection: {}", e))?;
+    pub async fn get_status_code_distribution(
+        &self,
+        cutoff_ms: i64,
+    ) -> Result<Vec<StatusCodeDistribution>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
         let mut stmt = conn
             .prepare(
@@ -866,9 +925,9 @@ impl ProxyDatabase {
             .query_map([cutoff_ms], |row| {
                 let status_code: i64 = row.get(0)?;
                 let count: i64 = row.get(1)?;
-                let category = if status_code >= 200 && status_code < 300 {
+                let category = if (200..300).contains(&status_code) {
                     "success".to_string()
-                } else if status_code >= 400 && status_code < 500 {
+                } else if (400..500).contains(&status_code) {
                     "client_error".to_string()
                 } else if status_code >= 500 {
                     "server_error".to_string()
@@ -892,7 +951,10 @@ impl ProxyDatabase {
     ///
     /// 只统计 ttft_ms IS NOT NULL 的记录
     pub async fn get_ttft_stats(&self, cutoff_ms: i64) -> Result<TtftStats, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Failed to lock connection: {}", e))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
         let stats = conn
             .query_row(
@@ -924,8 +986,14 @@ impl ProxyDatabase {
     /// 获取时间窗口内按模型分组的 TTFT 统计
     ///
     /// 结果按平均 TTFT 升序排列（响应快的在前）
-    pub async fn get_model_ttft_stats(&self, cutoff_ms: i64) -> Result<Vec<ModelTtftStats>, String> {
-        let conn = self.conn.lock().map_err(|e| format!("Failed to lock connection: {}", e))?;
+    pub async fn get_model_ttft_stats(
+        &self,
+        cutoff_ms: i64,
+    ) -> Result<Vec<ModelTtftStats>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
         let mut stmt = conn
             .prepare(
@@ -1029,7 +1097,12 @@ impl ProxyDatabase {
     }
 
     /// 搜索模型价格（支持分页和关键词搜索）
-    pub fn search_model_pricings(&self, query: Option<&str>, limit: i64, offset: i64) -> Result<Vec<ModelPricingConfig>, String> {
+    pub fn search_model_pricings(
+        &self,
+        query: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<ModelPricingConfig>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
 
         let pricings = if let Some(q) = query {
@@ -1044,9 +1117,8 @@ impl ProxyDatabase {
                 "#
             ).map_err(|e| format!("Failed to prepare statement: {}", e))?;
 
-            let rows = stmt.query_map(
-                rusqlite::params![search_pattern, limit, offset],
-                |row| {
+            let rows = stmt
+                .query_map(rusqlite::params![search_pattern, limit, offset], |row| {
                     Ok(ModelPricingConfig {
                         model_id: row.get(0)?,
                         display_name: row.get(1)?,
@@ -1057,8 +1129,8 @@ impl ProxyDatabase {
                         source: row.get(6)?,
                         last_updated: row.get(7)?,
                     })
-                },
-            ).map_err(|e| format!("Failed to search model pricings: {}", e))?;
+                })
+                .map_err(|e| format!("Failed to search model pricings: {}", e))?;
 
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("Failed to collect results: {}", e))?
@@ -1072,9 +1144,8 @@ impl ProxyDatabase {
                 "#
             ).map_err(|e| format!("Failed to prepare statement: {}", e))?;
 
-            let rows = stmt.query_map(
-                rusqlite::params![limit, offset],
-                |row| {
+            let rows = stmt
+                .query_map(rusqlite::params![limit, offset], |row| {
                     Ok(ModelPricingConfig {
                         model_id: row.get(0)?,
                         display_name: row.get(1)?,
@@ -1085,8 +1156,8 @@ impl ProxyDatabase {
                         source: row.get(6)?,
                         last_updated: row.get(7)?,
                     })
-                },
-            ).map_err(|e| format!("Failed to query model pricings: {}", e))?;
+                })
+                .map_err(|e| format!("Failed to query model pricings: {}", e))?;
 
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("Failed to collect results: {}", e))?
@@ -1211,21 +1282,22 @@ impl ProxyDatabase {
             "SELECT model_id, display_name, input_price, output_price, cache_read_price, cache_write_price, source, last_updated FROM model_pricing ORDER BY model_id"
         ).map_err(|e| format!("Failed to prepare statement: {}", e))?;
 
-        let pricings = stmt.query_map([], |row| {
-            Ok(ModelPricingConfig {
-                model_id: row.get(0)?,
-                display_name: row.get(1)?,
-                input_price: row.get(2)?,
-                output_price: row.get(3)?,
-                cache_read_price: row.get(4)?,
-                cache_write_price: row.get(5)?,
-                source: row.get(6)?,
-                last_updated: row.get(7)?,
+        let pricings = stmt
+            .query_map([], |row| {
+                Ok(ModelPricingConfig {
+                    model_id: row.get(0)?,
+                    display_name: row.get(1)?,
+                    input_price: row.get(2)?,
+                    output_price: row.get(3)?,
+                    cache_read_price: row.get(4)?,
+                    cache_write_price: row.get(5)?,
+                    source: row.get(6)?,
+                    last_updated: row.get(7)?,
+                })
             })
-        })
-        .map_err(|e| format!("Failed to query model pricings: {}", e))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to collect results: {}", e))?;
+            .map_err(|e| format!("Failed to query model pricings: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect results: {}", e))?;
 
         Ok(pricings)
     }

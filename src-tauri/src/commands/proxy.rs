@@ -7,10 +7,7 @@ use super::usage::ProxyState;
 
 /// 启动代理服务器
 #[tauri::command]
-pub async fn start_proxy(
-    port: u16,
-    state: State<'_, ProxyState>,
-) -> Result<(), String> {
+pub async fn start_proxy(port: u16, state: State<'_, ProxyState>) -> Result<(), String> {
     let mut server_guard = state.server.write().await;
 
     // 检查是否已在运行

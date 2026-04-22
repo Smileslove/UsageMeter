@@ -5,17 +5,16 @@ use crate::proxy::ProxyDatabase;
 use std::sync::Arc;
 
 /// 模型价格数据库实例（独立于代理）
-static MODEL_PRICING_DB: std::sync::OnceLock<Arc<std::sync::Mutex<Option<ProxyDatabase>>>> = std::sync::OnceLock::new();
+static MODEL_PRICING_DB: std::sync::OnceLock<Arc<std::sync::Mutex<Option<ProxyDatabase>>>> =
+    std::sync::OnceLock::new();
 
 /// 获取模型价格数据库实例
 fn get_pricing_db() -> Result<Arc<std::sync::Mutex<Option<ProxyDatabase>>>, String> {
-    let db = MODEL_PRICING_DB.get_or_init(|| {
-        match ProxyDatabase::new() {
-            Ok(database) => Arc::new(std::sync::Mutex::new(Some(database))),
-            Err(e) => {
-                eprintln!("[ModelPricing] Failed to create database: {}", e);
-                Arc::new(std::sync::Mutex::new(None))
-            }
+    let db = MODEL_PRICING_DB.get_or_init(|| match ProxyDatabase::new() {
+        Ok(database) => Arc::new(std::sync::Mutex::new(Some(database))),
+        Err(e) => {
+            eprintln!("[ModelPricing] Failed to create database: {}", e);
+            Arc::new(std::sync::Mutex::new(None))
         }
     });
     Ok(db.clone())
@@ -98,7 +97,11 @@ pub async fn sync_model_pricing_from_api() -> Result<usize, String> {
             if let Some(cost) = model.cost {
                 if cost.input > 0.0 && cost.output > 0.0 {
                     pricings.push(ModelPricingConfig {
-                        model_id: if model.id.is_empty() { model_id } else { model.id },
+                        model_id: if model.id.is_empty() {
+                            model_id
+                        } else {
+                            model.id
+                        },
                         display_name: model.name,
                         input_price: cost.input,
                         output_price: cost.output,
@@ -127,7 +130,9 @@ pub async fn sync_model_pricing_from_api() -> Result<usize, String> {
         } else {
             Err("Database not available".to_string())
         }
-    }).await.map_err(|e| format!("Task error: {}", e))??;
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))??;
 
     Ok(count)
 }
@@ -148,7 +153,9 @@ pub async fn search_model_pricing(
     let db_arc_clone = db_arc.clone();
     let query_clone = query.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let db_guard = db_arc_clone.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let db_guard = db_arc_clone
+            .lock()
+            .map_err(|e| format!("Lock error: {}", e))?;
 
         if let Some(database) = db_guard.as_ref() {
             // 确保 model_pricing 表存在
@@ -161,16 +168,16 @@ pub async fn search_model_pricing(
         } else {
             Err("Database not available".to_string())
         }
-    }).await.map_err(|e| format!("Task error: {}", e))??;
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))??;
 
     serde_json::to_string(&result).map_err(|e| format!("Serialization error: {}", e))
 }
 
 /// 添加自定义模型价格
 #[tauri::command]
-pub async fn add_custom_model_pricing(
-    pricing: ModelPricingConfig,
-) -> Result<(), String> {
+pub async fn add_custom_model_pricing(pricing: ModelPricingConfig) -> Result<(), String> {
     let db_arc = get_pricing_db()?;
 
     tauri::async_runtime::spawn_blocking(move || {
@@ -188,14 +195,14 @@ pub async fn add_custom_model_pricing(
         } else {
             Err("Database not available".to_string())
         }
-    }).await.map_err(|e| format!("Task error: {}", e))?
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
 }
 
 /// 更新自定义模型价格
 #[tauri::command]
-pub async fn update_custom_model_pricing(
-    pricing: ModelPricingConfig,
-) -> Result<(), String> {
+pub async fn update_custom_model_pricing(pricing: ModelPricingConfig) -> Result<(), String> {
     let db_arc = get_pricing_db()?;
 
     tauri::async_runtime::spawn_blocking(move || {
@@ -209,14 +216,14 @@ pub async fn update_custom_model_pricing(
         } else {
             Err("Database not available".to_string())
         }
-    }).await.map_err(|e| format!("Task error: {}", e))?
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
 }
 
 /// 删除模型价格
 #[tauri::command]
-pub async fn delete_model_pricing(
-    model_id: String,
-) -> Result<(), String> {
+pub async fn delete_model_pricing(model_id: String) -> Result<(), String> {
     let db_arc = get_pricing_db()?;
 
     tauri::async_runtime::spawn_blocking(move || {
@@ -227,7 +234,9 @@ pub async fn delete_model_pricing(
         } else {
             Err("Database not available".to_string())
         }
-    }).await.map_err(|e| format!("Task error: {}", e))?
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
 }
 
 /// 获取所有模型价格配置（用于费用计算）
@@ -243,5 +252,7 @@ pub async fn get_all_model_pricings() -> Result<Vec<ModelPricingConfig>, String>
         } else {
             Err("Database not available".to_string())
         }
-    }).await.map_err(|e| format!("Task error: {}", e))?
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
 }

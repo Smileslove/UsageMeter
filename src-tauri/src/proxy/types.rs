@@ -406,7 +406,15 @@ mod tests {
         let settings: ClaudeSettings = serde_json::from_str(json).unwrap();
 
         // 验证已知字段
-        assert_eq!(settings.env.get("ANTHROPIC_API_KEY").unwrap().as_str().unwrap(), "test-key");
+        assert_eq!(
+            settings
+                .env
+                .get("ANTHROPIC_API_KEY")
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "test-key"
+        );
 
         // 验证未知字段被保留在 'other' 中
         assert!(settings.other.contains_key("hooks"));
@@ -419,7 +427,10 @@ mod tests {
 
         assert!(reparsed.get("hooks").is_some());
         assert!(reparsed.get("customField").is_some());
-        assert_eq!(reparsed.get("customField").unwrap().as_str().unwrap(), "someValue");
+        assert_eq!(
+            reparsed.get("customField").unwrap().as_str().unwrap(),
+            "someValue"
+        );
     }
 
     #[test]
@@ -466,7 +477,10 @@ mod tests {
 
         // 不应该包含 permissions 或 include_co_authored_by 字段
         assert!(!reparsed.as_object().unwrap().contains_key("permissions"));
-        assert!(!reparsed.as_object().unwrap().contains_key("include_co_authored_by"));
+        assert!(!reparsed
+            .as_object()
+            .unwrap()
+            .contains_key("include_co_authored_by"));
     }
 
     #[test]

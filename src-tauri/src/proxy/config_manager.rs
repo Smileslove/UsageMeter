@@ -158,13 +158,14 @@ impl ClaudeConfigManager {
         if self.has_backup() {
             let backup_content = fs::read_to_string(&self.backup_path).ok()?;
             let settings: ClaudeSettings = serde_json::from_str(&backup_content).ok()?;
-            settings.get_base_url().or_else(|| {
-                Some("https://api.anthropic.com".to_string())
-            })
+            settings
+                .get_base_url()
+                .or_else(|| Some("https://api.anthropic.com".to_string()))
         } else {
-            self.read_settings().ok()?.get_base_url().or_else(|| {
-                Some("https://api.anthropic.com".to_string())
-            })
+            self.read_settings()
+                .ok()?
+                .get_base_url()
+                .or_else(|| Some("https://api.anthropic.com".to_string()))
         }
     }
 
@@ -206,7 +207,7 @@ impl ClaudeConfigManager {
                 if let Err(e) = fs::remove_file(&self.backup_path) {
                     return Some(format!("Failed to remove orphaned backup: {}", e));
                 }
-                return Some("Removed orphaned backup file".to_string());
+                Some("Removed orphaned backup file".to_string())
             }
 
             // 情况2：接管但没有备份（异常情况）
@@ -220,7 +221,7 @@ impl ClaudeConfigManager {
                     }
                     return Some("Cleared orphaned takeover state (no backup found)".to_string());
                 }
-                return Some("Failed to read settings while clearing orphaned takeover".to_string());
+                Some("Failed to read settings while clearing orphaned takeover".to_string())
             }
 
             // 情况3：备份存在且接管活跃（崩溃残留）
@@ -229,7 +230,7 @@ impl ClaudeConfigManager {
                 if let Err(e) = self.restore() {
                     return Some(format!("Failed to restore from backup: {}", e));
                 }
-                return Some("Restored Claude config from backup (recovered from crash)".to_string());
+                Some("Restored Claude config from backup (recovered from crash)".to_string())
             }
 
             // 正常状态：无备份，未接管
@@ -252,6 +253,9 @@ mod tests {
     fn test_config_manager_creation() {
         let manager = ClaudeConfigManager::new();
         // 设置路径应该指向 .claude/settings.json
-        assert!(manager.settings_path().to_string_lossy().contains(".claude"));
+        assert!(manager
+            .settings_path()
+            .to_string_lossy()
+            .contains(".claude"));
     }
 }

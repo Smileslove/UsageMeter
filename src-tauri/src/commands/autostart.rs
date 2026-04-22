@@ -18,5 +18,7 @@ pub fn disable_autostart(app: AppHandle) -> Result<(), String> {
 /// 检查开机自启动状态
 #[tauri::command]
 pub fn is_autostart_enabled(app: AppHandle) -> Result<bool, String> {
-    app.autolaunch().is_enabled().map_err(|e| format!("{:?}", e))
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|e| format!("{:?}", e))
 }
