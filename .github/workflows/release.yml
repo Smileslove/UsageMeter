@@ -19,28 +19,48 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  build-macos:
-    runs-on: macos-latest
+  verify:
+    name: Verify and Prepare
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract changelog for current version
-        id: changelog
+      - name: Determine version
+        id: version
         run: |
           VERSION="${{ github.event.inputs.version || github.ref_name }}"
-          # Remove 'v' prefix if present
           VERSION="${VERSION#v}"
+          echo "value=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
 
-          # Extract content between current version and the next version or end
-          CHANGELOG=$(awk -v ver="$VERSION" '
-            /^## \[/ { if (found) exit; if ($0 ~ ver) found=1 }
-            found { print }
-          ' CHANGELOG.md)
+      - name: Verify CHANGELOG entry exists
+        run: |
+          VERSION="${{ steps.version.outputs.value }}"
+          if ! grep -q "## \[$VERSION\]" CHANGELOG.md; then
+            echo "Error: Version $VERSION not found in CHANGELOG.md"
+            echo "Please add a changelog entry for version $VERSION before releasing."
+            exit 1
+          fi
+          echo "Changelog entry found for version $VERSION"
 
-          # Save to file for multiline output
-          echo "$CHANGELOG" > /tmp/release_notes.md
-          echo "file=/tmp/release_notes.md" >> $GITHUB_OUTPUT
+  build-macos:
+    name: Build macOS (${{ matrix.target }})
+    needs: verify
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            arch: Apple Silicon
+          - target: x86_64-apple-darwin
+            arch: Intel
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -51,7 +71,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: ${{ matrix.target }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -61,26 +81,25 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build Tauri app (Apple Silicon)
-        uses: tauri-apps/tauri-action@v0
-        with:
-          tagName: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
-          releaseName: "UsageMeter ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}"
-          releaseBodyFile: ${{ steps.changelog.outputs.file }}
-          releaseDraft: true
-          prerelease: false
-          args: --target aarch64-apple-darwin
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build frontend
+        run: npm run build
 
-      - name: Build Tauri app (Intel)
+      - name: Extract changelog
+        id: changelog
+        run: |
+          VERSION="${{ needs.verify.outputs.version }}"
+          NOTES=$(sed -n "/^## \[$VERSION\]/,/^## \[/p" CHANGELOG.md | sed '$d')
+          echo "$NOTES" > /tmp/release_notes.md
+          echo "Extracted release notes for version $VERSION"
+
+      - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         with:
-          tagName: ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}
-          releaseName: "UsageMeter ${{ github.event.inputs.version && format('v{0}', github.event.inputs.version) || github.ref_name }}"
-          releaseBodyFile: ${{ steps.changelog.outputs.file }}
+          tagName: v${{ needs.verify.outputs.version }}
+          releaseName: 'UsageMeter v${{ needs.verify.outputs.version }}'
+          releaseBodyFile: /tmp/release_notes.md
           releaseDraft: true
           prerelease: false
-          args: --target x86_64-apple-darwin
+          args: --target ${{ matrix.target }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

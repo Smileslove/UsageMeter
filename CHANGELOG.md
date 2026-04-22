@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.1] - 2026-04-22
+
+### Added
+
+- **Auto-start on System Boot**:
+  - Integrated tauri-plugin-autostart plugin
+  - Added autostart Tauri command for enabling/disabling auto-start
+  - Added autoStart field to AppSettings data model
+  - Added auto-start toggle UI in Settings panel
+  - Supports both macOS and Windows platforms
+
+### Fixed
+
+- Unified total_tokens calculation logic to include cache tokens
+- Resolved total_tokens calculation discrepancy with formula: `total_tokens = input + cache_create + cache_read + output`
+- `total_input_tokens` now correctly calculated as: `cache_read + cache_create + input`
+
+---
+
+### 新增
+
+- **开机自动启动**：
+  - 集成 tauri-plugin-autostart 插件
+  - 新增 autostart Tauri 命令，支持启用/禁用开机自启动
+  - AppSettings 数据模型添加 autoStart 字段
+  - 设置界面添加开机自启动开关 UI
+  - 支持 macOS 和 Windows 双平台
+
+### 修复
+
+- 统一 total_tokens 计算逻辑，包含缓存 Token
+- 修复 total_tokens 计算不一致问题，计算公式：`total_tokens = input + cache_create + cache_read + output`
+- `total_input_tokens` 现正确计算为：`cache_read + cache_create + input`
+
+---
+
 ## [0.2.0] - 2025-04-18
 
 ### Added
@@ -111,6 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.2.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.2.1
 [0.2.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.2.0
 [0.1.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.1.0
 
