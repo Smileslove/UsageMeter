@@ -54,6 +54,7 @@ export interface AppSettings {
   proxy: ProxyConfig         // 代理配置
   theme: ThemeMode           // 主题模式：light/dark/system
   modelPricing: ModelPricingSettings  // 模型价格设置
+  autoStart: boolean         // 开机自动启动
 }
 
 export interface WindowUsage {

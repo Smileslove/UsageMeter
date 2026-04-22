@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, onMounted } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import type { BillingType, WindowName, DataSource, ThemeMode } from '../types'
@@ -39,6 +40,9 @@ const localTheme = ref<ThemeMode>(store.settings.theme || 'system')
 const localWarningThreshold = ref(store.settings.warningThreshold)
 const localCriticalThreshold = ref(store.settings.criticalThreshold)
 const localIncludeErrorRequests = ref(store.settings.proxy.includeErrorRequests ?? true)
+
+// 开机自启动状态（从配置初始化，页面加载后同步系统状态）
+const autoStartEnabled = ref(store.settings.autoStart)
 
 // 本地配额状态
 const localQuotas = ref(JSON.parse(JSON.stringify(store.settings.quotas)))
@@ -224,6 +228,47 @@ const toggleProxy = async () => {
   await store.toggleProxy()
 }
 
+// 开机自启动控制
+const toggleAutoStart = async () => {
+  try {
+    if (autoStartEnabled.value) {
+      await invoke('disable_autostart')
+      autoStartEnabled.value = false
+    } else {
+      await invoke('enable_autostart')
+      autoStartEnabled.value = true
+    }
+    // 同步保存到 settings
+    store.settings.autoStart = autoStartEnabled.value
+    await store.saveSettings()
+  } catch (e) {
+    console.error('Failed to toggle autostart:', e)
+    // 发生错误时，恢复到系统实际状态
+    try {
+      autoStartEnabled.value = await invoke('is_autostart_enabled')
+    } catch {
+      // ignore
+    }
+  }
+}
+
+// 初始化：从系统获取实际的 autostart 状态，与配置同步
+onMounted(async () => {
+  try {
+    const systemState = await invoke<boolean>('is_autostart_enabled')
+    autoStartEnabled.value = systemState
+    // 如果配置和系统状态不一致，同步配置
+    if (store.settings.autoStart !== systemState) {
+      store.settings.autoStart = systemState
+      await store.saveSettings()
+    }
+  } catch (e) {
+    console.error('Failed to check autostart status:', e)
+    // 如果系统查询失败，使用配置中的值
+    autoStartEnabled.value = store.settings.autoStart
+  }
+})
+
 // 代理状态信息
 const proxyStatusInfo = computed(() => {
   if (!store.proxyStatus) return null
@@ -288,6 +333,26 @@ const formatUptime = (seconds: number): string => {
             >
               {{ t(store.settings.locale, `settings.theme${theme.charAt(0).toUpperCase() + theme.slice(1)}`) }}
             </button>
+          </div>
+        </div>
+        <div class="p-3 px-4 flex items-center justify-between text-[13px]">
+          <div class="flex flex-col">
+            <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.autoStart') }}</span>
+            <span class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.autoStartDesc') }}</span>
+          </div>
+          <div
+            :class="[
+              'w-10 h-6 rounded-full relative cursor-pointer flex items-center shrink-0 transition-colors',
+              autoStartEnabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-neutral-600'
+            ]"
+            @click="toggleAutoStart"
+          >
+            <div
+              :class="[
+                'w-[20px] h-[20px] bg-white rounded-full absolute shadow shadow-black/10 transition-all',
+                autoStartEnabled ? 'right-[2px]' : 'left-[2px]'
+              ]"
+            ></div>
           </div>
         </div>
         <div class="p-3 px-4 flex items-center justify-between text-[13px]">

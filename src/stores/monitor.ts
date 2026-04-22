@@ -33,7 +33,8 @@ const defaultSettings: AppSettings = {
     includeErrorRequests: true
   },
   theme: 'system',
-  modelPricing: defaultModelPricing
+  modelPricing: defaultModelPricing,
+  autoStart: false
 }
 
 export const useMonitorStore = defineStore('monitor', {

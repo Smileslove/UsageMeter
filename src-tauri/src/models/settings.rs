@@ -124,6 +124,8 @@ pub struct AppSettings {
     pub theme: String,
     #[serde(default)]
     pub model_pricing: ModelPricingSettings,
+    #[serde(default)]
+    pub auto_start: bool,
 }
 
 pub fn default_locale() -> String {
@@ -212,6 +214,7 @@ impl Default for AppSettings {
             proxy: ProxyConfig::default_config(),
             theme: default_theme(),
             model_pricing: ModelPricingSettings::default(),
+            auto_start: false,
         }
     }
 }

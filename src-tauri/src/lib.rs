@@ -78,6 +78,10 @@ fn make_window_rounded(window: &tauri::WebviewWindow) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::default(),
+            None,
+        ))
         .manage(commands::ProxyState::default())
         .on_window_event(|window, event| match event {
             WindowEvent::Focused(false) => {
@@ -207,6 +211,10 @@ pub fn run() {
             commands::update_custom_model_pricing,
             commands::delete_model_pricing,
             commands::get_all_model_pricings,
+            // 开机自启动命令
+            commands::enable_autostart,
+            commands::disable_autostart,
+            commands::is_autostart_enabled,
             // 退出命令
             commands::prepare_exit,
             commands::confirm_exit,
