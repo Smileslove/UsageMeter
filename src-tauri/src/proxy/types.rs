@@ -72,7 +72,7 @@ pub struct ProxyStatus {
 /// - `cache_create_tokens`: 用于创建新缓存的 Token 数量
 /// - `cache_read_tokens`: 从已有缓存读取的 Token 数量
 /// - `output_tokens`: 输出 Token 数量
-/// - `total_tokens`: 实际处理量 = input_tokens + output_tokens（不含缓存）
+/// - `total_tokens`: 总 Token 数 = input + cache_create + cache_read + output（含缓存）
 ///
 /// 时间和速率字段：
 /// - `request_start_time`: 请求开始时间（收到请求时）
@@ -85,7 +85,7 @@ pub struct ProxyStatus {
 ///
 /// 注意：
 /// 1. 四种 token 类型分开存储，用于成本计算（缓存 Token 价格不同）
-/// 2. `total_tokens` 是实际处理量，用于使用量统计
+/// 2. `total_tokens` 是总 Token 数（含缓存），用于使用量统计
 /// 3. 不在数据库中存储冗余的 total_tokens，查询时动态计算
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageRecord {
@@ -101,7 +101,7 @@ pub struct UsageRecord {
     pub cache_create_tokens: u64,
     /// 缓存读取 Token
     pub cache_read_tokens: u64,
-    /// 总 Token 数 = input + output（实际处理量，内存中计算）
+    /// 总 Token 数 = input + cache_create + cache_read + output（含缓存）
     pub total_tokens: u64,
     /// 使用的模型
     pub model: String,
@@ -151,7 +151,7 @@ impl Default for UsageRecord {
 pub struct WindowStats {
     /// 窗口名称："5h", "1d", "7d", "1m"
     pub window: String,
-    /// 已使用的总 Token 数（实际处理量 = input + output）
+    /// 已使用的总 Token 数（含缓存 = input + cache_create + cache_read + output）
     pub token_used: u64,
     /// 输入 Token（实际输入，不含缓存）
     pub input_tokens: u64,

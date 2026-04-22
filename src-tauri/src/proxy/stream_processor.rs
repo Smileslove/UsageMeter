@@ -115,17 +115,25 @@ impl SseUsageCollector {
 
 /// 从收集的 SSE 事件中解析使用量数据
 ///
-/// 数据语义说明：
-/// - input_tokens: 原始输入 Token（不含缓存）
-/// - cache_create_tokens: 用于创建缓存的 Token
-/// - cache_read_tokens: 从缓存读取的 Token
-/// - output_tokens: 输出 Token
-/// - total_tokens: input_tokens + cache_create_tokens + cache_read_tokens + output_tokens
+/// ## SSE 事件顺序与数据语义
 ///
-/// Anthropic API 在 message_start 事件中返回：
-/// - usage.input_tokens: 原始输入 Token（不含缓存）
-/// - usage.cache_creation_input_tokens: 缓存创建 Token
-/// - usage.cache_read_input_tokens: 缓存读取 Token
+/// Anthropic API 的 SSE 流事件顺序：
+/// 1. `message_start` - 流开始，包含初始占位 usage（input_tokens 通常为 0 或占位值）
+/// 2. `content_block_start` - 内容块开始
+/// 3. `content_block_delta` - 内容增量（多次）
+/// 4. `message_delta` - **流结束前最后一个数据事件，包含最终 usage**
+/// 5. `message_stop` - 流结束信号
+///
+/// ## Token 统计策略
+///
+/// **精确统计原则**：优先使用 `message_delta` 中的最终值
+///
+/// - `input_tokens`: 从 `message_delta.usage.input_tokens` 获取（最终真实值）
+/// - `output_tokens`: 从 `message_delta.usage.output_tokens` 获取（最终真实值）
+/// - `cache_create_tokens`: 从 `message_start.message.usage.cache_creation_input_tokens` 获取
+/// - `cache_read_tokens`: 从 `message_start.message.usage.cache_read_input_tokens` 获取
+///
+/// 注意：缓存相关 Token 只在 `message_start` 中返回，`message_delta` 中不包含
 fn parse_usage_from_events(events: &[Value]) -> Option<UsageData> {
     let mut usage = UsageData::default();
 
@@ -134,7 +142,7 @@ fn parse_usage_from_events(events: &[Value]) -> Option<UsageData> {
             match event_type {
                 "message_start" => {
                     if let Some(message) = event.get("message") {
-                        // 提取消息 ID
+                        // 提取消息 ID（唯一标识）
                         if let Some(id) = message.get("id").and_then(|v| v.as_str()) {
                             usage.message_id = id.to_string();
                         }
@@ -142,13 +150,8 @@ fn parse_usage_from_events(events: &[Value]) -> Option<UsageData> {
                         if let Some(m) = message.get("model").and_then(|v| v.as_str()) {
                             usage.model = m.to_string();
                         }
-                        // 提取 usage 信息
+                        // 提取缓存相关 Token（只在 message_start 中返回）
                         if let Some(msg_usage) = message.get("usage") {
-                            // 原始输入 Token（不含缓存）
-                            usage.input_tokens = msg_usage
-                                .get("input_tokens")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
                             // 缓存读取 Token
                             usage.cache_read_tokens = msg_usage
                                 .get("cache_read_input_tokens")
@@ -159,11 +162,20 @@ fn parse_usage_from_events(events: &[Value]) -> Option<UsageData> {
                                 .get("cache_creation_input_tokens")
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or(0);
+                            // 注意：不使用 message_start 中的 input_tokens
+                            // 因为它通常是 0 或占位值，真实值在 message_delta 中
                         }
                     }
                 }
                 "message_delta" => {
+                    // 最终 usage 数据（最精确）
                     if let Some(delta_usage) = event.get("usage") {
+                        // 输入 Token（最终真实值）
+                        usage.input_tokens = delta_usage
+                            .get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        // 输出 Token（最终真实值）
                         usage.output_tokens = delta_usage
                             .get("output_tokens")
                             .and_then(|v| v.as_u64())
@@ -276,8 +288,8 @@ pub fn create_database_collector(
             request_end_time - request_start_time
         };
 
-        // 计算实际处理量：input + output（不含缓存）
-        let total_tokens = usage.input_tokens + usage.output_tokens;
+        // 计算总 Token：input + cache_create + cache_read + output（含缓存）
+        let total_tokens = usage.input_tokens + usage.cache_create_tokens + usage.cache_read_tokens + usage.output_tokens;
 
         // 计算输出 Token 生成速率（tokens/s）
         let output_tokens_per_second = if duration_ms > 0 {
@@ -353,6 +365,9 @@ mod tests {
 
     #[test]
     fn test_parse_usage_from_events() {
+        // 模拟真实的 API 响应流程：
+        // message_start 中 input_tokens 为 0（占位值）
+        // message_delta 中包含最终的 input_tokens 和 output_tokens
         let events = vec![
             serde_json::json!({
                 "type": "message_start",
@@ -360,7 +375,8 @@ mod tests {
                     "id": "msg_123",
                     "model": "claude-sonnet-4",
                     "usage": {
-                        "input_tokens": 100,
+                        "input_tokens": 0,  // 占位值
+                        "output_tokens": 1,  // 占位值
                         "cache_read_input_tokens": 20,
                         "cache_creation_input_tokens": 10
                     }
@@ -369,7 +385,8 @@ mod tests {
             serde_json::json!({
                 "type": "message_delta",
                 "usage": {
-                    "output_tokens": 50
+                    "input_tokens": 100,  // 最终真实值
+                    "output_tokens": 50   // 最终真实值
                 }
             }),
         ];
@@ -377,10 +394,10 @@ mod tests {
         let usage = parse_usage_from_events(&events).unwrap();
         assert_eq!(usage.message_id, "msg_123");
         assert_eq!(usage.model, "claude-sonnet-4");
-        assert_eq!(usage.input_tokens, 100);
-        assert_eq!(usage.output_tokens, 50);
-        assert_eq!(usage.cache_read_tokens, 20);
-        assert_eq!(usage.cache_create_tokens, 10);
+        assert_eq!(usage.input_tokens, 100);  // 来自 message_delta
+        assert_eq!(usage.output_tokens, 50);  // 来自 message_delta
+        assert_eq!(usage.cache_read_tokens, 20);  // 来自 message_start
+        assert_eq!(usage.cache_create_tokens, 10);  // 来自 message_start
     }
 
     #[test]
@@ -402,6 +419,7 @@ mod tests {
             serde_json::json!({
                 "type": "message_delta",
                 "usage": {
+                    "input_tokens": 0,
                     "output_tokens": 0
                 }
             }),

@@ -823,7 +823,7 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
 // 辅助类型和函数
 struct RequestRecord {
     timestamp: u64,
-    tokens: u64,            // 实际处理量 = input + output
+    tokens: u64,            // 总 Token = input + cache_create + cache_read + output
     input_tokens: u64,      // 实际输入（不含缓存）
     output_tokens: u64,
     cache_create_tokens: u64,
@@ -891,15 +891,18 @@ fn extract_event_epoch(value: &serde_json::Value) -> Option<u64> {
 }
 
 fn extract_total_tokens(value: &serde_json::Value) -> Option<u64> {
-    // 计算 token 时，返回实际处理量（input + output）
-    // 缓存 token 单独统计，用于成本计算
+    // 计算总 Token：input + cache_create + cache_read + output（含缓存）
     let in_keys = ["input_tokens", "inputTokens", "input"];
     let out_keys = ["output_tokens", "outputTokens", "output"];
+    let cache_create_keys = ["cache_creation_input_tokens", "cacheCreationInputTokens", "cache_create_tokens"];
+    let cache_read_keys = ["cache_read_input_tokens", "cacheReadInputTokens", "cache_read_tokens"];
 
     let input = find_number_by_keys(value, &in_keys).unwrap_or(0);
     let output = find_number_by_keys(value, &out_keys).unwrap_or(0);
+    let cache_create = find_number_by_keys(value, &cache_create_keys).unwrap_or(0);
+    let cache_read = find_number_by_keys(value, &cache_read_keys).unwrap_or(0);
 
-    let sum = input + output;
+    let sum = input + cache_create + cache_read + output;
     if sum > 0 {
         Some(sum)
     } else {

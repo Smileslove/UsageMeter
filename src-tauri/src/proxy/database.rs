@@ -57,9 +57,9 @@ impl ProxyDatabase {
             r#"
             -- 使用记录表
             -- 存储单次 API 请求的使用数据
-            -- 注意：不存储 total_tokens，因为四种 token 价格不同，简单相加无意义
-            -- 实际处理量 = input_tokens + output_tokens
-            -- 计费相关需要单独处理四种 token
+            -- 注意：不存储 total_tokens，查询时动态计算
+            -- 总 Token = input_tokens + cache_create_tokens + cache_read_tokens + output_tokens
+            -- 计费相关需要单独处理四种 token（价格不同）
             CREATE TABLE IF NOT EXISTS usage_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp INTEGER NOT NULL,
@@ -100,7 +100,7 @@ impl ProxyDatabase {
             );
 
             -- 每日汇总表（用于更快的聚合）
-            -- total_tokens = input_tokens + output_tokens（实际处理量）
+            -- total_tokens = input_tokens + cache_create_tokens + cache_read_tokens + output_tokens（总 Token）
             CREATE TABLE IF NOT EXISTS daily_summary (
                 date TEXT PRIMARY KEY,
                 total_tokens INTEGER NOT NULL DEFAULT 0,
@@ -112,7 +112,7 @@ impl ProxyDatabase {
             );
 
             -- 模型使用量表
-            -- total_tokens = input_tokens + output_tokens（实际处理量）
+            -- total_tokens = input_tokens + cache_create_tokens + cache_read_tokens + output_tokens（总 Token）
             CREATE TABLE IF NOT EXISTS model_usage (
                 date TEXT NOT NULL,
                 model TEXT NOT NULL,
@@ -234,14 +234,16 @@ impl ProxyDatabase {
             .query_map([cutoff_ms], |row| {
                 let input = row.get::<_, i64>(2)? as u64;
                 let output = row.get::<_, i64>(3)? as u64;
+                let cache_create = row.get::<_, i64>(4)? as u64;
+                let cache_read = row.get::<_, i64>(5)? as u64;
                 Ok(UsageRecord {
                     timestamp: row.get::<_, i64>(0)?,
                     message_id: row.get(1)?,
                     input_tokens: input,
                     output_tokens: output,
-                    cache_create_tokens: row.get::<_, i64>(4)? as u64,
-                    cache_read_tokens: row.get::<_, i64>(5)? as u64,
-                    total_tokens: input + output, // 计算实际处理量
+                    cache_create_tokens: cache_create,
+                    cache_read_tokens: cache_read,
+                    total_tokens: input + cache_create + cache_read + output, // 总 Token（含缓存）
                     model: row.get(6)?,
                     session_id: row.get(7)?,
                     request_start_time: row.get::<_, Option<i64>>(8)?.unwrap_or(0),
@@ -307,7 +309,7 @@ impl ProxyDatabase {
                 r#"
                 SELECT
                     COUNT(*) as request_count,
-                    COALESCE(SUM(input_tokens + output_tokens), 0) as total_tokens,
+                    COALESCE(SUM(input_tokens + cache_create_tokens + cache_read_tokens + output_tokens), 0) as total_tokens,
                     COALESCE(SUM(input_tokens), 0) as input_tokens,
                     COALESCE(SUM(output_tokens), 0) as output_tokens,
                     COALESCE(SUM(cache_create_tokens), 0) as cache_create_tokens,
@@ -339,7 +341,7 @@ impl ProxyDatabase {
                 r#"
                 SELECT
                     COUNT(*) as request_count,
-                    COALESCE(SUM(input_tokens + output_tokens), 0) as total_tokens,
+                    COALESCE(SUM(input_tokens + cache_create_tokens + cache_read_tokens + output_tokens), 0) as total_tokens,
                     COALESCE(SUM(input_tokens), 0) as input_tokens,
                     COALESCE(SUM(output_tokens), 0) as output_tokens,
                     COALESCE(SUM(cache_create_tokens), 0) as cache_create_tokens,
@@ -386,7 +388,7 @@ impl ProxyDatabase {
                 SELECT
                     model,
                     COUNT(*) as request_count,
-                    SUM(input_tokens + output_tokens) as total_tokens,
+                    SUM(input_tokens + cache_create_tokens + cache_read_tokens + output_tokens) as total_tokens,
                     SUM(input_tokens) as input_tokens,
                     SUM(output_tokens) as output_tokens,
                     SUM(cache_create_tokens) as cache_create_tokens,
@@ -743,7 +745,7 @@ impl Default for ProxyDatabase {
 pub struct WindowAggregate {
     pub request_count: i64,
     #[allow(dead_code)]
-    pub total_tokens: i64,        // 实际处理量 = input + output
+    pub total_tokens: i64,        // 总 Token = input + cache_create + cache_read + output
     pub input_tokens: i64,        // 实际输入（不含缓存）
     pub output_tokens: i64,
     pub cache_create_tokens: i64,
@@ -758,7 +760,7 @@ pub struct WindowAggregate {
 pub struct ModelDistribution {
     pub model: String,
     pub request_count: i64,
-    pub total_tokens: i64,        // 实际处理量 = input + output
+    pub total_tokens: i64,        // 总 Token = input + cache_create + cache_read + output
     pub input_tokens: i64,        // 实际输入（不含缓存）
     pub output_tokens: i64,
     pub cache_create_tokens: i64,

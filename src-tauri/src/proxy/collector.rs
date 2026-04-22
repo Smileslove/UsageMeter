@@ -115,7 +115,7 @@ impl UsageCollector {
         match self.database.get_window_stats_filtered(cutoff_ms, include_errors).await {
             Ok(aggregate) => WindowStats {
                 window: window.to_string(),
-                token_used: (aggregate.input_tokens + aggregate.output_tokens) as u64,
+                token_used: (aggregate.input_tokens + aggregate.cache_create_tokens + aggregate.cache_read_tokens + aggregate.output_tokens) as u64,
                 input_tokens: aggregate.input_tokens as u64,
                 output_tokens: aggregate.output_tokens as u64,
                 cache_create_tokens: aggregate.cache_create_tokens as u64,
@@ -449,7 +449,7 @@ mod tests {
             output_tokens: 200,
             cache_create_tokens: 10,
             cache_read_tokens: 20,
-            total_tokens: 300, // 实际处理量 = input(100) + output(200)
+            total_tokens: 330, // 总 Token = input(100) + cache_create(10) + cache_read(20) + output(200)
             model: "claude-sonnet-4".to_string(),
             session_id: Some("session-123".to_string()),
             request_start_time: now - 5000, // 5 秒前开始
@@ -461,7 +461,7 @@ mod tests {
         };
 
         assert_eq!(record.message_id, "test-msg");
-        assert_eq!(record.total_tokens, 300); // input(100) + output(200)
+        assert_eq!(record.total_tokens, 330); // input(100) + cache_create(10) + cache_read(20) + output(200)
         assert_eq!(record.duration_ms, 5000);
         assert_eq!(record.output_tokens_per_second, Some(40.0));
     }
