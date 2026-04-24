@@ -57,10 +57,7 @@ pub fn get_all_session_meta_cached() -> Vec<SessionMeta> {
 fn full_scan_and_cache() -> Vec<SessionMeta> {
     let cache = get_cache();
     let session_files = scan_session_files();
-    let data: Vec<SessionMeta> = session_files
-        .iter()
-        .map(|f| extract_session_meta(f))
-        .collect();
+    let data: Vec<SessionMeta> = session_files.iter().map(extract_session_meta).collect();
 
     // 构建 message_id -> session_id 索引
     let mut message_to_session = std::collections::HashMap::new();
@@ -115,7 +112,7 @@ fn incremental_update_cache() -> Vec<SessionMeta> {
         let mut deleted_paths: Vec<PathBuf> = Vec::new();
 
         // 检查缓存中的文件是否被删除
-        for (path, _) in &entry.file_mtimes {
+        for path in entry.file_mtimes.keys() {
             if !current_mtimes.contains_key(path) {
                 deleted_paths.push(path.clone());
             }

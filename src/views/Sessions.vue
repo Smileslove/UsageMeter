@@ -98,6 +98,16 @@ const loadMore = async () => {
   loadingMore.value = false
 }
 
+// 监听数据源变化，重新加载会话列表
+watch(() => store.settings.dataSource, async () => {
+  currentPage.value = 0
+  hasMore.value = true
+  const count = await store.fetchSessions(pageSize, 0, false)
+  if (count < pageSize) {
+    hasMore.value = false
+  }
+})
+
 // 触底加载触发元素
 const loadMoreTrigger = ref<HTMLElement | null>(null)
 let observer: IntersectionObserver | null = null

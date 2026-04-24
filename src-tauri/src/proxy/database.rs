@@ -1753,6 +1753,38 @@ impl ProxyDatabase {
     ///
     /// 启动时调用一次，增量迁移新数据
     pub async fn migrate_to_session_stats(&self) -> Result<usize, String> {
+        // 类型别名：简化复杂类型定义
+        // UsageRecordRow: 从数据库查询的 usage_record 行（用于迁移）
+        type UsageRecordRow = (
+            i64,         // id
+            String,      // message_id
+            i64,         // duration_ms
+            i64,         // input_tokens
+            i64,         // output_tokens
+            i64,         // cache_create_tokens
+            i64,         // cache_read_tokens
+            i64,         // request_start_time
+            i64,         // request_end_time
+            i64,         // status_code
+            String,      // model
+            Option<f64>, // ttft_ms
+        );
+        // SessionAggregate: 按 session_id 聚合的统计数据
+        type SessionAggregate = (
+            i64,                               // total_duration_ms
+            i64,                               // total_input
+            i64,                               // total_output
+            i64,                               // total_cache_create
+            i64,                               // total_cache_read
+            i64,                               // min_start_time
+            i64,                               // max_end_time
+            i64,                               // success_count
+            i64,                               // error_count
+            i64,                               // request_count
+            std::collections::HashSet<String>, // models
+            Vec<f64>,                          // ttft_ms values
+        );
+
         // 检查是否有需要迁移的记录（session_id 为空的记录）
         let needs_migration = {
             let conn = self
@@ -1783,8 +1815,6 @@ impl ProxyDatabase {
         );
 
         // 获取没有 session_id 的记录
-        // 元组: (id, message_id, duration_ms, input, output, cache_create, cache_read, start_time, end_time, status_code, model, ttft_ms)
-        // 共 12 个元素（多一个 id 用于更新 session_id）
         let records = {
             let conn = self
                 .conn
@@ -1792,20 +1822,7 @@ impl ProxyDatabase {
                 .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
             // 只查询没有 session_id 的记录
-            let result: Vec<(
-                i64,
-                String,
-                i64,
-                i64,
-                i64,
-                i64,
-                i64,
-                i64,
-                i64,
-                i64,
-                String,
-                Option<f64>,
-            )> = conn
+            let result: Vec<UsageRecordRow> = conn
                 .prepare(
                     r#"
                     SELECT
@@ -1868,23 +1885,8 @@ impl ProxyDatabase {
 
         // 按 session_id 聚合记录
         // 同时记录需要更新的 record_id
-        let mut session_aggregates: std::collections::HashMap<
-            String,
-            (
-                i64,
-                i64,
-                i64,
-                i64,
-                i64,
-                i64,
-                i64,
-                i64,
-                i64,
-                i64,
-                std::collections::HashSet<String>,
-                Vec<f64>,
-            ),
-        > = std::collections::HashMap::new();
+        let mut session_aggregates: std::collections::HashMap<String, SessionAggregate> =
+            std::collections::HashMap::new();
 
         let mut matched = 0;
         let mut unmatched = 0;

@@ -1137,13 +1137,33 @@ pub async fn get_sessions(
     // 3. 从 session_stats 表获取性能指标（使用全局数据库实例）
     let session_ids: Vec<String> = meta_list.iter().map(|m| m.session_id.clone()).collect();
 
+    eprintln!(
+        "[get_sessions] Fetching stats for {} sessions",
+        session_ids.len()
+    );
+    if !session_ids.is_empty() {
+        eprintln!("[get_sessions] First session_id: {}", session_ids[0]);
+    }
+
     let proxy_stats_map: std::collections::HashMap<String, SessionStats> =
         match crate::proxy::ProxyDatabase::get_global() {
-            Some(db) => match db.get_session_stats_batch(&session_ids).await {
-                Ok(stats) => stats,
-                Err(_) => std::collections::HashMap::new(),
-            },
-            None => std::collections::HashMap::new(),
+            Some(db) => {
+                eprintln!("[get_sessions] Got global DB instance");
+                match db.get_session_stats_batch(&session_ids).await {
+                    Ok(stats) => {
+                        eprintln!("[get_sessions] Got {} session stats from DB", stats.len());
+                        stats
+                    }
+                    Err(e) => {
+                        eprintln!("[get_sessions] Failed to get session stats: {}", e);
+                        std::collections::HashMap::new()
+                    }
+                }
+            }
+            None => {
+                eprintln!("[get_sessions] Global DB instance is None");
+                std::collections::HashMap::new()
+            }
         };
 
     // 4. 构建 SessionStats，合并 JSONL 数据和 session_stats 数据
@@ -1258,7 +1278,10 @@ pub async fn get_session_detail(
 
     // 3. 从 session_stats 表获取性能指标（使用全局数据库实例）
     let proxy_stats: Option<SessionStats> = match crate::proxy::ProxyDatabase::get_global() {
-        Some(db) => match db.get_session_stats_batch(&[meta.session_id.clone()]).await {
+        Some(db) => match db
+            .get_session_stats_batch(std::slice::from_ref(&meta.session_id))
+            .await
+        {
             Ok(stats_map) => stats_map.get(&meta.session_id).cloned(),
             Err(_) => None,
         },
