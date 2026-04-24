@@ -108,6 +108,20 @@ npm run dev:tauri
 npm run build:tauri
 ```
 
+### Pre-commit Validation
+
+Before committing, run the lint script to ensure all checks pass (same as CI):
+
+```bash
+npm run lint
+```
+
+This script runs:
+- TypeScript type checking (`vue-tsc --noEmit`)
+- Rust formatting check (`cargo fmt -- --check`)
+- Rust clippy linting (`cargo clippy -- -D warnings`)
+- Rust compilation check (`cargo check`)
+
 ### Project Structure
 
 ```

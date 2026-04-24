@@ -2,11 +2,279 @@
 //!
 //! Scans ~/.claude/projects/ directory for JSONL session files
 //! and extracts metadata from them.
+//!
+//! Uses incremental caching strategy:
+//! - First call: full scan, build cache
+//! - Subsequent calls: only scan new/modified files
 
 use super::meta::{SessionFile, SessionMeta};
 use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// 缓存条目
+struct CacheEntry {
+    /// 缓存数据
+    data: Vec<SessionMeta>,
+    /// message_id -> session_id 的索引（用于快速查找）
+    message_to_session: std::collections::HashMap<String, String>,
+    /// 文件路径 -> 最后修改时间（用于增量更新检测）
+    file_mtimes: std::collections::HashMap<PathBuf, i64>,
+}
+
+/// 全局会话元数据缓存
+static SESSION_CACHE: OnceLock<Arc<Mutex<Option<CacheEntry>>>> = OnceLock::new();
+
+/// 获取缓存实例
+fn get_cache() -> &'static Arc<Mutex<Option<CacheEntry>>> {
+    SESSION_CACHE.get_or_init(|| Arc::new(Mutex::new(None)))
+}
+
+/// 获取会话元数据（带增量缓存）
+///
+/// 首次调用：全量扫描，初始化缓存
+/// 后续调用：只扫描新增/修改的文件，增量更新缓存
+pub fn get_all_session_meta_cached() -> Vec<SessionMeta> {
+    let cache = get_cache();
+
+    // 检查缓存是否存在
+    {
+        let cache_guard = cache.lock().unwrap();
+        if cache_guard.is_some() {
+            // 缓存存在，执行增量更新
+            drop(cache_guard);
+            return incremental_update_cache();
+        }
+    }
+
+    // 缓存不存在，执行全量扫描
+    full_scan_and_cache()
+}
+
+/// 全量扫描并初始化缓存
+fn full_scan_and_cache() -> Vec<SessionMeta> {
+    let cache = get_cache();
+    let session_files = scan_session_files();
+    let data: Vec<SessionMeta> = session_files
+        .iter()
+        .map(|f| extract_session_meta(f))
+        .collect();
+
+    // 构建 message_id -> session_id 索引
+    let mut message_to_session = std::collections::HashMap::new();
+    for meta in &data {
+        for msg_id in &meta.message_ids {
+            message_to_session.insert(msg_id.clone(), meta.session_id.clone());
+        }
+    }
+
+    // 构建文件修改时间映射
+    let mut file_mtimes = std::collections::HashMap::new();
+    for file in &session_files {
+        file_mtimes.insert(PathBuf::from(&file.file_path), file.last_modified);
+    }
+
+    // 更新缓存
+    {
+        let mut cache_guard = cache.lock().unwrap();
+        *cache_guard = Some(CacheEntry {
+            data: data.clone(),
+            message_to_session,
+            file_mtimes,
+        });
+    }
+
+    data
+}
+
+/// 增量更新缓存
+///
+/// 只扫描新增或修改的文件，更新缓存
+fn incremental_update_cache() -> Vec<SessionMeta> {
+    let cache = get_cache();
+
+    // 获取当前文件列表和修改时间
+    let current_files = scan_session_files();
+    let current_mtimes: std::collections::HashMap<PathBuf, i64> = current_files
+        .iter()
+        .map(|f| (PathBuf::from(&f.file_path), f.last_modified))
+        .collect();
+
+    // 获取缓存并检查变化
+    let (new_files, modified_files, deleted_paths) = {
+        let cache_guard = cache.lock().unwrap();
+        let entry = match cache_guard.as_ref() {
+            Some(e) => e,
+            None => return full_scan_and_cache(),
+        };
+
+        let mut new_files: Vec<SessionFile> = Vec::new();
+        let mut modified_files: Vec<SessionFile> = Vec::new();
+        let mut deleted_paths: Vec<PathBuf> = Vec::new();
+
+        // 检查缓存中的文件是否被删除
+        for (path, _) in &entry.file_mtimes {
+            if !current_mtimes.contains_key(path) {
+                deleted_paths.push(path.clone());
+            }
+        }
+
+        // 检查新文件和修改的文件
+        for file in &current_files {
+            let path = PathBuf::from(&file.file_path);
+            match entry.file_mtimes.get(&path) {
+                None => {
+                    // 新文件
+                    new_files.push(file.clone());
+                }
+                Some(&cached_mtime) if cached_mtime != file.last_modified => {
+                    // 修改的文件
+                    modified_files.push(file.clone());
+                }
+                _ => {
+                    // 未变化的文件，跳过
+                }
+            }
+        }
+
+        (new_files, modified_files, deleted_paths)
+    };
+
+    // 如果没有变化，直接返回缓存
+    if new_files.is_empty() && modified_files.is_empty() && deleted_paths.is_empty() {
+        let cache_guard = cache.lock().unwrap();
+        return cache_guard
+            .as_ref()
+            .map(|e| e.data.clone())
+            .unwrap_or_default();
+    }
+
+    // 有变化，更新缓存
+    let mut cache_guard = cache.lock().unwrap();
+    let entry = match cache_guard.as_mut() {
+        Some(e) => e,
+        None => return full_scan_and_cache(),
+    };
+
+    // 移除已删除文件的 message_ids
+    for path in &deleted_paths {
+        // 找到对应的 session_id
+        if let Some(meta) = entry
+            .data
+            .iter()
+            .find(|m| m.file_path == path.to_string_lossy())
+        {
+            // 移除该 session 的 message_ids
+            for msg_id in &meta.message_ids {
+                entry.message_to_session.remove(msg_id);
+            }
+        }
+    }
+
+    // 从 data 中移除已删除的会话
+    entry.data.retain(|m| {
+        !deleted_paths
+            .iter()
+            .any(|p| m.file_path == p.to_string_lossy())
+    });
+
+    // 移除已删除文件的 mtimes
+    for path in &deleted_paths {
+        entry.file_mtimes.remove(path);
+    }
+
+    // 处理修改的文件：先移除旧数据，再添加新数据
+    for file in &modified_files {
+        let path = PathBuf::from(&file.file_path);
+
+        // 移除旧的 message_ids
+        if let Some(meta) = entry.data.iter().find(|m| m.file_path == file.file_path) {
+            for msg_id in &meta.message_ids {
+                entry.message_to_session.remove(msg_id);
+            }
+        }
+
+        // 从 data 中移除旧的会话数据
+        entry.data.retain(|m| m.file_path != file.file_path);
+
+        // 提取新的会话数据
+        let new_meta = extract_session_meta(file);
+
+        // 添加新的 message_ids
+        for msg_id in &new_meta.message_ids {
+            entry
+                .message_to_session
+                .insert(msg_id.clone(), new_meta.session_id.clone());
+        }
+
+        // 添加新的会话数据
+        entry.data.push(new_meta);
+
+        // 更新 mtime
+        entry.file_mtimes.insert(path, file.last_modified);
+    }
+
+    // 处理新文件
+    for file in &new_files {
+        let path = PathBuf::from(&file.file_path);
+        let new_meta = extract_session_meta(file);
+
+        // 添加 message_ids
+        for msg_id in &new_meta.message_ids {
+            entry
+                .message_to_session
+                .insert(msg_id.clone(), new_meta.session_id.clone());
+        }
+
+        // 添加会话数据
+        entry.data.push(new_meta);
+
+        // 添加 mtime
+        entry.file_mtimes.insert(path, file.last_modified);
+    }
+
+    // 按修改时间排序（最新的在前）
+    entry
+        .data
+        .sort_by_key(|m| std::cmp::Reverse(m.last_modified));
+
+    entry.data.clone()
+}
+
+/// 通过 message_id 查找对应的 session_id（使用缓存索引）
+///
+/// 使用 HashMap 索引，O(1) 时间复杂度
+pub fn find_session_id_by_message_id(message_id: &str) -> Option<String> {
+    let cache = get_cache();
+
+    // 确保缓存已初始化
+    {
+        let cache_guard = cache.lock().unwrap();
+        if cache_guard.is_none() {
+            drop(cache_guard);
+            // 初始化缓存
+            get_all_session_meta_cached();
+        }
+    }
+
+    // 从缓存索引查找
+    let cache_guard = cache.lock().unwrap();
+    if let Some(entry) = cache_guard.as_ref() {
+        entry.message_to_session.get(message_id).cloned()
+    } else {
+        None
+    }
+}
+
+/// 清除缓存（用于强制刷新）
+#[allow(dead_code)]
+pub fn invalidate_cache() {
+    let cache = get_cache();
+    let mut cache_guard = cache.lock().unwrap();
+    *cache_guard = None;
+}
 
 /// Scan all session files from Claude projects directories
 pub fn scan_session_files() -> Vec<SessionFile> {
@@ -140,6 +408,7 @@ pub fn extract_session_meta(file: &SessionFile) -> SessionMeta {
         start_time: 0,
         end_time: 0,
         source: "jsonl".to_string(),
+        message_ids: Vec::new(),
     };
 
     // Open and read file
@@ -212,6 +481,18 @@ pub fn extract_session_meta(file: &SessionFile) -> SessionMeta {
             // Extract model
             if let Some(model) = extract_model(&json) {
                 models_set.insert(model);
+            }
+
+            // Extract message.id from assistant messages (for proxy data association)
+            // message.id 格式如 "msg_73424337149139748084"，与代理数据库中的 message_id 一致
+            if msg_type == Some("assistant") {
+                if let Some(msg_id) = json
+                    .get("message")
+                    .and_then(|m| m.get("id"))
+                    .and_then(|v| v.as_str())
+                {
+                    meta.message_ids.push(msg_id.to_string());
+                }
             }
         }
     }
@@ -412,14 +693,6 @@ pub fn get_all_session_meta(limit: usize) -> Vec<SessionMeta> {
     scan_session_files()
         .into_iter()
         .take(limit)
-        .map(|f| extract_session_meta(&f))
-        .collect()
-}
-
-/// Get all session metadata without limit (for pagination)
-pub fn get_all_session_meta_raw() -> Vec<SessionMeta> {
-    scan_session_files()
-        .into_iter()
         .map(|f| extract_session_meta(&f))
         .collect()
 }

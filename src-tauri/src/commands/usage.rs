@@ -1110,21 +1110,22 @@ pub async fn get_window_rate_summary(
 
 /// 获取会话列表（按最后修改时间倒序，支持分页）
 /// 数据源逻辑：
-/// - 会话列表始终从 JSONL 文件获取（主数据源）
-/// - 如果代理数据库中有对应会话的统计，合并代理的独有数据（速率、TTFT、状态码等）
+/// - JSONL：会话元信息（项目名、主题、token 统计）
+/// - session_stats 表：性能指标（速率、TTFT、耗时）
 #[tauri::command]
 pub async fn get_sessions(
     limit: i64,
     offset: i64,
     settings: AppSettings,
-    proxy_state: tauri::State<'_, ProxyState>,
+    _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<Vec<SessionStats>, String> {
     // 获取价格配置
-    let pricings = &settings.model_pricing.pricings;
-    let match_mode = &settings.model_pricing.match_mode;
+    let pricings = settings.model_pricing.pricings.clone();
+    let match_mode = settings.model_pricing.match_mode.clone();
 
     // 1. 从 JSONL 文件获取会话列表（主数据源）
-    let all_meta = crate::session::get_all_session_meta_raw();
+    // 使用缓存版本避免频繁扫描文件系统
+    let all_meta = crate::session::get_all_session_meta_cached();
 
     // 2. 应用分页
     let meta_list: Vec<_> = all_meta
@@ -1133,69 +1134,58 @@ pub async fn get_sessions(
         .take(limit as usize)
         .collect();
 
-    // 3. 获取代理的会话统计数据（如果有）
-    let proxy_stats_map = {
-        let server_guard = proxy_state.server.read().await;
-        if let Some(server) = server_guard.as_ref() {
-            let collector = server.get_collector();
-            let proxy_sessions = collector.get_all_sessions(1000, pricings, match_mode).await;
-            proxy_sessions
-                .into_iter()
-                .map(|s| (s.session_id.clone(), s))
-                .collect::<std::collections::HashMap<String, SessionStats>>()
-        } else {
-            std::collections::HashMap::new()
-        }
-    };
+    // 3. 从 session_stats 表获取性能指标（使用全局数据库实例）
+    let session_ids: Vec<String> = meta_list.iter().map(|m| m.session_id.clone()).collect();
 
-    // 4. 构建 SessionStats，合并 JSONL 数据和代理数据
+    let proxy_stats_map: std::collections::HashMap<String, SessionStats> =
+        match crate::proxy::ProxyDatabase::get_global() {
+            Some(db) => match db.get_session_stats_batch(&session_ids).await {
+                Ok(stats) => stats,
+                Err(_) => std::collections::HashMap::new(),
+            },
+            None => std::collections::HashMap::new(),
+        };
+
+    // 4. 构建 SessionStats，合并 JSONL 数据和 session_stats 数据
     let sessions: Vec<SessionStats> = meta_list
         .into_iter()
         .map(|meta| {
+            // 计算基于 JSONL 的费用
             let first_model = meta.models.first().map(|s| s.as_str()).unwrap_or("");
-            let estimated_cost = crate::models::estimate_session_cost(
+            let jsonl_cost = crate::models::estimate_session_cost(
                 meta.total_input_tokens,
                 meta.total_output_tokens,
                 meta.total_cache_create_tokens,
                 meta.total_cache_read_tokens,
                 first_model,
-                pricings,
-                match_mode,
+                &pricings,
+                &match_mode,
             );
 
-            // 尝试匹配代理数据
-            let proxy_stats = proxy_stats_map.get(&meta.session_id).or_else(|| {
-                let id_suffix = meta
-                    .session_id
-                    .split("::")
-                    .last()
-                    .unwrap_or(&meta.session_id);
-                proxy_stats_map
-                    .iter()
-                    .find(|(k, _)| {
-                        k.ends_with(id_suffix) || k.split("::").last().unwrap_or(k) == id_suffix
-                    })
-                    .map(|(_, v)| v)
-            });
-
-            if let Some(proxy) = proxy_stats {
+            // 尝试从 session_stats 获取性能指标
+            if let Some(proxy) = proxy_stats_map.get(&meta.session_id) {
+                // 合并数据：JSONL 的 token 统计 + session_stats 的性能指标
                 SessionStats {
                     session_id: meta.session_id,
-                    total_requests: proxy.total_requests,
-                    total_input_tokens: proxy.total_input_tokens,
-                    total_output_tokens: proxy.total_output_tokens,
-                    total_cache_create_tokens: proxy.total_cache_create_tokens,
-                    total_cache_read_tokens: proxy.total_cache_read_tokens,
+                    // Token 统计来自 JSONL（完整数据）
+                    total_input_tokens: meta.total_input_tokens,
+                    total_output_tokens: meta.total_output_tokens,
+                    total_cache_create_tokens: meta.total_cache_create_tokens,
+                    total_cache_read_tokens: meta.total_cache_read_tokens,
+                    // 性能指标来自 session_stats
                     total_duration_ms: proxy.total_duration_ms,
                     avg_output_tokens_per_second: proxy.avg_output_tokens_per_second,
-                    first_request_time: proxy.first_request_time,
-                    last_request_time: proxy.last_request_time,
-                    models: proxy.models.clone(),
                     avg_ttft_ms: proxy.avg_ttft_ms,
                     success_requests: proxy.success_requests,
                     error_requests: proxy.error_requests,
-                    estimated_cost: proxy.estimated_cost,
-                    is_cost_estimated: proxy.is_cost_estimated,
+                    // 其他
+                    total_requests: meta.message_count,
+                    first_request_time: meta.start_time,
+                    last_request_time: meta.end_time,
+                    models: meta.models,
+                    estimated_cost: jsonl_cost,
+                    is_cost_estimated: true,
+                    // JSONL 元信息
                     cwd: meta.cwd,
                     project_name: meta.project_name,
                     topic: meta.topic,
@@ -1203,6 +1193,7 @@ pub async fn get_sessions(
                     session_name: meta.session_name,
                 }
             } else {
+                // 没有代理数据，仅使用 JSONL
                 SessionStats {
                     session_id: meta.session_id,
                     total_requests: meta.message_count,
@@ -1218,7 +1209,7 @@ pub async fn get_sessions(
                     avg_ttft_ms: 0.0,
                     success_requests: 0,
                     error_requests: 0,
-                    estimated_cost,
+                    estimated_cost: jsonl_cost,
                     is_cost_estimated: true,
                     cwd: meta.cwd,
                     project_name: meta.project_name,
@@ -1235,75 +1226,67 @@ pub async fn get_sessions(
 
 /// 获取单个会话详情
 /// 数据源逻辑：
-/// - 会话基础信息从 JSONL 文件获取
-/// - 如果代理有对应会话的统计，合并代理的独有数据
+/// - JSONL：会话元信息（项目名、主题、token 统计）
+/// - session_stats 表：性能指标（速率、TTFT、耗时）
 #[tauri::command]
 pub async fn get_session_detail(
     session_id: String,
     settings: AppSettings,
-    proxy_state: tauri::State<'_, ProxyState>,
+    _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<Option<SessionStats>, String> {
-    eprintln!("[get_session_detail] fetching session: {}", session_id);
-
     // 获取价格配置
-    let pricings = &settings.model_pricing.pricings;
-    let match_mode = &settings.model_pricing.match_mode;
+    let pricings = settings.model_pricing.pricings.clone();
+    let match_mode = settings.model_pricing.match_mode.clone();
 
     // 1. 从 JSONL 获取会话元信息
     let meta = match crate::session::get_session_meta_by_id(&session_id) {
         Some(m) => m,
-        None => {
-            eprintln!("[get_session_detail] session not found in JSONL");
-            return Ok(None);
-        }
+        None => return Ok(None),
     };
 
-    // 2. 计算费用
+    // 2. 计算基于 JSONL 的费用
     let first_model = meta.models.first().map(|s| s.as_str()).unwrap_or("");
-    let estimated_cost = crate::models::estimate_session_cost(
+    let jsonl_cost = crate::models::estimate_session_cost(
         meta.total_input_tokens,
         meta.total_output_tokens,
         meta.total_cache_create_tokens,
         meta.total_cache_read_tokens,
         first_model,
-        pricings,
-        match_mode,
+        &pricings,
+        &match_mode,
     );
 
-    // 3. 尝试从代理获取统计数据
-    let proxy_stats = {
-        let server_guard = proxy_state.server.read().await;
-        if let Some(server) = server_guard.as_ref() {
-            let collector = server.get_collector();
-            collector
-                .get_session_stats(&session_id, pricings, match_mode)
-                .await
-        } else {
-            None
-        }
+    // 3. 从 session_stats 表获取性能指标（使用全局数据库实例）
+    let proxy_stats: Option<SessionStats> = match crate::proxy::ProxyDatabase::get_global() {
+        Some(db) => match db.get_session_stats_batch(&[meta.session_id.clone()]).await {
+            Ok(stats_map) => stats_map.get(&meta.session_id).cloned(),
+            Err(_) => None,
+        },
+        None => None,
     };
 
-    // 4. 合并数据
+    // 4. 合并数据：JSONL 的 token 统计 + session_stats 的性能指标
     let stats = if let Some(proxy) = proxy_stats {
-        eprintln!("[get_session_detail] found proxy stats, merging");
         SessionStats {
             session_id: meta.session_id,
-            // 代理统计数据
-            total_requests: proxy.total_requests,
-            total_input_tokens: proxy.total_input_tokens,
-            total_output_tokens: proxy.total_output_tokens,
-            total_cache_create_tokens: proxy.total_cache_create_tokens,
-            total_cache_read_tokens: proxy.total_cache_read_tokens,
+            // Token 统计来自 JSONL（完整数据）
+            total_input_tokens: meta.total_input_tokens,
+            total_output_tokens: meta.total_output_tokens,
+            total_cache_create_tokens: meta.total_cache_create_tokens,
+            total_cache_read_tokens: meta.total_cache_read_tokens,
+            // 性能指标来自 session_stats
             total_duration_ms: proxy.total_duration_ms,
             avg_output_tokens_per_second: proxy.avg_output_tokens_per_second,
-            first_request_time: proxy.first_request_time,
-            last_request_time: proxy.last_request_time,
-            models: proxy.models,
             avg_ttft_ms: proxy.avg_ttft_ms,
             success_requests: proxy.success_requests,
             error_requests: proxy.error_requests,
-            estimated_cost: proxy.estimated_cost,
-            is_cost_estimated: proxy.is_cost_estimated,
+            // 其他
+            total_requests: meta.message_count,
+            first_request_time: meta.start_time,
+            last_request_time: meta.end_time,
+            models: meta.models,
+            estimated_cost: jsonl_cost,
+            is_cost_estimated: true,
             // JSONL 元信息
             cwd: meta.cwd,
             project_name: meta.project_name,
@@ -1312,7 +1295,6 @@ pub async fn get_session_detail(
             session_name: meta.session_name,
         }
     } else {
-        eprintln!("[get_session_detail] no proxy stats, using JSONL only");
         SessionStats {
             session_id: meta.session_id,
             total_requests: meta.message_count,
@@ -1328,7 +1310,7 @@ pub async fn get_session_detail(
             avg_ttft_ms: 0.0,
             success_requests: 0,
             error_requests: 0,
-            estimated_cost,
+            estimated_cost: jsonl_cost,
             is_cost_estimated: true,
             cwd: meta.cwd,
             project_name: meta.project_name,
@@ -1342,37 +1324,22 @@ pub async fn get_session_detail(
 }
 
 /// 获取项目统计（基于所有会话数据聚合）
-/// 不依赖分页，扫描所有 JSONL 文件进行聚合
+/// 数据源逻辑：
+/// - JSONL：会话元信息（项目名、token 统计）
 #[tauri::command]
 pub async fn get_project_stats(
     settings: AppSettings,
-    proxy_state: tauri::State<'_, ProxyState>,
+    _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<Vec<crate::proxy::ProjectStats>, String> {
     // 获取价格配置
-    let pricings = &settings.model_pricing.pricings;
-    let match_mode = &settings.model_pricing.match_mode;
+    let pricings = settings.model_pricing.pricings.clone();
+    let match_mode = settings.model_pricing.match_mode.clone();
 
     // 1. 从 JSONL 文件获取所有会话元信息
-    let all_meta = crate::session::get_all_session_meta_raw();
+    // 使用缓存版本避免频繁扫描文件系统
+    let all_meta = crate::session::get_all_session_meta_cached();
 
-    // 2. 获取代理的会话统计数据（用于获取更准确的费用）
-    let proxy_stats_map = {
-        let server_guard = proxy_state.server.read().await;
-        if let Some(server) = server_guard.as_ref() {
-            let collector = server.get_collector();
-            let proxy_sessions = collector
-                .get_all_sessions(10000, pricings, match_mode)
-                .await;
-            proxy_sessions
-                .into_iter()
-                .map(|s| (s.session_id.clone(), s))
-                .collect::<std::collections::HashMap<String, SessionStats>>()
-        } else {
-            std::collections::HashMap::new()
-        }
-    };
-
-    // 3. 按项目名称聚合
+    // 2. 按项目名称聚合
     let mut project_map: std::collections::HashMap<String, crate::proxy::ProjectStats> =
         std::collections::HashMap::new();
 
@@ -1382,21 +1349,17 @@ pub async fn get_project_stats(
             .clone()
             .unwrap_or_else(|| "未命名项目".to_string());
 
-        // 计算费用（优先使用代理的准确费用，否则估算）
-        let cost = if let Some(proxy) = proxy_stats_map.get(&meta.session_id) {
-            proxy.estimated_cost
-        } else {
-            let first_model = meta.models.first().map(|s| s.as_str()).unwrap_or("");
-            crate::models::estimate_session_cost(
-                meta.total_input_tokens,
-                meta.total_output_tokens,
-                meta.total_cache_create_tokens,
-                meta.total_cache_read_tokens,
-                first_model,
-                pricings,
-                match_mode,
-            )
-        };
+        // 计算费用（JSONL token 统计 + 价格配置）
+        let first_model = meta.models.first().map(|s| s.as_str()).unwrap_or("");
+        let cost = crate::models::estimate_session_cost(
+            meta.total_input_tokens,
+            meta.total_output_tokens,
+            meta.total_cache_create_tokens,
+            meta.total_cache_read_tokens,
+            first_model,
+            &pricings,
+            &match_mode,
+        );
 
         let entry = project_map
             .entry(project_name)

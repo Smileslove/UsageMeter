@@ -27,7 +27,8 @@
     "build": "vue-tsc --noEmit && vite build",
     "build:tauri": "tauri build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "lint": "vue-tsc --noEmit && cd src-tauri && cargo fmt -- --check && cargo clippy -- -D warnings && cargo check"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.2",

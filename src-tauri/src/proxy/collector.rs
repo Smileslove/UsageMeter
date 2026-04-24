@@ -85,6 +85,16 @@ impl UsageCollector {
                 eprintln!("Failed to save record to database: {}", e);
             }
         }
+
+        // 增量更新 session_stats 表
+        // 即使 session_id 为空，也会尝试通过 message_id 从 JSONL 查找对应的 session_id
+        if let Err(e) = self
+            .database
+            .update_session_stats_incremental(&record)
+            .await
+        {
+            eprintln!("[collector] Failed to update session stats: {}", e);
+        }
     }
 
     /// 获取时间窗口内的记录（从数据库）
@@ -315,6 +325,21 @@ impl UsageCollector {
                 Vec::new()
             }
         }
+    }
+
+    /// 通过 message_id 列表查询会话统计信息
+    ///
+    /// 用于将 JSONL 会话文件中的消息与代理数据库记录关联
+    #[allow(dead_code)]
+    pub async fn get_session_stats_by_message_ids(
+        &self,
+        message_ids: &[String],
+        pricings: &[ModelPricingConfig],
+        match_mode: &str,
+    ) -> Option<SessionStats> {
+        self.database
+            .get_session_stats_by_message_ids(message_ids, pricings, match_mode)
+            .await
     }
 
     /// 获取窗口内的速率统计

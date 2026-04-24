@@ -8,5 +8,6 @@ mod scanner;
 
 #[allow(unused_imports)]
 pub use meta::SessionMeta;
-#[allow(unused_imports)]
-pub use scanner::{extract_session_meta, get_all_session_meta_raw, get_session_meta_by_id};
+pub use scanner::{
+    find_session_id_by_message_id, get_all_session_meta_cached, get_session_meta_by_id,
+};

@@ -108,6 +108,38 @@ pub fn run() {
                 }
             }
 
+            // 启动时执行 session_stats 表数据迁移（一次性）
+            // 将现有 usage_records 中的数据聚合到 session_stats 表
+            {
+                let db_path = dirs::home_dir()
+                    .map(|h| h.join(".usagemeter").join("proxy_data.db"));
+
+                if let Some(path) = db_path {
+                    if path.exists() {
+                        match proxy::ProxyDatabase::new_with_path(&path) {
+                            Ok(db) => {
+                                let db_clone = std::sync::Arc::new(db);
+                                tauri::async_runtime::spawn(async move {
+                                    match db_clone.migrate_to_session_stats().await {
+                                        Ok(count) => {
+                                            if count > 0 {
+                                                eprintln!("[UsageMeter] Migrated {} sessions to session_stats table", count);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            eprintln!("[UsageMeter] Failed to migrate session stats: {}", e);
+                                        }
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                eprintln!("[UsageMeter] Failed to open proxy DB for migration: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 make_window_rounded(&window);

@@ -6,6 +6,10 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
+
+/// 全局数据库实例（用于查询操作，避免重复打开连接）
+static GLOBAL_DB: OnceLock<Arc<ProxyDatabase>> = OnceLock::new();
 
 /// 数据库管理器，用于代理使用数据
 /// 使用线程安全的 SQLite 连接包装器
@@ -14,10 +18,32 @@ pub struct ProxyDatabase {
 }
 
 impl ProxyDatabase {
+    /// 获取全局数据库实例（用于查询操作）
+    /// 如果数据库文件存在，返回共享的数据库实例
+    /// 如果不存在，返回 None
+    pub fn get_global() -> Option<Arc<ProxyDatabase>> {
+        GLOBAL_DB.get().cloned().or_else(|| {
+            // 尝试初始化全局实例
+            let db_path = Self::get_db_path().ok()?;
+            if db_path.exists() {
+                if let Ok(db) = Self::new_with_path(&db_path) {
+                    let db = Arc::new(db);
+                    let _ = GLOBAL_DB.set(db.clone());
+                    return Some(db);
+                }
+            }
+            None
+        })
+    }
+
     /// 创建新的数据库连接
     pub fn new() -> Result<Self, String> {
         let db_path = Self::get_db_path()?;
+        Self::new_with_path(&db_path)
+    }
 
+    /// 使用指定路径创建数据库连接（用于独立查询）
+    pub fn new_with_path(db_path: &PathBuf) -> Result<Self, String> {
         // 确保父目录存在
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)
@@ -25,7 +51,7 @@ impl ProxyDatabase {
         }
 
         let conn =
-            Connection::open(&db_path).map_err(|e| format!("Failed to open database: {}", e))?;
+            Connection::open(db_path).map_err(|e| format!("Failed to open database: {}", e))?;
 
         // 启用 WAL 模式以获得更好的并发性
         conn.pragma_update(None, "journal_mode", "WAL")
@@ -53,6 +79,16 @@ impl ProxyDatabase {
 
     /// 创建数据库表
     pub fn create_tables(conn: &Connection) -> Result<(), String> {
+        // 检查 session_stats 表是否需要重建（旧版本表结构不兼容）
+        let needs_rebuild = Self::check_session_stats_needs_rebuild(conn);
+
+        if needs_rebuild {
+            eprintln!("[database] Rebuilding session_stats table due to schema change");
+            conn.execute("DROP TABLE IF EXISTS session_stats", [])
+                .map_err(|e| format!("Failed to drop old session_stats table: {}", e))?;
+        }
+
+        // 创建基础表
         conn.execute_batch(
             r#"
             -- 使用记录表
@@ -84,20 +120,36 @@ impl ProxyDatabase {
             -- 组合索引用于加速按模型分组的速率统计查询
             CREATE INDEX IF NOT EXISTS idx_model_timestamp ON usage_records(model, timestamp);
 
-            -- 会话统计表
+            -- 会话性能统计表
+            -- 存储代理独有数据，与 JSONL 数据合并使用
             CREATE TABLE IF NOT EXISTS session_stats (
                 session_id TEXT PRIMARY KEY,
-                total_requests INTEGER NOT NULL DEFAULT 0,
+                -- 性能指标
+                total_duration_ms INTEGER NOT NULL DEFAULT 0,
+                avg_output_tokens_per_second REAL NOT NULL DEFAULT 0,
+                avg_ttft_ms REAL NOT NULL DEFAULT 0,
+                -- 请求统计
+                proxy_request_count INTEGER NOT NULL DEFAULT 0,
+                success_requests INTEGER NOT NULL DEFAULT 0,
+                error_requests INTEGER NOT NULL DEFAULT 0,
+                -- Token 统计（代理视角）
                 total_input_tokens INTEGER NOT NULL DEFAULT 0,
                 total_output_tokens INTEGER NOT NULL DEFAULT 0,
                 total_cache_create_tokens INTEGER NOT NULL DEFAULT 0,
                 total_cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-                total_duration_ms INTEGER NOT NULL DEFAULT 0,
-                avg_output_tokens_per_second REAL DEFAULT 0,
+                -- 模型信息
+                models TEXT,
+                -- 时间范围
                 first_request_time INTEGER,
                 last_request_time INTEGER,
-                models TEXT
+                -- 费用估算
+                estimated_cost REAL NOT NULL DEFAULT 0,
+                -- 元数据
+                last_updated INTEGER NOT NULL DEFAULT 0
             );
+
+            -- 索引用于加速更新时间查询
+            CREATE INDEX IF NOT EXISTS idx_session_stats_updated ON session_stats(last_updated);
 
             -- 每日汇总表（用于更快的聚合）
             -- total_tokens = input_tokens + cache_create_tokens + cache_read_tokens + output_tokens（总 Token）
@@ -129,6 +181,40 @@ impl ProxyDatabase {
         .map_err(|e| format!("Failed to create tables: {}", e))?;
 
         Ok(())
+    }
+
+    /// 检查 session_stats 表是否需要重建
+    fn check_session_stats_needs_rebuild(conn: &Connection) -> bool {
+        // 获取表的列信息
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('session_stats')")
+            .and_then(|mut stmt| {
+                let mut cols = Vec::new();
+                let rows = stmt.query_map([], |row| row.get(0))?;
+                for row in rows {
+                    cols.push(row?);
+                }
+                Ok(cols)
+            })
+            .unwrap_or_default();
+
+        // 检查必要的列是否存在
+        let required_columns = [
+            "proxy_request_count",
+            "success_requests",
+            "error_requests",
+            "avg_ttft_ms",
+            "last_updated",
+        ];
+
+        for col in &required_columns {
+            if !columns.iter().any(|c| c == col) {
+                eprintln!("[database] session_stats missing column: {}", col);
+                return true;
+            }
+        }
+
+        false
     }
 
     /// 创建模型价格表（静态方法）
@@ -1300,5 +1386,727 @@ impl ProxyDatabase {
             .map_err(|e| format!("Failed to collect results: {}", e))?;
 
         Ok(pricings)
+    }
+
+    /// 通过 message_id 列表查询会话统计信息
+    ///
+    /// 用于将 JSONL 会话文件中的消息与代理数据库记录关联
+    /// 返回聚合后的统计数据：总耗时、总输出 Token、平均生成速率等
+    #[allow(dead_code)]
+    pub async fn get_session_stats_by_message_ids(
+        &self,
+        message_ids: &[String],
+        pricings: &[ModelPricingConfig],
+        match_mode: &str,
+    ) -> Option<SessionStats> {
+        if message_ids.is_empty() {
+            return None;
+        }
+
+        let conn = match self.conn.lock() {
+            Ok(c) => c,
+            Err(_) => return None,
+        };
+
+        // 构建 IN 子句参数
+        let placeholders: Vec<String> = message_ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            r#"
+            SELECT
+                COUNT(*) as total_requests,
+                COALESCE(SUM(input_tokens), 0) as total_input_tokens,
+                COALESCE(SUM(output_tokens), 0) as total_output_tokens,
+                COALESCE(SUM(cache_create_tokens), 0) as total_cache_create_tokens,
+                COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
+                COALESCE(SUM(duration_ms), 0) as total_duration_ms,
+                MIN(request_start_time) as first_request_time,
+                MAX(request_end_time) as last_request_time,
+                GROUP_CONCAT(DISTINCT model) as models,
+                AVG(ttft_ms) as avg_ttft_ms,
+                SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END) as success_requests,
+                SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) as error_requests
+            FROM usage_records
+            WHERE message_id IN ({})
+            "#,
+            placeholders.join(", ")
+        );
+
+        let params: Vec<&dyn rusqlite::types::ToSql> = message_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
+
+        let result = conn.query_row(&sql, params.as_slice(), |row| {
+            let total_output_tokens: i64 = row.get(2)?;
+            let total_duration_ms: i64 = row.get(5)?;
+            let models_str: String = row.get::<_, String>(8)?;
+            let total_input_tokens: i64 = row.get(1)?;
+            let total_cache_create_tokens: i64 = row.get(3)?;
+            let total_cache_read_tokens: i64 = row.get(4)?;
+
+            // 计算平均生成速率
+            let avg_rate = if total_duration_ms > 0 {
+                (total_output_tokens as f64) / (total_duration_ms as f64 / 1000.0)
+            } else {
+                0.0
+            };
+
+            // 获取第一个模型用于定价
+            let first_model = models_str.split(',').next().unwrap_or("");
+
+            // 计算估算费用
+            let estimated_cost = crate::models::estimate_session_cost(
+                total_input_tokens as u64,
+                total_output_tokens as u64,
+                total_cache_create_tokens as u64,
+                total_cache_read_tokens as u64,
+                first_model,
+                pricings,
+                match_mode,
+            );
+
+            Ok(SessionStats {
+                session_id: String::new(), // 调用方会填充
+                total_requests: row.get::<_, i64>(0)? as u64,
+                total_input_tokens: total_input_tokens as u64,
+                total_output_tokens: total_output_tokens as u64,
+                total_cache_create_tokens: total_cache_create_tokens as u64,
+                total_cache_read_tokens: total_cache_read_tokens as u64,
+                total_duration_ms: total_duration_ms as u64,
+                avg_output_tokens_per_second: avg_rate,
+                first_request_time: row.get::<_, Option<i64>>(6)?.unwrap_or(0),
+                last_request_time: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
+                models: if models_str.is_empty() {
+                    Vec::new()
+                } else {
+                    models_str.split(',').map(|s| s.to_string()).collect()
+                },
+                avg_ttft_ms: row.get::<_, Option<f64>>(9)?.unwrap_or(0.0),
+                success_requests: row.get::<_, i64>(10)? as u64,
+                error_requests: row.get::<_, i64>(11)? as u64,
+                estimated_cost,
+                is_cost_estimated: true,
+                cwd: None,
+                project_name: None,
+                topic: None,
+                last_prompt: None,
+                session_name: None,
+            })
+        });
+
+        match result {
+            Ok(stats) if stats.total_requests > 0 => Some(stats),
+            Ok(_) => None, // 没有找到记录
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                eprintln!("Failed to get session stats by message_ids: {}", e);
+                None
+            }
+        }
+    }
+
+    // ========== session_stats 表操作 ==========
+
+    /// 增量更新会话统计（新请求产生时调用）
+    ///
+    /// 如果会话不存在则创建新记录，否则增量更新
+    pub async fn update_session_stats_incremental(
+        &self,
+        record: &UsageRecord,
+    ) -> Result<(), String> {
+        // 如果没有 session_id，尝试从 JSONL 获取
+        let session_id = match &record.session_id {
+            Some(id) if !id.is_empty() => id.clone(),
+            _ => {
+                // 尝试通过 message_id 从 JSONL 获取 session_id
+                match self.find_session_id_by_message_id(&record.message_id).await {
+                    Some(id) => id,
+                    None => return Ok(()), // 无法确定会话，跳过
+                }
+            }
+        };
+
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // 检查是否已存在
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM session_stats WHERE session_id = ?1",
+                [&session_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .is_ok();
+
+        if exists {
+            // 增量更新
+            conn.execute(
+                r#"
+                UPDATE session_stats SET
+                    total_duration_ms = total_duration_ms + ?2,
+                    total_input_tokens = total_input_tokens + ?3,
+                    total_output_tokens = total_output_tokens + ?4,
+                    total_cache_create_tokens = total_cache_create_tokens + ?5,
+                    total_cache_read_tokens = total_cache_read_tokens + ?6,
+                    proxy_request_count = proxy_request_count + 1,
+                    success_requests = success_requests + CASE WHEN ?7 < 400 THEN 1 ELSE 0 END,
+                    error_requests = error_requests + CASE WHEN ?7 >= 400 THEN 1 ELSE 0 END,
+                    last_request_time = MAX(last_request_time, ?8),
+                    first_request_time = COALESCE(first_request_time, ?9),
+                    last_updated = ?10
+                WHERE session_id = ?1
+                "#,
+                rusqlite::params![
+                    session_id,
+                    record.duration_ms as i64,
+                    record.input_tokens as i64,
+                    record.output_tokens as i64,
+                    record.cache_create_tokens as i64,
+                    record.cache_read_tokens as i64,
+                    record.status_code as i64,
+                    record.request_end_time,
+                    record.request_start_time,
+                    now
+                ],
+            )
+            .map_err(|e| format!("Failed to update session stats: {}", e))?;
+
+            // 重新计算平均速率
+            conn.execute(
+                r#"
+                UPDATE session_stats SET
+                    avg_output_tokens_per_second = CASE
+                        WHEN total_duration_ms > 0 THEN total_output_tokens * 1000.0 / total_duration_ms
+                        ELSE 0
+                    END
+                WHERE session_id = ?1
+                "#,
+                [&session_id],
+            )
+            .map_err(|e| format!("Failed to update avg rate: {}", e))?;
+        } else {
+            // 插入新记录
+            conn.execute(
+                r#"
+                INSERT INTO session_stats (
+                    session_id, total_duration_ms, total_input_tokens, total_output_tokens,
+                    total_cache_create_tokens, total_cache_read_tokens, proxy_request_count,
+                    success_requests, error_requests, first_request_time, last_request_time,
+                    avg_output_tokens_per_second, last_updated, models, estimated_cost
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5, ?6, 1,
+                    CASE WHEN ?7 < 400 THEN 1 ELSE 0 END,
+                    CASE WHEN ?7 >= 400 THEN 1 ELSE 0 END,
+                    ?8, ?9,
+                    CASE WHEN ?2 > 0 THEN ?4 * 1000.0 / ?2 ELSE 0 END,
+                    ?10, ?11, 0
+                )
+                "#,
+                rusqlite::params![
+                    session_id,
+                    record.duration_ms as i64,
+                    record.input_tokens as i64,
+                    record.output_tokens as i64,
+                    record.cache_create_tokens as i64,
+                    record.cache_read_tokens as i64,
+                    record.status_code as i64,
+                    record.request_start_time,
+                    record.request_end_time,
+                    now,
+                    record.model.clone()
+                ],
+            )
+            .map_err(|e| format!("Failed to insert session stats: {}", e))?;
+        }
+
+        Ok(())
+    }
+
+    /// 通过 message_id 查找对应的 session_id（从 JSONL 文件）
+    async fn find_session_id_by_message_id(&self, message_id: &str) -> Option<String> {
+        // 使用 session 模块的缓存索引查找（O(1) 时间复杂度）
+        crate::session::find_session_id_by_message_id(message_id)
+    }
+
+    /// 批量获取会话统计
+    ///
+    /// 从 session_stats 表直接读取，不进行计算
+    pub async fn get_session_stats_batch(
+        &self,
+        session_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, SessionStats>, String> {
+        if session_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+        let placeholders: Vec<String> = session_ids.iter().map(|_| "?".to_string()).collect();
+        let sql = format!(
+            r#"
+            SELECT
+                session_id,
+                total_duration_ms,
+                avg_output_tokens_per_second,
+                avg_ttft_ms,
+                proxy_request_count,
+                success_requests,
+                error_requests,
+                total_input_tokens,
+                total_output_tokens,
+                total_cache_create_tokens,
+                total_cache_read_tokens,
+                models,
+                first_request_time,
+                last_request_time,
+                estimated_cost
+            FROM session_stats
+            WHERE session_id IN ({})
+            "#,
+            placeholders.join(", ")
+        );
+
+        let params: Vec<&dyn rusqlite::types::ToSql> = session_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
+
+        let mut result = std::collections::HashMap::new();
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare statement: {}", e))?;
+
+        let rows = stmt
+            .query_map(params.as_slice(), |row| {
+                let session_id: String = row.get(0)?;
+                let total_duration_ms: i64 = row.get(1)?;
+                let avg_rate: f64 = row.get(2)?;
+                let avg_ttft_ms: f64 = row.get(3)?;
+                let proxy_request_count: i64 = row.get(4)?;
+                let success_requests: i64 = row.get(5)?;
+                let error_requests: i64 = row.get(6)?;
+                let total_input_tokens: i64 = row.get(7)?;
+                let total_output_tokens: i64 = row.get(8)?;
+                let total_cache_create_tokens: i64 = row.get(9)?;
+                let total_cache_read_tokens: i64 = row.get(10)?;
+                let models_str: String = row.get::<_, Option<String>>(11)?.unwrap_or_default();
+                let first_request_time: i64 = row.get::<_, Option<i64>>(12)?.unwrap_or(0);
+                let last_request_time: i64 = row.get::<_, Option<i64>>(13)?.unwrap_or(0);
+                let estimated_cost: f64 = row.get::<_, Option<f64>>(14)?.unwrap_or(0.0);
+
+                Ok((
+                    session_id.clone(),
+                    SessionStats {
+                        session_id,
+                        total_requests: proxy_request_count as u64,
+                        total_input_tokens: total_input_tokens as u64,
+                        total_output_tokens: total_output_tokens as u64,
+                        total_cache_create_tokens: total_cache_create_tokens as u64,
+                        total_cache_read_tokens: total_cache_read_tokens as u64,
+                        total_duration_ms: total_duration_ms as u64,
+                        avg_output_tokens_per_second: avg_rate,
+                        first_request_time,
+                        last_request_time,
+                        models: if models_str.is_empty() {
+                            Vec::new()
+                        } else {
+                            models_str.split(',').map(|s| s.to_string()).collect()
+                        },
+                        avg_ttft_ms,
+                        success_requests: success_requests as u64,
+                        error_requests: error_requests as u64,
+                        estimated_cost,
+                        is_cost_estimated: true,
+                        cwd: None,
+                        project_name: None,
+                        topic: None,
+                        last_prompt: None,
+                        session_name: None,
+                    },
+                ))
+            })
+            .map_err(|e| format!("Failed to query session stats: {}", e))?;
+
+        for row_result in rows {
+            match row_result {
+                Ok((session_id, stats)) => {
+                    result.insert(session_id, stats);
+                }
+                Err(e) => {
+                    eprintln!("Error parsing session stats row: {}", e);
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// 迁移现有数据：只迁移没有 session_id 的 usage_records
+    ///
+    /// 启动时调用一次，增量迁移新数据
+    pub async fn migrate_to_session_stats(&self) -> Result<usize, String> {
+        // 检查是否有需要迁移的记录（session_id 为空的记录）
+        let needs_migration = {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM usage_records WHERE session_id IS NULL OR session_id = ''",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+
+            drop(conn);
+            count
+        };
+
+        // 如果没有需要迁移的记录，直接返回
+        if needs_migration == 0 {
+            return Ok(0);
+        }
+
+        eprintln!(
+            "[migration] Found {} records without session_id, starting migration...",
+            needs_migration
+        );
+
+        // 获取没有 session_id 的记录
+        // 元组: (id, message_id, duration_ms, input, output, cache_create, cache_read, start_time, end_time, status_code, model, ttft_ms)
+        // 共 12 个元素（多一个 id 用于更新 session_id）
+        let records = {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+            // 只查询没有 session_id 的记录
+            let result: Vec<(
+                i64,
+                String,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                String,
+                Option<f64>,
+            )> = conn
+                .prepare(
+                    r#"
+                    SELECT
+                        id,
+                        message_id,
+                        duration_ms,
+                        input_tokens,
+                        output_tokens,
+                        cache_create_tokens,
+                        cache_read_tokens,
+                        request_start_time,
+                        request_end_time,
+                        status_code,
+                        model,
+                        ttft_ms
+                    FROM usage_records
+                    WHERE session_id IS NULL OR session_id = ''
+                    ORDER BY timestamp
+                    "#,
+                )
+                .map_err(|e| format!("Failed to prepare migration query: {}", e))?
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, Option<f64>>(11)?,
+                    ))
+                })
+                .map_err(|e| format!("Failed to execute migration query: {}", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to collect migration results: {}", e))?;
+
+            result
+        }; // conn 在此处被释放
+
+        // 获取 JSONL 会话元数据缓存（使用缓存，60秒内不会重复扫描）
+        let all_meta = crate::session::get_all_session_meta_cached();
+
+        // 构建 message_id -> session_id 的映射
+        let mut msg_to_session: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for meta in &all_meta {
+            for msg_id in &meta.message_ids {
+                msg_to_session.insert(msg_id.clone(), meta.session_id.clone());
+            }
+        }
+        eprintln!(
+            "[migration] Built mapping for {} message_ids",
+            msg_to_session.len()
+        );
+
+        // 按 session_id 聚合记录
+        // 同时记录需要更新的 record_id
+        let mut session_aggregates: std::collections::HashMap<
+            String,
+            (
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                i64,
+                std::collections::HashSet<String>,
+                Vec<f64>,
+            ),
+        > = std::collections::HashMap::new();
+
+        let mut matched = 0;
+        let mut unmatched = 0;
+        let mut record_updates: Vec<(String, i64)> = Vec::new(); // (session_id, record_id)
+
+        for (
+            record_id,
+            message_id,
+            duration_ms,
+            input,
+            output,
+            cache_create,
+            cache_read,
+            start_time,
+            end_time,
+            status_code,
+            model,
+            ttft_ms,
+        ) in records
+        {
+            if let Some(session_id) = msg_to_session.get(&message_id) {
+                matched += 1;
+                record_updates.push((session_id.clone(), record_id));
+
+                let entry = session_aggregates.entry(session_id.clone()).or_insert((
+                    0,                                // count
+                    0,                                // total_duration
+                    0,                                // total_input
+                    0,                                // total_output
+                    0,                                // total_cache_create
+                    0,                                // total_cache_read
+                    i64::MAX,                         // first_time
+                    0,                                // last_time
+                    0,                                // success_count
+                    0,                                // error_count
+                    std::collections::HashSet::new(), // models
+                    Vec::new(),                       // ttft values
+                ));
+
+                entry.0 += 1;
+                entry.1 += duration_ms;
+                entry.2 += input;
+                entry.3 += output;
+                entry.4 += cache_create;
+                entry.5 += cache_read;
+                entry.6 = entry.6.min(start_time);
+                entry.7 = entry.7.max(end_time);
+                if status_code < 400 {
+                    entry.8 += 1;
+                } else {
+                    entry.9 += 1;
+                }
+                if !model.is_empty() {
+                    entry.10.insert(model);
+                }
+                if let Some(ttft) = ttft_ms {
+                    entry.11.push(ttft);
+                }
+            } else {
+                unmatched += 1;
+            }
+        }
+
+        if matched == 0 {
+            return Ok(0);
+        }
+
+        eprintln!(
+            "[migration] Matched {} records, unmatched {} records",
+            matched, unmatched
+        );
+
+        // 更新 usage_records 的 session_id
+        {
+            let conn = self
+                .conn
+                .lock()
+                .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+            for (session_id, record_id) in &record_updates {
+                conn.execute(
+                    "UPDATE usage_records SET session_id = ?1 WHERE id = ?2",
+                    rusqlite::params![session_id, record_id],
+                )
+                .ok(); // 忽略单个更新失败
+            }
+        }
+
+        // 保存到 session_stats 表（使用增量更新，避免覆盖已有数据）
+        let now = chrono::Utc::now().timestamp_millis();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+        let mut migrated = 0;
+
+        for (
+            session_id,
+            (
+                count,
+                duration,
+                input,
+                output,
+                cache_create,
+                cache_read,
+                first_time,
+                last_time,
+                success,
+                error,
+                models,
+                ttfts,
+            ),
+        ) in session_aggregates
+        {
+            let avg_rate = if duration > 0 {
+                (output as f64) * 1000.0 / (duration as f64)
+            } else {
+                0.0
+            };
+
+            let avg_ttft = if !ttfts.is_empty() {
+                ttfts.iter().sum::<f64>() / ttfts.len() as f64
+            } else {
+                0.0
+            };
+
+            let models_str: String = models.into_iter().collect::<Vec<_>>().join(",");
+
+            // 检查是否已存在该 session
+            let exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM session_stats WHERE session_id = ?1",
+                    [&session_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .is_ok();
+
+            if exists {
+                // 增量更新已存在的记录
+                let result = conn.execute(
+                    r#"
+                    UPDATE session_stats SET
+                        total_duration_ms = total_duration_ms + ?2,
+                        total_input_tokens = total_input_tokens + ?3,
+                        total_output_tokens = total_output_tokens + ?4,
+                        total_cache_create_tokens = total_cache_create_tokens + ?5,
+                        total_cache_read_tokens = total_cache_read_tokens + ?6,
+                        proxy_request_count = proxy_request_count + ?7,
+                        success_requests = success_requests + ?8,
+                        error_requests = error_requests + ?9,
+                        last_request_time = MAX(last_request_time, ?10),
+                        first_request_time = COALESCE(first_request_time, ?11),
+                        last_updated = ?12
+                    WHERE session_id = ?1
+                    "#,
+                    rusqlite::params![
+                        session_id,
+                        duration,
+                        input,
+                        output,
+                        cache_create,
+                        cache_read,
+                        count,
+                        success,
+                        error,
+                        last_time,
+                        if first_time == i64::MAX {
+                            None
+                        } else {
+                            Some(first_time)
+                        },
+                        now
+                    ],
+                );
+
+                if result.is_ok() {
+                    migrated += 1;
+                }
+            } else {
+                // 插入新记录
+                let result = conn.execute(
+                    r#"
+                    INSERT INTO session_stats (
+                        session_id, total_duration_ms, avg_output_tokens_per_second, avg_ttft_ms,
+                        proxy_request_count, success_requests, error_requests,
+                        total_input_tokens, total_output_tokens, total_cache_create_tokens, total_cache_read_tokens,
+                        models, first_request_time, last_request_time, estimated_cost, last_updated
+                    ) VALUES (
+                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0, ?15
+                    )
+                    "#,
+                    rusqlite::params![
+                        session_id,
+                        duration,
+                        avg_rate,
+                        avg_ttft,
+                        count,
+                        success,
+                        error,
+                        input,
+                        output,
+                        cache_create,
+                        cache_read,
+                        models_str,
+                        if first_time == i64::MAX { None } else { Some(first_time) },
+                        last_time,
+                        now
+                    ],
+                );
+
+                if result.is_ok() {
+                    migrated += 1;
+                }
+            }
+        }
+
+        drop(conn);
+        eprintln!(
+            "[migration] Migrated {} sessions to session_stats table",
+            migrated
+        );
+        Ok(migrated)
     }
 }

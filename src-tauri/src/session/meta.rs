@@ -59,6 +59,9 @@ pub struct SessionMeta {
     /// 数据来源
     #[serde(default)]
     pub source: String,
+    /// 该会话中所有消息的 ID 列表（用于关联代理数据库记录）
+    #[serde(default, skip_serializing)]
+    pub message_ids: Vec<String>,
 }
 
 /// Session file information (used for scanning)

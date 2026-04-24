@@ -112,6 +112,20 @@ npm run dev:tauri
 npm run build:tauri
 ```
 
+### 提交前验证
+
+提交前请运行 lint 脚本确保所有检查通过（与 CI 流程一致）：
+
+```bash
+npm run lint
+```
+
+该脚本会依次执行：
+- TypeScript 类型检查 (`vue-tsc --noEmit`)
+- Rust 格式检查 (`cargo fmt -- --check`)
+- Rust clippy 静态分析 (`cargo clippy -- -D warnings`)
+- Rust 编译检查 (`cargo check`)
+
 ### 项目结构
 
 ```
