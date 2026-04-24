@@ -1134,36 +1134,21 @@ pub async fn get_sessions(
         .take(limit as usize)
         .collect();
 
-    // 3. 从 session_stats 表获取性能指标（使用全局数据库实例）
-    let session_ids: Vec<String> = meta_list.iter().map(|m| m.session_id.clone()).collect();
-
-    eprintln!(
-        "[get_sessions] Fetching stats for {} sessions",
-        session_ids.len()
-    );
-    if !session_ids.is_empty() {
-        eprintln!("[get_sessions] First session_id: {}", session_ids[0]);
-    }
-
+    // 3. 仅在代理模式下从 session_stats 表获取性能指标
     let proxy_stats_map: std::collections::HashMap<String, SessionStats> =
-        match crate::proxy::ProxyDatabase::get_global() {
-            Some(db) => {
-                eprintln!("[get_sessions] Got global DB instance");
-                match db.get_session_stats_batch(&session_ids).await {
-                    Ok(stats) => {
-                        eprintln!("[get_sessions] Got {} session stats from DB", stats.len());
-                        stats
-                    }
-                    Err(e) => {
-                        eprintln!("[get_sessions] Failed to get session stats: {}", e);
-                        std::collections::HashMap::new()
-                    }
-                }
+        if settings.data_source == "proxy" {
+            let session_ids: Vec<String> = meta_list.iter().map(|m| m.session_id.clone()).collect();
+
+            match crate::proxy::ProxyDatabase::get_global() {
+                Some(db) => db
+                    .get_session_stats_batch(&session_ids)
+                    .await
+                    .unwrap_or_default(),
+                None => std::collections::HashMap::new(),
             }
-            None => {
-                eprintln!("[get_sessions] Global DB instance is None");
-                std::collections::HashMap::new()
-            }
+        } else {
+            // ccusage 模式下不查询代理性能数据
+            std::collections::HashMap::new()
         };
 
     // 4. 构建 SessionStats，合并 JSONL 数据和 session_stats 数据
@@ -1276,16 +1261,21 @@ pub async fn get_session_detail(
         &match_mode,
     );
 
-    // 3. 从 session_stats 表获取性能指标（使用全局数据库实例）
-    let proxy_stats: Option<SessionStats> = match crate::proxy::ProxyDatabase::get_global() {
-        Some(db) => match db
-            .get_session_stats_batch(std::slice::from_ref(&meta.session_id))
-            .await
-        {
-            Ok(stats_map) => stats_map.get(&meta.session_id).cloned(),
-            Err(_) => None,
-        },
-        None => None,
+    // 3. 仅在代理模式下从 session_stats 表获取性能指标
+    let proxy_stats: Option<SessionStats> = if settings.data_source == "proxy" {
+        match crate::proxy::ProxyDatabase::get_global() {
+            Some(db) => match db
+                .get_session_stats_batch(std::slice::from_ref(&meta.session_id))
+                .await
+            {
+                Ok(stats_map) => stats_map.get(&meta.session_id).cloned(),
+                Err(_) => None,
+            },
+            None => None,
+        }
+    } else {
+        // ccusage 模式下不查询代理性能数据
+        None
     };
 
     // 4. 合并数据：JSONL 的 token 统计 + session_stats 的性能指标

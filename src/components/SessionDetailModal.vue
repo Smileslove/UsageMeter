@@ -37,22 +37,19 @@ const formatDuration = (ms: number) => {
   return `${minutes}m ${seconds}s`
 }
 
-// 格式化 Token 数量
+// 格式化 Token 数量（1000以下显示整数，以上保留2位小数）
 const formatTokens = (tokens: number) => {
   if (!tokens) return '0'
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`
-  return tokens.toString()
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(2)}K`
+  return Math.round(tokens).toString()
 }
 
-// 格式化费用（智能精度）
+// 格式化费用（统一4位小数）
 const formatCost = (cost: number | undefined) => {
   if (cost === undefined || cost === null) return '-'
-  if (cost >= 1) return `$${cost.toFixed(2)}`
-  if (cost >= 0.01) return `$${cost.toFixed(3)}`
-  if (cost >= 0.001) return `$${cost.toFixed(4)}`
-  if (cost > 0) return `$${cost.toFixed(6)}`
-  return '$0.00'
+  if (cost > 0) return `$${cost.toFixed(4)}`
+  return '$0.0000'
 }
 
 // 计算输入输出比例

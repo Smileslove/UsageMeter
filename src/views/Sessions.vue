@@ -54,22 +54,19 @@ const formatTime = (epoch: number) => {
   })
 }
 
-// 格式化 Token 数量
+// 格式化 Token 数量（1000以下显示整数，以上保留2位小数）
 const formatTokens = (tokens: number) => {
   if (!tokens) return '0'
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`
-  return tokens.toString()
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(2)}K`
+  return Math.round(tokens).toString()
 }
 
-// 格式化费用（智能精度）
+// 格式化费用（统一4位小数）
 const formatCost = (cost: number | undefined) => {
   if (cost === undefined || cost === null) return '-'
-  if (cost >= 1) return `$${cost.toFixed(2)}`
-  if (cost >= 0.01) return `$${cost.toFixed(3)}`
-  if (cost >= 0.001) return `$${cost.toFixed(4)}`
-  if (cost > 0) return `$${cost.toFixed(6)}`
-  return '$0.00'
+  if (cost > 0) return `$${cost.toFixed(4)}`
+  return '$0.0000'
 }
 
 // 打开会话详情
@@ -181,7 +178,7 @@ onUnmounted(() => {
             <!-- 左侧项目与模型 -->
             <div class="flex items-center gap-2">
               <!-- 项目名 -->
-              <span v-if="session.projectName" class="text-[12px] font-bold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-500/30">
+              <span v-if="session.projectName" class="text-[11px] font-bold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-500/30">
                 {{ session.projectName }}
               </span>
 
@@ -213,42 +210,54 @@ onUnmounted(() => {
         </div>
 
         <!-- 2. 底部数据行 (输入、输出、总Token、生成速率、金额) -->
-        <div class="grid grid-cols-5 w-full items-center text-[10px] pt-1.5 border-t border-gray-100 dark:border-white/5 whitespace-nowrap">
+        <div class="grid grid-cols-5 w-full items-start text-[10px] pt-1.5 border-t border-gray-100 dark:border-white/5 gap-y-0.5">
           <!-- 输入 Token -->
-          <div class="flex items-center justify-start gap-0.5 text-gray-500 dark:text-gray-400 overflow-hidden pr-1">
-            <svg class="w-[11px] h-[11px] text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-            <span class="truncate">{{ t(store.settings.locale, 'sessions.input') }} {{ formatTokens(session.totalInputTokens) }}</span>
+          <div class="flex flex-col gap-0.5 min-w-0 items-center">
+            <div class="flex items-center gap-0.5">
+              <svg class="w-[11px] h-[11px] text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.input') }}</span>
+            </div>
+            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ formatTokens(session.totalInputTokens) }}</span>
           </div>
 
           <!-- 输出 Token -->
-          <div class="flex items-center justify-start gap-0.5 text-gray-500 dark:text-gray-400 overflow-hidden pr-1">
-            <svg class="w-[11px] h-[11px] text-purple-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
-            <span class="truncate">{{ t(store.settings.locale, 'sessions.output') }} {{ formatTokens(session.totalOutputTokens) }}</span>
+          <div class="flex flex-col gap-0.5 min-w-0 items-center">
+            <div class="flex items-center gap-0.5">
+              <svg class="w-[11px] h-[11px] text-purple-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.output') }}</span>
+            </div>
+            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ formatTokens(session.totalOutputTokens) }}</span>
           </div>
 
           <!-- 总 Token -->
-          <div class="flex items-center justify-start gap-0.5 text-gray-500 dark:text-gray-400 overflow-hidden pr-1">
-            <svg class="w-[11px] h-[11px] text-orange-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
-            <span class="truncate">{{ t(store.settings.locale, 'common.totalTokens') }} {{ formatTokens((session.totalInputTokens || 0) + (session.totalOutputTokens || 0)) }}</span>
+          <div class="flex flex-col gap-0.5 min-w-0 items-center">
+            <div class="flex items-center gap-0.5">
+              <svg class="w-[11px] h-[11px] text-orange-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'common.totalTokens') }}</span>
+            </div>
+            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ formatTokens((session.totalInputTokens || 0) + (session.totalOutputTokens || 0)) }}</span>
           </div>
 
           <!-- 平均 Token 速率 -->
-          <div class="flex items-center justify-start gap-0.5 text-gray-500 dark:text-gray-400 overflow-hidden pr-1">
-            <!-- 即使没有速率，外部div也存在，起空白占位作用保证五等分 -->
-            <template v-if="session.avgOutputTokensPerSecond > 0">
+          <div class="flex flex-col gap-0.5 min-w-0 items-center">
+            <div class="flex items-center gap-0.5">
               <svg class="w-[11px] h-[11px] text-yellow-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
               </svg>
-              <span class="truncate">{{ session.avgOutputTokensPerSecond.toFixed(0) }} t/s</span>
-            </template>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.avgRate') }}</span>
+            </div>
+            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ session.avgOutputTokensPerSecond > 0 ? `${session.avgOutputTokensPerSecond.toFixed(2)} t/s` : '-' }}</span>
           </div>
 
           <!-- 估算费用 -->
-          <div class="flex items-center justify-end gap-0.5 text-[#00E5FF] dark:text-[#00E5FF] font-medium overflow-hidden">
-            <svg class="w-[11px] h-[11px] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <span class="truncate">{{ session.estimatedCost === undefined ? '0.000000' : session.estimatedCost.toFixed(6) }}</span>
+          <div class="flex flex-col gap-0.5 min-w-0 items-center">
+            <div class="flex items-center gap-0.5">
+              <svg class="w-[11px] h-[11px] text-[#00E5FF] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.cost') }}</span>
+            </div>
+            <span class="text-[#00E5FF] font-medium">${{ session.estimatedCost === undefined ? '0.0000' : session.estimatedCost.toFixed(4) }}</span>
           </div>
         </div>
       </div>
@@ -283,7 +292,7 @@ onUnmounted(() => {
       <template v-else>
         <div v-for="project in store.projectStats" :key="project.name" class="bg-white dark:bg-[#1E2024] rounded-xl border border-gray-100 dark:border-white/5 py-2.5 px-2.5 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors flex flex-col gap-1.5">
         <!-- 顶部：项目名称与最后活跃时间 -->
-        <div class="flex items-center justify-between w-full pb-0.5 mb-0.5 border-b border-gray-50 dark:border-white/5 px-0.5">
+        <div class="flex items-center justify-between w-full px-0.5">
           <div class="flex items-center gap-2">
             <span class="text-[11px] font-bold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-500/30">
               {{ project.name }}
@@ -293,44 +302,59 @@ onUnmounted(() => {
             <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
-            <span>最后: {{ formatTime(project.lastActive).split(' ')[0] }}</span>
+            <span>{{ t(store.settings.locale, 'sessions.lastActive') }}: {{ formatTime(project.lastActive).split(' ')[0] }}</span>
           </div>
         </div>
 
         <!-- 数据明细网格 -->
-        <div class="grid grid-cols-[16%_21%_21%_25%_17%] w-full items-center text-[10px] pt-1.5 border-t border-gray-50 dark:border-white/5 whitespace-nowrap">
+        <div class="grid grid-cols-5 w-full items-start text-[10px] pt-1.5 border-t border-gray-50 dark:border-white/5 gap-y-0.5">
           <!-- 会话总数 -->
-          <div class="flex items-center justify-start gap-0.5 text-gray-500 dark:text-gray-400 overflow-hidden pr-1">
-            <svg class="w-[11px] h-[11px] text-blue-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-            </svg>
-            <span class="truncate">会话 {{ project.sessionCount }}</span>
+          <div class="flex flex-col gap-0.5 min-w-0 items-center">
+            <div class="flex items-center gap-0.5">
+              <svg class="w-[11px] h-[11px] text-blue-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.requests') }}</span>
+            </div>
+            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ project.sessionCount }}</span>
           </div>
 
           <!-- 总输入 -->
-          <div class="flex items-center justify-start gap-0.5 text-gray-500 dark:text-gray-400 overflow-hidden pr-1">
-            <svg class="w-[11px] h-[11px] text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-            <span class="truncate">输入 {{ formatTokens(project.totalInputTokens) }}</span>
+          <div class="flex flex-col gap-0.5 min-w-0 items-center">
+            <div class="flex items-center gap-0.5">
+              <svg class="w-[11px] h-[11px] text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.input') }}</span>
+            </div>
+            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ formatTokens(project.totalInputTokens) }}</span>
           </div>
 
           <!-- 总输出 -->
-          <div class="flex items-center justify-start gap-0.5 text-gray-500 dark:text-gray-400 overflow-hidden pr-1">
-            <svg class="w-[11px] h-[11px] text-purple-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
-            <span class="truncate">输出 {{ formatTokens(project.totalOutputTokens) }}</span>
+          <div class="flex flex-col gap-0.5 min-w-0 items-center">
+            <div class="flex items-center gap-0.5">
+              <svg class="w-[11px] h-[11px] text-purple-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.output') }}</span>
+            </div>
+            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ formatTokens(project.totalOutputTokens) }}</span>
           </div>
 
           <!-- 总Token -->
-          <div class="flex items-center justify-start gap-0.5 text-gray-500 dark:text-gray-400 overflow-hidden pr-1">
-            <svg class="w-[11px] h-[11px] text-orange-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
-            <span class="truncate">总计 {{ formatTokens(project.totalInputTokens + project.totalOutputTokens) }}</span>
+          <div class="flex flex-col gap-0.5 min-w-0 items-center">
+            <div class="flex items-center gap-0.5">
+              <svg class="w-[11px] h-[11px] text-orange-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'common.totalTokens') }}</span>
+            </div>
+            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ formatTokens(project.totalInputTokens + project.totalOutputTokens) }}</span>
           </div>
 
           <!-- 总成本 -->
-          <div class="flex items-center justify-start gap-0.5 text-[#00E5FF] dark:text-[#00E5FF] font-medium overflow-hidden">
-            <svg class="w-[11px] h-[11px] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <span class="truncate">{{ formatCost(project.totalCost) }}</span>
+          <div class="flex flex-col gap-0.5 min-w-0 items-center">
+            <div class="flex items-center gap-0.5">
+              <svg class="w-[11px] h-[11px] text-[#00E5FF] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.cost') }}</span>
+            </div>
+            <span class="text-[#00E5FF] font-medium">{{ formatCost(project.totalCost) }}</span>
           </div>
         </div>
       </div>
