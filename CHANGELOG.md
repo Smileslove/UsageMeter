@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.2] - 2026-04-25
+
+### Added
+
+- **New Time Window Option**: Added "Today" window to track usage from the start of current day (00:00:00)
+- **Development Tooling**: Added `npm run lint` script for pre-commit validation (TypeScript + Rust checks)
+- **Session Data Architecture**: Refactored session data sources - JSONL for metadata, session_stats table for performance metrics
+- **Incremental Cache**: Added incremental caching mechanism for session metadata scanning to reduce filesystem I/O
+- **Data Migration**: Automatic migration of existing usage_records data to session_stats table on app startup
+
+### Changed
+
+- **Time Window Rename**: Renamed "1d" to "24h" to clearly indicate a rolling 24-hour window
+- **Model Price Matching**: Improved matching logic - exact matching requires strict consistency, fuzzy matching supports case, prefix, and separator variations
+- **Custom Price Priority**: User-defined custom model prices now take precedence over open-source database prices
+- **Session List UI**: Optimized session list display with better tab switching and project query logic
+
+### Fixed
+
+- **Cost Calculation**: Fixed overview panel cost calculation error - now reads cost field from each time window
+- **Price Matching**: Fixed model price matching logic causing incorrect cost calculations
+- **Session Refresh**: Fixed issue where session list did not refresh after switching data source
+- **CI Compatibility**: Unified local and CI Rust versions, resolved clippy warnings
+
+---
+
+### 新增
+
+- **新增时间窗口选项**：新增 "当天" 窗口，统计今天自然日内的数据（从 00:00:00 起）
+- **开发工具**：新增 `npm run lint` 脚本用于提交前验证（TypeScript + Rust 检查）
+- **会话数据架构**：重构会话数据源 - JSONL 负责元信息，session_stats 表负责性能指标
+- **增量缓存**：会话元数据扫描新增增量缓存机制，减少文件系统 I/O
+- **数据迁移**：应用启动时自动迁移现有 usage_records 数据到 session_stats 表
+
+### 变更
+
+- **时间窗口重命名**：将 "1天" 重命名为 "24h"，明确表示滚动 24 小时窗口
+- **模型价格匹配**：优化匹配逻辑 - 精确匹配严格一致，模糊匹配支持大小写、前缀和分隔符差异
+- **自定义价格优先级**：自定义模型价格优先于开源数据库价格
+- **会话列表界面**：优化会话列表展示与代理查询逻辑
+
+### 修复
+
+- **费用计算**：修复概览面板费用计算错误问题，改为读取每个时间窗口的 cost 字段
+- **价格匹配**：修复模型价格匹配逻辑导致的费用计算错误
+- **会话刷新**：修复切换数据源后会话列表未刷新的问题
+- **CI 兼容性**：统一本地与 CI Rust 版本，修复 clippy 警告
+
+---
+
 ## [0.2.1] - 2026-04-22
 
 ### Added
@@ -147,7 +197,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.2.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.2.2
 [0.2.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.2.1
 [0.2.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.2.0
 [0.1.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.1.0
-
