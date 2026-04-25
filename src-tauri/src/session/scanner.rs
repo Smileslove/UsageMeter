@@ -1,11 +1,11 @@
-//! Session file scanner
+//! 会话文件扫描器
 //!
-//! Scans ~/.claude/projects/ directory for JSONL session files
-//! and extracts metadata from them.
+//! 扫描 ~/.claude/projects/ 目录下的 JSONL 会话文件
+//! 并从中提取元数据。
 //!
-//! Uses incremental caching strategy:
-//! - First call: full scan, build cache
-//! - Subsequent calls: only scan new/modified files
+//! 使用增量缓存策略：
+//! - 首次调用：全量扫描，构建缓存
+//! - 后续调用：只扫描新增/修改的文件
 
 use super::meta::{SessionFile, SessionMeta};
 use std::collections::HashSet;
@@ -273,7 +273,7 @@ pub fn invalidate_cache() {
     *cache_guard = None;
 }
 
-/// Scan all session files from Claude projects directories
+/// 扫描 Claude 项目目录中的所有会话文件
 pub fn scan_session_files() -> Vec<SessionFile> {
     let mut roots = Vec::new();
     if let Some(home) = dirs::home_dir() {
@@ -300,7 +300,7 @@ pub fn scan_session_files() -> Vec<SessionFile> {
                     .and_then(|n| n.to_str())
                     .unwrap_or("");
 
-                // Scan JSONL files in project directory
+                // 扫描项目目录中的 JSONL 文件
                 if let Ok(files) = fs::read_dir(&project_path) {
                     for file in files.flatten() {
                         let path = file.path();
@@ -310,7 +310,7 @@ pub fn scan_session_files() -> Vec<SessionFile> {
 
                         let session_id = path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
 
-                        // Generate unique ID: project_name::session_id
+                        // 生成唯一 ID：project_name::session_id
                         let unique_id = format!("{}::{}", project_name, session_id);
 
                         let metadata = fs::metadata(&path).ok();
@@ -324,7 +324,7 @@ pub fn scan_session_files() -> Vec<SessionFile> {
                             })
                             .unwrap_or(0);
 
-                        // Skip files that are too small (likely empty sessions)
+                        // 跳过太小的文件（可能是空会话）
                         if file_size < 100 {
                             continue;
                         }
@@ -342,49 +342,49 @@ pub fn scan_session_files() -> Vec<SessionFile> {
         }
     }
 
-    // Sort by modification time (newest first)
+    // 按修改时间排序（最新的在前）
     sessions.sort_by_key(|b| std::cmp::Reverse(b.last_modified));
     sessions
 }
 
-/// Check if a user message is a system/meta message that should be skipped
+/// 检查用户消息是否为系统/元消息，应跳过
 fn is_system_message(text: &str) -> bool {
     let trimmed = text.trim();
-    // Skip local command caveat
+    // 跳过本地命令提示
     if trimmed.starts_with("<local-command-caveat>") || trimmed.contains("<local-command-caveat>") {
         return true;
     }
-    // Skip command invocations
+    // 跳过命令调用
     if trimmed.starts_with("<command-name>") || trimmed.contains("<command-name>") {
         return true;
     }
-    // Skip command stdout
+    // 跳过命令输出
     if trimmed.starts_with("<local-command-stdout>") || trimmed.contains("<local-command-stdout>") {
         return true;
     }
-    // Skip system reminders
+    // 跳过系统提醒
     if trimmed.starts_with("<system-reminder>") || trimmed.contains("<system-reminder>") {
         return true;
     }
-    // Skip very short messages (likely just whitespace or single chars)
+    // 跳过过短消息（可能只是空白或单字符）
     if trimmed.chars().count() < 3 {
         return true;
     }
     false
 }
 
-/// Extract project name from cwd path
+/// 从 cwd 路径提取项目名称
 fn extract_project_name(cwd: &str) -> Option<String> {
     if cwd.is_empty() {
         return None;
     }
-    // Get the last component of the path
+    // 获取路径的最后一部分
     let normalized = cwd.replace('\\', "/");
     let parts: Vec<&str> = normalized.split('/').filter(|p| !p.is_empty()).collect();
     parts.last().map(|s| s.to_string())
 }
 
-/// Extract session metadata from a JSONL file
+/// 从 JSONL 文件提取会话元数据
 pub fn extract_session_meta(file: &SessionFile) -> SessionMeta {
     let mut meta = SessionMeta {
         session_id: file.session_id.clone(),
@@ -408,7 +408,7 @@ pub fn extract_session_meta(file: &SessionFile) -> SessionMeta {
         message_ids: Vec::new(),
     };
 
-    // Open and read file
+    // 打开并读取文件
     let file_handle = match fs::File::open(&file.file_path) {
         Ok(f) => f,
         Err(_) => return meta,
@@ -423,17 +423,17 @@ pub fn extract_session_meta(file: &SessionFile) -> SessionMeta {
     let mut first_timestamp: Option<i64> = None;
     let mut last_timestamp: Option<i64> = None;
 
-    // Parse each line
+    // 解析每一行
     for line in reader.lines().map_while(Result::ok) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-            // Extract cwd (only from first occurrence)
+            // 提取 cwd（仅从首次出现）
             if cwd_found.is_none() {
                 if let Some(cwd) = json.get("cwd").and_then(|v| v.as_str()) {
                     cwd_found = Some(cwd.to_string());
                 }
             }
 
-            // Extract session name (slug or customTitle)
+            // 提取会话名称（slug 或 customTitle）
             if session_name_found.is_none() {
                 if let Some(slug) = json.get("slug").and_then(|v| v.as_str()) {
                     session_name_found = Some(slug.to_string());
@@ -443,7 +443,7 @@ pub fn extract_session_meta(file: &SessionFile) -> SessionMeta {
                 }
             }
 
-            // Extract timestamp
+            // 提取时间戳
             if let Some(ts) = extract_timestamp(&json) {
                 if first_timestamp.is_none() {
                     first_timestamp = Some(ts);
@@ -451,15 +451,15 @@ pub fn extract_session_meta(file: &SessionFile) -> SessionMeta {
                 last_timestamp = Some(ts);
             }
 
-            // Extract user messages
+            // 提取用户消息
             let msg_type = json.get("type").and_then(|v| v.as_str());
             if msg_type == Some("user") || msg_type == Some("human") {
                 if let Some(text) = extract_user_text(&json) {
-                    // Skip system messages for first user message (topic)
+                    // 跳过系统消息作为首个用户消息（话题）
                     if first_user_message.is_none() && !is_system_message(&text) {
                         first_user_message = Some(text.clone());
                     }
-                    // Always track last user message (but skip system messages)
+                    // 始终跟踪最后用户消息（但跳过系统消息）
                     if !is_system_message(&text) {
                         last_user_message = Some(text);
                     }
@@ -467,7 +467,7 @@ pub fn extract_session_meta(file: &SessionFile) -> SessionMeta {
                 meta.message_count += 1;
             }
 
-            // Extract token usage from message or usage field
+            // 从消息或 usage 字段提取 Token 使用量
             if let Some(usage) = extract_token_usage(&json) {
                 meta.total_input_tokens += usage.input;
                 meta.total_output_tokens += usage.output;
@@ -475,12 +475,12 @@ pub fn extract_session_meta(file: &SessionFile) -> SessionMeta {
                 meta.total_cache_read_tokens += usage.cache_read;
             }
 
-            // Extract model
+            // 提取模型
             if let Some(model) = extract_model(&json) {
                 models_set.insert(model);
             }
 
-            // Extract message.id from assistant messages (for proxy data association)
+            // 从 assistant 消息提取 message.id（用于关联代理数据）
             // message.id 格式如 "msg_73424337149139748084"，与代理数据库中的 message_id 一致
             if msg_type == Some("assistant") {
                 if let Some(msg_id) = json
@@ -494,14 +494,14 @@ pub fn extract_session_meta(file: &SessionFile) -> SessionMeta {
         }
     }
 
-    // Set extracted results with truncation
+    // 设置提取结果并进行截断处理
     meta.cwd = cwd_found.clone();
     meta.project_name = cwd_found.as_ref().and_then(|cwd| extract_project_name(cwd));
     meta.topic = first_user_message.map(|s| truncate_string(&s, 50));
     meta.last_prompt = last_user_message.map(|s| truncate_string(&s, 100));
 
-    // Keep session_name for backward compatibility (will be used as fallback in UI)
-    // Now we prefer separate project_name + topic display
+    // 保留 session_name 以向后兼容（将作为 UI 中的备用显示）
+    // 现在我们优先使用分离的 project_name + topic 显示
     meta.session_name = session_name_found;
 
     meta.models = models_set.into_iter().collect();
@@ -511,16 +511,16 @@ pub fn extract_session_meta(file: &SessionFile) -> SessionMeta {
     meta
 }
 
-/// Extract user text from a JSON message
+/// 从 JSON 消息提取用户文本
 fn extract_user_text(json: &serde_json::Value) -> Option<String> {
-    // Try to get from message.content
+    // 尝试从 message.content 获取
     if let Some(message) = json.get("message") {
-        // String content
+        // 字符串内容
         if let Some(content) = message.get("content").and_then(|v| v.as_str()) {
             return Some(content.to_string());
         }
 
-        // Array content (content blocks)
+        // 数组内容（内容块）
         if let Some(content_arr) = message.get("content").and_then(|v| v.as_array()) {
             for item in content_arr {
                 if item.get("type").and_then(|v| v.as_str()) == Some("text") {
@@ -535,7 +535,7 @@ fn extract_user_text(json: &serde_json::Value) -> Option<String> {
     None
 }
 
-/// Token usage extracted from JSON
+/// 从 JSON 提取的 Token 使用量
 struct TokenUsage {
     input: u64,
     output: u64,
@@ -543,9 +543,9 @@ struct TokenUsage {
     cache_read: u64,
 }
 
-/// Extract token usage from JSON message
+/// 从 JSON 消息提取 Token 使用量
 fn extract_token_usage(json: &serde_json::Value) -> Option<TokenUsage> {
-    // Try message.usage first
+    // 先尝试 message.usage
     let usage = json
         .get("message")
         .and_then(|m| m.get("usage"))
@@ -591,22 +591,22 @@ fn extract_token_usage(json: &serde_json::Value) -> Option<TokenUsage> {
     None
 }
 
-/// Extract model name from JSON
+/// 从 JSON 提取模型名称
 fn extract_model(json: &serde_json::Value) -> Option<String> {
-    // Try message.model first
+    // 先尝试 message.model
     let model = json
         .get("message")
         .and_then(|m| m.get("model"))
         .and_then(|v| v.as_str())
         .or_else(|| json.get("model").and_then(|v| v.as_str()));
 
-    // Filter out synthetic/internal model names
+    // 过滤掉合成/内部模型名称
     if let Some(m) = model {
-        // Skip synthetic models (internal messages with no response)
+        // 跳过合成模型（无响应的内部消息）
         if m.starts_with('<') && m.ends_with('>') {
             return None;
         }
-        // Skip empty or placeholder model names
+        // 跳过空或占位符模型名称
         if m.is_empty() || m == "unknown" {
             return None;
         }
@@ -616,9 +616,9 @@ fn extract_model(json: &serde_json::Value) -> Option<String> {
     None
 }
 
-/// Extract timestamp from JSON
+/// 从 JSON 提取时间戳
 fn extract_timestamp(json: &serde_json::Value) -> Option<i64> {
-    // Try various timestamp fields
+    // 尝试各种时间戳字段
     let ts = json
         .get("timestamp")
         .or_else(|| json.get("createdAt"))
@@ -626,16 +626,16 @@ fn extract_timestamp(json: &serde_json::Value) -> Option<i64> {
         .or_else(|| json.get("time"));
 
     if let Some(ts) = ts {
-        // Try as number (could be seconds or milliseconds)
+        // 尝试作为数字（可能是秒或毫秒）
         if let Some(num) = ts.as_u64() {
-            // If > 10 billion, assume milliseconds
+            // 如果大于 100 亿，假设为毫秒
             return Some(if num > 10_000_000_000 {
                 (num / 1000) as i64
             } else {
                 num as i64
             });
         }
-        // Try as string (ISO format)
+        // 尝试作为字符串（ISO 格式）
         if let Some(s) = ts.as_str() {
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
                 return Some(dt.timestamp());
@@ -646,7 +646,7 @@ fn extract_timestamp(json: &serde_json::Value) -> Option<i64> {
     None
 }
 
-/// Truncate a string to max length, adding ellipsis if truncated
+/// 将字符串截断到最大长度，如被截断则添加省略号
 fn truncate_string(s: &str, max_len: usize) -> String {
     let trimmed = s.trim();
     if trimmed.chars().count() <= max_len {
@@ -657,18 +657,18 @@ fn truncate_string(s: &str, max_len: usize) -> String {
     }
 }
 
-/// Get session metadata by session ID
+/// 根据会话 ID 获取会话元数据
 pub fn get_session_meta_by_id(session_id: &str) -> Option<SessionMeta> {
     let files = scan_session_files();
 
-    // Try exact match first
+    // 先尝试精确匹配
     for file in &files {
         if file.session_id == session_id {
             return Some(extract_session_meta(file));
         }
     }
 
-    // Try matching by the last part of session_id (after ::)
+    // 尝试匹配 session_id 的最后一部分（:: 之后）
     let id_suffix = session_id.split("::").last().unwrap_or(session_id);
     for file in &files {
         let file_suffix = file
@@ -684,7 +684,7 @@ pub fn get_session_meta_by_id(session_id: &str) -> Option<SessionMeta> {
     None
 }
 
-/// Get all session metadata (limited)
+/// 获取所有会话元数据（限制数量）
 #[allow(dead_code)]
 pub fn get_all_session_meta(limit: usize) -> Vec<SessionMeta> {
     scan_session_files()
@@ -706,7 +706,7 @@ mod tests {
 
     #[test]
     fn test_is_system_message() {
-        // Should skip system messages
+        // 应跳过系统消息
         assert!(is_system_message("<local-command-caveat>some text"));
         assert!(is_system_message("prefix <local-command-caveat> content"));
         assert!(is_system_message("<command-name>/model</command-name>"));
@@ -716,9 +716,9 @@ mod tests {
         assert!(is_system_message(
             "<system-reminder>Some reminder</system-reminder>"
         ));
-        assert!(is_system_message("ab")); // too short
+        assert!(is_system_message("ab")); // 太短
 
-        // Should NOT skip real user messages
+        // 不应跳过真实用户消息
         assert!(!is_system_message("请帮我分析这段代码"));
         assert!(!is_system_message("How do I fix this bug?"));
         assert!(!is_system_message("分析一下项目结构"));

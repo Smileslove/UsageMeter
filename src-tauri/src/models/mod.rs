@@ -1,4 +1,4 @@
-//! Data models for the application
+//! 应用数据模型
 
 mod pricing;
 mod settings;

@@ -712,7 +712,8 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
     };
 
     // 模型分布统计（仅统计30天内的数据）
-    let mut model_stats: HashMap<String, (u64, u64, u64, u64, u64, u64)> = HashMap::new(); // (tokens, input, output, cache_create, cache_read, requests)
+    // (tokens, input, output, cache_create, cache_read, requests) 总Token, 输入, 输出, 缓存创建, 缓存读取, 请求数
+    let mut model_stats: HashMap<String, (u64, u64, u64, u64, u64, u64)> = HashMap::new();
     let mut window_model_stats: HashMap<String, HashMap<String, ModelTokenTotals>> = HashMap::new();
     let pricings = effective_model_pricings(settings);
     let match_mode = &settings.model_pricing.match_mode;
@@ -974,12 +975,12 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
 // 辅助类型和函数
 struct RequestRecord {
     timestamp: u64,
-    tokens: u64,       // 总 Token = input + cache_create + cache_read + output
-    input_tokens: u64, // 实际输入（不含缓存）
+    tokens: u64, // total_tokens: 总 Token = input + cache_create + cache_read + output
+    input_tokens: u64, // input_tokens: 实际输入（不含缓存）
     output_tokens: u64,
     cache_create_tokens: u64,
     cache_read_tokens: u64,
-    model: String, // 模型名称
+    model: String, // model: 模型名称
 }
 
 #[derive(Default)]

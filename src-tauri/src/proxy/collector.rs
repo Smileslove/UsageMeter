@@ -572,7 +572,7 @@ mod tests {
             request_start_time: now - 5000, // 5 秒前开始
             request_end_time: now,
             duration_ms: 5000,
-            output_tokens_per_second: Some(40.0), // 200 tokens / 5 seconds
+            output_tokens_per_second: Some(40.0), // 200 tokens / 5 秒
             ttft_ms: Some(100),
             status_code: 200,
         };

@@ -1,4 +1,4 @@
-//! Tauri commands module
+//! Tauri 命令模块
 
 mod autostart;
 mod model_pricing;

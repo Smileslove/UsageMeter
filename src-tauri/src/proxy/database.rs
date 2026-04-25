@@ -254,7 +254,7 @@ impl ProxyDatabase {
         ];
 
         for migration in migrations {
-            // SQLite 不支持 IF NOT EXISTS for ALTER TABLE ADD COLUMN
+            // SQLite 不支持 ALTER TABLE ADD COLUMN 的 IF NOT EXISTS
             // 所以我们忽略错误（字段已存在时会报错）
             let _ = conn.execute(migration, []);
         }
@@ -976,7 +976,7 @@ pub struct WindowRateSummary {
 pub struct StatusCodeDistribution {
     pub status_code: i64,
     pub count: i64,
-    pub category: String, // "success", "client_error", "server_error"
+    pub category: String, // "success", "client_error", "server_error" 成功、客户端错误、服务端错误
 }
 
 /// TTFT 统计（首 Token 生成时间）
@@ -1777,33 +1777,33 @@ impl ProxyDatabase {
         // 类型别名：简化复杂类型定义
         // UsageRecordRow: 从数据库查询的 usage_record 行（用于迁移）
         type UsageRecordRow = (
-            i64,         // id
-            String,      // message_id
-            i64,         // duration_ms
-            i64,         // input_tokens
-            i64,         // output_tokens
-            i64,         // cache_create_tokens
-            i64,         // cache_read_tokens
-            i64,         // request_start_time
-            i64,         // request_end_time
-            i64,         // status_code
-            String,      // model
-            Option<f64>, // ttft_ms
+            i64,         // id: 记录 ID
+            String,      // message_id: 消息 ID
+            i64,         // duration_ms: 耗时（毫秒）
+            i64,         // input_tokens: 输入 Token
+            i64,         // output_tokens: 输出 Token
+            i64,         // cache_create_tokens: 缓存创建 Token
+            i64,         // cache_read_tokens: 缓存读取 Token
+            i64,         // request_start_time: 请求开始时间
+            i64,         // request_end_time: 请求结束时间
+            i64,         // status_code: 状态码
+            String,      // model: 模型名称
+            Option<f64>, // ttft_ms: TTFT（毫秒）
         );
         // SessionAggregate: 按 session_id 聚合的统计数据
         type SessionAggregate = (
-            i64,                               // total_duration_ms
-            i64,                               // total_input
-            i64,                               // total_output
-            i64,                               // total_cache_create
-            i64,                               // total_cache_read
-            i64,                               // min_start_time
-            i64,                               // max_end_time
-            i64,                               // success_count
-            i64,                               // error_count
-            i64,                               // request_count
-            std::collections::HashSet<String>, // models
-            Vec<f64>,                          // ttft_ms values
+            i64,                               // total_duration_ms: 总耗时
+            i64,                               // total_input_tokens: 总输入
+            i64,                               // total_output_tokens: 总输出
+            i64,                               // total_cache_create_tokens: 总缓存创建
+            i64,                               // total_cache_read_tokens: 总缓存读取
+            i64,                               // first_request_time: 最早开始时间
+            i64,                               // last_request_time: 最晚结束时间
+            i64,                               // success_requests: 成功请求数
+            i64,                               // error_requests: 错误请求数
+            i64,                               // request_count: 请求数
+            std::collections::HashSet<String>, // 模型集合
+            Vec<f64>,                          // TTFT 值列表
         );
 
         // 检查是否有需要迁移的记录（session_id 为空的记录）
@@ -1911,7 +1911,7 @@ impl ProxyDatabase {
 
         let mut matched = 0;
         let mut unmatched = 0;
-        let mut record_updates: Vec<(String, i64)> = Vec::new(); // (session_id, record_id)
+        let mut record_updates: Vec<(String, i64)> = Vec::new(); // (session_id, record_id) 会话ID, 记录ID
 
         for (
             record_id,
@@ -1933,18 +1933,18 @@ impl ProxyDatabase {
                 record_updates.push((session_id.clone(), record_id));
 
                 let entry = session_aggregates.entry(session_id.clone()).or_insert((
-                    0,                                // count
-                    0,                                // total_duration
-                    0,                                // total_input
-                    0,                                // total_output
-                    0,                                // total_cache_create
-                    0,                                // total_cache_read
-                    i64::MAX,                         // first_time
-                    0,                                // last_time
-                    0,                                // success_count
-                    0,                                // error_count
-                    std::collections::HashSet::new(), // models
-                    Vec::new(),                       // ttft values
+                    0,                                // 计数
+                    0,                                // 总耗时
+                    0,                                // 总输入
+                    0,                                // 总输出
+                    0,                                // 总缓存创建
+                    0,                                // 总缓存读取
+                    i64::MAX,                         // 最早时间
+                    0,                                // 最晚时间
+                    0,                                // 成功数
+                    0,                                // 错误数
+                    std::collections::HashSet::new(), // 模型集合
+                    Vec::new(),                       // TTFT 值列表
                 ));
 
                 entry.0 += 1;

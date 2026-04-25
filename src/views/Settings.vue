@@ -248,7 +248,7 @@ const toggleAutoStart = async () => {
     try {
       autoStartEnabled.value = await invoke('is_autostart_enabled')
     } catch {
-      // ignore
+      // 忽略错误
     }
   }
 }

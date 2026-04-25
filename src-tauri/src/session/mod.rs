@@ -1,7 +1,6 @@
-//! Session module - JSONL session metadata extraction
+//! 会话模块 - JSONL 会话元数据提取
 //!
-//! This module provides functionality to scan and extract metadata
-//! from Claude Code session JSONL files.
+//! 本模块提供扫描和提取 Claude Code 会话 JSONL 文件元数据的功能。
 
 mod meta;
 mod scanner;

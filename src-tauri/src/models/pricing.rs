@@ -1,32 +1,32 @@
-//! Model pricing for cost estimation
+//! 模型价格配置，用于费用估算
 //!
-//! Pricing data comes from:
-//! 1. User custom pricing (highest priority)
-//! 2. API synchronized pricing from models.dev
+//! 价格数据来源：
+//! 1. 用户自定义价格（最高优先级）
+//! 2. API 同步的价格（来自 models.dev）
 //!
-//! No built-in pricing data - users should sync from API or add custom pricing.
+//! 无内置价格数据 - 用户应从 API 同步或添加自定义价格。
 
 use super::ModelPricingConfig;
 use serde::{Deserialize, Serialize};
 
-/// Model pricing configuration ($/M tokens)
+/// 模型价格配置（$/M tokens）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelPricing {
-    /// Input token price ($/M)
+    /// 输入 Token 价格（$/M）
     pub input: f64,
-    /// Output token price ($/M)
+    /// 输出 Token 价格（$/M）
     pub output: f64,
-    /// Cache write 5min price ($/M)
+    /// 缓存写入 5 分钟价格（$/M）
     pub cache_write_5m: f64,
-    /// Cache write 1h price ($/M)
+    /// 缓存写入 1 小时价格（$/M）
     pub cache_write_1h: f64,
-    /// Cache read price ($/M)
+    /// 缓存读取价格（$/M）
     pub cache_read: f64,
 }
 
 impl Default for ModelPricing {
     fn default() -> Self {
-        // No pricing available - will result in $0 cost estimation
+        // 无可用价格 - 将导致 $0 费用估算
         Self {
             input: 0.0,
             output: 0.0,
@@ -37,21 +37,21 @@ impl Default for ModelPricing {
     }
 }
 
-/// Get pricing for a model from database/custom pricing configuration
+/// 从数据库/自定义价格配置获取模型价格
 ///
-/// Priority: custom > api > default (0.0)
+/// 优先级：custom > api > default (0.0)
 pub fn get_pricing(model: &str, pricings: &[ModelPricingConfig], match_mode: &str) -> ModelPricing {
     let normalized_model = normalize_model_id(model);
 
-    // Try to find a matching pricing
+    // 尝试查找匹配的价格配置
     let matched = if match_mode == "exact" {
-        // Exact match means byte-for-byte model ID equality.
+        // 精确匹配表示模型 ID 字节级完全相等
         pricings
             .iter()
             .filter(|p| p.model_id == model)
             .min_by_key(|p| source_priority(&p.source))
     } else {
-        // Fuzzy match tolerates provider prefixes, case differences, and separator variants.
+        // 模糊匹配允许供应商前缀、大小写差异和分隔符变体
         pricings
             .iter()
             .filter_map(|p| fuzzy_match_score(model, &normalized_model, p).map(|score| (score, p)))
@@ -63,21 +63,21 @@ pub fn get_pricing(model: &str, pricings: &[ModelPricingConfig], match_mode: &st
         return ModelPricing {
             input: pricing.input_price,
             output: pricing.output_price,
-            // Use cache_write_price if available, otherwise estimate
+            // 如果有缓存写入价格则使用，否则估算
             cache_write_5m: pricing
                 .cache_write_price
                 .unwrap_or(pricing.input_price * 1.25),
             cache_write_1h: pricing
                 .cache_write_price
                 .unwrap_or(pricing.input_price * 0.5),
-            // Use cache_read_price if available, otherwise estimate
+            // 如果有缓存读取价格则使用，否则估算
             cache_read: pricing
                 .cache_read_price
                 .unwrap_or(pricing.input_price * 0.1),
         };
     }
 
-    // No pricing found - return default (0.0)
+    // 未找到价格 - 返回默认值 (0.0)
     ModelPricing::default()
 }
 
@@ -141,7 +141,7 @@ pub fn estimate_session_cost(
     let input_cost = (input_tokens as f64 / 1_000_000.0) * pricing.input;
     let output_cost = (output_tokens as f64 / 1_000_000.0) * pricing.output;
     let cache_read_cost = (cache_read_tokens as f64 / 1_000_000.0) * pricing.cache_read;
-    // Use 1h cache write price as default (more conservative)
+    // 使用 1 小时缓存写入价格作为默认值（更保守）
     let cache_create_cost = (cache_create_tokens as f64 / 1_000_000.0) * pricing.cache_write_1h;
 
     input_cost + output_cost + cache_read_cost + cache_create_cost
@@ -207,7 +207,7 @@ mod tests {
             last_updated: 0,
         }];
 
-        // Fuzzy match should find minimax-m2-5 when searching for partial
+        // 模糊匹配应能在搜索部分字符串时找到 minimax-m2-5
         let pricing = get_pricing("minimax-m2-5", &pricings, "fuzzy");
         assert!((pricing.input - 0.33).abs() < 0.01);
         assert!((pricing.output - 1.32).abs() < 0.01);
@@ -226,11 +226,11 @@ mod tests {
             last_updated: 0,
         }];
 
-        // Exact match should only match exact string
+        // 精确匹配应只匹配完全相同的字符串
         let pricing = get_pricing("exact-model", &pricings, "exact");
         assert!((pricing.input - 5.0).abs() < 0.01);
 
-        // Should return default (0.0) for non-exact match
+        // 对于非精确匹配应返回默认值 (0.0)
         let pricing = get_pricing("exact-model-v2", &pricings, "exact");
         assert!((pricing.input - 0.0).abs() < 0.01);
     }
@@ -345,7 +345,7 @@ mod tests {
             &pricings,
             "fuzzy",
         );
-        // No pricing = $0 cost
+        // 无价格配置 = $0 费用
         assert!((cost - 0.0).abs() < 0.01);
     }
 }

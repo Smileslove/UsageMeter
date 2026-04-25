@@ -1,4 +1,4 @@
-//! Usage data models
+//! 用量数据模型
 
 use serde::{Deserialize, Serialize};
 

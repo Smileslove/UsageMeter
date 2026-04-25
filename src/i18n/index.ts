@@ -606,7 +606,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       activeConnections: 'Active Connections',
       includeErrorRequests: 'Include Error Requests',
       includeErrorRequestsDesc: 'Include 4xx/5xx responses in request count',
-      // Model Pricing Settings
+      // 模型价格设置
       modelPricing: 'Model Pricing',
       modelPricingDesc: 'Custom model pricing configuration',
       modelPricingTitle: 'Model Pricing Settings',

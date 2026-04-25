@@ -1,4 +1,4 @@
-//! Settings and configuration data models
+//! 设置和配置数据模型
 
 use serde::{Deserialize, Serialize};
 

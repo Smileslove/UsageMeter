@@ -1,35 +1,35 @@
-//! Session metadata module
+//! 会话元数据模块
 //!
-//! Extracts session metadata from JSONL files including:
-//! - Working directory (cwd)
-//! - Session topic (first user message)
-//! - Last prompt (last user message)
-//! - Custom session name (slug/customTitle)
-//! - Basic token statistics (when available in JSONL)
+//! 从 JSONL 文件提取会话元数据，包括：
+//! - 工作目录（cwd）
+//! - 会话主题（首条用户消息）
+//! - 最后提示（最后一条用户消息）
+//! - 自定义会话名称（slug/customTitle）
+//! - 基本 Token 统计（JSONL 中可用时）
 
 use serde::{Deserialize, Serialize};
 
-/// Session metadata extracted from JSONL files
+/// 从 JSONL 文件提取的会话元数据
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionMeta {
-    /// Session ID (derived from file path)
+    /// 会话 ID（从文件路径派生）
     pub session_id: String,
-    /// Working directory (from JSONL cwd field)
+    /// 工作目录（从 JSONL cwd 字段提取）
     pub cwd: Option<String>,
-    /// Project name (extracted from cwd, last path component)
+    /// 项目名称（从 cwd 提取，路径最后部分）
     pub project_name: Option<String>,
-    /// Session topic (first user message, truncated to 50 chars)
+    /// 会话主题（首条用户消息，截断至 50 字符）
     pub topic: Option<String>,
-    /// Last user prompt (last user message, truncated to 100 chars)
+    /// 最后用户提示（最后一条用户消息，截断至 100 字符）
     pub last_prompt: Option<String>,
-    /// Custom session name (from slug or customTitle)
+    /// 自定义会话名称（来自 slug 或 customTitle）
     pub session_name: Option<String>,
-    /// File path
+    /// 文件路径
     pub file_path: String,
-    /// File size in bytes
+    /// 文件大小（字节）
     pub file_size: u64,
-    /// Last modified time (Unix timestamp)
+    /// 最后修改时间（Unix 时间戳）
     pub last_modified: i64,
     // === 从 JSONL 提取的统计信息 ===
     /// 总输入 Token（从 JSONL usage 字段提取）
@@ -64,18 +64,18 @@ pub struct SessionMeta {
     pub message_ids: Vec<String>,
 }
 
-/// Session file information (used for scanning)
+/// 会话文件信息（用于扫描）
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct SessionFile {
-    /// Session ID (unique identifier)
+    /// 会话 ID（唯一标识符）
     pub session_id: String,
-    /// Project path name (e.g., "-Users-xxx-ProjectA")
+    /// 项目路径名（如 "-Users-xxx-ProjectA"）
     pub project_path: String,
-    /// Full JSONL file path
+    /// 完整 JSONL 文件路径
     pub file_path: String,
-    /// File size in bytes
+    /// 文件大小（字节）
     pub file_size: u64,
-    /// Last modified time (Unix timestamp)
+    /// 最后修改时间（Unix 时间戳）
     pub last_modified: i64,
 }

@@ -1,6 +1,6 @@
-//! UsageMeter - Claude Code Usage Monitor
+//! UsageMeter - Claude Code 用量监控器
 //!
-//! A tray application for monitoring Claude Code usage with real-time statistics.
+//! 一款用于实时监控 Claude Code 使用情况的系统托盘应用。
 
 mod commands;
 mod models;

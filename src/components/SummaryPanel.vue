@@ -34,11 +34,10 @@ const getTokenUnit = (input: number, output: number): 'K' | 'M' | 'none' => {
   return 'none'
 }
 
-// 格式化速率显示
+// 格式化速率显示（保留两位小数）
 const formatRate = (rate: number): string => {
-  if (rate === 0) return '0'
-  if (rate >= 100) return rate.toFixed(0)
-  return rate.toFixed(1)
+  if (rate === 0) return '0.00'
+  return rate.toFixed(2)
 }
 
 // 智能格式化费用（根据金额大小选择精度）
