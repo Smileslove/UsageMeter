@@ -41,15 +41,22 @@ impl Default for ModelPricing {
 ///
 /// Priority: custom > api > default (0.0)
 pub fn get_pricing(model: &str, pricings: &[ModelPricingConfig], match_mode: &str) -> ModelPricing {
+    let normalized_model = normalize_model_id(model);
+
     // Try to find a matching pricing
     let matched = if match_mode == "exact" {
-        // Exact match
-        pricings.iter().find(|p| p.model_id == model)
+        // Exact match means byte-for-byte model ID equality.
+        pricings
+            .iter()
+            .filter(|p| p.model_id == model)
+            .min_by_key(|p| source_priority(&p.source))
     } else {
-        // Fuzzy match: support bidirectional containment
-        pricings.iter().find(|p| {
-            model == p.model_id || model.contains(&p.model_id) || p.model_id.contains(model)
-        })
+        // Fuzzy match tolerates provider prefixes, case differences, and separator variants.
+        pricings
+            .iter()
+            .filter_map(|p| fuzzy_match_score(model, &normalized_model, p).map(|score| (score, p)))
+            .min_by_key(|(score, pricing)| (*score, source_priority(&pricing.source)))
+            .map(|(_, pricing)| pricing)
     };
 
     if let Some(pricing) = matched {
@@ -72,6 +79,51 @@ pub fn get_pricing(model: &str, pricings: &[ModelPricingConfig], match_mode: &st
 
     // No pricing found - return default (0.0)
     ModelPricing::default()
+}
+
+fn normalize_model_id(model: &str) -> String {
+    model
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(|ch| ch.to_lowercase())
+        .collect()
+}
+
+fn fuzzy_match_score(
+    model: &str,
+    normalized_model: &str,
+    pricing: &ModelPricingConfig,
+) -> Option<u8> {
+    let pricing_id = pricing.model_id.as_str();
+    if model == pricing_id {
+        return Some(0);
+    }
+    if model.eq_ignore_ascii_case(pricing_id) {
+        return Some(1);
+    }
+
+    let model_lower = model.to_ascii_lowercase();
+    let pricing_lower = pricing_id.to_ascii_lowercase();
+    if model_lower.contains(&pricing_lower) || pricing_lower.contains(&model_lower) {
+        return Some(2);
+    }
+
+    let normalized_pricing = normalize_model_id(pricing_id);
+    if normalized_model.contains(&normalized_pricing)
+        || normalized_pricing.contains(normalized_model)
+    {
+        return Some(3);
+    }
+
+    None
+}
+
+fn source_priority(source: &str) -> u8 {
+    if source == "custom" {
+        0
+    } else {
+        1
+    }
 }
 
 /// 估算会话费用（基于 token 使用量）
@@ -181,6 +233,74 @@ mod tests {
         // Should return default (0.0) for non-exact match
         let pricing = get_pricing("exact-model-v2", &pricings, "exact");
         assert!((pricing.input - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_exact_match_requires_identical_model_id() {
+        let pricings = vec![ModelPricingConfig {
+            model_id: "glm-5".to_string(),
+            display_name: None,
+            input_price: 1.0,
+            output_price: 3.2,
+            cache_write_price: None,
+            cache_read_price: None,
+            source: "api".to_string(),
+            last_updated: 0,
+        }];
+
+        let pricing = get_pricing("GLM-5", &pricings, "exact");
+        assert!((pricing.input - 0.0).abs() < 0.01);
+
+        let pricing = get_pricing("glm-5", &pricings, "exact");
+        assert!((pricing.input - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_fuzzy_match_tolerates_case_and_separators() {
+        let pricings = vec![ModelPricingConfig {
+            model_id: "MiniMax-M2.5".to_string(),
+            display_name: None,
+            input_price: 0.3,
+            output_price: 1.2,
+            cache_write_price: None,
+            cache_read_price: None,
+            source: "api".to_string(),
+            last_updated: 0,
+        }];
+
+        let pricing = get_pricing("minimax-m2-5", &pricings, "fuzzy");
+        assert!((pricing.input - 0.3).abs() < 0.01);
+        assert!((pricing.output - 1.2).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_fuzzy_match_prioritizes_custom_pricing() {
+        let pricings = vec![
+            ModelPricingConfig {
+                model_id: "GLM-5".to_string(),
+                display_name: None,
+                input_price: 1.0,
+                output_price: 3.2,
+                cache_write_price: None,
+                cache_read_price: None,
+                source: "api".to_string(),
+                last_updated: 0,
+            },
+            ModelPricingConfig {
+                model_id: "GLM-5".to_string(),
+                display_name: None,
+                input_price: 0.59,
+                output_price: 2.64,
+                cache_write_price: None,
+                cache_read_price: None,
+                source: "custom".to_string(),
+                last_updated: 0,
+            },
+        ];
+
+        let pricing = get_pricing("GLM-5", &pricings, "fuzzy");
+        assert!((pricing.input - 0.59).abs() < 0.01);
+        assert!((pricing.output - 2.64).abs() < 0.01);
     }
 
     #[test]

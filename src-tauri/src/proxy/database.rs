@@ -480,29 +480,47 @@ impl ProxyDatabase {
         &self,
         cutoff_ms: i64,
     ) -> Result<Vec<ModelDistribution>, String> {
+        self.get_model_distribution_filtered(cutoff_ms, true).await
+    }
+
+    /// 获取时间窗口内的模型分布
+    pub async fn get_model_distribution_filtered(
+        &self,
+        cutoff_ms: i64,
+        include_errors: bool,
+    ) -> Result<Vec<ModelDistribution>, String> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
+        let status_filter = if include_errors {
+            ""
+        } else {
+            "AND status_code >= 200 AND status_code < 300"
+        };
+
         // 先查询基础数据
+        let sql = format!(
+            r#"
+            SELECT
+                model,
+                COUNT(*) as request_count,
+                SUM(input_tokens + cache_create_tokens + cache_read_tokens + output_tokens) as total_tokens,
+                SUM(input_tokens) as input_tokens,
+                SUM(output_tokens) as output_tokens,
+                SUM(cache_create_tokens) as cache_create_tokens,
+                SUM(cache_read_tokens) as cache_read_tokens
+            FROM usage_records
+            WHERE timestamp >= ?1
+              {status_filter}
+            GROUP BY model
+            ORDER BY total_tokens DESC
+            "#
+        );
+
         let mut stmt = conn
-            .prepare(
-                r#"
-                SELECT
-                    model,
-                    COUNT(*) as request_count,
-                    SUM(input_tokens + cache_create_tokens + cache_read_tokens + output_tokens) as total_tokens,
-                    SUM(input_tokens) as input_tokens,
-                    SUM(output_tokens) as output_tokens,
-                    SUM(cache_create_tokens) as cache_create_tokens,
-                    SUM(cache_read_tokens) as cache_read_tokens
-                FROM usage_records
-                WHERE timestamp >= ?1
-                GROUP BY model
-                ORDER BY total_tokens DESC
-                "#,
-            )
+            .prepare(&sql)
             .map_err(|e| format!("Failed to prepare statement: {}", e))?;
 
         let models: Vec<(String, i64, i64, i64, i64, i64, i64)> = stmt
@@ -534,12 +552,15 @@ impl ProxyDatabase {
         ) in models
         {
             // 查询该模型的状态码分布
+            let status_sql = format!(
+                "SELECT status_code, COUNT(*) as count FROM usage_records WHERE timestamp >= ?1 AND model = ?2 {status_filter} GROUP BY status_code ORDER BY count DESC"
+            );
             let status_codes: Vec<(i64, i64)> = conn
-                .prepare(
-                    "SELECT status_code, COUNT(*) as count FROM usage_records WHERE timestamp >= ?1 AND model = ?2 GROUP BY status_code ORDER BY count DESC"
-                )
+                .prepare(&status_sql)
                 .and_then(|mut stmt| {
-                    let rows = stmt.query_map(rusqlite::params![cutoff_ms, &model], |row| Ok((row.get(0)?, row.get(1)?)))?;
+                    let rows = stmt.query_map(rusqlite::params![cutoff_ms, &model], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    })?;
                     rows.collect::<Result<Vec<_>, _>>()
                 })
                 .unwrap_or_default();

@@ -70,6 +70,8 @@ export interface WindowUsage {
   tokenPercent: number | null
   requestPercent: number | null
   riskLevel: 'safe' | 'warning' | 'critical'
+  /** 该窗口的费用（美元） */
+  cost: number
   successRequests: number
   clientErrorRequests: number
   serverErrorRequests: number

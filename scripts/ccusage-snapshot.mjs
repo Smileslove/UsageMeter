@@ -32,6 +32,16 @@ function getCurrentMonthStartMs() {
 function buildSnapshot(blocks) {
   const now = Date.now()
   const currentMonthStartMs = getCurrentMonthStartMs()
+
+  // 每个窗口的模型分布统计
+  const windowModelStats = {
+    '5h': { stats: new Map(), maxAgeMs: 5 * 60 * 60 * 1000 },
+    '1d': { stats: new Map(), maxAgeMs: 24 * 60 * 60 * 1000 },
+    '7d': { stats: new Map(), maxAgeMs: 7 * 24 * 60 * 60 * 1000 },
+    '30d': { stats: new Map(), maxAgeMs: 30 * 24 * 60 * 60 * 1000 },
+    'current_month': { stats: new Map(), startMs: currentMonthStartMs },
+  }
+
   const windows = {
     '5h': { tokenUsed: 0, inputTokens: 0, outputTokens: 0, cacheCreateTokens: 0, cacheReadTokens: 0, requestUsed: 0, cost: 0, maxAgeMs: 5 * 60 * 60 * 1000 },
     '1d': { tokenUsed: 0, inputTokens: 0, outputTokens: 0, cacheCreateTokens: 0, cacheReadTokens: 0, requestUsed: 0, cost: 0, maxAgeMs: 24 * 60 * 60 * 1000 },
@@ -84,6 +94,17 @@ function buildSnapshot(blocks) {
           info.cacheReadTokens += breakdown.cacheRead
           info.requestUsed += 1
           info.cost += cost
+
+          // 窗口模型分布统计
+          const windowStats = windowModelStats[windowName].stats
+          if (!windowStats.has(model)) {
+            windowStats.set(model, { inputTokens: 0, outputTokens: 0, cacheCreateTokens: 0, cacheReadTokens: 0 })
+          }
+          const ms = windowStats.get(model)
+          ms.inputTokens += breakdown.input
+          ms.outputTokens += breakdown.output
+          ms.cacheCreateTokens += breakdown.cacheCreate
+          ms.cacheReadTokens += breakdown.cacheRead
         }
       }
 
@@ -96,6 +117,17 @@ function buildSnapshot(blocks) {
         windows['current_month'].cacheReadTokens += breakdown.cacheRead
         windows['current_month'].requestUsed += 1
         windows['current_month'].cost += cost
+
+        // 窗口模型分布统计
+        const windowStats = windowModelStats['current_month'].stats
+        if (!windowStats.has(model)) {
+          windowStats.set(model, { inputTokens: 0, outputTokens: 0, cacheCreateTokens: 0, cacheReadTokens: 0 })
+        }
+        const ms = windowStats.get(model)
+        ms.inputTokens += breakdown.input
+        ms.outputTokens += breakdown.output
+        ms.cacheCreateTokens += breakdown.cacheCreate
+        ms.cacheReadTokens += breakdown.cacheRead
       }
 
       // 模型统计（仅统计30天内的数据）
@@ -148,6 +180,20 @@ function buildSnapshot(blocks) {
     .sort((a, b) => b.tokenUsed - a.tokenUsed)
     .slice(0, 5)  // Top 5
 
+  // 转换窗口模型分布为数组格式
+  const windowModelDistribution = {}
+  for (const [windowName, { stats }] of Object.entries(windowModelStats)) {
+    windowModelDistribution[windowName] = Array.from(stats.entries())
+      .map(([modelName, ms]) => ({
+        modelName,
+        inputTokens: ms.inputTokens,
+        outputTokens: ms.outputTokens,
+        cacheCreateTokens: ms.cacheCreateTokens,
+        cacheReadTokens: ms.cacheReadTokens,
+      }))
+      .sort((a, b) => (b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens))
+  }
+
   return {
     source: 'ccusage-api',
     windows: Object.entries(windows).map(([window, info]) => ({
@@ -158,9 +204,11 @@ function buildSnapshot(blocks) {
       cacheCreateTokens: info.cacheCreateTokens,
       cacheReadTokens: info.cacheReadTokens,
       requestUsed: info.requestUsed,
+      cost: info.cost,  // 添加 ccusage 计算的费用
     })),
     totalCost,
     modelDistribution,
+    windowModelDistribution,
   }
 }
 
@@ -168,7 +216,7 @@ async function main() {
   const blocks = await loadSessionBlockData({
     sessionDurationHours: 5,
     mode: 'calculate',
-    offline: true,
+    offline: false,  // 使用在线模式从 LiteLLM 获取价格数据
   })
 
   const snapshot = buildSnapshot(blocks)

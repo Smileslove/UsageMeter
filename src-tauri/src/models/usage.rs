@@ -105,6 +105,9 @@ pub struct WindowUsage {
     pub token_percent: Option<f64>,
     pub request_percent: Option<f64>,
     pub risk_level: String,
+    /// 该窗口的费用（美元）
+    #[serde(default)]
+    pub cost: f64,
     #[serde(default)]
     pub success_requests: u64,
     #[serde(default)]

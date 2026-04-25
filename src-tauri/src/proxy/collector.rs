@@ -247,6 +247,27 @@ impl UsageCollector {
         }
     }
 
+    /// 获取时间窗口内的模型分布
+    pub async fn get_model_distribution_filtered(
+        &self,
+        window: &str,
+        include_errors: bool,
+    ) -> Vec<ModelDistribution> {
+        let cutoff_ms = Self::calculate_window_cutoff(window);
+
+        match self
+            .database
+            .get_model_distribution_filtered(cutoff_ms, include_errors)
+            .await
+        {
+            Ok(models) => models,
+            Err(e) => {
+                eprintln!("Failed to get model distribution: {}", e);
+                Vec::new()
+            }
+        }
+    }
+
     /// 清除所有记录（数据库和缓存）
     #[allow(dead_code)]
     pub async fn clear(&self) {

@@ -39,6 +39,7 @@ src-tauri/gen/schemas
 ehthumbs.db
 Thumbs.db
 
-# Claude Code local config
+# Vibe Coding local config
 .claude/
 CLAUDE.md
+AGENTS.md

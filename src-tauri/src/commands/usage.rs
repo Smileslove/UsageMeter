@@ -6,7 +6,7 @@ use crate::models::{
 };
 use crate::proxy::{ProxyServer, SessionStats};
 use chrono::{Datelike, Local, TimeZone};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -70,6 +70,17 @@ async fn get_proxy_usage_snapshot(
         // 读取设置：是否包含错误请求
         let include_errors = settings.proxy.include_error_requests;
         let window_stats = collector.get_all_window_stats(include_errors).await;
+        let pricings = effective_model_pricings(settings);
+        let match_mode = &settings.model_pricing.match_mode;
+        let mut window_costs = HashMap::new();
+        for quota in settings.quotas.iter().filter(|quota| quota.enabled) {
+            let model_distribution = collector
+                .get_model_distribution_filtered(&quota.window, include_errors)
+                .await;
+            let cost =
+                estimate_cost_from_model_distribution(&model_distribution, &pricings, match_mode);
+            window_costs.insert(quota.window.clone(), cost);
+        }
         drop(server_guard); // 提前释放锁
 
         let now = SystemTime::now()
@@ -114,6 +125,7 @@ async fn get_proxy_usage_snapshot(
                         settings.warning_threshold,
                         settings.critical_threshold,
                     ),
+                    cost: window_costs.get(&quota.window).copied().unwrap_or(0.0),
                     success_requests,
                     client_error_requests,
                     server_error_requests,
@@ -148,10 +160,6 @@ async fn get_proxy_usage_snapshot(
         // 计算总 token 用于百分比
         let total_model_tokens: i64 = model_distribution_raw.iter().map(|m| m.total_tokens).sum();
 
-        // 获取价格配置
-        let pricings = &settings.model_pricing.pricings;
-        let match_mode = &settings.model_pricing.match_mode;
-
         // 转换为前端 ModelUsage 格式，同时计算总费用
         let mut total_cost = 0.0;
         let model_distribution: Vec<crate::models::ModelUsage> = model_distribution_raw
@@ -173,7 +181,7 @@ async fn get_proxy_usage_snapshot(
                     m.cache_create_tokens as u64,
                     m.cache_read_tokens as u64,
                     &m.model,
-                    pricings,
+                    &pricings,
                     match_mode,
                 );
                 total_cost += model_cost;
@@ -248,6 +256,7 @@ fn empty_usage_snapshot(settings: &AppSettings, source: &str, note: String) -> U
             token_percent: compute_percent(0, quota.token_limit),
             request_percent: compute_percent(0, quota.request_limit),
             risk_level: "safe".to_string(),
+            cost: 0.0,
             success_requests: 0,
             client_error_requests: 0,
             server_error_requests: 0,
@@ -295,6 +304,8 @@ fn snapshot_from_ccusage(settings: &AppSettings) -> Result<UsageSnapshot, String
         .and_then(|v| v.as_str())
         .unwrap_or("ccusage-api")
         .to_string();
+    let pricings = effective_model_pricings(settings);
+    let match_mode = &settings.model_pricing.match_mode;
 
     let mut windows = Vec::new();
     for quota in &settings.quotas {
@@ -348,6 +359,11 @@ fn snapshot_from_ccusage(settings: &AppSettings) -> Result<UsageSnapshot, String
             .and_then(parse_u64_from_value)
             .unwrap_or(0);
 
+        // ccusage 只负责提供窗口内按模型拆分的 token 用量；
+        // 费用统一使用 UsageMeter 本地价格表逐模型计算，避免和自定义价格口径不一致。
+        let window_cost =
+            estimate_ccusage_window_cost(&value, &quota.window, &pricings, match_mode);
+
         let token_percent = compute_percent(token_used, quota.token_limit);
         let request_percent = compute_percent(request_used, quota.request_limit);
 
@@ -369,6 +385,7 @@ fn snapshot_from_ccusage(settings: &AppSettings) -> Result<UsageSnapshot, String
                 settings.warning_threshold,
                 settings.critical_threshold,
             ),
+            cost: window_cost,
             success_requests: 0, // ccusage 模式不包含状态码信息
             client_error_requests: 0,
             server_error_requests: 0,
@@ -417,25 +434,13 @@ fn snapshot_from_ccusage(settings: &AppSettings) -> Result<UsageSnapshot, String
         .unwrap_or(&"safe".to_string())
         .clone();
 
-    // 计算总费用：优先使用数据库价格配置，其次使用 ccusage 提供的费用
-    let pricings = &settings.model_pricing.pricings;
-    let match_mode = &settings.model_pricing.match_mode;
-
-    // 计算基于模型分布的费用
-    let total_cost: f64 = model_distribution
+    // 总费用使用 summaryWindow 的费用，和概览面板展示窗口保持一致。
+    let summary_window = &settings.summary_window;
+    let total_cost = windows
         .iter()
-        .map(|m| {
-            crate::models::estimate_session_cost(
-                m.input_tokens,
-                m.output_tokens,
-                m.cache_create_tokens,
-                m.cache_read_tokens,
-                &m.model_name,
-                pricings,
-                match_mode,
-            )
-        })
-        .sum();
+        .find(|w| &w.window == summary_window)
+        .map(|w| w.cost)
+        .unwrap_or(0.0);
 
     let summary = crate::models::UsageSummary {
         total_tokens: windows.iter().map(|w| w.token_used).sum(),
@@ -486,6 +491,81 @@ fn run_ccusage_json() -> Result<serde_json::Value, String> {
     }
 
     serde_json::from_str(&stdout).map_err(|e| format!("ERR_CCUSAGE_PARSE_JSON_FAILED: {e}"))
+}
+
+fn estimate_cost_from_model_distribution(
+    models: &[crate::proxy::ModelDistribution],
+    pricings: &[crate::models::ModelPricingConfig],
+    match_mode: &str,
+) -> f64 {
+    models
+        .iter()
+        .map(|model| {
+            crate::models::estimate_session_cost(
+                model.input_tokens.max(0) as u64,
+                model.output_tokens.max(0) as u64,
+                model.cache_create_tokens.max(0) as u64,
+                model.cache_read_tokens.max(0) as u64,
+                &model.model,
+                pricings,
+                match_mode,
+            )
+        })
+        .sum()
+}
+
+fn estimate_ccusage_window_cost(
+    value: &serde_json::Value,
+    window: &str,
+    pricings: &[crate::models::ModelPricingConfig],
+    match_mode: &str,
+) -> f64 {
+    let Some(models) = value
+        .get("windowModelDistribution")
+        .and_then(|v| v.get(window))
+        .and_then(|v| v.as_array())
+    else {
+        return 0.0;
+    };
+
+    models
+        .iter()
+        .filter_map(|model| {
+            let model_name = model.get("modelName")?.as_str()?;
+            Some(crate::models::estimate_session_cost(
+                model
+                    .get("inputTokens")
+                    .and_then(parse_u64_from_value)
+                    .unwrap_or(0),
+                model
+                    .get("outputTokens")
+                    .and_then(parse_u64_from_value)
+                    .unwrap_or(0),
+                model
+                    .get("cacheCreateTokens")
+                    .and_then(parse_u64_from_value)
+                    .unwrap_or(0),
+                model
+                    .get("cacheReadTokens")
+                    .and_then(parse_u64_from_value)
+                    .unwrap_or(0),
+                model_name,
+                pricings,
+                match_mode,
+            ))
+        })
+        .sum()
+}
+
+fn effective_model_pricings(settings: &AppSettings) -> Vec<crate::models::ModelPricingConfig> {
+    let mut pricings = settings.model_pricing.pricings.clone();
+
+    match crate::proxy::ProxyDatabase::new().and_then(|db| db.get_all_model_pricings()) {
+        Ok(db_pricings) => pricings.extend(db_pricings),
+        Err(e) => eprintln!("[usage] Failed to load model pricing database: {e}"),
+    }
+
+    pricings
 }
 
 fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, String> {
@@ -613,8 +693,10 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
     };
 
     // 模型分布统计（仅统计30天内的数据）
-    let mut model_stats: std::collections::HashMap<String, (u64, u64, u64, u64, u64, u64)> =
-        std::collections::HashMap::new(); // (tokens, input, output, cache_create, cache_read, requests)
+    let mut model_stats: HashMap<String, (u64, u64, u64, u64, u64, u64)> = HashMap::new(); // (tokens, input, output, cache_create, cache_read, requests)
+    let mut window_model_stats: HashMap<String, HashMap<String, ModelTokenTotals>> = HashMap::new();
+    let pricings = effective_model_pricings(settings);
+    let match_mode = &settings.model_pricing.match_mode;
 
     for record in request_map.values() {
         let age = now - record.timestamp;
@@ -625,6 +707,7 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             total_5h_cache_create_tokens += record.cache_create_tokens;
             total_5h_cache_read_tokens += record.cache_read_tokens;
             total_5h_requests += 1;
+            add_window_model_stats(&mut window_model_stats, "5h", record);
         }
         if age <= 24 * 60 * 60 {
             total_1d_tokens += record.tokens;
@@ -633,6 +716,7 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             total_1d_cache_create_tokens += record.cache_create_tokens;
             total_1d_cache_read_tokens += record.cache_read_tokens;
             total_1d_requests += 1;
+            add_window_model_stats(&mut window_model_stats, "1d", record);
         }
         if age <= 7 * 24 * 60 * 60 {
             total_7d_tokens += record.tokens;
@@ -641,6 +725,7 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             total_7d_cache_create_tokens += record.cache_create_tokens;
             total_7d_cache_read_tokens += record.cache_read_tokens;
             total_7d_requests += 1;
+            add_window_model_stats(&mut window_model_stats, "7d", record);
         }
         if age <= 30 * 24 * 60 * 60 {
             total_30d_tokens += record.tokens;
@@ -649,6 +734,7 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             total_30d_cache_create_tokens += record.cache_create_tokens;
             total_30d_cache_read_tokens += record.cache_read_tokens;
             total_30d_requests += 1;
+            add_window_model_stats(&mut window_model_stats, "30d", record);
 
             // 累计模型统计
             if !record.model.is_empty() {
@@ -671,6 +757,7 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             total_current_month_cache_create_tokens += record.cache_create_tokens;
             total_current_month_cache_read_tokens += record.cache_read_tokens;
             total_current_month_requests += 1;
+            add_window_model_stats(&mut window_model_stats, "current_month", record);
         }
     }
 
@@ -752,6 +839,11 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
                 settings.warning_threshold,
                 settings.critical_threshold,
             ),
+            cost: estimate_cost_from_window_model_stats(
+                window_model_stats.get(&quota.window),
+                &pricings,
+                match_mode,
+            ),
             success_requests: 0, // 本地 JSONL 模式不包含状态码信息
             client_error_requests: 0,
             server_error_requests: 0,
@@ -773,10 +865,6 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
     // 计算模型分布
     let total_model_tokens: u64 = model_stats.values().map(|(t, _, _, _, _, _)| t).sum();
 
-    // 获取价格配置
-    let pricings = &settings.model_pricing.pricings;
-    let match_mode = &settings.model_pricing.match_mode;
-
     // 计算总费用（在截断之前，基于所有模型计算）
     let total_cost: f64 = model_stats
         .iter()
@@ -788,7 +876,7 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
                     *cache_create,
                     *cache_read,
                     model_name,
-                    pricings,
+                    &pricings,
                     match_mode,
                 )
             },
@@ -855,6 +943,56 @@ struct RequestRecord {
     cache_create_tokens: u64,
     cache_read_tokens: u64,
     model: String, // 模型名称
+}
+
+#[derive(Default)]
+struct ModelTokenTotals {
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_create_tokens: u64,
+    cache_read_tokens: u64,
+}
+
+fn add_window_model_stats(
+    window_model_stats: &mut HashMap<String, HashMap<String, ModelTokenTotals>>,
+    window: &str,
+    record: &RequestRecord,
+) {
+    if record.model.is_empty() {
+        return;
+    }
+
+    let entry = window_model_stats
+        .entry(window.to_string())
+        .or_default()
+        .entry(record.model.clone())
+        .or_default();
+    entry.input_tokens += record.input_tokens;
+    entry.output_tokens += record.output_tokens;
+    entry.cache_create_tokens += record.cache_create_tokens;
+    entry.cache_read_tokens += record.cache_read_tokens;
+}
+
+fn estimate_cost_from_window_model_stats(
+    window_stats: Option<&HashMap<String, ModelTokenTotals>>,
+    pricings: &[crate::models::ModelPricingConfig],
+    match_mode: &str,
+) -> f64 {
+    window_stats
+        .into_iter()
+        .flat_map(|stats| stats.iter())
+        .map(|(model_name, totals)| {
+            crate::models::estimate_session_cost(
+                totals.input_tokens,
+                totals.output_tokens,
+                totals.cache_create_tokens,
+                totals.cache_read_tokens,
+                model_name,
+                pricings,
+                match_mode,
+            )
+        })
+        .sum()
 }
 
 fn collect_claude_jsonl_files() -> Vec<PathBuf> {
@@ -1120,7 +1258,7 @@ pub async fn get_sessions(
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<Vec<SessionStats>, String> {
     // 获取价格配置
-    let pricings = settings.model_pricing.pricings.clone();
+    let pricings = effective_model_pricings(&settings);
     let match_mode = settings.model_pricing.match_mode.clone();
 
     // 1. 从 JSONL 文件获取会话列表（主数据源）
@@ -1240,7 +1378,7 @@ pub async fn get_session_detail(
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<Option<SessionStats>, String> {
     // 获取价格配置
-    let pricings = settings.model_pricing.pricings.clone();
+    let pricings = effective_model_pricings(&settings);
     let match_mode = settings.model_pricing.match_mode.clone();
 
     // 1. 从 JSONL 获取会话元信息
@@ -1345,7 +1483,7 @@ pub async fn get_project_stats(
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<Vec<crate::proxy::ProjectStats>, String> {
     // 获取价格配置
-    let pricings = settings.model_pricing.pricings.clone();
+    let pricings = effective_model_pricings(&settings);
     let match_mode = settings.model_pricing.match_mode.clone();
 
     // 1. 从 JSONL 文件获取所有会话元信息

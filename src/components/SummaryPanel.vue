@@ -165,7 +165,7 @@ onMounted(() => {
           <div class="flex flex-col items-center">
             <Coins class="w-3.5 h-3.5 text-amber-500 mb-0.5" />
             <span class="text-[9px] font-semibold text-amber-600 dark:text-amber-400 leading-tight">{{ t(store.settings.locale, 'common.cost') }}</span>
-            <span class="text-sm font-bold text-gray-800 dark:text-gray-100 font-mono leading-tight">{{ formatCost(store.snapshot?.summary?.totalCost) }}</span>
+            <span class="text-sm font-bold text-gray-800 dark:text-gray-100 font-mono leading-tight">{{ formatCost(summaryWindowData?.cost) }}</span>
           </div>
         </div>
       </div>
@@ -200,7 +200,7 @@ onMounted(() => {
           <div class="flex flex-col items-center">
             <Coins class="w-3.5 h-3.5 text-amber-500 mb-0.5" />
             <span class="text-[9px] font-semibold text-amber-600 dark:text-amber-400 leading-tight">{{ t(store.settings.locale, 'common.cost') }}</span>
-            <span class="text-sm font-bold text-gray-800 dark:text-gray-100 font-mono leading-tight">{{ formatCost(store.snapshot?.summary?.totalCost) }}</span>
+            <span class="text-sm font-bold text-gray-800 dark:text-gray-100 font-mono leading-tight">{{ formatCost(summaryWindowData?.cost) }}</span>
           </div>
         </div>
       </div>

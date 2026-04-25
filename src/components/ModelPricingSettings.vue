@@ -290,6 +290,11 @@ const formatTime = (timestamp: number | null): string => {
           </div>
         </div>
 
+        <div class="mt-2 space-y-1 text-[10px] leading-snug text-gray-500 dark:text-gray-400">
+          <div>{{ t(store.settings.locale, 'settings.modelPricingMatchModeExactDesc') }}</div>
+          <div>{{ t(store.settings.locale, 'settings.modelPricingMatchModeFuzzyDesc') }}</div>
+        </div>
+
         <!-- 最后同步时间 -->
         <div v-if="store.settings.modelPricing?.lastSyncTime" class="text-[10px] text-gray-400 mt-2 pt-2 border-t border-gray-50 dark:border-neutral-800/50">
           {{ t(store.settings.locale, 'settings.modelPricingLastSync') }}: {{ formatTime(store.settings.modelPricing.lastSyncTime) }}

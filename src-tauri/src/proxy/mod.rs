@@ -11,6 +11,6 @@ mod types;
 
 pub use collector::UsageCollector;
 pub use config_manager::ClaudeConfigManager;
-pub use database::ProxyDatabase;
+pub use database::{ModelDistribution, ProxyDatabase};
 pub use server::ProxyServer;
 pub use types::*;
