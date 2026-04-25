@@ -58,7 +58,7 @@ const getWindowLabel = (window: string): string => {
 
 // 智能分割标签文本为多行（竖排显示）
 const labelLines = computed(() => {
-  const label = getWindowLabel(summaryWindowData.value?.window || '1d')
+  const label = getWindowLabel(summaryWindowData.value?.window || '24h')
   const locale = store.settings.locale
 
   // 中文模式：数字单独一行，其他字符每个一行

@@ -149,7 +149,7 @@ impl Default for UsageRecord {
 /// 时间窗口统计
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WindowStats {
-    /// 窗口名称："5h", "1d", "7d", "1m"
+    /// 窗口名称："5h", "24h", "today", "7d", "30d", "current_month"
     pub window: String,
     /// 已使用的总 Token 数（含缓存 = input + cache_create + cache_read + output）
     pub token_used: u64,

@@ -7,8 +7,8 @@ import WindowCard from '../components/WindowCard.vue'
 const store = useMonitorStore()
 const displayMode = ref<'auto' | 'exact'>('auto')
 
-// 窗口显示顺序：5h → 1d → 7d → 30d → current_month
-const windowOrder = ['5h', '1d', '7d', '30d', 'current_month'] as const
+// 窗口显示顺序：5h → 24h → today → 7d → 30d → current_month
+const windowOrder = ['5h', '24h', 'today', '7d', '30d', 'current_month'] as const
 
 // 获取启用的窗口数据（按照固定顺序排列）
 const enabledWindows = computed(() => {

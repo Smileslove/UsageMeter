@@ -654,12 +654,18 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
     let mut total_5h_cache_create_tokens = 0_u64;
     let mut total_5h_cache_read_tokens = 0_u64;
     let mut total_5h_requests = 0_u64;
-    let mut total_1d_tokens = 0_u64;
-    let mut total_1d_input_tokens = 0_u64;
-    let mut total_1d_output_tokens = 0_u64;
-    let mut total_1d_cache_create_tokens = 0_u64;
-    let mut total_1d_cache_read_tokens = 0_u64;
-    let mut total_1d_requests = 0_u64;
+    let mut total_24h_tokens = 0_u64;
+    let mut total_24h_input_tokens = 0_u64;
+    let mut total_24h_output_tokens = 0_u64;
+    let mut total_24h_cache_create_tokens = 0_u64;
+    let mut total_24h_cache_read_tokens = 0_u64;
+    let mut total_24h_requests = 0_u64;
+    let mut total_today_tokens = 0_u64;
+    let mut total_today_input_tokens = 0_u64;
+    let mut total_today_output_tokens = 0_u64;
+    let mut total_today_cache_create_tokens = 0_u64;
+    let mut total_today_cache_read_tokens = 0_u64;
+    let mut total_today_requests = 0_u64;
     let mut total_7d_tokens = 0_u64;
     let mut total_7d_input_tokens = 0_u64;
     let mut total_7d_output_tokens = 0_u64;
@@ -692,6 +698,19 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             .unwrap_or(0)
     };
 
+    // 计算今天起始时间戳（今天 00:00:00 本地时间）
+    let today_start = {
+        let now_dt = Local
+            .timestamp_opt(now as i64, 0)
+            .single()
+            .unwrap_or_else(Local::now);
+        now_dt
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .map(|dt| Local.from_local_datetime(&dt).unwrap().timestamp() as u64)
+            .unwrap_or(0)
+    };
+
     // 模型分布统计（仅统计30天内的数据）
     let mut model_stats: HashMap<String, (u64, u64, u64, u64, u64, u64)> = HashMap::new(); // (tokens, input, output, cache_create, cache_read, requests)
     let mut window_model_stats: HashMap<String, HashMap<String, ModelTokenTotals>> = HashMap::new();
@@ -710,13 +729,23 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             add_window_model_stats(&mut window_model_stats, "5h", record);
         }
         if age <= 24 * 60 * 60 {
-            total_1d_tokens += record.tokens;
-            total_1d_input_tokens += record.input_tokens;
-            total_1d_output_tokens += record.output_tokens;
-            total_1d_cache_create_tokens += record.cache_create_tokens;
-            total_1d_cache_read_tokens += record.cache_read_tokens;
-            total_1d_requests += 1;
-            add_window_model_stats(&mut window_model_stats, "1d", record);
+            total_24h_tokens += record.tokens;
+            total_24h_input_tokens += record.input_tokens;
+            total_24h_output_tokens += record.output_tokens;
+            total_24h_cache_create_tokens += record.cache_create_tokens;
+            total_24h_cache_read_tokens += record.cache_read_tokens;
+            total_24h_requests += 1;
+            add_window_model_stats(&mut window_model_stats, "24h", record);
+        }
+        // 今天：记录时间戳在今天内
+        if record.timestamp >= today_start {
+            total_today_tokens += record.tokens;
+            total_today_input_tokens += record.input_tokens;
+            total_today_output_tokens += record.output_tokens;
+            total_today_cache_create_tokens += record.cache_create_tokens;
+            total_today_cache_read_tokens += record.cache_read_tokens;
+            total_today_requests += 1;
+            add_window_model_stats(&mut window_model_stats, "today", record);
         }
         if age <= 7 * 24 * 60 * 60 {
             total_7d_tokens += record.tokens;
@@ -783,13 +812,21 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
                 total_5h_cache_read_tokens,
                 total_5h_requests,
             ),
-            "1d" => (
-                total_1d_tokens,
-                total_1d_input_tokens,
-                total_1d_output_tokens,
-                total_1d_cache_create_tokens,
-                total_1d_cache_read_tokens,
-                total_1d_requests,
+            "24h" => (
+                total_24h_tokens,
+                total_24h_input_tokens,
+                total_24h_output_tokens,
+                total_24h_cache_create_tokens,
+                total_24h_cache_read_tokens,
+                total_24h_requests,
+            ),
+            "today" => (
+                total_today_tokens,
+                total_today_input_tokens,
+                total_today_output_tokens,
+                total_today_cache_create_tokens,
+                total_today_cache_read_tokens,
+                total_today_requests,
             ),
             "7d" => (
                 total_7d_tokens,

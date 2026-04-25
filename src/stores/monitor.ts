@@ -4,7 +4,8 @@ import type { AlertEvent, AppSettings, ModelPricingSettings, ProjectStats, Proxy
 
 const defaultQuotas: WindowQuota[] = [
   { window: '5h', enabled: true, tokenLimit: 500000, requestLimit: 500 },
-  { window: '1d', enabled: false, tokenLimit: 1000000, requestLimit: 1000 },
+  { window: '24h', enabled: true, tokenLimit: 1000000, requestLimit: 1000 },
+  { window: 'today', enabled: true, tokenLimit: 1000000, requestLimit: 1000 },
   { window: '7d', enabled: true, tokenLimit: 5000000, requestLimit: 5000 },
   { window: '30d', enabled: true, tokenLimit: 20000000, requestLimit: 20000 },
   { window: 'current_month', enabled: true, tokenLimit: 30000000, requestLimit: 30000 }
@@ -24,7 +25,7 @@ const defaultSettings: AppSettings = {
   criticalThreshold: 90,
   billingType: 'both',
   quotas: defaultQuotas,
-  summaryWindow: '5h',
+  summaryWindow: '24h',
   dataSource: 'ccusage',
   proxy: {
     enabled: false,

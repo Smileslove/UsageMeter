@@ -113,7 +113,8 @@ impl UsageCollector {
     ///
     /// 时间窗口定义：
     /// - "5h": 滑动窗口，当前时间往前推 5 小时
-    /// - "1d": 自然日，今天 00:00:00 到现在
+    /// - "24h": 滑动窗口，当前时间往前推 24 小时
+    /// - "today": 自然日，今天 00:00:00 到现在
     /// - "7d": 自然周，本周一 00:00:00 到现在
     /// - "30d": 滑动窗口，当前时间往前推 30 天
     /// - "current_month": 自然月，本月 1 日 00:00:00 到现在
@@ -172,7 +173,12 @@ impl UsageCollector {
                 let cutoff = now - Duration::hours(5);
                 cutoff.timestamp_millis()
             }
-            "1d" => {
+            "24h" => {
+                // 滑动窗口：当前时间往前推 24 小时
+                let cutoff = now - Duration::hours(24);
+                cutoff.timestamp_millis()
+            }
+            "today" => {
                 // 自然日：今天 00:00:00
                 let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
                 Local
@@ -209,7 +215,7 @@ impl UsageCollector {
                     .timestamp_millis()
             }
             _ => {
-                // 默认：1 天滑动窗口
+                // 默认：24 小时滑动窗口
                 let cutoff = now - Duration::hours(24);
                 cutoff.timestamp_millis()
             }
@@ -225,7 +231,7 @@ impl UsageCollector {
         include_errors: bool,
     ) -> std::collections::HashMap<String, WindowStats> {
         let mut result = std::collections::HashMap::new();
-        for window in &["5h", "1d", "7d", "30d", "current_month"] {
+        for window in &["5h", "24h", "today", "7d", "30d", "current_month"] {
             result.insert(
                 window.to_string(),
                 self.get_window_stats(window, include_errors).await,
@@ -468,14 +474,19 @@ mod tests {
         // 允许 1 秒误差
         assert!((cutoff_5h - expected_5h).abs() < 1000);
 
-        // 1d 自然日：应该是今天 00:00:00
-        let cutoff_1d = UsageCollector::calculate_window_cutoff("1d");
+        // 24h 滑动窗口：应该约为 24 小时前
+        let cutoff_24h = UsageCollector::calculate_window_cutoff("24h");
+        let expected_24h = (now - Duration::hours(24)).timestamp_millis();
+        assert!((cutoff_24h - expected_24h).abs() < 1000);
+
+        // today 自然日：应该是今天 00:00:00
+        let cutoff_today = UsageCollector::calculate_window_cutoff("today");
         let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
-        let expected_1d = Local
+        let expected_today = Local
             .from_local_datetime(&today_start)
             .unwrap()
             .timestamp_millis();
-        assert_eq!(cutoff_1d, expected_1d);
+        assert_eq!(cutoff_today, expected_today);
 
         // 7d 自然周：应该是本周一 00:00:00
         let cutoff_7d = UsageCollector::calculate_window_cutoff("7d");
@@ -512,7 +523,8 @@ mod tests {
     fn test_window_ordering() {
         // 验证窗口截止时间的逻辑正确性
         let cutoff_5h = UsageCollector::calculate_window_cutoff("5h");
-        let cutoff_1d = UsageCollector::calculate_window_cutoff("1d");
+        let cutoff_24h = UsageCollector::calculate_window_cutoff("24h");
+        let cutoff_today = UsageCollector::calculate_window_cutoff("today");
         let cutoff_7d = UsageCollector::calculate_window_cutoff("7d");
         let cutoff_30d = UsageCollector::calculate_window_cutoff("30d");
         let cutoff_current_month = UsageCollector::calculate_window_cutoff("current_month");
@@ -533,7 +545,8 @@ mod tests {
         assert!(cutoff_30d <= cutoff_7d);
         // 所有截止时间都应该在过去
         assert!(cutoff_5h < now);
-        assert!(cutoff_1d < now);
+        assert!(cutoff_24h < now);
+        assert!(cutoff_today < now);
         assert!(cutoff_7d < now);
         assert!(cutoff_30d < now);
         assert!(cutoff_current_month < now);

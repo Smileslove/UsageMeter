@@ -158,7 +158,8 @@ const handleIncludeErrorRequestsChange = async () => {
 const getWindowLabelKey = (window: WindowName): string => {
   const map: Record<WindowName, string> = {
     '5h': 'settings.window5h',
-    '1d': 'settings.window1d',
+    '24h': 'settings.window24h',
+    'today': 'settings.windowToday',
     '7d': 'settings.window7d',
     '30d': 'settings.window30d',
     'current_month': 'settings.windowCurrentMonth'
@@ -219,7 +220,7 @@ const showRequestLimit = computed(() => {
 })
 
 // 窗口顺序
-const windowOrder: WindowName[] = ['5h', '1d', '7d', '30d', 'current_month']
+const windowOrder: WindowName[] = ['5h', '24h', 'today', '7d', '30d', 'current_month']
 
 // 代理控制
 const proxyEnabled = computed(() => store.isProxyRunning)

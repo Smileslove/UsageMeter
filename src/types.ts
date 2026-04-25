@@ -2,7 +2,7 @@ export type AppLocale = 'zh-CN' | 'zh-TW' | 'en-US'
 
 export type BillingType = 'token' | 'request' | 'both'
 
-export type WindowName = '5h' | '1d' | '7d' | '30d' | 'current_month'
+export type WindowName = '5h' | '24h' | 'today' | '7d' | '30d' | 'current_month'
 
 export type DataSource = 'ccusage' | 'proxy'
 

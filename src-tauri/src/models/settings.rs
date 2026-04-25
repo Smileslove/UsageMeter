@@ -153,7 +153,7 @@ pub fn default_billing_type() -> String {
 }
 
 pub fn default_summary_window() -> String {
-    "1d".to_string()
+    "24h".to_string()
 }
 
 pub fn default_data_source() -> String {
@@ -173,8 +173,14 @@ pub fn default_quotas() -> Vec<WindowQuota> {
             request_limit: Some(500),
         },
         WindowQuota {
-            window: "1d".to_string(),
-            enabled: false,
+            window: "24h".to_string(),
+            enabled: true,
+            token_limit: Some(1_000_000),
+            request_limit: Some(1_000),
+        },
+        WindowQuota {
+            window: "today".to_string(),
+            enabled: true,
             token_limit: Some(1_000_000),
             request_limit: Some(1_000),
         },

@@ -25,7 +25,8 @@ const isSingleRing = computed(() => store.settings.billingType === 'token' || st
 const getWindowLabel = (name: string): string => {
   const map: Record<string, string> = {
     '5h': 'settings.window5h',
-    '1d': 'settings.window1d',
+    '24h': 'settings.window24h',
+    'today': 'settings.windowToday',
     '7d': 'settings.window7d',
     '30d': 'settings.window30d',
     'current_month': 'settings.windowCurrentMonth',
