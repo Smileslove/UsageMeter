@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] - 2026-04-26
+
+### Added
+
+- **Statistics Panel**: Added a complete usage analytics panel with month/year activity views, range selection, metric cards, trends, model breakdowns, performance stats, status codes, and insights
+- **Historical Cost Ledger**: Added frozen per-request cost accounting with pricing snapshot IDs to keep historical statistics stable after pricing changes
+- **Daily Aggregation Cache**: Added persistent daily and model-level summaries for faster proxy-mode activity queries
+- **Statistics Commands**: Added Tauri commands for statistics summary, monthly activity, and yearly activity queries
+- **Shared Formatting Utilities**: Added unified request, token, cost, duration, and rate formatting helpers
+
+### Changed
+
+- **Statistics UI**: Replaced the previous placeholder statistics page with compact Bento-style cards and ECharts visualizations optimized for the tray window
+- **Proxy Records**: Extended proxy usage records with estimated cost, pricing snapshot, and cost lock fields
+- **Session Migration**: Improved legacy unmatched record handling to avoid repeated migration attempts
+- **Scrollable Content**: Improved main content container behavior for compact tray layouts
+
+### Fixed
+
+- **Chart Styling**: Aligned statistics line charts with the design spec by enabling visible symbols and gradient area fills
+- **Compact Layout**: Removed the wide yearly activity grid overflow and kept the contribution view within the tray width
+- **Statistics Coverage**: Connected performance and insights sections that were previously implemented but not rendered
+
+---
+
+### 新增
+
+- **统计面板**：新增完整用量分析面板，支持月/年活跃度、时间范围选择、核心指标卡、趋势图、模型分布、性能统计、状态码与洞察
+- **历史费用账本**：新增按请求冻结费用与价格快照 ID，确保价格变更后历史统计保持稳定
+- **日级聚合缓存**：新增代理模式下的日级与模型级持久化汇总，加快历史活跃度查询
+- **统计查询命令**：新增统计摘要、月活跃度、年活跃度 Tauri 命令
+- **统一格式化工具**：新增请求数、Token、费用、耗时、速率的通用格式化方法
+
+### 变更
+
+- **统计界面**：将原统计占位页替换为适配托盘窗口的紧凑 Bento 风格卡片与 ECharts 图表
+- **代理记录结构**：扩展代理用量记录，增加估算费用、价格快照与费用锁定字段
+- **会话迁移**：优化历史未匹配记录处理，避免重复迁移尝试
+- **内容滚动区域**：优化主内容容器在紧凑托盘布局下的滚动表现
+
+### 修复
+
+- **图表样式**：统计折线图启用实心节点与渐变面积填充，对齐设计规范
+- **紧凑布局**：移除年活跃度网格的宽屏横向溢出，使贡献图保持在托盘宽度内
+- **统计覆盖度**：接入此前已实现但未渲染的性能与洞察区块
+
+---
+
 ## [0.2.2] - 2026-04-25
 
 ### Added
@@ -197,6 +245,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.3.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.3.0
 [0.2.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.2.2
 [0.2.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.2.1
 [0.2.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.2.0

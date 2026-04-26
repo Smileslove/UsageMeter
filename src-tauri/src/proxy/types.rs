@@ -121,6 +121,15 @@ pub struct UsageRecord {
     /// HTTP 响应状态码
     #[serde(default)]
     pub status_code: u16,
+    /// 按记录写入时价格估算并冻结的费用
+    #[serde(default)]
+    pub estimated_cost: f64,
+    /// 价格配置快照标识，用于追溯费用来源
+    #[serde(default)]
+    pub pricing_snapshot_id: Option<String>,
+    /// 费用是否已经冻结。旧数据回填后也会置为 true。
+    #[serde(default)]
+    pub cost_locked: bool,
 }
 
 impl Default for UsageRecord {
@@ -142,6 +151,9 @@ impl Default for UsageRecord {
             output_tokens_per_second: None,
             ttft_ms: None,
             status_code: 200,
+            estimated_cost: 0.0,
+            pricing_snapshot_id: None,
+            cost_locked: false,
         }
     }
 }

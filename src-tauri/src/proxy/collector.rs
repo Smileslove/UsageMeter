@@ -575,6 +575,9 @@ mod tests {
             output_tokens_per_second: Some(40.0), // 200 tokens / 5 秒
             ttft_ms: Some(100),
             status_code: 200,
+            estimated_cost: 0.0,
+            pricing_snapshot_id: None,
+            cost_locked: false,
         };
 
         assert_eq!(record.message_id, "test-msg");

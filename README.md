@@ -33,11 +33,13 @@
 - 🌐 **Proxy Mode** - Optional local proxy for more accurate real-time tracking
 - 🌍 **i18n Support** - Available in English and Chinese
 - ⚙️ **Flexible Quota Settings** - Configure independent limits and warning thresholds for different time windows
+- 💵 **Cost Estimation** - Sync open-source model pricing data, add custom prices, and estimate usage cost by model
+- 📈 **Statistics Dashboard** - Analyze requests, tokens, cost, model breakdowns, trends, status codes, and activity heatmaps
+- 💬 **Session & Project Analytics** - Browse recent sessions, project-level summaries, token usage, cost, and proxy-only performance metrics
+- 🚀 **Auto Start & Native Tray UX** - Launch on login, follow system theme, and run as a lightweight menu bar app
 
 ### 🚧 Planned
 
-- 📈 **Statistics Dashboard** - Usage trend line charts, model distribution donut charts, daily contribution heatmaps, etc.
-- 💬 **Session Management** - Browse and analyze individual conversation session details, token usage, and generation rates
 - 🛠️ **Multi-tool Support** - Extend support to other AI coding assistants (Cursor, Copilot, etc.)
 - 🪟 **Windows Support** - Full compatibility with Windows 10/11
 - ☁️ **WebDAV Sync** - Sync settings and data across devices, aggregate multi-device usage
@@ -47,12 +49,11 @@
 
 ## Screenshots
 
-<div align="center">
-  <img src="assets/overview.png" alt="Overview Panel" width="400" >
-  <br>
-  <em>Overview Panel</em>
-</div>
-> Statistics and Session panels are under development
+| ![Overview Panel](assets/overview.png) | ![Activity Heatmap](assets/activity-heatmap.png) | ![Time Window Statistics](assets/time-window-statistics.png) |
+|:---:|:---:|:---:|
+| *Overview Panel* | *Activity Heatmap* | *Time Window Statistics* |
+| ![Model Usage](assets/model-usage-display.png) | ![Recent Sessions](assets/recent-sessions.png) | ![Project Statistics](assets/project-statistics.png) |
+| *Model Usage* | *Recent Sessions* | *Project Statistics* |
 
 ## Installation
 
@@ -78,13 +79,13 @@ UsageMeter supports two data collection strategies:
 
 | Mode | Description | Feature Differences |
 |------|-------------|---------------------|
-| **ccusage + Local Files** | Default mode. Uses ccusage tool first (requires Node.js environment), falls back to local log parsing | Basic stats and model distribution fully supported |
-| **Local Proxy** | Real-time data collection via local proxy | Supports **generation rate, status codes** and more |
+| **ccusage + Local Files** | Default mode. Uses ccusage first and falls back to local JSONL parsing when needed | Supports quota windows, token/request statistics, model distribution, cost estimation, sessions, and project summaries |
+| **Local Proxy** | Collects request data through a local Anthropic-compatible proxy | Adds real-time performance data such as generation rate, TTFT, status codes, request duration, and proxy-side request records |
 
 > **Note**:
-> - Both modes support basic token statistics and model distribution
-> - Local Proxy mode provides richer real-time data (generation rate, response time, status code distribution, etc.)
-> - **Cost statistics feature** is under development, will support configuring model pricing in settings
+> - Local-file mode remains the default and is enough for most historical token, request, session, project, and cost statistics.
+> - Proxy mode enriches the same views with runtime metrics that are not available in JSONL files, such as generation rate, TTFT, response time, and status code distribution.
+> - Cost estimation uses synced open-source model pricing plus user-defined custom prices. Custom prices take priority.
 
 ## Development
 
@@ -129,14 +130,17 @@ UsageMeter/
 ├── src/                    # Vue frontend
 │   ├── assets/             # Static assets
 │   ├── components/         # Reusable UI components
+│   │   └── statistics/     # Statistics dashboard widgets
 │   ├── views/              # Panel views (Overview, Statistics, Sessions, Settings)
 │   ├── stores/             # Pinia state management
+│   ├── utils/              # Frontend formatting utilities
 │   └── i18n/               # Internationalization
 ├── src-tauri/              # Tauri/Rust backend
 │   └── src/
 │       ├── commands/       # Tauri commands
 │       ├── models/         # Data models
 │       ├── proxy/          # Proxy server implementation
+│       ├── session/        # Local JSONL session metadata scanner
 │       └── utils/          # Utilities
 ├── scripts/                # Build scripts
 └── assets/                 # Documentation assets
@@ -144,45 +148,60 @@ UsageMeter/
 
 ## Database Design
 
-UsageMeter uses SQLite to store usage data in proxy mode. The database file is located at `~/.usagemeter/proxy_data.db`.
+UsageMeter stores proxy records, aggregated statistics, and model pricing data in SQLite at `~/.usagemeter/proxy_data.db`. Local-file mode also reads Claude Code JSONL files directly for session metadata and historical usage.
 
 ### Core Data Tables
 
 #### `usage_records` - Usage Records Table
 
-Stores detailed data for each API request:
+Stores proxy-side per-request data:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | INTEGER | Primary key |
 | `timestamp` | INTEGER | Request timestamp (milliseconds) |
 | `message_id` | TEXT | Unique message identifier |
-| `input_tokens` | INTEGER | Input token count |
-| `output_tokens` | INTEGER | Output token count |
-| `cache_create_tokens` | INTEGER | Cache creation token count |
-| `cache_read_tokens` | INTEGER | Cache read token count |
+| `input_tokens` / `output_tokens` | INTEGER | Input and output token counts |
+| `cache_create_tokens` / `cache_read_tokens` | INTEGER | Cache write/read token counts |
 | `model` | TEXT | Model name |
 | `session_id` | TEXT | Session ID |
-| `duration_ms` | INTEGER | Request duration (milliseconds) |
-| `output_tokens_per_second` | REAL | Generation rate (tokens/s) |
-| `ttft_ms` | INTEGER | Time to first token |
-| `status_code` | INTEGER | HTTP status code |
+| `request_start_time` / `request_end_time` | INTEGER | Request timing boundaries |
+| `duration_ms` / `ttft_ms` | INTEGER | Request duration and time to first token |
+| `output_tokens_per_second` | REAL | Output generation rate |
+| `status_code` | INTEGER | HTTP response status |
+| `estimated_cost` | REAL | Cost frozen at write/backfill time |
+| `pricing_snapshot_id` | TEXT | Pricing snapshot reference |
+| `cost_locked` | INTEGER | Whether cost has been frozen |
 
-> **Note**: `total_tokens` field is not stored because the four token types have different prices, so simply adding them is meaningless. Actual processing = `input_tokens` + `output_tokens`.
+> **Note**: `total_tokens` is not stored redundantly. It is computed as `input_tokens + cache_create_tokens + cache_read_tokens + output_tokens`, while cost calculations keep the four token categories separate because they may use different prices.
+
+#### `session_stats` - Session Performance Table
+
+Stores proxy-only session aggregates and is merged with local JSONL session metadata in the UI:
+
+| Field | Description |
+|-------|-------------|
+| `session_id` | Primary key |
+| `total_duration_ms`, `avg_output_tokens_per_second`, `avg_ttft_ms` | Performance metrics |
+| `proxy_request_count`, `success_requests`, `error_requests` | Request counters |
+| `total_input_tokens`, `total_output_tokens`, `total_cache_create_tokens`, `total_cache_read_tokens` | Proxy token totals |
+| `models`, `first_request_time`, `last_request_time` | Session model and time range |
+| `estimated_cost`, `last_updated` | Cost and update timestamp |
 
 #### `daily_summary` - Daily Summary Table
 
-Accelerates daily aggregation queries:
+Accelerates historical daily aggregation queries:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `date` | TEXT | Date (primary key) |
-| `total_tokens` | INTEGER | Total token count |
-| `input_tokens` | INTEGER | Input token count |
-| `output_tokens` | INTEGER | Output token count |
-| `cache_create_tokens` | INTEGER | Cache creation token count |
-| `cache_read_tokens` | INTEGER | Cache read token count |
+| `total_tokens` / token category fields | INTEGER | Total and category token counts |
 | `request_count` | INTEGER | Request count |
+| `cost` | REAL | Total estimated cost |
+| `success_*` fields | INTEGER / REAL | Successful-request token and cost aggregates |
+| `model_count` | INTEGER | Number of models used that day |
+| `success_requests` / `client_error_requests` / `server_error_requests` | INTEGER | Status-class counters |
+| `finalized_at` | INTEGER | Finalization timestamp for historical aggregation |
 
 #### `model_usage` - Model Usage Table
 
@@ -192,10 +211,22 @@ Statistics grouped by date and model:
 |-------|------|-------------|
 | `date` | TEXT | Date (composite primary key) |
 | `model` | TEXT | Model name (composite primary key) |
-| `total_tokens` | INTEGER | Total token count |
-| `input_tokens` | INTEGER | Input token count |
-| `output_tokens` | INTEGER | Output token count |
+| `total_tokens` / token category fields | INTEGER | Total and category token counts |
 | `request_count` | INTEGER | Request count |
+| `cost` | REAL | Estimated cost |
+| `success_requests` / `client_error_requests` / `server_error_requests` | INTEGER | Status-class counters |
+
+#### `model_pricing` - Model Pricing Table
+
+Caches synced open-source model prices and user-defined custom prices:
+
+| Field | Description |
+|-------|-------------|
+| `model_id`, `display_name` | Model identity and display name |
+| `input_price`, `output_price` | Price per million input/output tokens |
+| `cache_read_price`, `cache_write_price` | Optional cache token prices |
+| `source` | `api` or `custom` |
+| `last_updated` | Last update timestamp |
 
 ### Configuration Storage
 
@@ -205,14 +236,18 @@ Application configuration is stored in JSON format at `~/.usagemeter/settings.js
 - Refresh interval
 - Warning/danger thresholds
 - Billing type (token/request/both)
-- Quota limits for each time window
-- Proxy configuration
-- Theme settings
+- Quota limits for `5h`, `24h`, `today`, `7d`, `30d`, and `current_month`
+- Summary display window and data source (`ccusage` or `proxy`)
+- Proxy port, auto-start behavior, and whether error requests are counted
+- Theme settings and login auto-start
+- Model pricing match mode, last sync time, and custom pricing overrides
 
 ## Tech Stack
 
-- **Frontend**: Vue 3 + TypeScript + Tailwind CSS + ECharts
-- **Backend**: Tauri 2.x (Rust)
+- **Frontend**: Vue 3 + TypeScript + Vite + Tailwind CSS + Pinia + ECharts / vue-echarts
+- **Backend**: Tauri 2.x (Rust) with tray icon, autostart, local proxy, and native window controls
+- **Data**: ccusage, local Claude Code JSONL parsing, SQLite (`rusqlite`), and synced/custom model pricing
+- **Proxy Runtime**: Tokio + Hyper + Reqwest for local Anthropic-compatible request forwarding
 
 ## Contributing
 

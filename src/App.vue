@@ -154,7 +154,7 @@ onUnmounted(() => {
     </header>
 
     <!-- View Content -->
-    <div class="flex-1 overflow-y-auto px-4 pb-4 pt-1.5 relative no-scrollbar">
+    <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-4 pt-1.5 relative no-scrollbar">
       <Overview v-if="currentView === 'overview'" />
       <Statistics v-else-if="currentView === 'statistics'" />
       <Sessions v-else-if="currentView === 'sessions'" />

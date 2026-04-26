@@ -164,6 +164,9 @@ impl RequestForwarder {
                 output_tokens_per_second: None,
                 ttft_ms: None,
                 status_code,
+                estimated_cost: 0.0,
+                pricing_snapshot_id: None,
+                cost_locked: false,
             };
             self.usage_collector.record(record).await;
 
@@ -307,6 +310,9 @@ impl RequestForwarder {
                 output_tokens_per_second,
                 ttft_ms: None, // 非流式请求无法计算 TTFT
                 status_code,
+                estimated_cost: 0.0,
+                pricing_snapshot_id: None,
+                cost_locked: false,
             };
             self.usage_collector.record(record).await;
         }

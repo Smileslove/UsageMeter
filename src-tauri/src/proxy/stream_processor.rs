@@ -327,6 +327,9 @@ pub fn create_database_collector(
             output_tokens_per_second,
             ttft_ms: usage.ttft_ms,
             status_code,
+            estimated_cost: 0.0,
+            pricing_snapshot_id: None,
+            cost_locked: false,
         };
 
         let collector = usage_collector.clone();

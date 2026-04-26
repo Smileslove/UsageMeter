@@ -2,10 +2,10 @@
 
 use crate::models::{
     compute_percent, risk_level, AppSettings, ModelRateStats, ModelTtftStats, OverallRateStats,
-    TtftStats, UsageSnapshot, WindowRateSummary, WindowUsage,
+    StatusCodeCount, TtftStats, UsageSnapshot, WindowRateSummary, WindowUsage,
 };
-use crate::proxy::{ProxyServer, SessionStats};
-use chrono::{Datelike, Local, TimeZone};
+use crate::proxy::{ProxyServer, SessionStats, UsageRecord};
+use chrono::{Datelike, Local, NaiveDate, TimeZone};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -25,6 +25,179 @@ impl Default for ProxyState {
             server: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatisticsQuery {
+    pub start_epoch: i64,
+    pub end_epoch: i64,
+    pub timezone: String,
+    pub bucket: StatisticsBucket,
+    pub metric: StatisticsMetric,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StatisticsBucket {
+    Hour,
+    Day,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StatisticsMetric {
+    Cost,
+    Requests,
+    Tokens,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatisticsRange {
+    pub start_epoch: i64,
+    pub end_epoch: i64,
+    pub timezone: String,
+    pub bucket: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StatisticsCapability {
+    pub has_basic_usage: bool,
+    pub has_performance: bool,
+    pub has_status_codes: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StatisticsTotals {
+    pub request_count: u64,
+    pub total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_create_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cost: f64,
+    pub model_count: u64,
+    pub success_requests: Option<u64>,
+    pub error_requests: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StatisticsTrendPoint {
+    pub start_epoch: i64,
+    pub label: String,
+    pub request_count: u64,
+    pub total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_create_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cost: f64,
+    pub avg_tokens_per_second: Option<f64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StatisticsModelBreakdown {
+    pub model_name: String,
+    pub request_count: u64,
+    pub total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_create_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cost: f64,
+    pub percent: f64,
+    pub avg_tokens_per_second: Option<f64>,
+    pub avg_ttft_ms: Option<f64>,
+    pub error_requests: Option<u64>,
+    pub success_requests: Option<u64>,
+    pub client_error_requests: Option<u64>,
+    pub server_error_requests: Option<u64>,
+    pub status_codes: Vec<StatusCodeCount>,
+    pub trend: Vec<StatisticsTrendPoint>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StatisticsPerformance {
+    pub request_count: u64,
+    pub avg_tokens_per_second: f64,
+    pub avg_ttft_ms: f64,
+    pub slowest_model: Option<String>,
+    pub fastest_model: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StatisticsStatusBreakdown {
+    pub success_requests: u64,
+    pub client_error_requests: u64,
+    pub server_error_requests: u64,
+    pub success_rate: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatisticsInsight {
+    pub kind: String,
+    pub level: String,
+    pub value: String,
+    pub model_name: Option<String>,
+    pub date: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatisticsSummary {
+    pub generated_at_epoch: i64,
+    pub source: String,
+    pub capability: StatisticsCapability,
+    pub range: StatisticsRange,
+    pub totals: StatisticsTotals,
+    pub trend: Vec<StatisticsTrendPoint>,
+    pub models: Vec<StatisticsModelBreakdown>,
+    pub performance: Option<StatisticsPerformance>,
+    pub status: Option<StatisticsStatusBreakdown>,
+    pub insights: Vec<StatisticsInsight>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthActivity {
+    pub year: i32,
+    pub month: u8,
+    pub timezone: String,
+    pub metric: StatisticsMetric,
+    pub days: Vec<DayActivity>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct YearActivity {
+    pub year: i32,
+    pub timezone: String,
+    pub metric: StatisticsMetric,
+    pub days: Vec<DayActivity>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DayActivity {
+    pub date: String,
+    pub request_count: u64,
+    pub total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_create_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cost: f64,
+    pub model_count: u64,
+    pub success_requests: Option<u64>,
+    pub error_requests: Option<u64>,
 }
 
 /// 从数据源获取用量快照
@@ -1197,6 +1370,974 @@ fn parse_u64_from_value(value: &serde_json::Value) -> Option<u64> {
         return Some(v.max(0) as u64);
     }
     None
+}
+
+#[derive(Default, Clone)]
+struct StatAccumulator {
+    request_count: u64,
+    total_tokens: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_create_tokens: u64,
+    cache_read_tokens: u64,
+    cost: f64,
+    success_requests: u64,
+    client_error_requests: u64,
+    server_error_requests: u64,
+    rate_sum: f64,
+    rate_count: u64,
+    ttft_sum: f64,
+    ttft_count: u64,
+    status_code_counts: HashMap<u16, u64>,
+}
+
+impl StatAccumulator {
+    fn add_tokens(
+        &mut self,
+        input: u64,
+        output: u64,
+        cache_create: u64,
+        cache_read: u64,
+        requests: u64,
+        cost: f64,
+    ) {
+        self.request_count += requests;
+        self.input_tokens += input;
+        self.output_tokens += output;
+        self.cache_create_tokens += cache_create;
+        self.cache_read_tokens += cache_read;
+        self.total_tokens += input + output + cache_create + cache_read;
+        self.cost += cost;
+    }
+
+    fn add_record(&mut self, record: &UsageRecord, cost: f64) {
+        self.add_tokens(
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_create_tokens,
+            record.cache_read_tokens,
+            1,
+            cost,
+        );
+
+        if (200..300).contains(&record.status_code) {
+            self.success_requests += 1;
+        } else if (400..500).contains(&record.status_code) {
+            self.client_error_requests += 1;
+        } else if record.status_code >= 500 {
+            self.server_error_requests += 1;
+        }
+        *self
+            .status_code_counts
+            .entry(record.status_code)
+            .or_insert(0) += 1;
+
+        if let Some(rate) = record.output_tokens_per_second {
+            if rate > 0.0 {
+                self.rate_sum += rate;
+                self.rate_count += 1;
+            }
+        }
+        if let Some(ttft) = record.ttft_ms {
+            if ttft > 0 {
+                self.ttft_sum += ttft as f64;
+                self.ttft_count += 1;
+            }
+        }
+    }
+}
+
+fn normalize_range(query: &StatisticsQuery) -> (i64, i64) {
+    let start = query.start_epoch.max(0);
+    let end = query.end_epoch.max(start + 1);
+    (start, end)
+}
+
+fn bucket_step_seconds(bucket: &StatisticsBucket) -> i64 {
+    match bucket {
+        StatisticsBucket::Hour => 60 * 60,
+        StatisticsBucket::Day => 24 * 60 * 60,
+    }
+}
+
+fn bucket_name(bucket: &StatisticsBucket) -> String {
+    match bucket {
+        StatisticsBucket::Hour => "hour".to_string(),
+        StatisticsBucket::Day => "day".to_string(),
+    }
+}
+
+fn bucket_start(epoch: i64, bucket: &StatisticsBucket) -> i64 {
+    let step = bucket_step_seconds(bucket);
+    (epoch / step) * step
+}
+
+fn bucket_label(epoch: i64, bucket: &StatisticsBucket) -> String {
+    let dt = Local
+        .timestamp_opt(epoch, 0)
+        .single()
+        .unwrap_or_else(Local::now);
+    match bucket {
+        StatisticsBucket::Hour => dt.format("%m-%d %H:00").to_string(),
+        StatisticsBucket::Day => dt.format("%m-%d").to_string(),
+    }
+}
+
+fn make_empty_trend(
+    start_epoch: i64,
+    end_epoch: i64,
+    bucket: &StatisticsBucket,
+) -> Vec<StatisticsTrendPoint> {
+    let step = bucket_step_seconds(bucket);
+    let mut points = Vec::new();
+    let mut cursor = bucket_start(start_epoch, bucket);
+    while cursor < end_epoch {
+        points.push(StatisticsTrendPoint {
+            start_epoch: cursor,
+            label: bucket_label(cursor, bucket),
+            ..Default::default()
+        });
+        cursor += step;
+    }
+    points
+}
+
+fn apply_acc_to_trend_point(point: &mut StatisticsTrendPoint, acc: &StatAccumulator) {
+    point.request_count = acc.request_count;
+    point.total_tokens = acc.total_tokens;
+    point.input_tokens = acc.input_tokens;
+    point.output_tokens = acc.output_tokens;
+    point.cache_create_tokens = acc.cache_create_tokens;
+    point.cache_read_tokens = acc.cache_read_tokens;
+    point.cost = acc.cost;
+    point.avg_tokens_per_second =
+        (acc.rate_count > 0).then_some(acc.rate_sum / acc.rate_count as f64);
+}
+
+fn trend_from_map(
+    trend_map: &HashMap<i64, StatAccumulator>,
+    start_epoch: i64,
+    end_epoch: i64,
+    bucket: &StatisticsBucket,
+) -> Vec<StatisticsTrendPoint> {
+    let mut trend = make_empty_trend(start_epoch, end_epoch, bucket);
+    for point in &mut trend {
+        if let Some(acc) = trend_map.get(&point.start_epoch) {
+            apply_acc_to_trend_point(point, acc);
+        }
+    }
+    trend
+}
+
+fn value_for_metric(point: &StatisticsTrendPoint, metric: &StatisticsMetric) -> f64 {
+    match metric {
+        StatisticsMetric::Cost => point.cost,
+        StatisticsMetric::Requests => point.request_count as f64,
+        StatisticsMetric::Tokens => point.total_tokens as f64,
+    }
+}
+
+fn totals_from_acc(acc: &StatAccumulator, model_count: u64, with_status: bool) -> StatisticsTotals {
+    let error_requests = acc.client_error_requests + acc.server_error_requests;
+    StatisticsTotals {
+        request_count: acc.request_count,
+        total_tokens: acc.total_tokens,
+        input_tokens: acc.input_tokens,
+        output_tokens: acc.output_tokens,
+        cache_create_tokens: acc.cache_create_tokens,
+        cache_read_tokens: acc.cache_read_tokens,
+        cost: acc.cost,
+        model_count,
+        success_requests: with_status.then_some(acc.success_requests),
+        error_requests: with_status.then_some(error_requests),
+    }
+}
+
+fn build_insights(
+    totals: &StatisticsTotals,
+    trend: &[StatisticsTrendPoint],
+    models: &[StatisticsModelBreakdown],
+    metric: &StatisticsMetric,
+    performance: Option<&StatisticsPerformance>,
+) -> Vec<StatisticsInsight> {
+    let mut insights = Vec::new();
+
+    if let Some(peak) = trend.iter().max_by(|a, b| {
+        value_for_metric(a, metric)
+            .partial_cmp(&value_for_metric(b, metric))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    }) {
+        if value_for_metric(peak, metric) > 0.0 {
+            insights.push(StatisticsInsight {
+                kind: "peak".to_string(),
+                level: "info".to_string(),
+                value: match metric {
+                    StatisticsMetric::Cost => format!("{:.4}", peak.cost),
+                    StatisticsMetric::Requests => peak.request_count.to_string(),
+                    StatisticsMetric::Tokens => peak.total_tokens.to_string(),
+                },
+                model_name: None,
+                date: Some(peak.label.clone()),
+            });
+        }
+    }
+
+    if let Some(model) = models.first() {
+        insights.push(StatisticsInsight {
+            kind: "topModel".to_string(),
+            level: "info".to_string(),
+            value: format!("{:.1}", model.percent),
+            model_name: Some(model.model_name.clone()),
+            date: None,
+        });
+    }
+
+    if let Some(error_requests) = totals.error_requests {
+        if error_requests > 0 {
+            insights.push(StatisticsInsight {
+                kind: "errors".to_string(),
+                level: "warning".to_string(),
+                value: error_requests.to_string(),
+                model_name: None,
+                date: None,
+            });
+        }
+    }
+
+    if let Some(perf) = performance {
+        if let Some(model) = &perf.slowest_model {
+            insights.push(StatisticsInsight {
+                kind: "slowestModel".to_string(),
+                level: "info".to_string(),
+                value: format!("{:.0}", perf.avg_ttft_ms),
+                model_name: Some(model.clone()),
+                date: None,
+            });
+        }
+    }
+
+    insights.truncate(4);
+    insights
+}
+
+fn build_proxy_statistics(
+    records: Vec<UsageRecord>,
+    query: &StatisticsQuery,
+    _settings: &AppSettings,
+) -> StatisticsSummary {
+    let (start_epoch, end_epoch) = normalize_range(query);
+    let mut total = StatAccumulator::default();
+    let mut trend_map: HashMap<i64, StatAccumulator> = HashMap::new();
+    let mut model_map: HashMap<String, StatAccumulator> = HashMap::new();
+    let mut model_trend_map: HashMap<String, HashMap<i64, StatAccumulator>> = HashMap::new();
+
+    for record in &records {
+        let cost = record.estimated_cost;
+        let model_name = if record.model.is_empty() {
+            "unknown".to_string()
+        } else {
+            record.model.clone()
+        };
+        let bucket = bucket_start(record.timestamp / 1000, &query.bucket);
+        total.add_record(record, cost);
+        trend_map
+            .entry(bucket)
+            .or_default()
+            .add_record(record, cost);
+        model_map
+            .entry(model_name.clone())
+            .or_default()
+            .add_record(record, cost);
+        model_trend_map
+            .entry(model_name)
+            .or_default()
+            .entry(bucket)
+            .or_default()
+            .add_record(record, cost);
+    }
+
+    let trend = trend_from_map(&trend_map, start_epoch, end_epoch, &query.bucket);
+
+    let mut models: Vec<StatisticsModelBreakdown> = model_map
+        .into_iter()
+        .map(|(model_name, acc)| {
+            let mut status_codes: Vec<StatusCodeCount> = acc
+                .status_code_counts
+                .iter()
+                .map(|(status_code, count)| StatusCodeCount {
+                    status_code: *status_code,
+                    count: *count,
+                })
+                .collect();
+            status_codes.sort_by(|a, b| a.status_code.cmp(&b.status_code));
+
+            StatisticsModelBreakdown {
+                model_name: model_name.clone(),
+                request_count: acc.request_count,
+                total_tokens: acc.total_tokens,
+                input_tokens: acc.input_tokens,
+                output_tokens: acc.output_tokens,
+                cache_create_tokens: acc.cache_create_tokens,
+                cache_read_tokens: acc.cache_read_tokens,
+                cost: acc.cost,
+                percent: if total.total_tokens > 0 {
+                    (acc.total_tokens as f64 / total.total_tokens as f64) * 100.0
+                } else {
+                    0.0
+                },
+                avg_tokens_per_second: (acc.rate_count > 0)
+                    .then_some(acc.rate_sum / acc.rate_count as f64),
+                avg_ttft_ms: (acc.ttft_count > 0).then_some(acc.ttft_sum / acc.ttft_count as f64),
+                error_requests: Some(acc.client_error_requests + acc.server_error_requests),
+                success_requests: Some(acc.success_requests),
+                client_error_requests: Some(acc.client_error_requests),
+                server_error_requests: Some(acc.server_error_requests),
+                status_codes,
+                trend: model_trend_map
+                    .get(&model_name)
+                    .map(|trend_map| {
+                        trend_from_map(trend_map, start_epoch, end_epoch, &query.bucket)
+                    })
+                    .unwrap_or_else(|| make_empty_trend(start_epoch, end_epoch, &query.bucket)),
+            }
+        })
+        .collect();
+    models.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
+
+    let performance = if total.rate_count > 0 || total.ttft_count > 0 {
+        let fastest_model = models
+            .iter()
+            .filter_map(|m| m.avg_tokens_per_second.map(|v| (m.model_name.clone(), v)))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|m| m.0);
+        let slowest_model = models
+            .iter()
+            .filter_map(|m| m.avg_ttft_ms.map(|v| (m.model_name.clone(), v)))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|m| m.0);
+
+        Some(StatisticsPerformance {
+            request_count: total.rate_count.max(total.ttft_count),
+            avg_tokens_per_second: if total.rate_count > 0 {
+                total.rate_sum / total.rate_count as f64
+            } else {
+                0.0
+            },
+            avg_ttft_ms: if total.ttft_count > 0 {
+                total.ttft_sum / total.ttft_count as f64
+            } else {
+                0.0
+            },
+            slowest_model,
+            fastest_model,
+        })
+    } else {
+        None
+    };
+
+    let status_total =
+        total.success_requests + total.client_error_requests + total.server_error_requests;
+    let status = Some(StatisticsStatusBreakdown {
+        success_requests: total.success_requests,
+        client_error_requests: total.client_error_requests,
+        server_error_requests: total.server_error_requests,
+        success_rate: if status_total > 0 {
+            (total.success_requests as f64 / status_total as f64) * 100.0
+        } else {
+            0.0
+        },
+    });
+
+    let totals = totals_from_acc(&total, models.len() as u64, true);
+    let insights = build_insights(
+        &totals,
+        &trend,
+        &models,
+        &query.metric,
+        performance.as_ref(),
+    );
+
+    StatisticsSummary {
+        generated_at_epoch: chrono::Utc::now().timestamp(),
+        source: "proxy".to_string(),
+        capability: StatisticsCapability {
+            has_basic_usage: true,
+            has_performance: performance.is_some(),
+            has_status_codes: true,
+        },
+        range: StatisticsRange {
+            start_epoch,
+            end_epoch,
+            timezone: query.timezone.clone(),
+            bucket: bucket_name(&query.bucket),
+        },
+        totals,
+        trend,
+        models,
+        performance,
+        status,
+        insights,
+    }
+}
+
+fn build_jsonl_statistics(query: &StatisticsQuery, settings: &AppSettings) -> StatisticsSummary {
+    let (start_epoch, end_epoch) = normalize_range(query);
+    let pricings = effective_model_pricings(settings);
+    let match_mode = settings.model_pricing.match_mode.clone();
+    let mut total = StatAccumulator::default();
+    let mut trend_map: HashMap<i64, StatAccumulator> = HashMap::new();
+    let mut model_map: HashMap<String, StatAccumulator> = HashMap::new();
+    let mut model_trend_map: HashMap<String, HashMap<i64, StatAccumulator>> = HashMap::new();
+
+    for meta in crate::session::get_all_session_meta_cached() {
+        let event_epoch = if meta.end_time > 0 {
+            meta.end_time
+        } else {
+            meta.last_modified
+        };
+        if event_epoch < start_epoch || event_epoch >= end_epoch {
+            continue;
+        }
+        let model = meta
+            .models
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string());
+        let cost = crate::models::estimate_session_cost(
+            meta.total_input_tokens,
+            meta.total_output_tokens,
+            meta.total_cache_create_tokens,
+            meta.total_cache_read_tokens,
+            &model,
+            &pricings,
+            &match_mode,
+        );
+        let requests = meta.message_count.max(1);
+        let bucket = bucket_start(event_epoch, &query.bucket);
+        total.add_tokens(
+            meta.total_input_tokens,
+            meta.total_output_tokens,
+            meta.total_cache_create_tokens,
+            meta.total_cache_read_tokens,
+            requests,
+            cost,
+        );
+        trend_map.entry(bucket).or_default().add_tokens(
+            meta.total_input_tokens,
+            meta.total_output_tokens,
+            meta.total_cache_create_tokens,
+            meta.total_cache_read_tokens,
+            requests,
+            cost,
+        );
+        model_map.entry(model.clone()).or_default().add_tokens(
+            meta.total_input_tokens,
+            meta.total_output_tokens,
+            meta.total_cache_create_tokens,
+            meta.total_cache_read_tokens,
+            requests,
+            cost,
+        );
+        model_trend_map
+            .entry(model.clone())
+            .or_default()
+            .entry(bucket)
+            .or_default()
+            .add_tokens(
+                meta.total_input_tokens,
+                meta.total_output_tokens,
+                meta.total_cache_create_tokens,
+                meta.total_cache_read_tokens,
+                requests,
+                cost,
+            );
+    }
+
+    let trend = trend_from_map(&trend_map, start_epoch, end_epoch, &query.bucket);
+
+    let mut models: Vec<StatisticsModelBreakdown> = model_map
+        .into_iter()
+        .map(|(model_name, acc)| StatisticsModelBreakdown {
+            model_name: model_name.clone(),
+            request_count: acc.request_count,
+            total_tokens: acc.total_tokens,
+            input_tokens: acc.input_tokens,
+            output_tokens: acc.output_tokens,
+            cache_create_tokens: acc.cache_create_tokens,
+            cache_read_tokens: acc.cache_read_tokens,
+            cost: acc.cost,
+            percent: if total.total_tokens > 0 {
+                (acc.total_tokens as f64 / total.total_tokens as f64) * 100.0
+            } else {
+                0.0
+            },
+            avg_tokens_per_second: None,
+            avg_ttft_ms: None,
+            error_requests: None,
+            success_requests: None,
+            client_error_requests: None,
+            server_error_requests: None,
+            status_codes: Vec::new(),
+            trend: model_trend_map
+                .get(&model_name)
+                .map(|trend_map| trend_from_map(trend_map, start_epoch, end_epoch, &query.bucket))
+                .unwrap_or_else(|| make_empty_trend(start_epoch, end_epoch, &query.bucket)),
+        })
+        .collect();
+    models.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
+
+    let totals = totals_from_acc(&total, models.len() as u64, false);
+    let insights = build_insights(&totals, &trend, &models, &query.metric, None);
+
+    StatisticsSummary {
+        generated_at_epoch: chrono::Utc::now().timestamp(),
+        source: "local-jsonl".to_string(),
+        capability: StatisticsCapability {
+            has_basic_usage: true,
+            has_performance: false,
+            has_status_codes: false,
+        },
+        range: StatisticsRange {
+            start_epoch,
+            end_epoch,
+            timezone: query.timezone.clone(),
+            bucket: bucket_name(&query.bucket),
+        },
+        totals,
+        trend,
+        models,
+        performance: None,
+        status: None,
+        insights,
+    }
+}
+
+#[tauri::command]
+pub async fn get_statistics_summary(
+    query: StatisticsQuery,
+    settings: AppSettings,
+    _proxy_state: tauri::State<'_, ProxyState>,
+) -> Result<StatisticsSummary, String> {
+    let (start_epoch, end_epoch) = normalize_range(&query);
+    if settings.data_source == "proxy" {
+        if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
+            db.backfill_unlocked_costs().await?;
+            let records = db
+                .get_records_between(start_epoch * 1000, end_epoch * 1000, true)
+                .await?;
+            return Ok(build_proxy_statistics(records, &query, &settings));
+        }
+    }
+
+    Ok(build_jsonl_statistics(&query, &settings))
+}
+
+fn month_day_count(year: i32, month: u8) -> u32 {
+    for day in (28..=31).rev() {
+        if NaiveDate::from_ymd_opt(year, month as u32, day).is_some() {
+            return day;
+        }
+    }
+    30
+}
+
+#[tauri::command]
+pub async fn get_month_activity(
+    year: i32,
+    month: u8,
+    metric: StatisticsMetric,
+    settings: AppSettings,
+    _proxy_state: tauri::State<'_, ProxyState>,
+) -> Result<MonthActivity, String> {
+    let day_count = month_day_count(year, month);
+    let pricings = effective_model_pricings(&settings);
+    let match_mode = settings.model_pricing.match_mode.clone();
+    let mut day_map: HashMap<String, (StatAccumulator, std::collections::HashSet<String>)> =
+        HashMap::new();
+
+    let month_start = Local
+        .with_ymd_and_hms(year, month as u32, 1, 0, 0, 0)
+        .single()
+        .unwrap_or_else(Local::now)
+        .timestamp();
+    let next_month = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month as u32 + 1)
+    };
+    let month_end = Local
+        .with_ymd_and_hms(next_month.0, next_month.1, 1, 0, 0, 0)
+        .single()
+        .unwrap_or_else(Local::now)
+        .timestamp();
+
+    if settings.data_source == "proxy" {
+        if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
+            let month_start_date = NaiveDate::from_ymd_opt(year, month as u32, 1)
+                .unwrap_or_else(|| Local::now().date_naive());
+            let next_month_date = if month == 12 {
+                NaiveDate::from_ymd_opt(year + 1, 1, 1)
+            } else {
+                NaiveDate::from_ymd_opt(year, month as u32 + 1, 1)
+            }
+            .unwrap_or_else(|| Local::now().date_naive());
+            let today_date = Local::now().date_naive();
+            let summary_end_date = next_month_date.min(today_date);
+
+            if summary_end_date > month_start_date {
+                let summary_start_key = month_start_date.format("%Y-%m-%d").to_string();
+                let summary_end_key = summary_end_date.format("%Y-%m-%d").to_string();
+                db.ensure_daily_summaries(&summary_start_key, &summary_end_key)
+                    .await?;
+                for summary in db
+                    .get_daily_activity_summaries(&summary_start_key, &summary_end_key)
+                    .await?
+                {
+                    let mut acc = StatAccumulator::default();
+                    if settings.proxy.include_error_requests {
+                        acc.request_count = summary.request_count;
+                        acc.total_tokens = summary.total_tokens;
+                        acc.input_tokens = summary.input_tokens;
+                        acc.output_tokens = summary.output_tokens;
+                        acc.cache_create_tokens = summary.cache_create_tokens;
+                        acc.cache_read_tokens = summary.cache_read_tokens;
+                        acc.cost = summary.cost;
+                    } else {
+                        acc.request_count = summary.success_requests;
+                        acc.total_tokens = summary.success_total_tokens;
+                        acc.input_tokens = summary.success_input_tokens;
+                        acc.output_tokens = summary.success_output_tokens;
+                        acc.cache_create_tokens = summary.success_cache_create_tokens;
+                        acc.cache_read_tokens = summary.success_cache_read_tokens;
+                        acc.cost = summary.success_cost;
+                    }
+                    acc.success_requests = summary.success_requests;
+                    acc.client_error_requests = summary.client_error_requests;
+                    acc.server_error_requests = summary.server_error_requests;
+                    let models = (0..summary.model_count)
+                        .map(|idx| format!("__cached_model_{idx}"))
+                        .collect();
+                    day_map.insert(summary.date, (acc, models));
+                }
+            } else {
+                db.backfill_unlocked_costs().await?;
+            }
+
+            let live_start = month_start_date.max(today_date);
+            if live_start < next_month_date {
+                let live_start_epoch = Local
+                    .with_ymd_and_hms(
+                        live_start.year(),
+                        live_start.month(),
+                        live_start.day(),
+                        0,
+                        0,
+                        0,
+                    )
+                    .single()
+                    .unwrap_or_else(Local::now)
+                    .timestamp();
+                let live_end_epoch = month_end;
+                let records = db
+                    .get_records_between(
+                        live_start_epoch * 1000,
+                        live_end_epoch * 1000,
+                        settings.proxy.include_error_requests,
+                    )
+                    .await?;
+                for record in records {
+                    let date = Local
+                        .timestamp_opt(record.timestamp / 1000, 0)
+                        .single()
+                        .unwrap_or_else(Local::now)
+                        .format("%Y-%m-%d")
+                        .to_string();
+                    let cost = record.estimated_cost;
+                    let entry = day_map.entry(date).or_default();
+                    entry.0.add_record(&record, cost);
+                    if !record.model.is_empty() {
+                        entry.1.insert(record.model);
+                    }
+                }
+            }
+        }
+    } else {
+        for meta in crate::session::get_all_session_meta_cached() {
+            let event_epoch = if meta.end_time > 0 {
+                meta.end_time
+            } else {
+                meta.last_modified
+            };
+            if event_epoch < month_start || event_epoch >= month_end {
+                continue;
+            }
+            let date = Local
+                .timestamp_opt(event_epoch, 0)
+                .single()
+                .unwrap_or_else(Local::now)
+                .format("%Y-%m-%d")
+                .to_string();
+            let model = meta
+                .models
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string());
+            let cost = crate::models::estimate_session_cost(
+                meta.total_input_tokens,
+                meta.total_output_tokens,
+                meta.total_cache_create_tokens,
+                meta.total_cache_read_tokens,
+                &model,
+                &pricings,
+                &match_mode,
+            );
+            let entry = day_map.entry(date).or_default();
+            entry.0.add_tokens(
+                meta.total_input_tokens,
+                meta.total_output_tokens,
+                meta.total_cache_create_tokens,
+                meta.total_cache_read_tokens,
+                meta.message_count.max(1),
+                cost,
+            );
+            for model in meta.models {
+                entry.1.insert(model);
+            }
+        }
+    }
+
+    let mut days = Vec::new();
+    for day in 1..=day_count {
+        let Some(date) = NaiveDate::from_ymd_opt(year, month as u32, day) else {
+            continue;
+        };
+        let key = date.format("%Y-%m-%d").to_string();
+        let (acc, models) = day_map.remove(&key).unwrap_or_default();
+        let error_requests = acc.client_error_requests + acc.server_error_requests;
+        days.push(DayActivity {
+            date: key,
+            request_count: acc.request_count,
+            total_tokens: acc.total_tokens,
+            input_tokens: acc.input_tokens,
+            output_tokens: acc.output_tokens,
+            cache_create_tokens: acc.cache_create_tokens,
+            cache_read_tokens: acc.cache_read_tokens,
+            cost: acc.cost,
+            model_count: models.len() as u64,
+            success_requests: (settings.data_source == "proxy").then_some(acc.success_requests),
+            error_requests: (settings.data_source == "proxy").then_some(error_requests),
+        });
+    }
+
+    Ok(MonthActivity {
+        year,
+        month,
+        timezone: settings.timezone,
+        metric,
+        days,
+    })
+}
+
+#[tauri::command]
+pub async fn get_year_activity(
+    year: i32,
+    metric: StatisticsMetric,
+    settings: AppSettings,
+    _proxy_state: tauri::State<'_, ProxyState>,
+) -> Result<YearActivity, String> {
+    let pricings = effective_model_pricings(&settings);
+    let match_mode = settings.model_pricing.match_mode.clone();
+    let mut day_map: HashMap<String, (StatAccumulator, std::collections::HashSet<String>)> =
+        HashMap::new();
+
+    let year_start = Local
+        .with_ymd_and_hms(year, 1, 1, 0, 0, 0)
+        .single()
+        .unwrap_or_else(Local::now)
+        .timestamp();
+    let year_end = Local
+        .with_ymd_and_hms(year + 1, 1, 1, 0, 0, 0)
+        .single()
+        .unwrap_or_else(Local::now)
+        .timestamp();
+
+    if settings.data_source == "proxy" {
+        if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
+            let year_start_date =
+                NaiveDate::from_ymd_opt(year, 1, 1).unwrap_or_else(|| Local::now().date_naive());
+            let next_year_date = NaiveDate::from_ymd_opt(year + 1, 1, 1)
+                .unwrap_or_else(|| Local::now().date_naive());
+            let today_date = Local::now().date_naive();
+            let summary_end_date = next_year_date.min(today_date);
+
+            if summary_end_date > year_start_date {
+                let summary_start_key = year_start_date.format("%Y-%m-%d").to_string();
+                let summary_end_key = summary_end_date.format("%Y-%m-%d").to_string();
+                db.ensure_daily_summaries(&summary_start_key, &summary_end_key)
+                    .await?;
+                for summary in db
+                    .get_daily_activity_summaries(&summary_start_key, &summary_end_key)
+                    .await?
+                {
+                    let mut acc = StatAccumulator::default();
+                    if settings.proxy.include_error_requests {
+                        acc.request_count = summary.request_count;
+                        acc.total_tokens = summary.total_tokens;
+                        acc.input_tokens = summary.input_tokens;
+                        acc.output_tokens = summary.output_tokens;
+                        acc.cache_create_tokens = summary.cache_create_tokens;
+                        acc.cache_read_tokens = summary.cache_read_tokens;
+                        acc.cost = summary.cost;
+                    } else {
+                        acc.request_count = summary.success_requests;
+                        acc.total_tokens = summary.success_total_tokens;
+                        acc.input_tokens = summary.success_input_tokens;
+                        acc.output_tokens = summary.success_output_tokens;
+                        acc.cache_create_tokens = summary.success_cache_create_tokens;
+                        acc.cache_read_tokens = summary.success_cache_read_tokens;
+                        acc.cost = summary.success_cost;
+                    }
+                    acc.success_requests = summary.success_requests;
+                    acc.client_error_requests = summary.client_error_requests;
+                    acc.server_error_requests = summary.server_error_requests;
+                    let models = (0..summary.model_count)
+                        .map(|idx| format!("__cached_model_{idx}"))
+                        .collect();
+                    day_map.insert(summary.date, (acc, models));
+                }
+            } else {
+                db.backfill_unlocked_costs().await?;
+            }
+
+            let live_start = year_start_date.max(today_date);
+            if live_start < next_year_date {
+                let live_start_epoch = Local
+                    .with_ymd_and_hms(
+                        live_start.year(),
+                        live_start.month(),
+                        live_start.day(),
+                        0,
+                        0,
+                        0,
+                    )
+                    .single()
+                    .unwrap_or_else(Local::now)
+                    .timestamp();
+                let records = db
+                    .get_records_between(
+                        live_start_epoch * 1000,
+                        year_end * 1000,
+                        settings.proxy.include_error_requests,
+                    )
+                    .await?;
+                for record in records {
+                    let date = Local
+                        .timestamp_opt(record.timestamp / 1000, 0)
+                        .single()
+                        .unwrap_or_else(Local::now)
+                        .format("%Y-%m-%d")
+                        .to_string();
+                    let cost = record.estimated_cost;
+                    let entry = day_map.entry(date).or_default();
+                    entry.0.add_record(&record, cost);
+                    if !record.model.is_empty() {
+                        entry.1.insert(record.model);
+                    }
+                }
+            }
+        }
+    } else {
+        for meta in crate::session::get_all_session_meta_cached() {
+            let event_epoch = if meta.end_time > 0 {
+                meta.end_time
+            } else {
+                meta.last_modified
+            };
+            if event_epoch < year_start || event_epoch >= year_end {
+                continue;
+            }
+            let date = Local
+                .timestamp_opt(event_epoch, 0)
+                .single()
+                .unwrap_or_else(Local::now)
+                .format("%Y-%m-%d")
+                .to_string();
+            let model = meta
+                .models
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string());
+            let cost = crate::models::estimate_session_cost(
+                meta.total_input_tokens,
+                meta.total_output_tokens,
+                meta.total_cache_create_tokens,
+                meta.total_cache_read_tokens,
+                &model,
+                &pricings,
+                &match_mode,
+            );
+            let entry = day_map.entry(date).or_default();
+            entry.0.add_tokens(
+                meta.total_input_tokens,
+                meta.total_output_tokens,
+                meta.total_cache_create_tokens,
+                meta.total_cache_read_tokens,
+                meta.message_count.max(1),
+                cost,
+            );
+            for model in meta.models {
+                entry.1.insert(model);
+            }
+        }
+    }
+
+    let Some(mut date) = NaiveDate::from_ymd_opt(year, 1, 1) else {
+        return Ok(YearActivity {
+            year,
+            timezone: settings.timezone,
+            metric,
+            days: Vec::new(),
+        });
+    };
+    let Some(end_date) = NaiveDate::from_ymd_opt(year + 1, 1, 1) else {
+        return Ok(YearActivity {
+            year,
+            timezone: settings.timezone,
+            metric,
+            days: Vec::new(),
+        });
+    };
+
+    let mut days = Vec::new();
+    while date < end_date {
+        let key = date.format("%Y-%m-%d").to_string();
+        let (acc, models) = day_map.remove(&key).unwrap_or_default();
+        let error_requests = acc.client_error_requests + acc.server_error_requests;
+        days.push(DayActivity {
+            date: key,
+            request_count: acc.request_count,
+            total_tokens: acc.total_tokens,
+            input_tokens: acc.input_tokens,
+            output_tokens: acc.output_tokens,
+            cache_create_tokens: acc.cache_create_tokens,
+            cache_read_tokens: acc.cache_read_tokens,
+            cost: acc.cost,
+            model_count: models.len() as u64,
+            success_requests: (settings.data_source == "proxy").then_some(acc.success_requests),
+            error_requests: (settings.data_source == "proxy").then_some(error_requests),
+        });
+        let Some(next_date) = date.succ_opt() else {
+            break;
+        };
+        date = next_date;
+    }
+
+    Ok(YearActivity {
+        year,
+        timezone: settings.timezone,
+        metric,
+        days,
+    })
 }
 
 /// 获取窗口速率汇总（整体 + 按模型）用于代理模式

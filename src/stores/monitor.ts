@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AlertEvent, AppSettings, ModelPricingSettings, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, UsageSnapshot, WindowQuota, WindowRateSummary } from '../types'
+import type { AlertEvent, AppSettings, ModelPricingSettings, MonthActivity, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageSnapshot, WindowQuota, WindowRateSummary, YearActivity } from '../types'
 
 const defaultQuotas: WindowQuota[] = [
   { window: '5h', enabled: true, tokenLimit: 500000, requestLimit: 500 },
@@ -15,6 +15,19 @@ const defaultModelPricing: ModelPricingSettings = {
   matchMode: 'fuzzy',
   lastSyncTime: null,
   pricings: []
+}
+
+function invokeWithTimeout<T>(command: string, args: Record<string, unknown>, timeoutMs = 120000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject('ERR_STATISTICS_TIMEOUT'), timeoutMs)
+  })
+
+  return Promise.race([invoke<T>(command, args), timeout]).finally(() => {
+    if (timer) {
+      clearTimeout(timer)
+    }
+  })
 }
 
 const defaultSettings: AppSettings = {
@@ -62,7 +75,18 @@ export const useMonitorStore = defineStore('monitor', {
     selectedSession: null as SessionStats | null,
     // 项目统计（基于所有会话聚合，不受分页影响）
     projectStats: [] as ProjectStats[],
-    projectStatsLoading: false
+    projectStatsLoading: false,
+    // 统计面板
+    statisticsSummary: null as StatisticsSummary | null,
+    monthActivity: null as MonthActivity | null,
+    yearActivity: null as YearActivity | null,
+    statisticsLoading: false,
+    monthActivityLoading: false,
+    yearActivityLoading: false,
+    statisticsError: '' as string,
+    statisticsRequestSeq: 0,
+    monthActivityRequestSeq: 0,
+    yearActivityRequestSeq: 0
   }),
   getters: {
     hasData: state => !!state.snapshot,
@@ -176,6 +200,75 @@ export const useMonitorStore = defineStore('monitor', {
           await new Promise(resolve => setTimeout(resolve, minLoadingMs - elapsed))
         }
         this.loading = false
+      }
+    },
+    async fetchStatisticsSummary(query: StatisticsQuery) {
+      const requestSeq = ++this.statisticsRequestSeq
+      this.statisticsLoading = true
+      try {
+        this.statisticsError = ''
+        const summary = await invokeWithTimeout<StatisticsSummary>('get_statistics_summary', {
+          query,
+          settings: this.settings
+        })
+        if (requestSeq === this.statisticsRequestSeq) {
+          this.statisticsSummary = summary
+        }
+      } catch (e) {
+        if (requestSeq === this.statisticsRequestSeq) {
+          this.statisticsError = String(e)
+        }
+      } finally {
+        if (requestSeq === this.statisticsRequestSeq) {
+          this.statisticsLoading = false
+        }
+      }
+    },
+    async fetchMonthActivity(year: number, month: number, metric: StatisticsMetric) {
+      const requestSeq = ++this.monthActivityRequestSeq
+      this.monthActivityLoading = true
+      try {
+        this.statisticsError = ''
+        const activity = await invokeWithTimeout<MonthActivity>('get_month_activity', {
+          year,
+          month,
+          metric,
+          settings: this.settings
+        })
+        if (requestSeq === this.monthActivityRequestSeq) {
+          this.monthActivity = activity
+        }
+      } catch (e) {
+        if (requestSeq === this.monthActivityRequestSeq) {
+          this.statisticsError = String(e)
+        }
+      } finally {
+        if (requestSeq === this.monthActivityRequestSeq) {
+          this.monthActivityLoading = false
+        }
+      }
+    },
+    async fetchYearActivity(year: number, metric: StatisticsMetric) {
+      const requestSeq = ++this.yearActivityRequestSeq
+      this.yearActivityLoading = true
+      try {
+        this.statisticsError = ''
+        const activity = await invokeWithTimeout<YearActivity>('get_year_activity', {
+          year,
+          metric,
+          settings: this.settings
+        })
+        if (requestSeq === this.yearActivityRequestSeq) {
+          this.yearActivity = activity
+        }
+      } catch (e) {
+        if (requestSeq === this.yearActivityRequestSeq) {
+          this.statisticsError = String(e)
+        }
+      } finally {
+        if (requestSeq === this.yearActivityRequestSeq) {
+          this.yearActivityLoading = false
+        }
       }
     },
     calculatePercent(used: number, limit: number | null): number | null {

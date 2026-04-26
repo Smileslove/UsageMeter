@@ -1,6 +1,6 @@
 [package]
 name = "usagemeter"
-version = "0.2.0"
+version = "0.3.0"
 description = "A lightweight tray application for monitoring Claude Code usage"
 authors = ["Smileslove"]
 license = "MIT"
@@ -50,4 +50,3 @@ tempfile = "3"  # For testing
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSColor", "NSView", "NSGraphics"] }
 objc2-foundation = { version = "0.3", features = ["NSObject"] }
-

@@ -252,3 +252,142 @@ export interface SessionRequest {
   ttftMs: number | null
   statusCode: number
 }
+
+// 统计面板
+export type StatisticsMetric = 'cost' | 'requests' | 'tokens'
+
+export type StatisticsBucket = 'hour' | 'day'
+
+export type StatisticsRangePreset = '5h' | 'today' | '1d' | '7d' | '30d' | 'current_month' | 'custom'
+
+export interface StatisticsQuery {
+  startEpoch: number
+  endEpoch: number
+  timezone: string
+  bucket: StatisticsBucket
+  metric: StatisticsMetric
+}
+
+export interface StatisticsRange {
+  startEpoch: number
+  endEpoch: number
+  timezone: string
+  bucket: StatisticsBucket
+}
+
+export interface StatisticsCapability {
+  hasBasicUsage: boolean
+  hasPerformance: boolean
+  hasStatusCodes: boolean
+}
+
+export interface StatisticsTotals {
+  requestCount: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cacheCreateTokens: number
+  cacheReadTokens: number
+  cost: number
+  modelCount: number
+  successRequests?: number | null
+  errorRequests?: number | null
+}
+
+export interface StatisticsTrendPoint {
+  startEpoch: number
+  label: string
+  requestCount: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cacheCreateTokens: number
+  cacheReadTokens: number
+  cost: number
+  avgTokensPerSecond?: number | null
+}
+
+export interface StatisticsModelBreakdown {
+  modelName: string
+  requestCount: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cacheCreateTokens: number
+  cacheReadTokens: number
+  cost: number
+  percent: number
+  avgTokensPerSecond?: number | null
+  avgTtftMs?: number | null
+  errorRequests?: number | null
+  successRequests?: number | null
+  clientErrorRequests?: number | null
+  serverErrorRequests?: number | null
+  statusCodes: StatusCodeCount[]
+  trend: StatisticsTrendPoint[]
+}
+
+export interface StatisticsPerformance {
+  requestCount: number
+  avgTokensPerSecond: number
+  avgTtftMs: number
+  slowestModel?: string | null
+  fastestModel?: string | null
+}
+
+export interface StatisticsStatusBreakdown {
+  successRequests: number
+  clientErrorRequests: number
+  serverErrorRequests: number
+  successRate: number
+}
+
+export interface StatisticsInsight {
+  kind: 'peak' | 'topModel' | 'errors' | 'slowestModel' | string
+  level: 'info' | 'warning' | string
+  value: string
+  modelName?: string | null
+  date?: string | null
+}
+
+export interface StatisticsSummary {
+  generatedAtEpoch: number
+  source: string
+  capability: StatisticsCapability
+  range: StatisticsRange
+  totals: StatisticsTotals
+  trend: StatisticsTrendPoint[]
+  models: StatisticsModelBreakdown[]
+  performance?: StatisticsPerformance | null
+  status?: StatisticsStatusBreakdown | null
+  insights: StatisticsInsight[]
+}
+
+export interface DayActivity {
+  date: string
+  requestCount: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cacheCreateTokens: number
+  cacheReadTokens: number
+  cost: number
+  modelCount: number
+  successRequests?: number | null
+  errorRequests?: number | null
+}
+
+export interface MonthActivity {
+  year: number
+  month: number
+  timezone: string
+  metric: StatisticsMetric
+  days: DayActivity[]
+}
+
+export interface YearActivity {
+  year: number
+  timezone: string
+  metric: StatisticsMetric
+  days: DayActivity[]
+}

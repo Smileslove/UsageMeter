@@ -225,6 +225,9 @@ pub fn run() {
             // 用量命令
             commands::get_usage_snapshot,
             commands::get_window_rate_summary,
+            commands::get_statistics_summary,
+            commands::get_month_activity,
+            commands::get_year_activity,
             // 会话命令
             commands::get_sessions,
             commands::get_session_detail,

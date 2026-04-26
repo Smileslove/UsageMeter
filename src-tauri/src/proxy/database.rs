@@ -2,14 +2,42 @@
 
 use super::types::{SessionStats, UsageRecord};
 use crate::models::ModelPricingConfig;
+use chrono::{Local, TimeZone};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 /// 全局数据库实例（用于查询操作，避免重复打开连接）
 static GLOBAL_DB: OnceLock<Arc<ProxyDatabase>> = OnceLock::new();
+
+const LEGACY_UNMATCHED_SESSION_ID: &str = "__legacy_unmatched__";
+
+#[derive(Debug, Clone)]
+pub struct DailyActivitySummary {
+    pub date: String,
+    pub total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_create_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub request_count: u64,
+    pub cost: f64,
+    pub success_total_tokens: u64,
+    pub success_input_tokens: u64,
+    pub success_output_tokens: u64,
+    pub success_cache_create_tokens: u64,
+    pub success_cache_read_tokens: u64,
+    pub success_cost: f64,
+    pub model_count: u64,
+    pub success_requests: u64,
+    pub client_error_requests: u64,
+    pub server_error_requests: u64,
+}
 
 /// 数据库管理器，用于代理使用数据
 /// 使用线程安全的 SQLite 连接包装器
@@ -56,6 +84,8 @@ impl ProxyDatabase {
         // 启用 WAL 模式以获得更好的并发性
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| format!("Failed to enable WAL mode: {}", e))?;
+        conn.busy_timeout(Duration::from_secs(30))
+            .map_err(|e| format!("Failed to set SQLite busy timeout: {}", e))?;
 
         // 创建表
         Self::create_tables(&conn)?;
@@ -110,6 +140,9 @@ impl ProxyDatabase {
                 request_end_time INTEGER,
                 duration_ms INTEGER NOT NULL DEFAULT 0,
                 output_tokens_per_second REAL,
+                estimated_cost REAL NOT NULL DEFAULT 0,
+                pricing_snapshot_id TEXT,
+                cost_locked INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
             );
 
@@ -160,7 +193,19 @@ impl ProxyDatabase {
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_create_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-                request_count INTEGER NOT NULL DEFAULT 0
+                request_count INTEGER NOT NULL DEFAULT 0,
+                cost REAL NOT NULL DEFAULT 0,
+                success_total_tokens INTEGER NOT NULL DEFAULT 0,
+                success_input_tokens INTEGER NOT NULL DEFAULT 0,
+                success_output_tokens INTEGER NOT NULL DEFAULT 0,
+                success_cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+                success_cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                success_cost REAL NOT NULL DEFAULT 0,
+                model_count INTEGER NOT NULL DEFAULT 0,
+                success_requests INTEGER NOT NULL DEFAULT 0,
+                client_error_requests INTEGER NOT NULL DEFAULT 0,
+                server_error_requests INTEGER NOT NULL DEFAULT 0,
+                finalized_at INTEGER NOT NULL DEFAULT 0
             );
 
             -- 模型使用量表
@@ -174,6 +219,10 @@ impl ProxyDatabase {
                 cache_create_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
                 request_count INTEGER NOT NULL DEFAULT 0,
+                cost REAL NOT NULL DEFAULT 0,
+                success_requests INTEGER NOT NULL DEFAULT 0,
+                client_error_requests INTEGER NOT NULL DEFAULT 0,
+                server_error_requests INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (date, model)
             );
             "#,
@@ -251,6 +300,26 @@ impl ProxyDatabase {
             "ALTER TABLE usage_records ADD COLUMN output_tokens_per_second REAL",
             "ALTER TABLE usage_records ADD COLUMN status_code INTEGER NOT NULL DEFAULT 200",
             "ALTER TABLE usage_records ADD COLUMN ttft_ms INTEGER",
+            "ALTER TABLE usage_records ADD COLUMN migration_attempted_at INTEGER",
+            "ALTER TABLE usage_records ADD COLUMN estimated_cost REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE usage_records ADD COLUMN pricing_snapshot_id TEXT",
+            "ALTER TABLE usage_records ADD COLUMN cost_locked INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE daily_summary ADD COLUMN cost REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE daily_summary ADD COLUMN success_total_tokens INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE daily_summary ADD COLUMN success_input_tokens INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE daily_summary ADD COLUMN success_output_tokens INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE daily_summary ADD COLUMN success_cache_create_tokens INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE daily_summary ADD COLUMN success_cache_read_tokens INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE daily_summary ADD COLUMN success_cost REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE daily_summary ADD COLUMN model_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE daily_summary ADD COLUMN success_requests INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE daily_summary ADD COLUMN client_error_requests INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE daily_summary ADD COLUMN server_error_requests INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE daily_summary ADD COLUMN finalized_at INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE model_usage ADD COLUMN cost REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE model_usage ADD COLUMN success_requests INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE model_usage ADD COLUMN client_error_requests INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE model_usage ADD COLUMN server_error_requests INTEGER NOT NULL DEFAULT 0",
         ];
 
         for migration in migrations {
@@ -262,8 +331,102 @@ impl ProxyDatabase {
         Ok(())
     }
 
+    fn pricing_snapshot_id(pricings: &[ModelPricingConfig], match_mode: &str) -> String {
+        let mut normalized = pricings.to_vec();
+        normalized.sort_by(|a, b| {
+            a.model_id
+                .cmp(&b.model_id)
+                .then_with(|| a.source.cmp(&b.source))
+                .then_with(|| a.last_updated.cmp(&b.last_updated))
+        });
+        let payload = serde_json::json!({
+            "matchMode": match_mode,
+            "pricings": normalized,
+        });
+        let mut hasher = DefaultHasher::new();
+        payload.to_string().hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    }
+
+    fn record_local_date(timestamp_ms: i64) -> String {
+        Local
+            .timestamp_opt(timestamp_ms / 1000, 0)
+            .single()
+            .unwrap_or_else(Local::now)
+            .format("%Y-%m-%d")
+            .to_string()
+    }
+
+    fn today_local_date() -> String {
+        Local::now().format("%Y-%m-%d").to_string()
+    }
+
+    fn current_pricing_context(&self) -> (Vec<ModelPricingConfig>, String, String) {
+        let settings = crate::commands::load_settings().unwrap_or_default();
+        let mut pricings = settings.model_pricing.pricings;
+        if let Ok(db_pricings) = self.get_all_model_pricings() {
+            pricings.extend(db_pricings);
+        }
+        let match_mode = settings.model_pricing.match_mode;
+        let snapshot_id = Self::pricing_snapshot_id(&pricings, &match_mode);
+        (pricings, match_mode, snapshot_id)
+    }
+
+    fn estimate_record_cost(
+        record: &UsageRecord,
+        pricings: &[ModelPricingConfig],
+        match_mode: &str,
+    ) -> f64 {
+        crate::models::estimate_session_cost(
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_create_tokens,
+            record.cache_read_tokens,
+            &record.model,
+            pricings,
+            match_mode,
+        )
+    }
+
+    fn usage_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageRecord> {
+        let input = row.get::<_, i64>(2)? as u64;
+        let output = row.get::<_, i64>(3)? as u64;
+        let cache_create = row.get::<_, i64>(4)? as u64;
+        let cache_read = row.get::<_, i64>(5)? as u64;
+        Ok(UsageRecord {
+            timestamp: row.get::<_, i64>(0)?,
+            message_id: row.get(1)?,
+            input_tokens: input,
+            output_tokens: output,
+            cache_create_tokens: cache_create,
+            cache_read_tokens: cache_read,
+            total_tokens: input + cache_create + cache_read + output,
+            model: row.get(6)?,
+            session_id: row.get(7)?,
+            request_start_time: row.get::<_, Option<i64>>(8)?.unwrap_or(0),
+            request_end_time: row.get::<_, Option<i64>>(9)?.unwrap_or(0),
+            duration_ms: row.get::<_, i64>(10)? as u64,
+            output_tokens_per_second: row.get(11)?,
+            ttft_ms: row.get::<_, Option<i64>>(12)?.map(|v| v as u64),
+            status_code: row.get::<_, i64>(13)? as u16,
+            estimated_cost: row.get::<_, Option<f64>>(14)?.unwrap_or(0.0),
+            pricing_snapshot_id: row.get(15)?,
+            cost_locked: row.get::<_, Option<i64>>(16)?.unwrap_or(0) != 0,
+        })
+    }
+
     /// 插入使用记录
     pub async fn insert_record(&self, record: &UsageRecord) -> Result<i64, String> {
+        let (pricings, match_mode, snapshot_id) = self.current_pricing_context();
+        let estimated_cost = if record.cost_locked {
+            record.estimated_cost
+        } else {
+            Self::estimate_record_cost(record, &pricings, &match_mode)
+        };
+        let pricing_snapshot_id = record
+            .pricing_snapshot_id
+            .clone()
+            .unwrap_or_else(|| snapshot_id.clone());
         let conn = self
             .conn
             .lock()
@@ -274,8 +437,9 @@ impl ProxyDatabase {
             INSERT OR REPLACE INTO usage_records
             (timestamp, message_id, input_tokens, output_tokens, cache_create_tokens,
              cache_read_tokens, model, session_id, request_start_time,
-             request_end_time, duration_ms, output_tokens_per_second, ttft_ms, status_code)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             request_end_time, duration_ms, output_tokens_per_second, ttft_ms, status_code,
+             estimated_cost, pricing_snapshot_id, cost_locked)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1)
             "#,
             (
                 record.timestamp,
@@ -292,12 +456,288 @@ impl ProxyDatabase {
                 record.output_tokens_per_second,
                 record.ttft_ms.map(|v| v as i64),
                 record.status_code as i64,
+                estimated_cost,
+                pricing_snapshot_id,
             ),
         )
         .map_err(|e| format!("Failed to insert record: {}", e))?;
 
         let id = conn.last_insert_rowid();
+        let date = Self::record_local_date(record.timestamp);
+        if date < Self::today_local_date() {
+            Self::refresh_daily_summary_for_date_conn(&conn, &date)?;
+        }
         Ok(id)
+    }
+
+    fn refresh_daily_summary_for_date_conn(conn: &Connection, date: &str) -> Result<(), String> {
+        conn.execute("DELETE FROM daily_summary WHERE date = ?1", [date])
+            .map_err(|e| format!("Failed to clear daily summary: {}", e))?;
+        conn.execute("DELETE FROM model_usage WHERE date = ?1", [date])
+            .map_err(|e| format!("Failed to clear model usage: {}", e))?;
+
+        conn.execute(
+            r#"
+            INSERT INTO daily_summary (
+                date, total_tokens, input_tokens, output_tokens, cache_create_tokens,
+                cache_read_tokens, request_count, cost, success_total_tokens,
+                success_input_tokens, success_output_tokens, success_cache_create_tokens,
+                success_cache_read_tokens, success_cost, model_count, success_requests,
+                client_error_requests, server_error_requests, finalized_at
+            )
+            SELECT
+                ?1,
+                COALESCE(SUM(input_tokens + cache_create_tokens + cache_read_tokens + output_tokens), 0),
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(cache_create_tokens), 0),
+                COALESCE(SUM(cache_read_tokens), 0),
+                COUNT(*),
+                COALESCE(SUM(estimated_cost), 0),
+                COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN input_tokens + cache_create_tokens + cache_read_tokens + output_tokens ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN input_tokens ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN output_tokens ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN cache_create_tokens ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN cache_read_tokens ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN estimated_cost ELSE 0 END), 0),
+                COUNT(DISTINCT CASE WHEN model != '' THEN model END),
+                COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END), 0),
+                ?2
+            FROM usage_records
+            WHERE date(timestamp / 1000, 'unixepoch', 'localtime') = ?1
+            HAVING COUNT(*) > 0
+            "#,
+            rusqlite::params![date, chrono::Utc::now().timestamp_millis()],
+        )
+        .map_err(|e| format!("Failed to refresh daily summary: {}", e))?;
+
+        conn.execute(
+            r#"
+            INSERT INTO model_usage (
+                date, model, total_tokens, input_tokens, output_tokens, cache_create_tokens,
+                cache_read_tokens, request_count, cost, success_requests,
+                client_error_requests, server_error_requests
+            )
+            SELECT
+                ?1,
+                model,
+                COALESCE(SUM(input_tokens + cache_create_tokens + cache_read_tokens + output_tokens), 0),
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(cache_create_tokens), 0),
+                COALESCE(SUM(cache_read_tokens), 0),
+                COUNT(*),
+                COALESCE(SUM(estimated_cost), 0),
+                COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END), 0)
+            FROM usage_records
+            WHERE date(timestamp / 1000, 'unixepoch', 'localtime') = ?1
+            GROUP BY model
+            "#,
+            [date],
+        )
+        .map_err(|e| format!("Failed to refresh model usage: {}", e))?;
+
+        Ok(())
+    }
+
+    pub async fn backfill_unlocked_costs(&self) -> Result<usize, String> {
+        let (pricings, match_mode, snapshot_id) = self.current_pricing_context();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+        let records = {
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                    SELECT id, timestamp, input_tokens, output_tokens, cache_create_tokens,
+                           cache_read_tokens, model
+                    FROM usage_records
+                    WHERE cost_locked = 0 OR cost_locked IS NULL
+                    "#,
+                )
+                .map_err(|e| format!("Failed to prepare cost backfill query: {}", e))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)? as u64,
+                        row.get::<_, i64>(3)? as u64,
+                        row.get::<_, i64>(4)? as u64,
+                        row.get::<_, i64>(5)? as u64,
+                        row.get::<_, String>(6)?,
+                    ))
+                })
+                .map_err(|e| format!("Failed to query cost backfill records: {}", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to collect cost backfill records: {}", e))?;
+            rows
+        };
+
+        if records.is_empty() {
+            return Ok(0);
+        }
+
+        let mut touched_dates = std::collections::HashSet::new();
+        let mut stmt = conn
+            .prepare(
+                r#"
+                UPDATE usage_records
+                SET estimated_cost = ?1, pricing_snapshot_id = ?2, cost_locked = 1
+                WHERE id = ?3
+                "#,
+            )
+            .map_err(|e| format!("Failed to prepare cost backfill update: {}", e))?;
+
+        for (id, timestamp, input, output, cache_create, cache_read, model) in &records {
+            let cost = crate::models::estimate_session_cost(
+                *input,
+                *output,
+                *cache_create,
+                *cache_read,
+                model,
+                &pricings,
+                &match_mode,
+            );
+            stmt.execute(rusqlite::params![cost, snapshot_id, id])
+                .map_err(|e| format!("Failed to update cost backfill record: {}", e))?;
+            let date = Self::record_local_date(*timestamp);
+            if date < Self::today_local_date() {
+                touched_dates.insert(date);
+            }
+        }
+        drop(stmt);
+
+        for date in touched_dates {
+            Self::refresh_daily_summary_for_date_conn(&conn, &date)?;
+        }
+
+        eprintln!(
+            "[database] Backfilled frozen cost for {} usage records",
+            records.len()
+        );
+        Ok(records.len())
+    }
+
+    pub async fn ensure_daily_summaries(
+        &self,
+        start_date: &str,
+        end_date_exclusive: &str,
+    ) -> Result<(), String> {
+        self.backfill_unlocked_costs().await?;
+
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+        let dates = {
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                    SELECT DISTINCT date(timestamp / 1000, 'unixepoch', 'localtime') as date_key
+                    FROM usage_records
+                    WHERE date(timestamp / 1000, 'unixepoch', 'localtime') >= ?1
+                      AND date(timestamp / 1000, 'unixepoch', 'localtime') < ?2
+                    "#,
+                )
+                .map_err(|e| format!("Failed to prepare summary date query: {}", e))?;
+            let rows = stmt
+                .query_map(rusqlite::params![start_date, end_date_exclusive], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|e| format!("Failed to query summary dates: {}", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to collect summary dates: {}", e))?;
+            rows
+        };
+
+        let existing = {
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                    SELECT date FROM daily_summary
+                    WHERE date >= ?1 AND date < ?2
+                    "#,
+                )
+                .map_err(|e| format!("Failed to prepare existing summary query: {}", e))?;
+            let rows = stmt
+                .query_map(rusqlite::params![start_date, end_date_exclusive], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|e| format!("Failed to query existing summaries: {}", e))?
+                .collect::<Result<std::collections::HashSet<_>, _>>()
+                .map_err(|e| format!("Failed to collect existing summaries: {}", e))?;
+            rows
+        };
+
+        for date in dates {
+            if !existing.contains(&date) {
+                Self::refresh_daily_summary_for_date_conn(&conn, &date)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_daily_activity_summaries(
+        &self,
+        start_date: &str,
+        end_date_exclusive: &str,
+    ) -> Result<Vec<DailyActivitySummary>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+        let mut stmt = conn
+            .prepare(
+                r#"
+                SELECT date, total_tokens, input_tokens, output_tokens, cache_create_tokens,
+                       cache_read_tokens, request_count, cost, success_total_tokens,
+                       success_input_tokens, success_output_tokens, success_cache_create_tokens,
+                       success_cache_read_tokens, success_cost, model_count, success_requests,
+                       client_error_requests, server_error_requests
+                FROM daily_summary
+                WHERE date >= ?1 AND date < ?2
+                ORDER BY date ASC
+                "#,
+            )
+            .map_err(|e| format!("Failed to prepare daily summaries query: {}", e))?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![start_date, end_date_exclusive], |row| {
+                Ok(DailyActivitySummary {
+                    date: row.get(0)?,
+                    total_tokens: row.get::<_, i64>(1)? as u64,
+                    input_tokens: row.get::<_, i64>(2)? as u64,
+                    output_tokens: row.get::<_, i64>(3)? as u64,
+                    cache_create_tokens: row.get::<_, i64>(4)? as u64,
+                    cache_read_tokens: row.get::<_, i64>(5)? as u64,
+                    request_count: row.get::<_, i64>(6)? as u64,
+                    cost: row.get::<_, f64>(7)?,
+                    success_total_tokens: row.get::<_, i64>(8)? as u64,
+                    success_input_tokens: row.get::<_, i64>(9)? as u64,
+                    success_output_tokens: row.get::<_, i64>(10)? as u64,
+                    success_cache_create_tokens: row.get::<_, i64>(11)? as u64,
+                    success_cache_read_tokens: row.get::<_, i64>(12)? as u64,
+                    success_cost: row.get::<_, f64>(13)?,
+                    model_count: row.get::<_, i64>(14)? as u64,
+                    success_requests: row.get::<_, i64>(15)? as u64,
+                    client_error_requests: row.get::<_, i64>(16)? as u64,
+                    server_error_requests: row.get::<_, i64>(17)? as u64,
+                })
+            })
+            .map_err(|e| format!("Failed to query daily summaries: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect daily summaries: {}", e))?;
+        Ok(rows)
     }
 
     /// 获取时间窗口内的记录
@@ -314,7 +754,7 @@ impl ProxyDatabase {
                 SELECT timestamp, message_id, input_tokens, output_tokens,
                        cache_create_tokens, cache_read_tokens, model, session_id,
                        request_start_time, request_end_time, duration_ms, output_tokens_per_second,
-                       ttft_ms, status_code
+                       ttft_ms, status_code, estimated_cost, pricing_snapshot_id, cost_locked
                 FROM usage_records
                 WHERE timestamp >= ?1
                 ORDER BY timestamp DESC
@@ -323,29 +763,56 @@ impl ProxyDatabase {
             .map_err(|e| format!("Failed to prepare statement: {}", e))?;
 
         let records = stmt
-            .query_map([cutoff_ms], |row| {
-                let input = row.get::<_, i64>(2)? as u64;
-                let output = row.get::<_, i64>(3)? as u64;
-                let cache_create = row.get::<_, i64>(4)? as u64;
-                let cache_read = row.get::<_, i64>(5)? as u64;
-                Ok(UsageRecord {
-                    timestamp: row.get::<_, i64>(0)?,
-                    message_id: row.get(1)?,
-                    input_tokens: input,
-                    output_tokens: output,
-                    cache_create_tokens: cache_create,
-                    cache_read_tokens: cache_read,
-                    total_tokens: input + cache_create + cache_read + output, // 总 Token（含缓存）
-                    model: row.get(6)?,
-                    session_id: row.get(7)?,
-                    request_start_time: row.get::<_, Option<i64>>(8)?.unwrap_or(0),
-                    request_end_time: row.get::<_, Option<i64>>(9)?.unwrap_or(0),
-                    duration_ms: row.get::<_, i64>(10)? as u64,
-                    output_tokens_per_second: row.get(11)?,
-                    ttft_ms: row.get::<_, Option<i64>>(12)?.map(|v| v as u64),
-                    status_code: row.get::<_, i64>(13)? as u16,
-                })
-            })
+            .query_map([cutoff_ms], Self::usage_record_from_row)
+            .map_err(|e| format!("Failed to query records: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect records: {}", e))?;
+
+        Ok(records)
+    }
+
+    /// 获取指定时间范围内的记录
+    ///
+    /// 使用半开区间 [start_ms, end_ms)，便于前端按日期和小时拼接连续范围。
+    pub async fn get_records_between(
+        &self,
+        start_ms: i64,
+        end_ms: i64,
+        include_errors: bool,
+    ) -> Result<Vec<UsageRecord>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+        let status_filter = if include_errors {
+            ""
+        } else {
+            "AND status_code >= 200 AND status_code < 300"
+        };
+
+        let sql = format!(
+            r#"
+            SELECT timestamp, message_id, input_tokens, output_tokens,
+                   cache_create_tokens, cache_read_tokens, model, session_id,
+                   request_start_time, request_end_time, duration_ms, output_tokens_per_second,
+                   ttft_ms, status_code, estimated_cost, pricing_snapshot_id, cost_locked
+            FROM usage_records
+            WHERE timestamp >= ?1 AND timestamp < ?2
+              {status_filter}
+            ORDER BY timestamp ASC
+            "#
+        );
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare statement: {}", e))?;
+
+        let records = stmt
+            .query_map(
+                rusqlite::params![start_ms, end_ms],
+                Self::usage_record_from_row,
+            )
             .map_err(|e| format!("Failed to query records: {}", e))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Failed to collect records: {}", e))?;
@@ -722,7 +1189,9 @@ impl ProxyDatabase {
                     SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END) as success_requests,
                     SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) as error_requests
                 FROM usage_records
-                WHERE session_id IS NOT NULL AND session_id != ''
+                WHERE session_id IS NOT NULL
+                  AND session_id != ''
+                  AND session_id != ?2
                 GROUP BY session_id
                 ORDER BY MAX(request_end_time) DESC
                 LIMIT ?1
@@ -731,62 +1200,65 @@ impl ProxyDatabase {
             .map_err(|e| format!("Failed to prepare statement: {}", e))?;
 
         let sessions = stmt
-            .query_map([limit], |row| {
-                let total_output_tokens: i64 = row.get(3)?;
-                let total_duration_ms: i64 = row.get(6)?;
-                let models_str: String = row.get::<_, String>(9)?;
-                let total_input_tokens: i64 = row.get(2)?;
-                let total_cache_create_tokens: i64 = row.get(4)?;
-                let total_cache_read_tokens: i64 = row.get(5)?;
+            .query_map(
+                rusqlite::params![limit, LEGACY_UNMATCHED_SESSION_ID],
+                |row| {
+                    let total_output_tokens: i64 = row.get(3)?;
+                    let total_duration_ms: i64 = row.get(6)?;
+                    let models_str: String = row.get::<_, String>(9)?;
+                    let total_input_tokens: i64 = row.get(2)?;
+                    let total_cache_create_tokens: i64 = row.get(4)?;
+                    let total_cache_read_tokens: i64 = row.get(5)?;
 
-                let avg_rate = if total_duration_ms > 0 {
-                    (total_output_tokens as f64) / (total_duration_ms as f64 / 1000.0)
-                } else {
-                    0.0
-                };
-
-                // 获取第一个模型用于定价
-                let first_model = models_str.split(',').next().unwrap_or("");
-
-                // 计算估算费用
-                let estimated_cost = crate::models::estimate_session_cost(
-                    total_input_tokens as u64,
-                    total_output_tokens as u64,
-                    total_cache_create_tokens as u64,
-                    total_cache_read_tokens as u64,
-                    first_model,
-                    pricings,
-                    match_mode,
-                );
-
-                Ok(SessionStats {
-                    session_id: row.get(0)?,
-                    total_requests: row.get::<_, i64>(1)? as u64,
-                    total_input_tokens: total_input_tokens as u64,
-                    total_output_tokens: total_output_tokens as u64,
-                    total_cache_create_tokens: total_cache_create_tokens as u64,
-                    total_cache_read_tokens: total_cache_read_tokens as u64,
-                    total_duration_ms: total_duration_ms as u64,
-                    avg_output_tokens_per_second: avg_rate,
-                    first_request_time: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
-                    last_request_time: row.get::<_, Option<i64>>(8)?.unwrap_or(0),
-                    models: if models_str.is_empty() {
-                        Vec::new()
+                    let avg_rate = if total_duration_ms > 0 {
+                        (total_output_tokens as f64) / (total_duration_ms as f64 / 1000.0)
                     } else {
-                        models_str.split(',').map(|s| s.to_string()).collect()
-                    },
-                    avg_ttft_ms: row.get::<_, Option<f64>>(10)?.unwrap_or(0.0),
-                    success_requests: row.get::<_, i64>(11)? as u64,
-                    error_requests: row.get::<_, i64>(12)? as u64,
-                    estimated_cost,
-                    is_cost_estimated: true,
-                    cwd: None,
-                    project_name: None,
-                    topic: None,
-                    last_prompt: None,
-                    session_name: None,
-                })
-            })
+                        0.0
+                    };
+
+                    // 获取第一个模型用于定价
+                    let first_model = models_str.split(',').next().unwrap_or("");
+
+                    // 计算估算费用
+                    let estimated_cost = crate::models::estimate_session_cost(
+                        total_input_tokens as u64,
+                        total_output_tokens as u64,
+                        total_cache_create_tokens as u64,
+                        total_cache_read_tokens as u64,
+                        first_model,
+                        pricings,
+                        match_mode,
+                    );
+
+                    Ok(SessionStats {
+                        session_id: row.get(0)?,
+                        total_requests: row.get::<_, i64>(1)? as u64,
+                        total_input_tokens: total_input_tokens as u64,
+                        total_output_tokens: total_output_tokens as u64,
+                        total_cache_create_tokens: total_cache_create_tokens as u64,
+                        total_cache_read_tokens: total_cache_read_tokens as u64,
+                        total_duration_ms: total_duration_ms as u64,
+                        avg_output_tokens_per_second: avg_rate,
+                        first_request_time: row.get::<_, Option<i64>>(7)?.unwrap_or(0),
+                        last_request_time: row.get::<_, Option<i64>>(8)?.unwrap_or(0),
+                        models: if models_str.is_empty() {
+                            Vec::new()
+                        } else {
+                            models_str.split(',').map(|s| s.to_string()).collect()
+                        },
+                        avg_ttft_ms: row.get::<_, Option<f64>>(10)?.unwrap_or(0.0),
+                        success_requests: row.get::<_, i64>(11)? as u64,
+                        error_requests: row.get::<_, i64>(12)? as u64,
+                        estimated_cost,
+                        is_cost_estimated: true,
+                        cwd: None,
+                        project_name: None,
+                        topic: None,
+                        last_prompt: None,
+                        session_name: None,
+                    })
+                },
+            )
             .map_err(|e| format!("Failed to query sessions: {}", e))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Failed to collect sessions: {}", e))?;
@@ -1806,7 +2278,9 @@ impl ProxyDatabase {
             Vec<f64>,                          // TTFT 值列表
         );
 
-        // 检查是否有需要迁移的记录（session_id 为空的记录）
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // 检查是否有需要迁移的记录（session_id 为空的历史记录）
         let needs_migration = {
             let conn = self
                 .conn
@@ -1912,6 +2386,7 @@ impl ProxyDatabase {
         let mut matched = 0;
         let mut unmatched = 0;
         let mut record_updates: Vec<(String, i64)> = Vec::new(); // (session_id, record_id) 会话ID, 记录ID
+        let mut unmatched_record_ids: Vec<i64> = Vec::new();
 
         for (
             record_id,
@@ -1968,11 +2443,8 @@ impl ProxyDatabase {
                 }
             } else {
                 unmatched += 1;
+                unmatched_record_ids.push(record_id);
             }
-        }
-
-        if matched == 0 {
-            return Ok(0);
         }
 
         eprintln!(
@@ -1980,30 +2452,53 @@ impl ProxyDatabase {
             matched, unmatched
         );
 
-        // 更新 usage_records 的 session_id
-        {
-            let conn = self
-                .conn
-                .lock()
-                .map_err(|e| format!("Failed to lock connection: {}", e))?;
-
-            for (session_id, record_id) in &record_updates {
-                conn.execute(
-                    "UPDATE usage_records SET session_id = ?1 WHERE id = ?2",
-                    rusqlite::params![session_id, record_id],
-                )
-                .ok(); // 忽略单个更新失败
-            }
-        }
-
         // 保存到 session_stats 表（使用增量更新，避免覆盖已有数据）
-        let now = chrono::Utc::now().timestamp_millis();
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| format!("Failed to lock connection: {}", e))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Failed to start migration transaction: {}", e))?;
 
         let mut migrated = 0;
+
+        {
+            let mut update_record_stmt = tx
+                .prepare("UPDATE usage_records SET session_id = ?1 WHERE id = ?2")
+                .map_err(|e| format!("Failed to prepare record migration update: {}", e))?;
+
+            for (session_id, record_id) in &record_updates {
+                let _ = update_record_stmt.execute(rusqlite::params![session_id, record_id]);
+            }
+        }
+
+        if !unmatched_record_ids.is_empty() {
+            let mut mark_unmatched_stmt = tx
+                .prepare(
+                    "UPDATE usage_records SET session_id = ?1, migration_attempted_at = ?2 WHERE id = ?3",
+                )
+                .map_err(|e| format!("Failed to prepare unmatched migration update: {}", e))?;
+
+            for record_id in &unmatched_record_ids {
+                let _ = mark_unmatched_stmt.execute(rusqlite::params![
+                    LEGACY_UNMATCHED_SESSION_ID,
+                    now,
+                    record_id
+                ]);
+            }
+        }
+
+        if matched == 0 {
+            tx.commit()
+                .map_err(|e| format!("Failed to commit unmatched migration transaction: {}", e))?;
+            drop(conn);
+            eprintln!(
+                "[migration] No records matched; archived {} records as legacy unmatched",
+                unmatched
+            );
+            return Ok(0);
+        }
 
         for (
             session_id,
@@ -2038,7 +2533,7 @@ impl ProxyDatabase {
             let models_str: String = models.into_iter().collect::<Vec<_>>().join(",");
 
             // 检查是否已存在该 session
-            let exists: bool = conn
+            let exists: bool = tx
                 .query_row(
                     "SELECT 1 FROM session_stats WHERE session_id = ?1",
                     [&session_id],
@@ -2048,7 +2543,7 @@ impl ProxyDatabase {
 
             if exists {
                 // 增量更新已存在的记录
-                let result = conn.execute(
+                let result = tx.execute(
                     r#"
                     UPDATE session_stats SET
                         total_duration_ms = total_duration_ms + ?2,
@@ -2089,7 +2584,7 @@ impl ProxyDatabase {
                 }
             } else {
                 // 插入新记录
-                let result = conn.execute(
+                let result = tx.execute(
                     r#"
                     INSERT INTO session_stats (
                         session_id, total_duration_ms, avg_output_tokens_per_second, avg_ttft_ms,
@@ -2125,6 +2620,8 @@ impl ProxyDatabase {
             }
         }
 
+        tx.commit()
+            .map_err(|e| format!("Failed to commit migration transaction: {}", e))?;
         drop(conn);
         eprintln!(
             "[migration] Migrated {} sessions to session_stats table",
