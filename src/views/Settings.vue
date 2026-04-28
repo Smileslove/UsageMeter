@@ -7,11 +7,12 @@ import { WINDOW_ORDER, type BillingType, type WindowName, type DataSource, type 
 import ModelPricingSettings from '../components/ModelPricingSettings.vue'
 import ApiSourceList from '../components/ApiSourceList.vue'
 import WindowQuotaSettings from '../components/WindowQuotaSettings.vue'
+import CurrencySettings from '../components/CurrencySettings.vue'
 
 const store = useMonitorStore()
 
 // 子页面状态
-const subView = ref<'main' | 'model-pricing' | 'api-sources' | 'window-quotas'>('main')
+const subView = ref<'main' | 'model-pricing' | 'api-sources' | 'window-quotas' | 'currency'>('main')
 
 // 监听 subView 变化，触发子组件刷新
 const modelPricingKey = ref(0)
@@ -40,6 +41,11 @@ const openApiSources = () => {
 // 进入窗口配额管理
 const openWindowQuotas = () => {
   subView.value = 'window-quotas'
+}
+
+// 进入货币设置
+const openCurrency = () => {
+  subView.value = 'currency'
 }
 
 // 本地状态用于双向绑定
@@ -254,6 +260,12 @@ const formatUptime = (seconds: number): string => {
     <!-- 窗口配额管理子页面 -->
     <WindowQuotaSettings
       v-show="subView === 'window-quotas'"
+      @back="goBack"
+    />
+
+    <!-- 货币设置子页面 -->
+    <CurrencySettings
+      v-show="subView === 'currency'"
       @back="goBack"
     />
 
@@ -530,6 +542,22 @@ const formatUptime = (seconds: number): string => {
             </div>
           </div>
   
+          <!-- 货币设置入口 -->
+          <div
+            @click="openCurrency"
+            class="p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors"
+          >
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.currency') }}</div>
+                <div class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.currencyDesc') }}</div>
+              </div>
+              <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+              </svg>
+            </div>
+          </div>
+
           <!-- 计费类型 -->
           <div class="p-3 px-4">
             <div class="flex items-center justify-between">

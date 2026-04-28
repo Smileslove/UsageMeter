@@ -8,6 +8,9 @@ import VChart from 'vue-echarts'
 import { t } from '../../i18n'
 import { formatCost, formatRequestCount, formatTokenValue } from '../../utils/format'
 import type { AppLocale, StatisticsMetric, StatisticsTrendPoint } from '../../types'
+import { useMonitorStore } from '../../stores/monitor'
+
+const store = useMonitorStore()
 
 use([CanvasRenderer, LineChart, GridComponent, TooltipComponent])
 
@@ -37,7 +40,7 @@ function valueOf(point: StatisticsTrendPoint, metric: StatisticsMetric): number 
 }
 
 function formatMetric(metric: StatisticsMetric, value: number): string {
-  if (metric === 'cost') return formatCost(value)
+  if (metric === 'cost') return formatCost(value, store.settings.currency)
   if (metric === 'tokens') return formatTokenValue(value)
   return formatRequestCount(value)
 }

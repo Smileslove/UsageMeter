@@ -2,6 +2,10 @@
 import { ref, watch } from 'vue'
 import { t } from '../i18n'
 import type { ModelPricingConfig } from '../types'
+import { useMonitorStore } from '../stores/monitor'
+import { getCurrencySymbol } from '../utils/format'
+
+const store = useMonitorStore()
 
 const props = defineProps<{
   pricing: ModelPricingConfig | null
@@ -12,6 +16,9 @@ const emit = defineEmits<{
   save: [pricing: ModelPricingConfig]
   close: []
 }>()
+
+// 输入币种（默认跟随显示货币）
+const inputCurrency = ref(store.settings.currency.displayCurrency)
 
 // 表单状态
 const modelId = ref('')
@@ -26,14 +33,17 @@ const isEdit = ref(false)
 
 // 初始化
 watch(() => props.pricing, (pricing) => {
+  inputCurrency.value = store.settings.currency.displayCurrency
   if (pricing) {
     isEdit.value = true
     modelId.value = pricing.modelId
     displayName.value = pricing.displayName || ''
-    inputPrice.value = pricing.inputPrice
-    outputPrice.value = pricing.outputPrice
-    cacheReadPrice.value = pricing.cacheReadPrice
-    cacheWritePrice.value = pricing.cacheWritePrice
+    // 将存储的 USD 价格转换为当前输入币种显示
+    const r = store.settings.currency.exchangeRates[inputCurrency.value] || 1.0
+    inputPrice.value = parseFloat((pricing.inputPrice * r).toFixed(4))
+    outputPrice.value = parseFloat((pricing.outputPrice * r).toFixed(4))
+    cacheReadPrice.value = pricing.cacheReadPrice != null ? parseFloat((pricing.cacheReadPrice * r).toFixed(4)) : undefined
+    cacheWritePrice.value = pricing.cacheWritePrice != null ? parseFloat((pricing.cacheWritePrice * r).toFixed(4)) : undefined
   } else {
     isEdit.value = false
     modelId.value = ''
@@ -45,18 +55,30 @@ watch(() => props.pricing, (pricing) => {
   }
 }, { immediate: true })
 
-// 保存
+// 输入币种变化时重新转换显示值
+watch(inputCurrency, (newCurrency) => {
+  if (!props.pricing) return
+  const r = store.settings.currency.exchangeRates[newCurrency] || 1.0
+  inputPrice.value = parseFloat((props.pricing.inputPrice * r).toFixed(4))
+  outputPrice.value = parseFloat((props.pricing.outputPrice * r).toFixed(4))
+  cacheReadPrice.value = props.pricing.cacheReadPrice != null ? parseFloat((props.pricing.cacheReadPrice * r).toFixed(4)) : undefined
+  cacheWritePrice.value = props.pricing.cacheWritePrice != null ? parseFloat((props.pricing.cacheWritePrice * r).toFixed(4)) : undefined
+})
+
+// 保存（将输入币种价格转换为 USD 存储）
 const handleSave = () => {
   if (!modelId.value.trim()) return
   if (inputPrice.value <= 0 || outputPrice.value <= 0) return
 
+  const r = store.settings.currency.exchangeRates[inputCurrency.value] || 1.0
+
   const pricing: ModelPricingConfig = {
     modelId: modelId.value.trim(),
     displayName: displayName.value.trim() || undefined,
-    inputPrice: inputPrice.value,
-    outputPrice: outputPrice.value,
-    cacheReadPrice: cacheReadPrice.value,
-    cacheWritePrice: cacheWritePrice.value,
+    inputPrice: parseFloat((inputPrice.value / r).toFixed(6)),
+    outputPrice: parseFloat((outputPrice.value / r).toFixed(6)),
+    cacheReadPrice: cacheReadPrice.value != null ? parseFloat((cacheReadPrice.value / r).toFixed(6)) : undefined,
+    cacheWritePrice: cacheWritePrice.value != null ? parseFloat((cacheWritePrice.value / r).toFixed(6)) : undefined,
     source: 'custom',
     lastUpdated: Date.now()
   }
@@ -109,6 +131,19 @@ const isValid = () => {
         />
       </div>
 
+      <!-- 输入币种选择 -->
+      <div>
+        <label class="block text-[10px] text-gray-500 mb-0.5">{{ t(props.locale, 'settings.currencyInputUnit') }}</label>
+        <select
+          v-model="inputCurrency"
+          class="w-full px-2.5 py-1.5 bg-gray-50 dark:bg-neutral-800 border border-gray-200 dark:border-neutral-700 rounded-lg text-xs outline-none focus:border-blue-400 transition-colors cursor-pointer appearance-none"
+        >
+          <option v-for="code in store.settings.currency.trackedCurrencies" :key="code" :value="code">
+            {{ code }} ({{ getCurrencySymbol(code) }})
+          </option>
+        </select>
+      </div>
+
       <!-- 输入/输出价格 -->
       <div class="grid grid-cols-2 gap-2">
         <div>
@@ -122,7 +157,7 @@ const isValid = () => {
               placeholder="3.00"
               class="w-full px-2.5 py-1.5 pr-10 bg-gray-50 dark:bg-neutral-800 border border-gray-200 dark:border-neutral-700 rounded-lg text-xs outline-none focus:border-blue-400 transition-colors font-mono"
             />
-            <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-gray-400">$/M</span>
+            <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-gray-400">{{ getCurrencySymbol(inputCurrency) }}/M</span>
           </div>
         </div>
         <div>
@@ -136,7 +171,7 @@ const isValid = () => {
               placeholder="15.00"
               class="w-full px-2.5 py-1.5 pr-10 bg-gray-50 dark:bg-neutral-800 border border-gray-200 dark:border-neutral-700 rounded-lg text-xs outline-none focus:border-blue-400 transition-colors font-mono"
             />
-            <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-gray-400">$/M</span>
+            <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-gray-400">{{ getCurrencySymbol(inputCurrency) }}/M</span>
           </div>
         </div>
       </div>
@@ -154,7 +189,7 @@ const isValid = () => {
               placeholder="0"
               class="w-full px-2.5 py-1.5 pr-10 bg-gray-50 dark:bg-neutral-800 border border-gray-200 dark:border-neutral-700 rounded-lg text-xs outline-none focus:border-blue-400 transition-colors font-mono"
             />
-            <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-gray-400">$/M</span>
+            <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-gray-400">{{ getCurrencySymbol(inputCurrency) }}/M</span>
           </div>
         </div>
         <div>
@@ -168,7 +203,7 @@ const isValid = () => {
               placeholder="0"
               class="w-full px-2.5 py-1.5 pr-10 bg-gray-50 dark:bg-neutral-800 border border-gray-200 dark:border-neutral-700 rounded-lg text-xs outline-none focus:border-blue-400 transition-colors font-mono"
             />
-            <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-gray-400">$/M</span>
+            <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] text-gray-400">{{ getCurrencySymbol(inputCurrency) }}/M</span>
           </div>
         </div>
       </div>

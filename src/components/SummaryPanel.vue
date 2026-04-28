@@ -3,6 +3,7 @@ import { computed, watch, onMounted } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import { t, windowNameLabel } from '../i18n'
 import { Zap, Activity, Gauge, Coins } from 'lucide-vue-next'
+import { getCurrencySymbol, convertCost } from '../utils/format'
 
 const store = useMonitorStore()
 
@@ -47,14 +48,16 @@ const formatRate = (rate: number): string => {
   return rate.toFixed(2)
 }
 
-// 智能格式化费用（根据金额大小选择精度）
+// 智能格式化费用（根据金额大小选择精度，支持多货币）
 const formatCost = (cost: number | undefined): string => {
-  if (cost === undefined || cost === null) return '$0.00'
-  if (cost >= 1) return `$${cost.toFixed(2)}`
-  if (cost >= 0.01) return `$${cost.toFixed(3)}`
-  if (cost >= 0.001) return `$${cost.toFixed(4)}`
-  if (cost > 0) return `$${cost.toFixed(6)}`
-  return '$0.00'
+  if (cost === undefined || cost === null) return `${getCurrencySymbol(store.settings.currency.displayCurrency)}0.00`
+  const converted = convertCost(cost, store.settings.currency)
+  const sym = getCurrencySymbol(store.settings.currency.displayCurrency)
+  if (converted >= 1) return `${sym}${converted.toFixed(2)}`
+  if (converted >= 0.01) return `${sym}${converted.toFixed(3)}`
+  if (converted >= 0.001) return `${sym}${converted.toFixed(4)}`
+  if (converted > 0) return `${sym}${converted.toFixed(6)}`
+  return `${sym}0.00`
 }
 
 // 获取窗口标签

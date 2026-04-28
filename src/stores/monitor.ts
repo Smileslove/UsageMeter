@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AlertEvent, AppSettings, ClientToolSettings, ModelPricingSettings, MonthActivity, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageSnapshot, WindowQuota, WindowRateSummary, YearActivity, SourceAwareSettings } from '../types'
+import type { AlertEvent, AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageSnapshot, WindowQuota, WindowRateSummary, YearActivity, SourceAwareSettings } from '../types'
 
 const defaultQuotas: WindowQuota[] = [
   { window: '5h', enabled: true, tokenLimit: 500000, requestLimit: 500 },
@@ -20,6 +20,13 @@ const defaultModelPricing: ModelPricingSettings = {
 const defaultSourceAware: SourceAwareSettings = {
   sources: [],
   activeSourceFilter: null
+}
+
+const defaultCurrency: CurrencySettings = {
+  displayCurrency: 'USD',
+  exchangeRates: { USD: 1.0 },
+  trackedCurrencies: ['USD'],
+  lastRateUpdate: null
 }
 
 const defaultClientTools: ClientToolSettings = {
@@ -65,7 +72,8 @@ const defaultSettings: AppSettings = {
   modelPricing: defaultModelPricing,
   autoStart: false,
   sourceAware: defaultSourceAware,
-  clientTools: defaultClientTools
+  clientTools: defaultClientTools,
+  currency: defaultCurrency
 }
 
 export const useMonitorStore = defineStore('monitor', {
@@ -180,6 +188,21 @@ export const useMonitorStore = defineStore('monitor', {
           }
           if (this.settings.clientTools.activeToolFilter === undefined) {
             this.settings.clientTools.activeToolFilter = null
+          }
+        }
+
+        // 确保货币设置存在（迁移兼容）
+        if (!this.settings.currency) {
+          this.settings.currency = defaultCurrency
+        } else {
+          if (!this.settings.currency.displayCurrency) {
+            this.settings.currency.displayCurrency = 'USD'
+          }
+          if (!this.settings.currency.exchangeRates) {
+            this.settings.currency.exchangeRates = { USD: 1.0 }
+          }
+          if (!this.settings.currency.trackedCurrencies?.length) {
+            this.settings.currency.trackedCurrencies = ['USD']
           }
         }
       } catch (e) {

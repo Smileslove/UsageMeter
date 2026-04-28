@@ -8,6 +8,9 @@ import VChart from 'vue-echarts'
 import { t } from '../../i18n'
 import { formatCost, formatDurationMs, formatRate, formatRequestCount, formatTokenPair, formatTokenValue } from '../../utils/format'
 import type { AppLocale, StatisticsModelBreakdown, StatisticsTrendPoint } from '../../types'
+import { useMonitorStore } from '../../stores/monitor'
+
+const store = useMonitorStore()
 
 use([CanvasRenderer, PieChart, LineChart, GridComponent, TooltipComponent])
 
@@ -73,7 +76,7 @@ function trendValue(point: StatisticsTrendPoint, metric: 'requests' | 'tokens' |
 function formatTrendValue(metric: 'requests' | 'tokens' | 'cost' | 'rate', value: number): string {
   if (metric === 'requests') return formatRequestCount(value)
   if (metric === 'tokens') return formatTokenValue(value)
-  if (metric === 'cost') return formatCost(value)
+  if (metric === 'cost') return formatCost(value, store.settings.currency)
   return `${formatRate(value)} ${t(props.locale, 'metrics.tokensPerSecond')}`
 }
 
@@ -136,7 +139,7 @@ const chartOptions = computed(() => {
           <div style="font-weight:600;margin-bottom:5px;">${model.modelName}</div>
           <div style="display:flex;justify-content:space-between;gap:16px;"><span>${t(props.locale, 'statistics.modelShare')}</span><b>${model.percent.toFixed(1)}%</b></div>
           <div style="display:flex;justify-content:space-between;gap:16px;"><span>${t(props.locale, 'statistics.requests')}</span><b>${formatRequestCount(model.requestCount)}</b></div>
-          <div style="display:flex;justify-content:space-between;gap:16px;"><span>${t(props.locale, 'statistics.cost')}</span><b>${formatCost(model.cost)}</b></div>
+          <div style="display:flex;justify-content:space-between;gap:16px;"><span>${t(props.locale, 'statistics.cost')}</span><b>${formatCost(model.cost, store.settings.currency)}</b></div>
         `
       }
     },
@@ -314,7 +317,7 @@ watch(
             <div class="grid grid-cols-2 gap-1.5">
             <div class="rounded-lg bg-gray-50 p-1.5 dark:bg-neutral-800/80">
               <p class="text-[9px] text-gray-400 dark:text-gray-500">{{ t(locale, 'statistics.cost') }}</p>
-              <p class="font-mono text-[11px] font-bold text-gray-800 dark:text-gray-100">{{ formatCost(selectedModel.cost) }}</p>
+              <p class="font-mono text-[11px] font-bold text-gray-800 dark:text-gray-100">{{ formatCost(selectedModel.cost, store.settings.currency) }}</p>
             </div>
             <div class="rounded-lg bg-gray-50 p-1.5 dark:bg-neutral-800/80">
               <p class="text-[9px] text-gray-400 dark:text-gray-500">{{ t(locale, 'statistics.metricTokens') }}</p>

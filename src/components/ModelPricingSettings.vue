@@ -5,6 +5,7 @@ import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import type { ModelPricingConfig } from '../types'
 import ModelPricingEditModal from './ModelPricingEditModal.vue'
+import { formatCost as formatCostUtil } from '../utils/format'
 
 const emit = defineEmits<{
   back: []
@@ -215,10 +216,10 @@ const savePricing = async (pricing: ModelPricingConfig) => {
   }
 }
 
-// 格式化价格
+// 格式化价格（支持多货币）
 const formatPrice = (price: number | undefined): string => {
   if (price === undefined || price === null) return '-'
-  return `$${price.toFixed(2)}`
+  return formatCostUtil(price, store.settings.currency, 2)
 }
 
 // 格式化时间

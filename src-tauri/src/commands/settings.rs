@@ -1,6 +1,6 @@
 //! 设置相关 Tauri 命令
 
-use crate::models::{AppSettings, WindowQuota};
+use crate::models::{AppSettings, CurrencySettings, WindowQuota};
 use std::fs;
 
 /// 加载应用设置
@@ -23,6 +23,9 @@ pub fn load_settings() -> Result<AppSettings, String> {
 
     // 确保模型价格配置存在（迁移旧配置）
     migrate_model_pricing(&mut settings);
+
+    // 确保货币配置存在（迁移旧配置）
+    migrate_currency(&mut settings);
 
     Ok(settings)
 }
@@ -67,5 +70,37 @@ fn migrate_proxy_config(settings: &mut AppSettings) {
 fn migrate_model_pricing(settings: &mut AppSettings) {
     if settings.model_pricing.match_mode.is_empty() {
         settings.model_pricing.match_mode = "fuzzy".to_string();
+    }
+}
+
+/// 确保货币配置存在且有效（迁移旧配置）
+fn migrate_currency(settings: &mut AppSettings) {
+    if settings.currency.display_currency.is_empty() {
+        settings.currency = CurrencySettings::default();
+        return;
+    }
+    if !settings.currency.exchange_rates.contains_key("USD") {
+        settings
+            .currency
+            .exchange_rates
+            .insert("USD".to_string(), 1.0);
+    }
+    if !settings
+        .currency
+        .tracked_currencies
+        .contains(&"USD".to_string())
+    {
+        settings
+            .currency
+            .tracked_currencies
+            .insert(0, "USD".to_string());
+    }
+    // 确保显示货币在追踪列表中
+    if !settings
+        .currency
+        .tracked_currencies
+        .contains(&settings.currency.display_currency)
+    {
+        settings.currency.display_currency = "USD".to_string();
     }
 }

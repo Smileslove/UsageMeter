@@ -257,6 +257,8 @@ pub fn run() {
             commands::update_api_source_key_note,
             commands::set_active_source_filter,
             commands::get_api_sources,
+            // 货币命令
+            commands::get_exchange_rates,
             // 退出命令
             commands::prepare_exit,
             commands::confirm_exit,

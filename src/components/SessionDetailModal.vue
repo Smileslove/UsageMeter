@@ -3,6 +3,7 @@ import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import { computed } from 'vue'
 import type { SessionStats } from '../types'
+import { formatCost as formatCostUtil } from '../utils/format'
 
 const props = defineProps<{
   visible: boolean
@@ -45,11 +46,10 @@ const formatTokens = (tokens: number) => {
   return Math.round(tokens).toString()
 }
 
-// 格式化费用（统一4位小数）
+// 格式化费用（统一4位小数，支持多货币）
 const formatCost = (cost: number | undefined) => {
   if (cost === undefined || cost === null) return '-'
-  if (cost > 0) return `$${cost.toFixed(4)}`
-  return '$0.0000'
+  return formatCostUtil(cost, store.settings.currency, 4)
 }
 
 // 计算输入输出比例

@@ -4,6 +4,7 @@ import { t } from '../i18n'
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import type { SessionStats } from '../types'
 import SessionDetailModal from '../components/SessionDetailModal.vue'
+import { formatCost as formatCostUtil } from '../utils/format'
 
 const store = useMonitorStore()
 
@@ -62,11 +63,10 @@ const formatTokens = (tokens: number) => {
   return Math.round(tokens).toString()
 }
 
-// 格式化费用（统一4位小数）
+// 格式化费用（统一4位小数，支持多货币）
 const formatCost = (cost: number | undefined) => {
   if (cost === undefined || cost === null) return '-'
-  if (cost > 0) return `$${cost.toFixed(4)}`
-  return '$0.0000'
+  return formatCostUtil(cost, store.settings.currency, 4)
 }
 
 // 打开会话详情
@@ -257,7 +257,7 @@ onUnmounted(() => {
               </svg>
               <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.cost') }}</span>
             </div>
-            <span class="text-[#00E5FF] font-medium">${{ session.estimatedCost === undefined ? '0.0000' : session.estimatedCost.toFixed(4) }}</span>
+            <span class="text-[#00E5FF] font-medium">{{ formatCost(session.estimatedCost) }}</span>
           </div>
         </div>
       </div>

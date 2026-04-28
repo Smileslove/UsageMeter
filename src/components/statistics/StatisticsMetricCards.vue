@@ -3,6 +3,9 @@ import { CircleDollarSign, MessageSquare, Sigma } from 'lucide-vue-next'
 import { t } from '../../i18n'
 import { formatCost, formatRequestCount, formatTokenPair, formatTokenValue } from '../../utils/format'
 import type { AppLocale, StatisticsTotals } from '../../types'
+import { useMonitorStore } from '../../stores/monitor'
+
+const store = useMonitorStore()
 
 const props = defineProps<{
   locale: AppLocale
@@ -11,13 +14,13 @@ const props = defineProps<{
 
 function value(key: 'requests' | 'tokens' | 'input' | 'output' | 'cost'): string {
   const totals = props.totals
-  if (!totals) return key === 'cost' ? formatCost(0) : '0'
+  if (!totals) return key === 'cost' ? formatCost(0, store.settings.currency) : '0'
   if (key === 'requests') return formatRequestCount(totals.requestCount)
   if (key === 'tokens') return formatTokenValue(totals.totalTokens)
   // 输入显示总输入（包含缓存读取）
   if (key === 'input') return formatTokenPair(totals.inputTokens + (totals.cacheReadTokens ?? 0), totals.outputTokens).input
   if (key === 'output') return formatTokenPair(totals.inputTokens + (totals.cacheReadTokens ?? 0), totals.outputTokens).output
-  if (key === 'cost') return formatCost(totals.cost)
+  if (key === 'cost') return formatCost(totals.cost, store.settings.currency)
   return '0'
 }
 
@@ -27,11 +30,11 @@ function countValue(value: number | null | undefined): string {
 
 function splitCost(key: 'input' | 'output'): string {
   const totals = props.totals
-  if (!totals || totals.cost <= 0) return formatCost(0)
+  if (!totals || totals.cost <= 0) return formatCost(0, store.settings.currency)
   const total = totals.inputTokens + totals.outputTokens
-  if (total <= 0) return formatCost(0)
+  if (total <= 0) return formatCost(0, store.settings.currency)
   const tokens = key === 'input' ? totals.inputTokens : totals.outputTokens
-  return formatCost(totals.cost * (tokens / total))
+  return formatCost(totals.cost * (tokens / total), store.settings.currency)
 }
 </script>
 

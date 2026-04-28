@@ -43,6 +43,13 @@ export interface ModelPricingSettings {
   pricings: ModelPricingConfig[]      // 价格配置列表
 }
 
+export interface CurrencySettings {
+  displayCurrency: string          // "USD"
+  exchangeRates: Record<string, number>  // {"CNY": 7.25, "EUR": 0.92}
+  trackedCurrencies: string[]      // ["USD", "CNY"]
+  lastRateUpdate: number | null    // 最后汇率更新时间
+}
+
 export interface AppSettings {
   locale: AppLocale
   timezone: string
@@ -59,6 +66,7 @@ export interface AppSettings {
   autoStart: boolean         // 开机自动启动
   sourceAware: SourceAwareSettings    // 来源识别设置
   clientTools: ClientToolSettings      // 客户端工具识别设置
+  currency: CurrencySettings           // 多货币设置
 }
 
 // API 来源配置

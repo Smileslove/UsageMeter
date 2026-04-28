@@ -322,6 +322,49 @@ impl SourceAwareSettings {
     }
 }
 
+/// 多货币设置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrencySettings {
+    /// 当前显示币种，如 "USD"、"CNY"
+    #[serde(default = "default_display_currency")]
+    pub display_currency: String,
+    /// 用户追踪的币种汇率，key=币种代码, value=1USD兑换该币种数量
+    #[serde(default = "default_exchange_rates")]
+    pub exchange_rates: HashMap<String, f64>,
+    /// 用户选择追踪的币种列表（用于同步过滤）
+    #[serde(default = "default_tracked_currencies")]
+    pub tracked_currencies: Vec<String>,
+    /// 最后汇率更新时间
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_rate_update: Option<i64>,
+}
+
+pub fn default_display_currency() -> String {
+    "USD".to_string()
+}
+
+pub fn default_exchange_rates() -> HashMap<String, f64> {
+    let mut rates = HashMap::new();
+    rates.insert("USD".to_string(), 1.0);
+    rates
+}
+
+pub fn default_tracked_currencies() -> Vec<String> {
+    vec!["USD".to_string()]
+}
+
+impl Default for CurrencySettings {
+    fn default() -> Self {
+        Self {
+            display_currency: default_display_currency(),
+            exchange_rates: default_exchange_rates(),
+            tracked_currencies: default_tracked_currencies(),
+            last_rate_update: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -355,6 +398,8 @@ pub struct AppSettings {
     pub source_aware: SourceAwareSettings,
     #[serde(default)]
     pub client_tools: ClientToolSettings,
+    #[serde(default)]
+    pub currency: CurrencySettings,
 }
 
 pub fn default_locale() -> String {
@@ -452,6 +497,7 @@ impl Default for AppSettings {
             auto_start: false,
             source_aware: SourceAwareSettings::default(),
             client_tools: ClientToolSettings::default(),
+            currency: CurrencySettings::default(),
         }
     }
 }

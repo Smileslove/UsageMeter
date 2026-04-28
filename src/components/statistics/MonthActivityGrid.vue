@@ -4,6 +4,9 @@ import { ChevronLeft, ChevronRight } from 'lucide-vue-next'
 import { t } from '../../i18n'
 import { formatCost, formatRequestCount, formatTokenPair, formatTokenValue } from '../../utils/format'
 import type { AppLocale, DayActivity, MonthActivity, StatisticsMetric, YearActivity } from '../../types'
+import { useMonitorStore } from '../../stores/monitor'
+
+const store = useMonitorStore()
 
 type ActivityViewMode = 'month' | 'year'
 
@@ -387,7 +390,7 @@ function handleDayLeave() {
         <div class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 text-gray-500 dark:text-gray-400"><span class="truncate">{{ t(locale, 'statistics.inputTokens') }}</span><span class="font-mono font-semibold text-gray-800 dark:text-gray-100">{{ hoveredTokenPair.input }}</span></div>
         <div class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 text-gray-500 dark:text-gray-400"><span class="truncate">{{ t(locale, 'statistics.outputTokens') }}</span><span class="font-mono font-semibold text-gray-800 dark:text-gray-100">{{ hoveredTokenPair.output }}</span></div>
         <div class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 text-gray-500 dark:text-gray-400"><span class="truncate">{{ t(locale, 'statistics.totalTokens') }}</span><span class="font-mono font-semibold text-gray-800 dark:text-gray-100">{{ formatTokenValue(hovered.totalTokens) }}</span></div>
-        <div class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 text-gray-500 dark:text-gray-400"><span class="truncate">{{ t(locale, 'statistics.cost') }}</span><span class="font-mono font-semibold text-gray-800 dark:text-gray-100">{{ formatCost(hovered.cost) }}</span></div>
+        <div class="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 text-gray-500 dark:text-gray-400"><span class="truncate">{{ t(locale, 'statistics.cost') }}</span><span class="font-mono font-semibold text-gray-800 dark:text-gray-100">{{ formatCost(hovered.cost, store.settings.currency) }}</span></div>
       </div>
     </div>
   </section>
