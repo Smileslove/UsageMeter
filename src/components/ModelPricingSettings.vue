@@ -27,6 +27,10 @@ const editingPricing = ref<ModelPricingConfig | null>(null)
 const loading = ref(true)
 const loadError = ref('')
 
+// 删除确认弹窗状态
+const showDeleteConfirm = ref(false)
+const deletingModelId = ref<string | null>(null)
+
 // 当前标签页：custom 或 synced
 const activeTab = ref<'custom' | 'synced'>('custom')
 
@@ -172,13 +176,21 @@ const editPricing = (pricing: ModelPricingConfig) => {
   showEditModal.value = true
 }
 
-// 删除模型
-const deletePricing = async (modelId: string) => {
-  if (!confirm(t(store.settings.locale, 'settings.modelPricingConfirmDelete'))) return
+// 删除模型 - 显示确认弹窗
+const confirmDelete = (modelId: string) => {
+  deletingModelId.value = modelId
+  showDeleteConfirm.value = true
+}
+
+// 执行删除
+const deletePricing = async () => {
+  if (!deletingModelId.value) return
 
   try {
-    await invoke('delete_model_pricing', { modelId })
+    await invoke('delete_model_pricing', { modelId: deletingModelId.value })
     await loadPricings()
+    showDeleteConfirm.value = false
+    deletingModelId.value = null
   } catch (e) {
     console.error('[ModelPricingSettings] Failed to delete pricing:', e)
   }
@@ -376,7 +388,7 @@ const formatTime = (timestamp: number | null): string => {
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                   </svg>
                 </button>
-                <button @click="deletePricing(pricing.modelId)" class="p-1 hover:bg-gray-100 dark:hover:bg-neutral-700 rounded transition-colors">
+                <button @click="confirmDelete(pricing.modelId)" class="p-1 hover:bg-gray-100 dark:hover:bg-neutral-700 rounded transition-colors">
                   <svg class="w-3.5 h-3.5 text-gray-400 hover:text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                   </svg>
@@ -469,6 +481,43 @@ const formatTime = (timestamp: number | null): string => {
             @save="savePricing"
             @close="showEditModal = false"
           />
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 删除确认弹窗 -->
+    <Teleport to="body">
+      <div v-if="showDeleteConfirm" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" @click.self="showDeleteConfirm = false">
+        <div class="bg-white dark:bg-[#1C1C1E] rounded-2xl shadow-xl w-[280px] overflow-hidden" @click.stop>
+          <div class="p-4">
+            <div class="text-center">
+              <div class="w-10 h-10 mx-auto mb-3 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
+                <svg class="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </div>
+              <h3 class="text-sm font-medium text-gray-900 dark:text-gray-100 mb-1">
+                {{ t(store.settings.locale, 'settings.modelPricingDeleteTitle') }}
+              </h3>
+              <p class="text-xs text-gray-500 dark:text-gray-400">
+                {{ t(store.settings.locale, 'settings.modelPricingConfirmDelete') }}
+              </p>
+            </div>
+          </div>
+          <div class="flex border-t border-gray-100 dark:border-neutral-800">
+            <button
+              @click="showDeleteConfirm = false"
+              class="flex-1 py-2.5 text-xs font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-neutral-800 transition-colors"
+            >
+              {{ t(store.settings.locale, 'common.cancel') }}
+            </button>
+            <button
+              @click="deletePricing"
+              class="flex-1 py-2.5 text-xs font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors border-l border-gray-100 dark:border-neutral-800"
+            >
+              {{ t(store.settings.locale, 'common.confirm') }}
+            </button>
+          </div>
         </div>
       </div>
     </Teleport>
