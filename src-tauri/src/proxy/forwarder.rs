@@ -57,10 +57,16 @@ impl RequestForwarder {
         })
     }
 
+    /// 获取目标 base_url
+    pub fn get_target_base_url(&self) -> String {
+        self.target_base_url.clone()
+    }
+
     /// 获取要使用的 API 密钥
-    fn get_api_key(&self) -> Result<String, String> {
-        self.api_key
-            .clone()
+    pub(crate) fn get_api_key(&self, inbound_api_key: Option<&str>) -> Result<String, String> {
+        inbound_api_key
+            .map(|key| key.to_string())
+            .or_else(|| self.api_key.clone())
             .or_else(|| {
                 // 尝试从 Claude 设置获取
                 let manager = super::config_manager::ClaudeConfigManager::new();
@@ -78,8 +84,45 @@ impl RequestForwarder {
         body: bytes::Bytes,
         mut context: RequestContext,
     ) -> Result<ForwardResult, String> {
-        let api_key = self.get_api_key()?;
-        let url = format!("{}/v1/messages", self.target_base_url);
+        let api_key = match self.get_api_key(context.inbound_api_key.as_deref()) {
+            Ok(key) => key,
+            Err(e) => {
+                // 记录无 key 的错误，确保请求被统计
+                let now = chrono::Utc::now().timestamp_millis();
+                let record = UsageRecord {
+                    timestamp: now,
+                    message_id: format!("no_key_{}", now),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_create_tokens: 0,
+                    cache_read_tokens: 0,
+                    total_tokens: 0,
+                    model: context.model.clone().unwrap_or_default(),
+                    session_id: context.session_id.clone(),
+                    request_start_time: context.start_time_ms,
+                    request_end_time: now,
+                    duration_ms: 0,
+                    output_tokens_per_second: None,
+                    ttft_ms: None,
+                    status_code: 502,
+                    estimated_cost: 0.0,
+                    pricing_snapshot_id: None,
+                    cost_locked: false,
+                    api_key_prefix: context.api_key_prefix,
+                    request_base_url: context.request_base_url,
+                    client_tool: context.client_tool,
+                    proxy_profile_id: context.proxy_profile_id,
+                    client_detection_method: context.client_detection_method,
+                };
+                self.usage_collector.record(record).await;
+                return Err(e);
+            }
+        };
+        let target_base_url = context
+            .target_base_url
+            .clone()
+            .unwrap_or_else(|| self.target_base_url.clone());
+        let url = format!("{}/v1/messages", target_base_url.trim_end_matches('/'));
 
         // 解析请求体以提取元数据
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) {
@@ -167,6 +210,11 @@ impl RequestForwarder {
                 estimated_cost: 0.0,
                 pricing_snapshot_id: None,
                 cost_locked: false,
+                api_key_prefix: context.api_key_prefix,
+                request_base_url: context.request_base_url,
+                client_tool: context.client_tool,
+                proxy_profile_id: context.proxy_profile_id,
+                client_detection_method: context.client_detection_method,
             };
             self.usage_collector.record(record).await;
 
@@ -202,6 +250,11 @@ impl RequestForwarder {
             session_id: context.session_id.clone(),
             request_start_time: context.start_time_ms,
             status_code,
+            api_key_prefix: context.api_key_prefix,
+            request_base_url: context.request_base_url,
+            client_tool: context.client_tool,
+            proxy_profile_id: context.proxy_profile_id,
+            client_detection_method: context.client_detection_method,
         };
 
         // 创建使用量收集器，用于记录到数据库
@@ -313,6 +366,11 @@ impl RequestForwarder {
                 estimated_cost: 0.0,
                 pricing_snapshot_id: None,
                 cost_locked: false,
+                api_key_prefix: context.api_key_prefix,
+                request_base_url: context.request_base_url,
+                client_tool: context.client_tool,
+                proxy_profile_id: context.proxy_profile_id,
+                client_detection_method: context.client_detection_method,
             };
             self.usage_collector.record(record).await;
         }

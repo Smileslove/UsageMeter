@@ -55,6 +55,47 @@ export interface AppSettings {
   theme: ThemeMode           // 主题模式：light/dark/system
   modelPricing: ModelPricingSettings  // 模型价格设置
   autoStart: boolean         // 开机自动启动
+  sourceAware: SourceAwareSettings    // 来源识别设置
+  clientTools: ClientToolSettings      // 客户端工具识别设置
+}
+
+// API 来源配置
+export interface ApiSource {
+  id: string
+  displayName?: string
+  baseUrl?: string
+  apiKeyPrefixes: string[]
+  apiKeyNotes?: Record<string, string>
+  color: string
+  icon?: string
+  autoDetected: boolean
+  firstSeenMs: number
+  lastSeenMs: number
+}
+
+// 来源感知设置
+export interface SourceAwareSettings {
+  sources: ApiSource[]
+  activeSourceFilter: string | null  // null = 全部, "__unknown__" = 未归因, 其他 = source_id
+}
+
+// 客户端工具接入配置
+export interface ClientToolProfile {
+  id: string
+  tool: string
+  displayName?: string
+  pathPrefix: string
+  targetBaseUrl?: string
+  enabled: boolean
+  autoDetected: boolean
+  firstSeenMs: number
+  lastSeenMs: number
+  icon?: string
+}
+
+export interface ClientToolSettings {
+  profiles: ClientToolProfile[]
+  activeToolFilter: string | null
 }
 
 export interface WindowUsage {

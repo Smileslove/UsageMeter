@@ -255,12 +255,13 @@ Contributions and discussions are welcome! Please feel free to submit a Pull Req
 
 ## Acknowledgments
 
-> The following tools were referenced during implementation:
+> The following tools were referenced or used during implementation:
 
 - [ryoppippi/ccusage](https://github.com/ryoppippi/ccusage) - A command-line tool for analyzing Claude Code/Codex CLI usage from local JSONL files.
 - [farion1231/cc-switch](https://github.com/farion1231/cc-switch) - A cross-platform desktop all-in-one utility for Claude Code, Codex, OpenCode, OpenClaw, and Gemini command-line tools.
 - [sj719045032/claude-statistics](https://github.com/sj719045032/claude-statistics) - A macOS menu bar application for monitoring Claude Code usage, session statistics, and cost details.
 - [anomalyco/models.dev](https://github.com/anomalyco/models.dev) - An open-source database of AI models.
+- [lobehub/lobe-icons](https://github.com/lobehub/lobe-icons) - High-quality AI/LLM brand logos used for model icons in the UI.
 
 ## License
 

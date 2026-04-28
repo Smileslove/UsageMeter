@@ -1,7 +1,7 @@
 //! SQLite 数据库，用于持久化代理使用数据
 
 use super::types::{SessionStats, UsageRecord};
-use crate::models::ModelPricingConfig;
+use crate::models::{ModelPricingConfig, SourceFilter, ToolFilter, UsageQueryFilter};
 use chrono::{Local, TimeZone};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -304,6 +304,13 @@ impl ProxyDatabase {
             "ALTER TABLE usage_records ADD COLUMN estimated_cost REAL NOT NULL DEFAULT 0",
             "ALTER TABLE usage_records ADD COLUMN pricing_snapshot_id TEXT",
             "ALTER TABLE usage_records ADD COLUMN cost_locked INTEGER NOT NULL DEFAULT 0",
+            // 来源识别字段
+            "ALTER TABLE usage_records ADD COLUMN api_key_prefix TEXT",
+            "ALTER TABLE usage_records ADD COLUMN request_base_url TEXT",
+            // 客户端工具识别字段（单端口 + path prefix）
+            "ALTER TABLE usage_records ADD COLUMN client_tool TEXT NOT NULL DEFAULT 'claude_code'",
+            "ALTER TABLE usage_records ADD COLUMN proxy_profile_id TEXT",
+            "ALTER TABLE usage_records ADD COLUMN client_detection_method TEXT NOT NULL DEFAULT 'legacy_path'",
             "ALTER TABLE daily_summary ADD COLUMN cost REAL NOT NULL DEFAULT 0",
             "ALTER TABLE daily_summary ADD COLUMN success_total_tokens INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE daily_summary ADD COLUMN success_input_tokens INTEGER NOT NULL DEFAULT 0",
@@ -327,6 +334,20 @@ impl ProxyDatabase {
             // 所以我们忽略错误（字段已存在时会报错）
             let _ = conn.execute(migration, []);
         }
+
+        // 创建来源查询索引（忽略已存在错误）
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_source_lookup ON usage_records(api_key_prefix, request_base_url)",
+            []
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_tool_source ON usage_records(client_tool, api_key_prefix, request_base_url)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_tool_time ON usage_records(client_tool, timestamp)",
+            [],
+        );
 
         Ok(())
     }
@@ -412,6 +433,15 @@ impl ProxyDatabase {
             estimated_cost: row.get::<_, Option<f64>>(14)?.unwrap_or(0.0),
             pricing_snapshot_id: row.get(15)?,
             cost_locked: row.get::<_, Option<i64>>(16)?.unwrap_or(0) != 0,
+            api_key_prefix: row.get(17)?,
+            request_base_url: row.get(18)?,
+            client_tool: row
+                .get::<_, Option<String>>(19)?
+                .unwrap_or_else(|| crate::models::DEFAULT_CLIENT_TOOL.to_string()),
+            proxy_profile_id: row.get(20)?,
+            client_detection_method: row
+                .get::<_, Option<String>>(21)?
+                .unwrap_or_else(|| crate::models::DEFAULT_CLIENT_DETECTION_METHOD.to_string()),
         })
     }
 
@@ -438,10 +468,11 @@ impl ProxyDatabase {
             (timestamp, message_id, input_tokens, output_tokens, cache_create_tokens,
              cache_read_tokens, model, session_id, request_start_time,
              request_end_time, duration_ms, output_tokens_per_second, ttft_ms, status_code,
-             estimated_cost, pricing_snapshot_id, cost_locked)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1)
+             estimated_cost, pricing_snapshot_id, cost_locked, api_key_prefix, request_base_url,
+             client_tool, proxy_profile_id, client_detection_method)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1, ?17, ?18, ?19, ?20, ?21)
             "#,
-            (
+            rusqlite::params![
                 record.timestamp,
                 &record.message_id,
                 record.input_tokens as i64,
@@ -458,7 +489,12 @@ impl ProxyDatabase {
                 record.status_code as i64,
                 estimated_cost,
                 pricing_snapshot_id,
-            ),
+                &record.api_key_prefix,
+                &record.request_base_url,
+                &record.client_tool,
+                &record.proxy_profile_id,
+                &record.client_detection_method,
+            ],
         )
         .map_err(|e| format!("Failed to insert record: {}", e))?;
 
@@ -754,7 +790,9 @@ impl ProxyDatabase {
                 SELECT timestamp, message_id, input_tokens, output_tokens,
                        cache_create_tokens, cache_read_tokens, model, session_id,
                        request_start_time, request_end_time, duration_ms, output_tokens_per_second,
-                       ttft_ms, status_code, estimated_cost, pricing_snapshot_id, cost_locked
+                       ttft_ms, status_code, estimated_cost, pricing_snapshot_id, cost_locked,
+                       api_key_prefix, request_base_url, client_tool, proxy_profile_id,
+                       client_detection_method
                 FROM usage_records
                 WHERE timestamp >= ?1
                 ORDER BY timestamp DESC
@@ -796,7 +834,9 @@ impl ProxyDatabase {
             SELECT timestamp, message_id, input_tokens, output_tokens,
                    cache_create_tokens, cache_read_tokens, model, session_id,
                    request_start_time, request_end_time, duration_ms, output_tokens_per_second,
-                   ttft_ms, status_code, estimated_cost, pricing_snapshot_id, cost_locked
+                   ttft_ms, status_code, estimated_cost, pricing_snapshot_id, cost_locked,
+                   api_key_prefix, request_base_url, client_tool, proxy_profile_id,
+                   client_detection_method
             FROM usage_records
             WHERE timestamp >= ?1 AND timestamp < ?2
               {status_filter}
@@ -813,6 +853,66 @@ impl ProxyDatabase {
                 rusqlite::params![start_ms, end_ms],
                 Self::usage_record_from_row,
             )
+            .map_err(|e| format!("Failed to query records: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect records: {}", e))?;
+
+        Ok(records)
+    }
+
+    /// 获取指定时间范围内的记录（带来源过滤）
+    ///
+    /// 使用半开区间 [start_ms, end_ms)，便于前端按日期和小时拼接连续范围。
+    pub async fn get_records_between_with_source(
+        &self,
+        start_ms: i64,
+        end_ms: i64,
+        include_errors: bool,
+        usage_filter: &UsageQueryFilter,
+    ) -> Result<Vec<UsageRecord>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+        let status_filter = if include_errors {
+            ""
+        } else {
+            "AND status_code >= 200 AND status_code < 300"
+        };
+
+        let (filter_where, filter_params) = Self::build_usage_filter_sql(usage_filter);
+
+        let sql = format!(
+            r#"
+            SELECT timestamp, message_id, input_tokens, output_tokens,
+                   cache_create_tokens, cache_read_tokens, model, session_id,
+                   request_start_time, request_end_time, duration_ms, output_tokens_per_second,
+                   ttft_ms, status_code, estimated_cost, pricing_snapshot_id, cost_locked,
+                   api_key_prefix, request_base_url, client_tool, proxy_profile_id,
+                   client_detection_method
+            FROM usage_records
+            WHERE timestamp >= ?1 AND timestamp < ?2
+              {status_filter}
+              {filter_where}
+            ORDER BY timestamp ASC
+            "#
+        );
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare statement: {}", e))?;
+
+        // 构建参数
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> =
+            vec![Box::new(start_ms), Box::new(end_ms)];
+        for p in &filter_params {
+            params_vec.push(Box::new(p.clone()));
+        }
+        let params: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+
+        let records = stmt
+            .query_map(params.as_slice(), Self::usage_record_from_row)
             .map_err(|e| format!("Failed to query records: {}", e))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Failed to collect records: {}", e))?;
@@ -942,18 +1042,91 @@ impl ProxyDatabase {
         Ok(stats)
     }
 
-    /// 获取时间窗口内的模型分布
-    pub async fn get_model_distribution(
+    /// 获取时间窗口的聚合统计（支持来源过滤）
+    ///
+    /// # 参数
+    /// - `cutoff_ms`: 窗口起始时间戳（毫秒）
+    /// - `include_errors`: 是否包含错误请求（4xx/5xx）
+    /// - `source_filter`: 来源过滤条件
+    pub async fn get_window_stats_with_source(
         &self,
         cutoff_ms: i64,
-    ) -> Result<Vec<ModelDistribution>, String> {
-        self.get_model_distribution_filtered(cutoff_ms, true).await
+        include_errors: bool,
+        usage_filter: &UsageQueryFilter,
+    ) -> Result<WindowAggregate, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+        // 构建来源过滤 SQL
+        let (filter_where, filter_params) = Self::build_usage_filter_sql(usage_filter);
+
+        let status_filter = if include_errors {
+            ""
+        } else {
+            "AND status_code >= 200 AND status_code < 300"
+        };
+
+        let sql = format!(
+            r#"
+            SELECT
+                COUNT(*) as request_count,
+                COALESCE(SUM(input_tokens + cache_create_tokens + cache_read_tokens + output_tokens), 0) as total_tokens,
+                COALESCE(SUM(input_tokens), 0) as input_tokens,
+                COALESCE(SUM(output_tokens), 0) as output_tokens,
+                COALESCE(SUM(cache_create_tokens), 0) as cache_create_tokens,
+                COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
+                COALESCE(SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END), 0) as status_2xx,
+                COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END), 0) as status_4xx,
+                COALESCE(SUM(CASE WHEN status_code >= 500 AND status_code < 600 THEN 1 ELSE 0 END), 0) as status_5xx
+            FROM usage_records
+            WHERE timestamp >= ?1
+              {status_filter}
+              {filter_where}
+            "#,
+        );
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare statement: {}", e))?;
+
+        // 构建参数
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(cutoff_ms)];
+        params_vec.extend(
+            filter_params
+                .into_iter()
+                .map(|p| Box::new(p) as Box<dyn rusqlite::ToSql>),
+        );
+
+        // 转换为引用切片
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+
+        let stats = stmt
+            .query_row(params_refs.as_slice(), |row| {
+                Ok(WindowAggregate {
+                    request_count: row.get(0)?,
+                    total_tokens: row.get(1)?,
+                    input_tokens: row.get(2)?,
+                    output_tokens: row.get(3)?,
+                    cache_create_tokens: row.get(4)?,
+                    cache_read_tokens: row.get(5)?,
+                    status_2xx: row.get(6)?,
+                    status_4xx: row.get(7)?,
+                    status_5xx: row.get(8)?,
+                })
+            })
+            .map_err(|e| format!("Failed to get window stats with source: {}", e))?;
+
+        Ok(stats)
     }
 
-    /// 获取时间窗口内的模型分布
-    pub async fn get_model_distribution_filtered(
+    /// 获取时间窗口内的模型分布（带来源过滤）
+    pub async fn get_model_distribution_with_source(
         &self,
         cutoff_ms: i64,
+        usage_filter: &UsageQueryFilter,
         include_errors: bool,
     ) -> Result<Vec<ModelDistribution>, String> {
         let conn = self
@@ -967,7 +1140,9 @@ impl ProxyDatabase {
             "AND status_code >= 200 AND status_code < 300"
         };
 
-        // 先查询基础数据
+        let (filter_where, filter_params) = Self::build_usage_filter_sql(usage_filter);
+
+        // 查询模型分布
         let sql = format!(
             r#"
             SELECT
@@ -981,6 +1156,7 @@ impl ProxyDatabase {
             FROM usage_records
             WHERE timestamp >= ?1
               {status_filter}
+              {filter_where}
             GROUP BY model
             ORDER BY total_tokens DESC
             "#
@@ -990,8 +1166,15 @@ impl ProxyDatabase {
             .prepare(&sql)
             .map_err(|e| format!("Failed to prepare statement: {}", e))?;
 
+        // 构建参数
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(cutoff_ms)];
+        for p in &filter_params {
+            params_vec.push(Box::new(p.clone()));
+        }
+        let params: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+
         let models: Vec<(String, i64, i64, i64, i64, i64, i64)> = stmt
-            .query_map([cutoff_ms], |row| {
+            .query_map(params.as_slice(), |row| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -1020,12 +1203,19 @@ impl ProxyDatabase {
         {
             // 查询该模型的状态码分布
             let status_sql = format!(
-                "SELECT status_code, COUNT(*) as count FROM usage_records WHERE timestamp >= ?1 AND model = ?2 {status_filter} GROUP BY status_code ORDER BY count DESC"
+                "SELECT status_code, COUNT(*) as count FROM usage_records WHERE timestamp >= ?1 AND model = ?2 {status_filter} {filter_where} GROUP BY status_code ORDER BY count DESC"
             );
+            let mut status_params_vec: Vec<Box<dyn rusqlite::ToSql>> =
+                vec![Box::new(cutoff_ms), Box::new(model.clone())];
+            for p in &filter_params {
+                status_params_vec.push(Box::new(p.clone()));
+            }
+            let status_params: Vec<&dyn rusqlite::ToSql> =
+                status_params_vec.iter().map(|p| p.as_ref()).collect();
             let status_codes: Vec<(i64, i64)> = conn
                 .prepare(&status_sql)
                 .and_then(|mut stmt| {
-                    let rows = stmt.query_map(rusqlite::params![cutoff_ms, &model], |row| {
+                    let rows = stmt.query_map(status_params.as_slice(), |row| {
                         Ok((row.get(0)?, row.get(1)?))
                     })?;
                     rows.collect::<Result<Vec<_>, _>>()
@@ -1056,6 +1246,77 @@ impl ProxyDatabase {
         Ok(result)
     }
 
+    /// 构建来源过滤的 SQL WHERE 子句和参数
+    fn build_source_filter_sql(source_filter: &SourceFilter) -> (String, Vec<String>) {
+        match source_filter {
+            SourceFilter::All => (String::new(), vec![]),
+            SourceFilter::Source {
+                api_key_prefixes,
+                base_url,
+            } => {
+                if api_key_prefixes.is_empty() {
+                    return ("AND 1 = 0".to_string(), vec![]);
+                }
+                let placeholders: Vec<String> =
+                    api_key_prefixes.iter().map(|_| "?".to_string()).collect();
+                let mut params: Vec<String> = api_key_prefixes.clone();
+                params.push(base_url.clone().unwrap_or_default());
+                (
+                    format!(
+                        "AND api_key_prefix IN ({}) AND COALESCE(request_base_url, '') = ?",
+                        placeholders.join(",")
+                    ),
+                    params,
+                )
+            }
+            SourceFilter::Unknown { known_pairs } => {
+                if known_pairs.is_empty() {
+                    (String::new(), vec![])
+                } else {
+                    let mut clauses = Vec::new();
+                    let mut params = Vec::new();
+                    for (prefix, base_url) in known_pairs {
+                        clauses.push(
+                            "(api_key_prefix = ? AND COALESCE(request_base_url, '') = ?)"
+                                .to_string(),
+                        );
+                        params.push(prefix.clone());
+                        params.push(base_url.clone().unwrap_or_default());
+                    }
+                    (
+                        format!(
+                            "AND (api_key_prefix IS NULL OR NOT ({}))",
+                            clauses.join(" OR ")
+                        ),
+                        params,
+                    )
+                }
+            }
+        }
+    }
+
+    fn build_tool_filter_sql(tool_filter: &ToolFilter) -> (String, Vec<String>) {
+        match tool_filter {
+            ToolFilter::All => (String::new(), vec![]),
+            ToolFilter::Tool(tool) if tool.trim().is_empty() => (String::new(), vec![]),
+            ToolFilter::Tool(tool) => ("AND client_tool = ?".to_string(), vec![tool.clone()]),
+        }
+    }
+
+    fn build_usage_filter_sql(usage_filter: &UsageQueryFilter) -> (String, Vec<String>) {
+        let (source_where, mut params) = Self::build_source_filter_sql(&usage_filter.source);
+        let (tool_where, tool_params) = Self::build_tool_filter_sql(&usage_filter.tool);
+        params.extend(tool_params);
+        let where_clause = match (source_where.is_empty(), tool_where.is_empty()) {
+            (true, true) => String::new(),
+            (false, true) => source_where,
+            (true, false) => tool_where,
+            (false, false) => format!("{source_where} {tool_where}"),
+        };
+        (where_clause, params)
+    }
+
+    /// 获取所有会话统计
     /// 获取会话统计信息
     #[allow(dead_code)]
     pub async fn get_session_stats(
@@ -2007,14 +2268,17 @@ impl ProxyDatabase {
         &self,
         record: &UsageRecord,
     ) -> Result<(), String> {
-        // 如果没有 session_id，尝试从 JSONL 获取
+        // 如果没有 session_id，尝试从 JSONL 获取；无匹配时使用请求时间窗口作为回退
         let session_id = match &record.session_id {
             Some(id) if !id.is_empty() => id.clone(),
             _ => {
-                // 尝试通过 message_id 从 JSONL 获取 session_id
                 match self.find_session_id_by_message_id(&record.message_id).await {
                     Some(id) => id,
-                    None => return Ok(()), // 无法确定会话，跳过
+                    None => {
+                        // 无法匹配 JSONL 的请求也保留在 session_stats 中，
+                        // 后续 JSONL 重新扫描时可通过 message_id 回填正确值
+                        LEGACY_UNMATCHED_SESSION_ID.to_string()
+                    }
                 }
             }
         };
@@ -2240,6 +2504,172 @@ impl ProxyDatabase {
         }
 
         Ok(result)
+    }
+
+    /// 获取按来源过滤后的会话列表。
+    ///
+    /// 来源过滤必须从 usage_records 聚合，不能使用 session_stats 的全量缓存。
+    pub async fn get_sessions_with_source(
+        &self,
+        limit: i64,
+        offset: i64,
+        usage_filter: &UsageQueryFilter,
+    ) -> Result<Vec<SessionStats>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+        let (filter_where, filter_params) = Self::build_usage_filter_sql(usage_filter);
+        let sql = format!(
+            r#"
+            SELECT
+                session_id,
+                COUNT(*) as total_requests,
+                COALESCE(SUM(input_tokens), 0) as total_input_tokens,
+                COALESCE(SUM(output_tokens), 0) as total_output_tokens,
+                COALESCE(SUM(cache_create_tokens), 0) as total_cache_create_tokens,
+                COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
+                COALESCE(SUM(duration_ms), 0) as total_duration_ms,
+                MIN(request_start_time) as first_request_time,
+                MAX(request_end_time) as last_request_time,
+                GROUP_CONCAT(DISTINCT model) as models,
+                AVG(ttft_ms) as avg_ttft_ms,
+                SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END) as success_requests,
+                SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) as error_requests,
+                COALESCE(SUM(estimated_cost), 0) as estimated_cost
+            FROM usage_records
+            WHERE session_id IS NOT NULL AND session_id <> '' AND session_id <> ?
+              {filter_where}
+            GROUP BY session_id
+            ORDER BY last_request_time DESC
+            LIMIT ? OFFSET ?
+            "#
+        );
+
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        params_vec.push(Box::new(LEGACY_UNMATCHED_SESSION_ID.to_string()));
+        for p in &filter_params {
+            params_vec.push(Box::new(p.clone()));
+        }
+        params_vec.push(Box::new(limit));
+        params_vec.push(Box::new(offset));
+        let params: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare source sessions statement: {}", e))?;
+
+        let sessions = stmt
+            .query_map(params.as_slice(), Self::session_stats_from_usage_row)
+            .map_err(|e| format!("Failed to query source sessions: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect source sessions: {}", e))?;
+
+        Ok(sessions)
+    }
+
+    /// 获取单个会话在当前来源过滤下的聚合统计。
+    pub async fn get_session_detail_with_source(
+        &self,
+        session_id: &str,
+        usage_filter: &UsageQueryFilter,
+    ) -> Result<Option<SessionStats>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+        let (filter_where, filter_params) = Self::build_usage_filter_sql(usage_filter);
+        let sql = format!(
+            r#"
+            SELECT
+                session_id,
+                COUNT(*) as total_requests,
+                COALESCE(SUM(input_tokens), 0) as total_input_tokens,
+                COALESCE(SUM(output_tokens), 0) as total_output_tokens,
+                COALESCE(SUM(cache_create_tokens), 0) as total_cache_create_tokens,
+                COALESCE(SUM(cache_read_tokens), 0) as total_cache_read_tokens,
+                COALESCE(SUM(duration_ms), 0) as total_duration_ms,
+                MIN(request_start_time) as first_request_time,
+                MAX(request_end_time) as last_request_time,
+                GROUP_CONCAT(DISTINCT model) as models,
+                AVG(ttft_ms) as avg_ttft_ms,
+                SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END) as success_requests,
+                SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) as error_requests,
+                COALESCE(SUM(estimated_cost), 0) as estimated_cost
+            FROM usage_records
+            WHERE session_id = ?
+              {filter_where}
+            GROUP BY session_id
+            "#
+        );
+
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(session_id.to_string())];
+        for p in &filter_params {
+            params_vec.push(Box::new(p.clone()));
+        }
+        let params: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare source session detail statement: {}", e))?;
+
+        match stmt.query_row(params.as_slice(), Self::session_stats_from_usage_row) {
+            Ok(stats) if stats.total_requests > 0 => Ok(Some(stats)),
+            Ok(_) | Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(format!("Failed to query source session detail: {}", e)),
+        }
+    }
+
+    fn session_stats_from_usage_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionStats> {
+        let session_id: String = row.get(0)?;
+        let total_requests: i64 = row.get(1)?;
+        let total_input_tokens: i64 = row.get(2)?;
+        let total_output_tokens: i64 = row.get(3)?;
+        let total_cache_create_tokens: i64 = row.get(4)?;
+        let total_cache_read_tokens: i64 = row.get(5)?;
+        let total_duration_ms: i64 = row.get(6)?;
+        let first_request_time: i64 = row.get::<_, Option<i64>>(7)?.unwrap_or(0);
+        let last_request_time: i64 = row.get::<_, Option<i64>>(8)?.unwrap_or(0);
+        let models_str: String = row.get::<_, Option<String>>(9)?.unwrap_or_default();
+        let avg_ttft_ms: f64 = row.get::<_, Option<f64>>(10)?.unwrap_or(0.0);
+        let success_requests: i64 = row.get::<_, Option<i64>>(11)?.unwrap_or(0);
+        let error_requests: i64 = row.get::<_, Option<i64>>(12)?.unwrap_or(0);
+        let estimated_cost: f64 = row.get::<_, Option<f64>>(13)?.unwrap_or(0.0);
+        let avg_rate = if total_duration_ms > 0 {
+            total_output_tokens as f64 / (total_duration_ms as f64 / 1000.0)
+        } else {
+            0.0
+        };
+
+        Ok(SessionStats {
+            session_id,
+            total_requests: total_requests as u64,
+            total_input_tokens: total_input_tokens as u64,
+            total_output_tokens: total_output_tokens as u64,
+            total_cache_create_tokens: total_cache_create_tokens as u64,
+            total_cache_read_tokens: total_cache_read_tokens as u64,
+            total_duration_ms: total_duration_ms as u64,
+            avg_output_tokens_per_second: avg_rate,
+            first_request_time,
+            last_request_time,
+            models: if models_str.is_empty() {
+                Vec::new()
+            } else {
+                models_str.split(',').map(|s| s.to_string()).collect()
+            },
+            avg_ttft_ms,
+            success_requests: success_requests as u64,
+            error_requests: error_requests as u64,
+            estimated_cost,
+            is_cost_estimated: false,
+            cwd: None,
+            project_name: None,
+            topic: None,
+            last_prompt: None,
+            session_name: None,
+        })
     }
 
     /// 迁移现有数据：只迁移没有 session_id 的 usage_records
@@ -2628,5 +3058,48 @@ impl ProxyDatabase {
             migrated
         );
         Ok(migrated)
+    }
+
+    /// 删除指定来源的请求记录
+    pub async fn delete_records_by_source(
+        &self,
+        api_key_prefixes: &[String],
+        base_url: Option<&str>,
+    ) -> Result<(), String> {
+        if api_key_prefixes.is_empty() {
+            return Ok(());
+        }
+
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+        // 构建删除 SQL
+        let placeholders: Vec<String> = api_key_prefixes.iter().map(|_| "?".to_string()).collect();
+        let base_url_val = base_url.unwrap_or("");
+
+        let sql = format!(
+            "DELETE FROM usage_records WHERE api_key_prefix IN ({}) AND COALESCE(request_base_url, '') = ?",
+            placeholders.join(",")
+        );
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare delete statement: {}", e))?;
+
+        // 构建参数
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![];
+        for p in api_key_prefixes {
+            params.push(p);
+        }
+        params.push(&base_url_val);
+
+        let deleted = stmt
+            .execute(params.as_slice())
+            .map_err(|e| format!("Failed to delete records: {}", e))?;
+
+        eprintln!("[database] Deleted {} records for source", deleted);
+        Ok(())
     }
 }

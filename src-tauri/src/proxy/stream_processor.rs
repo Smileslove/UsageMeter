@@ -39,6 +39,16 @@ pub struct UsageData {
     pub status_code: u16,
     /// 首 Token 生成时间（毫秒）
     pub ttft_ms: Option<u64>,
+    /// API Key 前缀（用于来源识别）
+    pub api_key_prefix: Option<String>,
+    /// 实际请求目标 base_url
+    pub request_base_url: Option<String>,
+    /// 发起请求的客户端工具
+    pub client_tool: String,
+    /// 匹配到的客户端工具 profile ID
+    pub proxy_profile_id: Option<String>,
+    /// 工具识别方式
+    pub client_detection_method: String,
 }
 
 /// SSE 使用量收集器，聚合事件并在完成时触发回调
@@ -150,8 +160,13 @@ fn parse_usage_from_events(events: &[Value]) -> Option<UsageData> {
                         if let Some(m) = message.get("model").and_then(|v| v.as_str()) {
                             usage.model = m.to_string();
                         }
-                        // 提取缓存相关 Token（只在 message_start 中返回）
+                        // 提取缓存相关 Token 和输入 Token（只在 message_start 中返回）
                         if let Some(msg_usage) = message.get("usage") {
+                            // 输入 Token（最终真实值，message_start 中即为准确值）
+                            usage.input_tokens = msg_usage
+                                .get("input_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
                             // 缓存读取 Token
                             usage.cache_read_tokens = msg_usage
                                 .get("cache_read_input_tokens")
@@ -168,13 +183,8 @@ fn parse_usage_from_events(events: &[Value]) -> Option<UsageData> {
                     }
                 }
                 "message_delta" => {
-                    // 最终 usage 数据（最精确）
+                    // 最终 usage 数据（最精确），message_delta 中只含 output_tokens
                     if let Some(delta_usage) = event.get("usage") {
-                        // 输入 Token（最终真实值）
-                        usage.input_tokens = delta_usage
-                            .get("input_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
                         // 输出 Token（最终真实值）
                         usage.output_tokens = delta_usage
                             .get("output_tokens")
@@ -281,6 +291,11 @@ pub fn create_database_collector(
     // 记录请求开始时间
     let request_start_time = chrono::Utc::now().timestamp_millis();
     let status_code = context.status_code;
+    let api_key_prefix = context.api_key_prefix.clone();
+    let request_base_url = context.request_base_url.clone();
+    let client_tool = context.client_tool.clone();
+    let proxy_profile_id = context.proxy_profile_id.clone();
+    let client_detection_method = context.client_detection_method.clone();
 
     SseUsageCollector::new(start_time, move |usage| {
         // 计算请求结束时间和耗时
@@ -330,6 +345,11 @@ pub fn create_database_collector(
             estimated_cost: 0.0,
             pricing_snapshot_id: None,
             cost_locked: false,
+            api_key_prefix: api_key_prefix.clone(),
+            request_base_url: request_base_url.clone(),
+            client_tool: client_tool.clone(),
+            proxy_profile_id: proxy_profile_id.clone(),
+            client_detection_method: client_detection_method.clone(),
         };
 
         let collector = usage_collector.clone();
@@ -354,6 +374,16 @@ pub struct StreamContext {
     pub request_start_time: i64,
     /// HTTP 响应状态码
     pub status_code: u16,
+    /// API Key 前缀（用于来源识别）
+    pub api_key_prefix: Option<String>,
+    /// 实际请求目标 base_url
+    pub request_base_url: Option<String>,
+    /// 发起请求的客户端工具
+    pub client_tool: String,
+    /// 匹配到的客户端工具 profile ID
+    pub proxy_profile_id: Option<String>,
+    /// 工具识别方式
+    pub client_detection_method: String,
 }
 
 impl Default for StreamContext {
@@ -364,6 +394,11 @@ impl Default for StreamContext {
             session_id: None,
             request_start_time: chrono::Utc::now().timestamp_millis(),
             status_code: 200,
+            api_key_prefix: None,
+            request_base_url: None,
+            client_tool: crate::models::DEFAULT_CLIENT_TOOL.to_string(),
+            proxy_profile_id: None,
+            client_detection_method: crate::models::DEFAULT_CLIENT_DETECTION_METHOD.to_string(),
         }
     }
 }

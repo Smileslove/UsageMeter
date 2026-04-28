@@ -5,6 +5,7 @@ mod config_manager;
 mod database;
 mod forwarder;
 mod server;
+mod source_detector;
 mod sse;
 mod stream_processor;
 mod types;

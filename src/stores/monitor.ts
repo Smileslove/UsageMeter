@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AlertEvent, AppSettings, ModelPricingSettings, MonthActivity, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageSnapshot, WindowQuota, WindowRateSummary, YearActivity } from '../types'
+import type { AlertEvent, AppSettings, ClientToolSettings, ModelPricingSettings, MonthActivity, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageSnapshot, WindowQuota, WindowRateSummary, YearActivity, SourceAwareSettings } from '../types'
 
 const defaultQuotas: WindowQuota[] = [
   { window: '5h', enabled: true, tokenLimit: 500000, requestLimit: 500 },
@@ -15,6 +15,21 @@ const defaultModelPricing: ModelPricingSettings = {
   matchMode: 'fuzzy',
   lastSyncTime: null,
   pricings: []
+}
+
+const defaultSourceAware: SourceAwareSettings = {
+  sources: [],
+  activeSourceFilter: null
+}
+
+const defaultClientTools: ClientToolSettings = {
+  profiles: [
+    { id: 'claude_code', tool: 'claude_code', displayName: 'Claude Code', pathPrefix: 'claude-code', enabled: true, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'claudecode' },
+    { id: 'codex', tool: 'codex', displayName: 'Codex', pathPrefix: 'codex', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'codex' },
+    { id: 'cursor', tool: 'cursor', displayName: 'Cursor', pathPrefix: 'cursor', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'cursor' },
+    { id: 'opencode', tool: 'opencode', displayName: 'OpenCode', pathPrefix: 'opencode', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'opencode' }
+  ],
+  activeToolFilter: null
 }
 
 function invokeWithTimeout<T>(command: string, args: Record<string, unknown>, timeoutMs = 120000): Promise<T> {
@@ -48,7 +63,9 @@ const defaultSettings: AppSettings = {
   },
   theme: 'system',
   modelPricing: defaultModelPricing,
-  autoStart: false
+  autoStart: false,
+  sourceAware: defaultSourceAware,
+  clientTools: defaultClientTools
 }
 
 export const useMonitorStore = defineStore('monitor', {
@@ -148,6 +165,21 @@ export const useMonitorStore = defineStore('monitor', {
           }
           if (!this.settings.modelPricing.pricings) {
             this.settings.modelPricing.pricings = []
+          }
+        }
+
+        // 确保来源识别配置存在（迁移兼容）
+        if (!this.settings.sourceAware) {
+          this.settings.sourceAware = defaultSourceAware
+        }
+        if (!this.settings.clientTools) {
+          this.settings.clientTools = defaultClientTools
+        } else {
+          if (!this.settings.clientTools.profiles?.length) {
+            this.settings.clientTools.profiles = defaultClientTools.profiles
+          }
+          if (this.settings.clientTools.activeToolFilter === undefined) {
+            this.settings.clientTools.activeToolFilter = null
           }
         }
       } catch (e) {
@@ -508,6 +540,76 @@ export const useMonitorStore = defineStore('monitor', {
       } finally {
         this.projectStatsLoading = false
       }
+    },
+    // === 来源管理 ===
+    /**
+     * 设置当前激活的来源过滤器
+     */
+    async setActiveSourceFilter(sourceId: string | null) {
+      this.settings.sourceAware.activeSourceFilter = sourceId
+      await this.saveSettings()
+      await this.refreshUsage()
+    },
+    /**
+     * 设置当前激活的工具过滤器
+     */
+    async setActiveToolFilter(toolId: string | null) {
+      this.settings.clientTools.activeToolFilter = toolId
+      await this.saveSettings()
+      await this.refreshUsage()
+    },
+    /**
+     * 重命名来源
+     */
+    async renameSource(sourceId: string, name: string) {
+      const source = this.settings.sourceAware.sources.find(s => s.id === sourceId)
+      if (source) {
+        source.displayName = name.trim() || undefined
+        source.autoDetected = false
+      }
+      await invoke('rename_api_source', { sourceId, name })
+      await this.loadSettings()
+    },
+    /**
+     * 删除来源
+     */
+    async deleteSource(sourceId: string, alsoDeleteRecords: boolean = false) {
+      await invoke('delete_api_source', { sourceId, alsoDeleteRecords })
+      await this.loadSettings()
+      await this.refreshUsage()
+    },
+    /**
+     * 合并两个来源
+     */
+    async mergeSource(sourceIdFrom: string, sourceIdInto: string) {
+      await invoke('merge_api_source', { sourceIdFrom, sourceIdInto })
+      await this.loadSettings()
+      await this.refreshUsage()
+    },
+    /**
+     * 添加 Key 前缀到来源
+     */
+    async addKeyPrefixToSource(sourceId: string, keyPrefix: string) {
+      await invoke('add_key_prefix_to_source', { sourceId, keyPrefix })
+      await this.loadSettings()
+    },
+    /**
+     * 更新 Key 前缀备注
+     */
+    async updateSourceKeyNote(sourceId: string, keyPrefix: string, note: string) {
+      const source = this.settings.sourceAware.sources.find(s => s.id === sourceId)
+      if (source) {
+        if (!source.apiKeyNotes) source.apiKeyNotes = {}
+        const value = note.trim()
+        if (value) {
+          source.apiKeyNotes[keyPrefix] = value
+        } else {
+          delete source.apiKeyNotes[keyPrefix]
+        }
+        source.autoDetected = false
+      }
+      await invoke('update_api_source_key_note', { sourceId, keyPrefix, note })
+      await this.loadSettings()
     }
   }
 })

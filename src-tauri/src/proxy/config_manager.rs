@@ -95,7 +95,17 @@ impl ClaudeConfigManager {
 
     /// 接管 Claude 配置
     /// 备份原始设置并修改为指向代理
+    #[allow(dead_code)]
     pub fn takeover(&self, proxy_port: u16) -> Result<(), String> {
+        self.takeover_with_path_prefix(proxy_port, None)
+    }
+
+    /// 接管 Claude 配置，并可追加单端口代理的工具路径前缀。
+    pub fn takeover_with_path_prefix(
+        &self,
+        proxy_port: u16,
+        path_prefix: Option<&str>,
+    ) -> Result<(), String> {
         // 读取当前设置
         let mut settings = self.read_settings()?;
 
@@ -115,7 +125,13 @@ impl ClaudeConfigManager {
         }
 
         // 修改设置指向代理
-        let proxy_url = format!("http://127.0.0.1:{}", proxy_port);
+        let proxy_url = match path_prefix
+            .map(|p| p.trim().trim_matches('/'))
+            .filter(|p| !p.is_empty())
+        {
+            Some(prefix) => format!("http://127.0.0.1:{}/{}", proxy_port, prefix),
+            None => format!("http://127.0.0.1:{}", proxy_port),
+        };
         settings.set_base_url(&proxy_url);
 
         // 写入修改后的设置

@@ -130,6 +130,21 @@ pub struct UsageRecord {
     /// 费用是否已经冻结。旧数据回填后也会置为 true。
     #[serde(default)]
     pub cost_locked: bool,
+    /// API Key 前缀（前 12 位），用于来源识别
+    #[serde(default)]
+    pub api_key_prefix: Option<String>,
+    /// 实际请求目标 base_url；None = 官方 Anthropic
+    #[serde(default)]
+    pub request_base_url: Option<String>,
+    /// 发起请求的客户端工具，如 claude_code / codex / cursor / opencode
+    #[serde(default = "default_client_tool")]
+    pub client_tool: String,
+    /// 匹配到的客户端工具 profile ID
+    #[serde(default)]
+    pub proxy_profile_id: Option<String>,
+    /// 工具识别方式，如 path_prefix / legacy_path
+    #[serde(default = "default_client_detection_method")]
+    pub client_detection_method: String,
 }
 
 impl Default for UsageRecord {
@@ -154,8 +169,21 @@ impl Default for UsageRecord {
             estimated_cost: 0.0,
             pricing_snapshot_id: None,
             cost_locked: false,
+            api_key_prefix: None,
+            request_base_url: None,
+            client_tool: default_client_tool(),
+            proxy_profile_id: None,
+            client_detection_method: default_client_detection_method(),
         }
     }
+}
+
+fn default_client_tool() -> String {
+    crate::models::DEFAULT_CLIENT_TOOL.to_string()
+}
+
+fn default_client_detection_method() -> String {
+    crate::models::DEFAULT_CLIENT_DETECTION_METHOD.to_string()
 }
 
 /// 时间窗口统计
@@ -266,7 +294,6 @@ pub struct ProjectStats {
 }
 
 /// 代理状态（在处理器之间共享）
-#[allow(dead_code)]
 pub struct ProxyState {
     /// 使用量收集器
     pub usage_collector: Arc<UsageCollector>,
@@ -280,6 +307,8 @@ pub struct ProxyState {
     pub status: Arc<RwLock<ProxyStatus>>,
     /// 启动时间（Unix 时间戳，秒）
     pub start_time: Arc<RwLock<Option<i64>>>,
+    /// Tauri 应用句柄（用于发送事件）
+    pub app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
 }
 
 /// Claude API 的 SSE 事件类型
@@ -330,6 +359,20 @@ pub struct RequestContext {
     pub start_time: std::time::Instant,
     /// 请求开始时间（Unix 毫秒）
     pub start_time_ms: i64,
+    /// 来自入站请求的 API Key 前缀（x-api-key 前 12 位）
+    pub api_key_prefix: Option<String>,
+    /// 实际请求目标 base_url；None = 官方 Anthropic
+    pub request_base_url: Option<String>,
+    /// 发起请求的客户端工具
+    pub client_tool: String,
+    /// 匹配到的客户端工具 profile ID
+    pub proxy_profile_id: Option<String>,
+    /// 工具识别方式
+    pub client_detection_method: String,
+    /// 入站请求携带的 API Key。转发时优先使用它，避免多工具共享端口时串用其他工具的 key。
+    pub inbound_api_key: Option<String>,
+    /// 当前请求的实际转发目标地址。None 时使用代理启动时的兼容默认目标。
+    pub target_base_url: Option<String>,
 }
 
 impl Default for RequestContext {
@@ -344,6 +387,13 @@ impl Default for RequestContext {
             cache_read_tokens: 0,
             start_time: std::time::Instant::now(),
             start_time_ms: chrono::Utc::now().timestamp_millis(),
+            api_key_prefix: None,
+            request_base_url: None,
+            client_tool: default_client_tool(),
+            proxy_profile_id: None,
+            client_detection_method: default_client_detection_method(),
+            inbound_api_key: None,
+            target_base_url: None,
         }
     }
 }

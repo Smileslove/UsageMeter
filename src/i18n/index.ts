@@ -40,7 +40,12 @@ const messages: Record<AppLocale, TranslationNode> = {
       unlimited: '无限制',
       avgRate: '速率',
       underDevelopment: '功能开发中',
-      noMore: '没有更多了'
+      noMore: '没有更多了',
+      justNow: '刚刚',
+      minutesAgo: '分钟前',
+      hoursAgo: '小时前',
+      daysAgo: '天前',
+      confirm: '确认'
     },
     source: {
       ccusageApi: 'ccusage',
@@ -79,7 +84,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       avgTtft: '平均响应',
       minTtft: '最小',
       maxTtft: '最大',
-      modelTtftRanking: '模型响应速度排行'
+      modelTtftRanking: '模型响应速度排行',
+      percent: '占比'
     },
     alerts: {
       title: '告警',
@@ -305,6 +311,37 @@ const messages: Record<AppLocale, TranslationNode> = {
       weekFri: '五',
       weekSat: '六',
       weekSun: '日'
+    },
+    tools: {
+      all: '全部工具'
+    },
+    sources: {
+      title: 'API 来源',
+      manage: '管理',
+      all: '全部',
+      unknown: '未归因',
+      officialAnthropic: '官方 Anthropic',
+      noSources: '暂未检测到来源，启动代理后使用 Claude Code 即可自动发现',
+      editName: '重命名',
+      namePlaceholder: '来源名称（如 OpenRouter）',
+      apiKeyPrefixes: 'API Key 前缀',
+      baseUrl: '基础地址',
+      lastUsed: '最近使用',
+      delete: '删除来源',
+      deleteConfirm: '删除此来源？历史记录默认保留，出现在「未归因」中。',
+      deleteRecordsToo: '同时删除关联的历史请求记录',
+      mergeInto: '合并到...',
+      mergeConfirm: '将此来源的 Key 前缀合并入目标来源，历史记录无需迁移。',
+      newDetected: '检测到新 API 来源',
+      proxyOnlyNote: '来源识别仅在本地代理模式下可用',
+      keyRotationHint: '更换了 API Key？在新来源上点击「合并到」可合入同一来源',
+      keyNotePlaceholder: 'Key 备注',
+      prefixTooShort: '前缀至少需要 8 位',
+      sourcesCount: '个来源',
+      keyPrefixTruncated: '完整前缀: {prefix}',
+      changeIcon: '更换图标',
+      removeIcon: '移除图标',
+      searchIcon: '搜索图标...'
     }
   },
   'zh-TW': {
@@ -342,7 +379,12 @@ const messages: Record<AppLocale, TranslationNode> = {
       unlimited: '無限制',
       avgRate: '速率',
       underDevelopment: '功能開發中',
-      noMore: '沒有更多了'
+      noMore: '沒有更多了',
+      justNow: '剛剛',
+      minutesAgo: '分鐘前',
+      hoursAgo: '小時前',
+      daysAgo: '天前',
+      confirm: '確認'
     },
     source: {
       ccusageApi: 'ccusage',
@@ -381,7 +423,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       avgTtft: '平均響應',
       minTtft: '最小',
       maxTtft: '最大',
-      modelTtftRanking: '模型響應速度排行'
+      modelTtftRanking: '模型響應速度排行',
+      percent: '占比'
     },
     alerts: {
       title: '警告',
@@ -607,6 +650,37 @@ const messages: Record<AppLocale, TranslationNode> = {
       weekFri: '五',
       weekSat: '六',
       weekSun: '日'
+    },
+    tools: {
+      all: '全部工具'
+    },
+    sources: {
+      title: 'API 來源',
+      manage: '管理',
+      all: '全部',
+      unknown: '未歸因',
+      officialAnthropic: '官方 Anthropic',
+      noSources: '暫未檢測到來源，啟動代理後使用 Claude Code 即可自動發現',
+      editName: '重新命名',
+      namePlaceholder: '來源名稱（如 OpenRouter）',
+      apiKeyPrefixes: 'API Key 前綴',
+      baseUrl: '基礎地址',
+      lastUsed: '最近使用',
+      delete: '刪除來源',
+      deleteConfirm: '刪除此來源？歷史記錄預設保留，出現在「未歸因」中。',
+      deleteRecordsToo: '同時刪除關聯的歷史請求記錄',
+      mergeInto: '合併到...',
+      mergeConfirm: '將此來源的 Key 前綴合�入目標來源，歷史記錄無需遷移。',
+      newDetected: '檢測到新 API 來源',
+      proxyOnlyNote: '來源識別僅在本地代理模式下可用',
+      keyRotationHint: '更換了 API Key？在新來源上點擊「合併到」可合入同一來源',
+      keyNotePlaceholder: 'Key 備註',
+      prefixTooShort: '前綴至少需要 8 位',
+      sourcesCount: '個來源',
+      keyPrefixTruncated: '完整前綴: {prefix}',
+      changeIcon: '更換圖標',
+      removeIcon: '移除圖標',
+      searchIcon: '搜尋圖標...'
     }
   },
   'en-US': {
@@ -644,7 +718,12 @@ const messages: Record<AppLocale, TranslationNode> = {
       unlimited: 'Unlimited',
       avgRate: 'Rate',
       underDevelopment: 'Under Development',
-      noMore: 'No more sessions'
+      noMore: 'No more sessions',
+      justNow: 'Just now',
+      minutesAgo: 'm ago',
+      hoursAgo: 'h ago',
+      daysAgo: 'd ago',
+      confirm: 'Confirm'
     },
     source: {
       ccusageApi: 'ccusage',
@@ -683,7 +762,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       avgTtft: 'Avg Response',
       minTtft: 'Min',
       maxTtft: 'Max',
-      modelTtftRanking: 'Model Response Speed'
+      modelTtftRanking: 'Model Response Speed',
+      percent: 'Share'
     },
     alerts: {
       title: 'Alerts',
@@ -909,6 +989,37 @@ const messages: Record<AppLocale, TranslationNode> = {
       weekFri: 'Fri',
       weekSat: 'Sat',
       weekSun: 'Sun'
+    },
+    tools: {
+      all: 'All Tools'
+    },
+    sources: {
+      title: 'API Sources',
+      manage: 'Manage',
+      all: 'All',
+      unknown: 'Unattributed',
+      officialAnthropic: 'Anthropic Official',
+      noSources: 'No sources detected yet. Use Claude Code with proxy enabled.',
+      editName: 'Rename',
+      namePlaceholder: 'Source name (e.g. OpenRouter)',
+      apiKeyPrefixes: 'API Key Prefixes',
+      baseUrl: 'Base URL',
+      lastUsed: 'Last used',
+      delete: 'Remove Source',
+      deleteConfirm: 'Remove this source? Records will be kept under "Unattributed" unless deleted.',
+      deleteRecordsToo: 'Also delete associated request records',
+      mergeInto: 'Merge into...',
+      mergeConfirm: 'Merge key prefixes into target. Historical records need no migration.',
+      newDetected: 'New API source detected',
+      proxyOnlyNote: 'Source tracking requires Local Proxy mode',
+      keyRotationHint: 'Rotated your API key? Use "Merge into" to keep it as one source',
+      keyNotePlaceholder: 'Key note',
+      prefixTooShort: 'Prefix must be at least 8 characters',
+      sourcesCount: 'sources',
+      keyPrefixTruncated: 'Full prefix: {prefix}',
+      changeIcon: 'Change icon',
+      removeIcon: 'Remove icon',
+      searchIcon: 'Search icons...'
     }
   }
 }

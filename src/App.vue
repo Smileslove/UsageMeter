@@ -7,6 +7,8 @@ import Overview from './views/Overview.vue'
 import Statistics from './views/Statistics.vue'
 import Sessions from './views/Sessions.vue'
 import Settings from './views/Settings.vue'
+import SourceSelector from './components/SourceSelector.vue'
+import ToolSelector from './components/ToolSelector.vue'
 import type { ThemeMode } from './types'
 import { RefreshCw, Sun, Moon, Monitor } from 'lucide-vue-next'
 import { t } from './i18n'
@@ -77,6 +79,7 @@ watch(
 
 // 退出事件监听器
 let unlistenQuit: UnlistenFn | null = null
+let unlistenSourceDetected: UnlistenFn | null = null
 
 onMounted(async () => {
   await store.initialize()
@@ -99,6 +102,12 @@ onMounted(async () => {
     // 通知后端可以退出了
     await invoke('confirm_exit')
   })
+
+  // 监听新来源检测事件
+  unlistenSourceDetected = await listen('source_detected', async () => {
+    // 重新加载设置以获取最新的来源列表
+    await store.loadSettings()
+  })
 })
 
 onUnmounted(() => {
@@ -108,6 +117,9 @@ onUnmounted(() => {
   }
   if (unlistenQuit) {
     unlistenQuit()
+  }
+  if (unlistenSourceDetected) {
+    unlistenSourceDetected()
   }
 })
 </script>
@@ -128,6 +140,8 @@ onUnmounted(() => {
 
         <!-- 操作按钮（右侧） -->
         <div class="flex items-center gap-1 shrink-0 drag-region-none" style="-webkit-app-region: no-drag; app-region: no-drag">
+          <SourceSelector />
+          <ToolSelector />
           <button @click="store.refreshUsage()" class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-200/60 dark:hover:text-gray-200 dark:hover:bg-neutral-800/80 transition-all select-none" :title="t(store.settings.locale, 'common.refresh')">
             <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': store.loading }" />
           </button>

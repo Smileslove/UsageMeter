@@ -2,7 +2,8 @@
 
 use crate::models::{
     compute_percent, risk_level, AppSettings, ModelRateStats, ModelTtftStats, OverallRateStats,
-    StatusCodeCount, TtftStats, UsageSnapshot, WindowRateSummary, WindowUsage,
+    SourceFilter, StatusCodeCount, ToolFilter, TtftStats, UsageQueryFilter, UsageSnapshot,
+    WindowRateSummary, WindowUsage,
 };
 use crate::proxy::{ProxyServer, SessionStats, UsageRecord};
 use chrono::{Datelike, Local, NaiveDate, TimeZone};
@@ -25,6 +26,17 @@ impl Default for ProxyState {
             server: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
+}
+
+fn build_usage_query_filter(settings: &AppSettings) -> UsageQueryFilter {
+    UsageQueryFilter {
+        source: settings.source_aware.build_filter(),
+        tool: settings.client_tools.build_filter(),
+    }
+}
+
+fn is_usage_filter_all(filter: &UsageQueryFilter) -> bool {
+    matches!(filter.source, SourceFilter::All) && matches!(filter.tool, ToolFilter::All)
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -242,13 +254,17 @@ async fn get_proxy_usage_snapshot(
         let collector = server.get_collector();
         // 读取设置：是否包含错误请求
         let include_errors = settings.proxy.include_error_requests;
-        let window_stats = collector.get_all_window_stats(include_errors).await;
+        // 构建来源过滤器
+        let usage_filter = build_usage_query_filter(settings);
+        let window_stats = collector
+            .get_all_window_stats_with_source(include_errors, &usage_filter)
+            .await;
         let pricings = effective_model_pricings(settings);
         let match_mode = &settings.model_pricing.match_mode;
         let mut window_costs = HashMap::new();
         for quota in settings.quotas.iter().filter(|quota| quota.enabled) {
             let model_distribution = collector
-                .get_model_distribution_filtered(&quota.window, include_errors)
+                .get_model_distribution_with_source(&quota.window, include_errors, &usage_filter)
                 .await;
             let cost =
                 estimate_cost_from_model_distribution(&model_distribution, &pricings, match_mode);
@@ -327,7 +343,11 @@ async fn get_proxy_usage_snapshot(
 
         // 从收集器获取模型分布
         let model_distribution_raw = collector
-            .get_model_distribution(&settings.summary_window)
+            .get_model_distribution_with_source(
+                &settings.summary_window,
+                include_errors,
+                &usage_filter,
+            )
             .await;
 
         // 计算总 token 用于百分比
@@ -1922,8 +1942,15 @@ pub async fn get_statistics_summary(
     if settings.data_source == "proxy" {
         if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
             db.backfill_unlocked_costs().await?;
+            // 构建来源过滤器
+            let usage_filter = build_usage_query_filter(&settings);
             let records = db
-                .get_records_between(start_epoch * 1000, end_epoch * 1000, true)
+                .get_records_between_with_source(
+                    start_epoch * 1000,
+                    end_epoch * 1000,
+                    true,
+                    &usage_filter,
+                )
                 .await?;
             return Ok(build_proxy_statistics(records, &query, &settings));
         }
@@ -1939,6 +1966,42 @@ fn month_day_count(year: i32, month: u8) -> u32 {
         }
     }
     30
+}
+
+async fn collect_proxy_records_by_day(
+    db: &crate::proxy::ProxyDatabase,
+    day_map: &mut HashMap<String, (StatAccumulator, std::collections::HashSet<String>)>,
+    start_epoch: i64,
+    end_epoch: i64,
+    include_errors: bool,
+    usage_filter: &UsageQueryFilter,
+) -> Result<(), String> {
+    db.backfill_unlocked_costs().await?;
+    let records = db
+        .get_records_between_with_source(
+            start_epoch * 1000,
+            end_epoch * 1000,
+            include_errors,
+            usage_filter,
+        )
+        .await?;
+
+    for record in records {
+        let date = Local
+            .timestamp_opt(record.timestamp / 1000, 0)
+            .single()
+            .unwrap_or_else(Local::now)
+            .format("%Y-%m-%d")
+            .to_string();
+        let cost = record.estimated_cost;
+        let entry = day_map.entry(date).or_default();
+        entry.0.add_record(&record, cost);
+        if !record.model.is_empty() {
+            entry.1.insert(record.model);
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -1973,90 +2036,103 @@ pub async fn get_month_activity(
 
     if settings.data_source == "proxy" {
         if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
-            let month_start_date = NaiveDate::from_ymd_opt(year, month as u32, 1)
-                .unwrap_or_else(|| Local::now().date_naive());
-            let next_month_date = if month == 12 {
-                NaiveDate::from_ymd_opt(year + 1, 1, 1)
+            let usage_filter = build_usage_query_filter(&settings);
+            if !is_usage_filter_all(&usage_filter) {
+                collect_proxy_records_by_day(
+                    &db,
+                    &mut day_map,
+                    month_start,
+                    month_end,
+                    settings.proxy.include_error_requests,
+                    &usage_filter,
+                )
+                .await?;
             } else {
-                NaiveDate::from_ymd_opt(year, month as u32 + 1, 1)
-            }
-            .unwrap_or_else(|| Local::now().date_naive());
-            let today_date = Local::now().date_naive();
-            let summary_end_date = next_month_date.min(today_date);
-
-            if summary_end_date > month_start_date {
-                let summary_start_key = month_start_date.format("%Y-%m-%d").to_string();
-                let summary_end_key = summary_end_date.format("%Y-%m-%d").to_string();
-                db.ensure_daily_summaries(&summary_start_key, &summary_end_key)
-                    .await?;
-                for summary in db
-                    .get_daily_activity_summaries(&summary_start_key, &summary_end_key)
-                    .await?
-                {
-                    let mut acc = StatAccumulator::default();
-                    if settings.proxy.include_error_requests {
-                        acc.request_count = summary.request_count;
-                        acc.total_tokens = summary.total_tokens;
-                        acc.input_tokens = summary.input_tokens;
-                        acc.output_tokens = summary.output_tokens;
-                        acc.cache_create_tokens = summary.cache_create_tokens;
-                        acc.cache_read_tokens = summary.cache_read_tokens;
-                        acc.cost = summary.cost;
-                    } else {
-                        acc.request_count = summary.success_requests;
-                        acc.total_tokens = summary.success_total_tokens;
-                        acc.input_tokens = summary.success_input_tokens;
-                        acc.output_tokens = summary.success_output_tokens;
-                        acc.cache_create_tokens = summary.success_cache_create_tokens;
-                        acc.cache_read_tokens = summary.success_cache_read_tokens;
-                        acc.cost = summary.success_cost;
-                    }
-                    acc.success_requests = summary.success_requests;
-                    acc.client_error_requests = summary.client_error_requests;
-                    acc.server_error_requests = summary.server_error_requests;
-                    let models = (0..summary.model_count)
-                        .map(|idx| format!("__cached_model_{idx}"))
-                        .collect();
-                    day_map.insert(summary.date, (acc, models));
+                let month_start_date = NaiveDate::from_ymd_opt(year, month as u32, 1)
+                    .unwrap_or_else(|| Local::now().date_naive());
+                let next_month_date = if month == 12 {
+                    NaiveDate::from_ymd_opt(year + 1, 1, 1)
+                } else {
+                    NaiveDate::from_ymd_opt(year, month as u32 + 1, 1)
                 }
-            } else {
-                db.backfill_unlocked_costs().await?;
-            }
+                .unwrap_or_else(|| Local::now().date_naive());
+                let today_date = Local::now().date_naive();
+                let summary_end_date = next_month_date.min(today_date);
 
-            let live_start = month_start_date.max(today_date);
-            if live_start < next_month_date {
-                let live_start_epoch = Local
-                    .with_ymd_and_hms(
-                        live_start.year(),
-                        live_start.month(),
-                        live_start.day(),
-                        0,
-                        0,
-                        0,
-                    )
-                    .single()
-                    .unwrap_or_else(Local::now)
-                    .timestamp();
-                let live_end_epoch = month_end;
-                let records = db
-                    .get_records_between(
-                        live_start_epoch * 1000,
-                        live_end_epoch * 1000,
-                        settings.proxy.include_error_requests,
-                    )
-                    .await?;
-                for record in records {
-                    let date = Local
-                        .timestamp_opt(record.timestamp / 1000, 0)
+                if summary_end_date > month_start_date {
+                    let summary_start_key = month_start_date.format("%Y-%m-%d").to_string();
+                    let summary_end_key = summary_end_date.format("%Y-%m-%d").to_string();
+                    db.ensure_daily_summaries(&summary_start_key, &summary_end_key)
+                        .await?;
+                    for summary in db
+                        .get_daily_activity_summaries(&summary_start_key, &summary_end_key)
+                        .await?
+                    {
+                        let mut acc = StatAccumulator::default();
+                        if settings.proxy.include_error_requests {
+                            acc.request_count = summary.request_count;
+                            acc.total_tokens = summary.total_tokens;
+                            acc.input_tokens = summary.input_tokens;
+                            acc.output_tokens = summary.output_tokens;
+                            acc.cache_create_tokens = summary.cache_create_tokens;
+                            acc.cache_read_tokens = summary.cache_read_tokens;
+                            acc.cost = summary.cost;
+                        } else {
+                            acc.request_count = summary.success_requests;
+                            acc.total_tokens = summary.success_total_tokens;
+                            acc.input_tokens = summary.success_input_tokens;
+                            acc.output_tokens = summary.success_output_tokens;
+                            acc.cache_create_tokens = summary.success_cache_create_tokens;
+                            acc.cache_read_tokens = summary.success_cache_read_tokens;
+                            acc.cost = summary.success_cost;
+                        }
+                        acc.success_requests = summary.success_requests;
+                        acc.client_error_requests = summary.client_error_requests;
+                        acc.server_error_requests = summary.server_error_requests;
+                        let models = (0..summary.model_count)
+                            .map(|idx| format!("__cached_model_{idx}"))
+                            .collect();
+                        day_map.insert(summary.date, (acc, models));
+                    }
+                } else {
+                    db.backfill_unlocked_costs().await?;
+                }
+
+                let live_start = month_start_date.max(today_date);
+                if live_start < next_month_date {
+                    let live_start_epoch = Local
+                        .with_ymd_and_hms(
+                            live_start.year(),
+                            live_start.month(),
+                            live_start.day(),
+                            0,
+                            0,
+                            0,
+                        )
                         .single()
                         .unwrap_or_else(Local::now)
-                        .format("%Y-%m-%d")
-                        .to_string();
-                    let cost = record.estimated_cost;
-                    let entry = day_map.entry(date).or_default();
-                    entry.0.add_record(&record, cost);
-                    if !record.model.is_empty() {
-                        entry.1.insert(record.model);
+                        .timestamp();
+                    let live_end_epoch = month_end;
+                    let records = db
+                        .get_records_between(
+                            live_start_epoch * 1000,
+                            live_end_epoch * 1000,
+                            settings.proxy.include_error_requests,
+                        )
+                        .await?;
+                    for record in records {
+                        let date = Local
+                            .timestamp_opt(record.timestamp / 1000, 0)
+                            .single()
+                            .unwrap_or_else(Local::now)
+                            .format("%Y-%m-%d")
+                            .to_string();
+                        let cost = record.estimated_cost;
+                        let entry = day_map.entry(date).or_default();
+                        entry.0.add_record(&record, cost);
+                        if !record.model.is_empty() {
+                            entry.1.insert(record.model);
+                        }
                     }
                 }
             }
@@ -2163,85 +2239,98 @@ pub async fn get_year_activity(
 
     if settings.data_source == "proxy" {
         if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
-            let year_start_date =
-                NaiveDate::from_ymd_opt(year, 1, 1).unwrap_or_else(|| Local::now().date_naive());
-            let next_year_date = NaiveDate::from_ymd_opt(year + 1, 1, 1)
-                .unwrap_or_else(|| Local::now().date_naive());
-            let today_date = Local::now().date_naive();
-            let summary_end_date = next_year_date.min(today_date);
-
-            if summary_end_date > year_start_date {
-                let summary_start_key = year_start_date.format("%Y-%m-%d").to_string();
-                let summary_end_key = summary_end_date.format("%Y-%m-%d").to_string();
-                db.ensure_daily_summaries(&summary_start_key, &summary_end_key)
-                    .await?;
-                for summary in db
-                    .get_daily_activity_summaries(&summary_start_key, &summary_end_key)
-                    .await?
-                {
-                    let mut acc = StatAccumulator::default();
-                    if settings.proxy.include_error_requests {
-                        acc.request_count = summary.request_count;
-                        acc.total_tokens = summary.total_tokens;
-                        acc.input_tokens = summary.input_tokens;
-                        acc.output_tokens = summary.output_tokens;
-                        acc.cache_create_tokens = summary.cache_create_tokens;
-                        acc.cache_read_tokens = summary.cache_read_tokens;
-                        acc.cost = summary.cost;
-                    } else {
-                        acc.request_count = summary.success_requests;
-                        acc.total_tokens = summary.success_total_tokens;
-                        acc.input_tokens = summary.success_input_tokens;
-                        acc.output_tokens = summary.success_output_tokens;
-                        acc.cache_create_tokens = summary.success_cache_create_tokens;
-                        acc.cache_read_tokens = summary.success_cache_read_tokens;
-                        acc.cost = summary.success_cost;
-                    }
-                    acc.success_requests = summary.success_requests;
-                    acc.client_error_requests = summary.client_error_requests;
-                    acc.server_error_requests = summary.server_error_requests;
-                    let models = (0..summary.model_count)
-                        .map(|idx| format!("__cached_model_{idx}"))
-                        .collect();
-                    day_map.insert(summary.date, (acc, models));
-                }
+            let usage_filter = build_usage_query_filter(&settings);
+            if !is_usage_filter_all(&usage_filter) {
+                collect_proxy_records_by_day(
+                    &db,
+                    &mut day_map,
+                    year_start,
+                    year_end,
+                    settings.proxy.include_error_requests,
+                    &usage_filter,
+                )
+                .await?;
             } else {
-                db.backfill_unlocked_costs().await?;
-            }
+                let year_start_date = NaiveDate::from_ymd_opt(year, 1, 1)
+                    .unwrap_or_else(|| Local::now().date_naive());
+                let next_year_date = NaiveDate::from_ymd_opt(year + 1, 1, 1)
+                    .unwrap_or_else(|| Local::now().date_naive());
+                let today_date = Local::now().date_naive();
+                let summary_end_date = next_year_date.min(today_date);
 
-            let live_start = year_start_date.max(today_date);
-            if live_start < next_year_date {
-                let live_start_epoch = Local
-                    .with_ymd_and_hms(
-                        live_start.year(),
-                        live_start.month(),
-                        live_start.day(),
-                        0,
-                        0,
-                        0,
-                    )
-                    .single()
-                    .unwrap_or_else(Local::now)
-                    .timestamp();
-                let records = db
-                    .get_records_between(
-                        live_start_epoch * 1000,
-                        year_end * 1000,
-                        settings.proxy.include_error_requests,
-                    )
-                    .await?;
-                for record in records {
-                    let date = Local
-                        .timestamp_opt(record.timestamp / 1000, 0)
+                if summary_end_date > year_start_date {
+                    let summary_start_key = year_start_date.format("%Y-%m-%d").to_string();
+                    let summary_end_key = summary_end_date.format("%Y-%m-%d").to_string();
+                    db.ensure_daily_summaries(&summary_start_key, &summary_end_key)
+                        .await?;
+                    for summary in db
+                        .get_daily_activity_summaries(&summary_start_key, &summary_end_key)
+                        .await?
+                    {
+                        let mut acc = StatAccumulator::default();
+                        if settings.proxy.include_error_requests {
+                            acc.request_count = summary.request_count;
+                            acc.total_tokens = summary.total_tokens;
+                            acc.input_tokens = summary.input_tokens;
+                            acc.output_tokens = summary.output_tokens;
+                            acc.cache_create_tokens = summary.cache_create_tokens;
+                            acc.cache_read_tokens = summary.cache_read_tokens;
+                            acc.cost = summary.cost;
+                        } else {
+                            acc.request_count = summary.success_requests;
+                            acc.total_tokens = summary.success_total_tokens;
+                            acc.input_tokens = summary.success_input_tokens;
+                            acc.output_tokens = summary.success_output_tokens;
+                            acc.cache_create_tokens = summary.success_cache_create_tokens;
+                            acc.cache_read_tokens = summary.success_cache_read_tokens;
+                            acc.cost = summary.success_cost;
+                        }
+                        acc.success_requests = summary.success_requests;
+                        acc.client_error_requests = summary.client_error_requests;
+                        acc.server_error_requests = summary.server_error_requests;
+                        let models = (0..summary.model_count)
+                            .map(|idx| format!("__cached_model_{idx}"))
+                            .collect();
+                        day_map.insert(summary.date, (acc, models));
+                    }
+                } else {
+                    db.backfill_unlocked_costs().await?;
+                }
+
+                let live_start = year_start_date.max(today_date);
+                if live_start < next_year_date {
+                    let live_start_epoch = Local
+                        .with_ymd_and_hms(
+                            live_start.year(),
+                            live_start.month(),
+                            live_start.day(),
+                            0,
+                            0,
+                            0,
+                        )
                         .single()
                         .unwrap_or_else(Local::now)
-                        .format("%Y-%m-%d")
-                        .to_string();
-                    let cost = record.estimated_cost;
-                    let entry = day_map.entry(date).or_default();
-                    entry.0.add_record(&record, cost);
-                    if !record.model.is_empty() {
-                        entry.1.insert(record.model);
+                        .timestamp();
+                    let records = db
+                        .get_records_between(
+                            live_start_epoch * 1000,
+                            year_end * 1000,
+                            settings.proxy.include_error_requests,
+                        )
+                        .await?;
+                    for record in records {
+                        let date = Local
+                            .timestamp_opt(record.timestamp / 1000, 0)
+                            .single()
+                            .unwrap_or_else(Local::now)
+                            .format("%Y-%m-%d")
+                            .to_string();
+                        let cost = record.estimated_cost;
+                        let entry = day_map.entry(date).or_default();
+                        entry.0.add_record(&record, cost);
+                        if !record.model.is_empty() {
+                            entry.1.insert(record.model);
+                        }
                     }
                 }
             }
@@ -2440,6 +2529,39 @@ pub async fn get_sessions(
     let pricings = effective_model_pricings(&settings);
     let match_mode = settings.model_pricing.match_mode.clone();
 
+    if settings.data_source == "proxy" {
+        let usage_filter = build_usage_query_filter(&settings);
+        if !is_usage_filter_all(&usage_filter) {
+            if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
+                let mut sessions = db
+                    .get_sessions_with_source(limit, offset, &usage_filter)
+                    .await?;
+                for session in sessions.iter_mut() {
+                    if let Some(meta) = crate::session::get_session_meta_by_id(&session.session_id)
+                    {
+                        session.cwd = meta.cwd;
+                        session.project_name = meta.project_name;
+                        session.topic = meta.topic;
+                        session.last_prompt = meta.last_prompt;
+                        session.session_name = meta.session_name;
+                    } else {
+                        // 无 JSONL 元数据的代理会话，使用首条请求时间和模型作为展示名
+                        let first = if session.first_request_time > 0 {
+                            chrono::DateTime::from_timestamp_millis(session.first_request_time)
+                                .map(|d| d.format("%m/%d %H:%M").to_string())
+                        } else {
+                            None
+                        };
+                        session.session_name =
+                            Some(first.unwrap_or_else(|| "Proxy Session".to_string()));
+                    }
+                }
+                return Ok(sessions);
+            }
+            return Ok(Vec::new());
+        }
+    }
+
     // 1. 从 JSONL 文件获取会话列表（主数据源）
     // 使用缓存版本避免频繁扫描文件系统
     let all_meta = crate::session::get_all_session_meta_cached();
@@ -2559,6 +2681,31 @@ pub async fn get_session_detail(
     // 获取价格配置
     let pricings = effective_model_pricings(&settings);
     let match_mode = settings.model_pricing.match_mode.clone();
+
+    if settings.data_source == "proxy" {
+        let usage_filter = build_usage_query_filter(&settings);
+        if !is_usage_filter_all(&usage_filter) {
+            if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
+                let Some(mut stats) = db
+                    .get_session_detail_with_source(&session_id, &usage_filter)
+                    .await?
+                else {
+                    return Ok(None);
+                };
+
+                if let Some(meta) = crate::session::get_session_meta_by_id(&session_id) {
+                    stats.cwd = meta.cwd;
+                    stats.project_name = meta.project_name;
+                    stats.topic = meta.topic;
+                    stats.last_prompt = meta.last_prompt;
+                    stats.session_name = meta.session_name;
+                }
+
+                return Ok(Some(stats));
+            }
+            return Ok(None);
+        }
+    }
 
     // 1. 从 JSONL 获取会话元信息
     let meta = match crate::session::get_session_meta_by_id(&session_id) {

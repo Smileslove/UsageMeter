@@ -249,6 +249,14 @@ pub fn run() {
             commands::enable_autostart,
             commands::disable_autostart,
             commands::is_autostart_enabled,
+            // 来源管理命令
+            commands::rename_api_source,
+            commands::delete_api_source,
+            commands::merge_api_source,
+            commands::add_key_prefix_to_source,
+            commands::update_api_source_key_note,
+            commands::set_active_source_filter,
+            commands::get_api_sources,
             // 退出命令
             commands::prepare_exit,
             commands::confirm_exit,

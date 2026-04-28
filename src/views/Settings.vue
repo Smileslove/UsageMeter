@@ -5,11 +5,12 @@ import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import type { BillingType, WindowName, DataSource, ThemeMode } from '../types'
 import ModelPricingSettings from '../components/ModelPricingSettings.vue'
+import ApiSourceList from '../components/ApiSourceList.vue'
 
 const store = useMonitorStore()
 
 // 子页面状态
-const subView = ref<'main' | 'model-pricing'>('main')
+const subView = ref<'main' | 'model-pricing' | 'api-sources'>('main')
 
 // 监听 subView 变化，触发子组件刷新
 const modelPricingKey = ref(0)
@@ -28,6 +29,11 @@ const goBack = () => {
 // 进入模型价格设置
 const openModelPricing = () => {
   subView.value = 'model-pricing'
+}
+
+// 进入 API 来源管理
+const openApiSources = () => {
+  subView.value = 'api-sources'
 }
 
 // 本地状态用于双向绑定
@@ -301,8 +307,14 @@ const formatUptime = (seconds: number): string => {
       @back="goBack"
     />
 
+    <!-- API 来源管理子页面 -->
+    <ApiSourceList
+      v-show="subView === 'api-sources'"
+      :onBack="goBack"
+    />
+
     <!-- 主设置页面 -->
-    <div v-show="subView !== 'model-pricing'" class="space-y-5 animate-in fade-in zoom-in-95 duration-300 pb-6">
+    <div v-show="subView === 'main'" class="space-y-5 animate-in fade-in zoom-in-95 duration-300 pb-6">
     <div class="space-y-2">
       <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.general') }}</h3>
       <div class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 overflow-hidden divide-y divide-gray-50 dark:divide-neutral-800/50 shadow-sm">
@@ -517,6 +529,43 @@ const formatUptime = (seconds: number): string => {
             />
             <span class="text-xs text-gray-400">{{ t(store.settings.locale, 'common.seconds') }}</span>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- API 来源管理入口（仅代理模式显示） -->
+    <div v-if="localDataSource === 'proxy'" class="space-y-2">
+      <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">
+        {{ t(store.settings.locale, 'sources.title') }}
+      </h3>
+      <div
+        @click="openApiSources"
+        class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors shadow-sm"
+      >
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="flex items-center gap-2">
+              <div class="text-[13px] text-gray-700 dark:text-gray-200">
+                {{ t(store.settings.locale, 'sources.manage') }}
+              </div>
+              <!-- 新来源提示徽章 -->
+              <span
+                v-if="store.settings.sourceAware.sources.filter(s => s.autoDetected && !s.displayName).length > 0"
+                class="px-1.5 py-0.5 text-[10px] font-medium bg-red-100 text-red-600 dark:bg-red-500/20 dark:text-red-400 rounded-full"
+              >
+                {{ store.settings.sourceAware.sources.filter(s => s.autoDetected && !s.displayName).length }}
+              </span>
+            </div>
+            <div class="text-[10px] text-gray-400 mt-0.5">
+              {{ store.settings.sourceAware.sources.length > 0
+                ? `${store.settings.sourceAware.sources.length} ${t(store.settings.locale, 'sources.sourcesCount')}`
+                : t(store.settings.locale, 'sources.noSources')
+              }}
+            </div>
+          </div>
+          <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+          </svg>
         </div>
       </div>
     </div>

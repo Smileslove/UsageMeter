@@ -2,7 +2,7 @@
 
 use super::database::{ModelDistribution, ProxyDatabase, WindowRateStats, WindowRateSummary};
 use super::types::{SessionStats, UsageRecord, WindowStats};
-use crate::models::ModelPricingConfig;
+use crate::models::{ModelPricingConfig, UsageQueryFilter};
 use chrono::{Datelike, Duration, Local, TimeZone};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -154,6 +154,88 @@ impl UsageCollector {
         }
     }
 
+    /// 获取特定时间窗口的统计数据（支持来源过滤）
+    ///
+    /// # 参数
+    /// - `window`: 时间窗口名称
+    /// - `include_errors`: 是否包含错误请求（4xx/5xx）
+    /// - `source_filter`: 来源过滤条件
+    pub async fn get_window_stats_with_source(
+        &self,
+        window: &str,
+        include_errors: bool,
+        usage_filter: &UsageQueryFilter,
+    ) -> WindowStats {
+        let cutoff_ms = Self::calculate_window_cutoff(window);
+        let now = Self::current_timestamp();
+
+        match self
+            .database
+            .get_window_stats_with_source(cutoff_ms, include_errors, usage_filter)
+            .await
+        {
+            Ok(aggregate) => WindowStats {
+                window: window.to_string(),
+                token_used: (aggregate.input_tokens
+                    + aggregate.cache_create_tokens
+                    + aggregate.cache_read_tokens
+                    + aggregate.output_tokens) as u64,
+                input_tokens: aggregate.input_tokens as u64,
+                output_tokens: aggregate.output_tokens as u64,
+                cache_create_tokens: aggregate.cache_create_tokens as u64,
+                cache_read_tokens: aggregate.cache_read_tokens as u64,
+                request_used: aggregate.request_count as u64,
+                last_updated: now,
+                success_requests: aggregate.status_2xx as u64,
+                client_error_requests: aggregate.status_4xx as u64,
+                server_error_requests: aggregate.status_5xx as u64,
+            },
+            Err(e) => {
+                eprintln!("Failed to get window stats with source: {}", e);
+                WindowStats::default()
+            }
+        }
+    }
+
+    /// 获取所有时间窗口的统计数据（支持来源过滤）
+    pub async fn get_all_window_stats_with_source(
+        &self,
+        include_errors: bool,
+        usage_filter: &UsageQueryFilter,
+    ) -> std::collections::HashMap<String, WindowStats> {
+        let mut result = std::collections::HashMap::new();
+        for window in &["5h", "24h", "today", "7d", "30d", "current_month"] {
+            result.insert(
+                window.to_string(),
+                self.get_window_stats_with_source(window, include_errors, usage_filter)
+                    .await,
+            );
+        }
+        result
+    }
+
+    /// 获取时间窗口内的模型分布（支持来源过滤）
+    pub async fn get_model_distribution_with_source(
+        &self,
+        window: &str,
+        include_errors: bool,
+        usage_filter: &UsageQueryFilter,
+    ) -> Vec<ModelDistribution> {
+        let cutoff_ms = Self::calculate_window_cutoff(window);
+
+        match self
+            .database
+            .get_model_distribution_with_source(cutoff_ms, usage_filter, include_errors)
+            .await
+        {
+            Ok(models) => models,
+            Err(e) => {
+                eprintln!("Failed to get model distribution with source: {}", e);
+                Vec::new()
+            }
+        }
+    }
+
     /// 计算时间窗口的截止时间戳（毫秒）
     ///
     /// 返回窗口开始时间的 Unix 时间戳（毫秒）
@@ -238,40 +320,6 @@ impl UsageCollector {
             );
         }
         result
-    }
-
-    /// 获取时间窗口内的模型分布
-    pub async fn get_model_distribution(&self, window: &str) -> Vec<ModelDistribution> {
-        let cutoff_ms = Self::calculate_window_cutoff(window);
-
-        match self.database.get_model_distribution(cutoff_ms).await {
-            Ok(models) => models,
-            Err(e) => {
-                eprintln!("Failed to get model distribution: {}", e);
-                Vec::new()
-            }
-        }
-    }
-
-    /// 获取时间窗口内的模型分布
-    pub async fn get_model_distribution_filtered(
-        &self,
-        window: &str,
-        include_errors: bool,
-    ) -> Vec<ModelDistribution> {
-        let cutoff_ms = Self::calculate_window_cutoff(window);
-
-        match self
-            .database
-            .get_model_distribution_filtered(cutoff_ms, include_errors)
-            .await
-        {
-            Ok(models) => models,
-            Err(e) => {
-                eprintln!("Failed to get model distribution: {}", e);
-                Vec::new()
-            }
-        }
     }
 
     /// 清除所有记录（数据库和缓存）
@@ -578,6 +626,11 @@ mod tests {
             estimated_cost: 0.0,
             pricing_snapshot_id: None,
             cost_locked: false,
+            api_key_prefix: None,
+            request_base_url: None,
+            client_tool: crate::models::DEFAULT_CLIENT_TOOL.to_string(),
+            proxy_profile_id: None,
+            client_detection_method: crate::models::DEFAULT_CLIENT_DETECTION_METHOD.to_string(),
         };
 
         assert_eq!(record.message_id, "test-msg");
