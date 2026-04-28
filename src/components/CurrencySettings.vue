@@ -194,18 +194,16 @@ async function save() {
         :key="code"
         class="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-gray-50 dark:border-neutral-800 shadow-[0_2px_10px_rgba(0,0,0,0.02)] px-3 py-2"
       >
-        <div class="flex items-center gap-2.5 min-w-0">
+        <div class="grid grid-cols-[2rem_2.75rem_minmax(0,1fr)_8.25rem_2rem] items-center gap-2 min-w-0">
           <div
             class="w-8 h-8 rounded-xl flex items-center justify-center text-[12px] font-bold shrink-0"
             :class="code === localCurrency.displayCurrency ? 'bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-300' : 'bg-gray-50 text-gray-500 dark:bg-neutral-800 dark:text-gray-400'"
           >
             {{ getCurrencySymbol(code).trim().slice(0, 2) || code.slice(0, 1) }}
           </div>
-          <div class="min-w-0 flex-1 flex items-center gap-1.5">
-            <span class="text-sm font-semibold text-gray-800 dark:text-gray-100 leading-tight shrink-0">{{ code }}</span>
-            <span class="text-[12px] font-medium text-gray-700 dark:text-gray-200 truncate">{{ getCurrencyName(code, store.settings.locale) }}</span>
-          </div>
-          <div class="w-[118px] min-w-0 flex items-center gap-1 rounded-lg bg-gray-50 dark:bg-neutral-800/75 border border-gray-50 dark:border-neutral-800 px-2 py-1.5 shrink-0">
+          <span class="font-mono text-sm font-semibold text-gray-800 dark:text-gray-100 leading-tight tabular-nums">{{ code }}</span>
+          <span class="min-w-0 text-[12px] font-medium text-gray-700 dark:text-gray-200 truncate">{{ getCurrencyName(code, store.settings.locale) }}</span>
+          <div class="min-w-0 flex items-center gap-1 rounded-lg bg-gray-50 dark:bg-neutral-800/75 border border-gray-50 dark:border-neutral-800 px-2 py-1.5">
             <span
               v-if="code === 'USD'"
               class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-right font-mono text-[12px] font-semibold text-gray-600 dark:text-gray-300"
@@ -224,9 +222,14 @@ async function save() {
             <span class="text-[10px] font-semibold text-gray-400 dark:text-gray-500 shrink-0">{{ code }}</span>
           </div>
           <button
-            v-if="code !== 'USD'"
             @click.stop="removeCurrency(code)"
-            class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 transition-colors shrink-0"
+            :disabled="code === 'USD'"
+            :class="[
+              'w-8 h-8 rounded-lg flex items-center justify-center transition-colors shrink-0',
+              code === 'USD'
+                ? 'invisible pointer-events-none'
+                : 'text-gray-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10'
+            ]"
             :title="t(store.settings.locale, 'settings.currencyRemove')"
           >
             <Trash2 class="w-4 h-4" :stroke-width="2" />
