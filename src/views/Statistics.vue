@@ -10,13 +10,13 @@ import StatisticsModelList from '../components/statistics/StatisticsModelList.vu
 import { backendErrorLabel } from '../i18n'
 
 const store = useMonitorStore()
-const preset = ref<StatisticsRangePreset>('7d')
+const preset = ref<StatisticsRangePreset>('today')
 const monthMetric = ref<StatisticsMetric>('cost')
 const analysisMetric = ref<StatisticsMetric>('cost')
 const currentMonth = ref(new Date())
 const activityView = ref<'month' | 'year'>('month')
 const selectedDate = ref('')
-const customStart = ref(toDateTimeInput(addDays(startOfLocalDay(new Date()), -6)))
+const customStart = ref(toDateTimeInput(startOfLocalDay(new Date())))
 const customEnd = ref(toDateTimeInput(new Date()))
 
 const locale = computed(() => store.settings.locale)
@@ -130,7 +130,9 @@ function moveMonth(delta: number) {
 function selectDay(day: DayActivity) {
   selectedDate.value = day.date
   customStart.value = `${day.date}T00:00`
-  customEnd.value = `${day.date}T23:59`
+  // 如果是今天，截止时间使用当前时刻，避免展示未来空数据
+  const todayStr = toDateInput(new Date())
+  customEnd.value = day.date === todayStr ? toDateTimeInput(new Date()) : `${day.date}T23:59`
   preset.value = 'custom'
 }
 

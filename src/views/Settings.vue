@@ -2,15 +2,16 @@
 import { ref, watch, computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useMonitorStore } from '../stores/monitor'
-import { t } from '../i18n'
+import { t, windowNameLabel } from '../i18n'
 import type { BillingType, WindowName, DataSource, ThemeMode } from '../types'
 import ModelPricingSettings from '../components/ModelPricingSettings.vue'
 import ApiSourceList from '../components/ApiSourceList.vue'
+import WindowQuotaSettings from '../components/WindowQuotaSettings.vue'
 
 const store = useMonitorStore()
 
 // 子页面状态
-const subView = ref<'main' | 'model-pricing' | 'api-sources'>('main')
+const subView = ref<'main' | 'model-pricing' | 'api-sources' | 'window-quotas'>('main')
 
 // 监听 subView 变化，触发子组件刷新
 const modelPricingKey = ref(0)
@@ -34,6 +35,11 @@ const openModelPricing = () => {
 // 进入 API 来源管理
 const openApiSources = () => {
   subView.value = 'api-sources'
+}
+
+// 进入窗口配额管理
+const openWindowQuotas = () => {
+  subView.value = 'window-quotas'
 }
 
 // 本地状态用于双向绑定
@@ -160,71 +166,6 @@ const handleIncludeErrorRequestsChange = async () => {
   await store.saveSettings()
 }
 
-// 获取窗口的 i18n key
-const getWindowLabelKey = (window: WindowName): string => {
-  const map: Record<WindowName, string> = {
-    '5h': 'settings.window5h',
-    '24h': 'settings.window24h',
-    'today': 'settings.windowToday',
-    '7d': 'settings.window7d',
-    '30d': 'settings.window30d',
-    'current_month': 'settings.windowCurrentMonth'
-  }
-  return map[window]
-}
-
-// 获取配额
-const getQuota = (window: WindowName) => {
-  return localQuotas.value.find((q: any) => q.window === window)
-}
-
-// 切换窗口启用状态
-const toggleWindowEnabled = async (window: WindowName) => {
-  const quota = getQuota(window)
-  if (quota) {
-    quota.enabled = !quota.enabled
-    store.settings.quotas = JSON.parse(JSON.stringify(localQuotas.value))
-    await store.saveSettings()
-  }
-}
-
-// 更新限额
-const updateTokenLimit = async (window: WindowName, value: string) => {
-  const quota = getQuota(window)
-  if (quota) {
-    const num = value ? parseInt(value.replace(/,/g, ''), 10) : null
-    quota.tokenLimit = num && num > 0 ? num : null
-    store.settings.quotas = JSON.parse(JSON.stringify(localQuotas.value))
-    await store.saveSettings()
-  }
-}
-
-const updateRequestLimit = async (window: WindowName, value: string) => {
-  const quota = getQuota(window)
-  if (quota) {
-    const num = value ? parseInt(value.replace(/,/g, ''), 10) : null
-    quota.requestLimit = num && num > 0 ? num : null
-    store.settings.quotas = JSON.parse(JSON.stringify(localQuotas.value))
-    await store.saveSettings()
-  }
-}
-
-// 格式化数字显示
-const formatNumber = (num: number | null): string => {
-  if (num === null) return ''
-  return num.toLocaleString()
-}
-
-// 是否显示 Token 限额
-const showTokenLimit = computed(() => {
-  return localBillingType.value === 'token' || localBillingType.value === 'both'
-})
-
-// 是否显示请求限额
-const showRequestLimit = computed(() => {
-  return localBillingType.value === 'request' || localBillingType.value === 'both'
-})
-
 // 窗口顺序
 const windowOrder: WindowName[] = ['5h', '24h', 'today', '7d', '30d', 'current_month']
 
@@ -313,6 +254,12 @@ const formatUptime = (seconds: number): string => {
       :onBack="goBack"
     />
 
+    <!-- 窗口配额管理子页面 -->
+    <WindowQuotaSettings
+      v-show="subView === 'window-quotas'"
+      @back="goBack"
+    />
+
     <!-- 主设置页面 -->
     <div v-show="subView === 'main'" class="space-y-5 animate-in fade-in zoom-in-95 duration-300 pb-6">
     <div class="space-y-2">
@@ -376,7 +323,7 @@ const formatUptime = (seconds: number): string => {
             class="bg-transparent text-gray-500 dark:text-gray-400 text-sm outline-none text-right tracking-tight cursor-pointer appearance-none"
           >
             <option v-for="window in windowOrder" :key="window" :value="window">
-              {{ t(store.settings.locale, getWindowLabelKey(window)) }}
+              {{ windowNameLabel(store.settings.locale, window) }}
             </option>
           </select>
         </div>
@@ -533,70 +480,61 @@ const formatUptime = (seconds: number): string => {
       </div>
     </div>
 
-    <!-- API 来源管理入口（仅代理模式显示） -->
-    <div v-if="localDataSource === 'proxy'" class="space-y-2">
-      <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">
-        {{ t(store.settings.locale, 'sources.title') }}
-      </h3>
-      <div
-        @click="openApiSources"
-        class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors shadow-sm"
-      >
-        <div class="flex items-center justify-between">
-          <div>
-            <div class="flex items-center gap-2">
-              <div class="text-[13px] text-gray-700 dark:text-gray-200">
-                {{ t(store.settings.locale, 'sources.manage') }}
+    <!-- 数据与配额 -->
+    <div class="space-y-2">
+      <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.dataManagement') }}</h3>
+      <div class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 overflow-hidden divide-y divide-gray-50 dark:divide-neutral-800/50 shadow-sm">
+
+        <!-- API 来源入口（仅代理模式显示） -->
+        <div
+          v-if="localDataSource === 'proxy'"
+          @click="openApiSources"
+          class="p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors"
+        >
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="flex items-center gap-2">
+                <div class="text-[13px] text-gray-700 dark:text-gray-200">
+                  {{ t(store.settings.locale, 'sources.manage') }}
+                </div>
+                <span
+                  v-if="store.settings.sourceAware.sources.filter(s => s.autoDetected && !s.displayName).length > 0"
+                  class="px-1.5 py-0.5 text-[10px] font-medium bg-red-100 text-red-600 dark:bg-red-500/20 dark:text-red-400 rounded-full"
+                >
+                  {{ store.settings.sourceAware.sources.filter(s => s.autoDetected && !s.displayName).length }}
+                </span>
               </div>
-              <!-- 新来源提示徽章 -->
-              <span
-                v-if="store.settings.sourceAware.sources.filter(s => s.autoDetected && !s.displayName).length > 0"
-                class="px-1.5 py-0.5 text-[10px] font-medium bg-red-100 text-red-600 dark:bg-red-500/20 dark:text-red-400 rounded-full"
-              >
-                {{ store.settings.sourceAware.sources.filter(s => s.autoDetected && !s.displayName).length }}
-              </span>
+              <div class="text-[10px] text-gray-400 mt-0.5">
+                {{ store.settings.sourceAware.sources.length > 0
+                  ? `${store.settings.sourceAware.sources.length} ${t(store.settings.locale, 'sources.sourcesCount')}`
+                  : t(store.settings.locale, 'sources.noSources')
+                }}
+              </div>
             </div>
-            <div class="text-[10px] text-gray-400 mt-0.5">
-              {{ store.settings.sourceAware.sources.length > 0
-                ? `${store.settings.sourceAware.sources.length} ${t(store.settings.locale, 'sources.sourcesCount')}`
-                : t(store.settings.locale, 'sources.noSources')
-              }}
+            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
+          </div>
+        </div>
+
+        <!-- 模型价格入口 -->
+        <div
+          @click="openModelPricing"
+          class="p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors"
+        >
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.modelPricing') }}</div>
+              <div class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.modelPricingDesc') }}</div>
             </div>
+            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
           </div>
-          <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-          </svg>
         </div>
-      </div>
-    </div>
 
-    <!-- 模型价格设置入口 -->
-    <div class="space-y-2">
-      <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.modelPricing') }}</h3>
-      <div
-        @click="openModelPricing"
-        class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors shadow-sm"
-      >
-        <div class="flex items-center justify-between">
-          <div>
-            <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.modelPricing') }}</div>
-            <div class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.modelPricingDesc') }}</div>
-          </div>
-          <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-          </svg>
-        </div>
-      </div>
-    </div>
-
-    <!-- 窗口配额设置 -->
-    <div class="space-y-2">
-      <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.quotaTitle') }}</h3>
-
-      <!-- 整合的配额卡片 -->
-      <div class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 overflow-hidden shadow-sm">
-        <!-- 计费类型选择 -->
-        <div class="p-3 px-4 border-b border-gray-50 dark:border-neutral-800/50">
+        <!-- 计费类型 -->
+        <div class="p-3 px-4">
           <div class="flex items-center justify-between">
             <span class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.billingType') }}</span>
             <div class="flex gap-1.5">
@@ -617,74 +555,22 @@ const formatUptime = (seconds: number): string => {
           </div>
         </div>
 
-        <!-- 各窗口配额 -->
-        <div class="divide-y divide-gray-50 dark:divide-neutral-800/50">
-          <div
-            v-for="window in windowOrder"
-            :key="window"
-            :class="[
-              'transition-all',
-              getQuota(window)?.enabled ? 'bg-white dark:bg-[#1C1C1E]' : 'bg-gray-50/50 dark:bg-neutral-900/30'
-            ]"
-          >
-            <div :class="getQuota(window)?.enabled ? 'p-3 px-4' : 'p-2.5 px-4'">
-              <!-- 窗口标题行 -->
-              <div class="flex items-center justify-between">
-                <span :class="['text-[13px] font-medium transition-colors', getQuota(window)?.enabled ? 'text-gray-700 dark:text-gray-200' : 'text-gray-400 dark:text-gray-500']">
-                  {{ t(store.settings.locale, getWindowLabelKey(window)) }}
-                </span>
-                <!-- iOS 风格开关 -->
-                <div
-                  :class="[
-                    'w-9 h-5 rounded-full relative cursor-pointer flex items-center shrink-0 transition-colors',
-                    getQuota(window)?.enabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-neutral-600'
-                  ]"
-                  @click="toggleWindowEnabled(window)"
-                >
-                  <div
-                    :class="[
-                      'w-[18px] h-[18px] bg-white rounded-full absolute shadow shadow-black/10 transition-all',
-                      getQuota(window)?.enabled ? 'right-[1px]' : 'left-[1px]'
-                    ]"
-                  ></div>
-                </div>
-              </div>
-
-              <!-- 限额输入（仅在启用时显示） -->
-              <div v-if="getQuota(window)?.enabled" class="mt-2.5 flex gap-3">
-                <!-- Token 限额 -->
-                <div v-if="showTokenLimit" class="flex-1">
-                  <div class="flex items-center justify-between">
-                    <span class="text-[10px] text-gray-400 dark:text-gray-500">{{ t(store.settings.locale, 'settings.tokenLimitPlaceholder') }}</span>
-                  </div>
-                  <input
-                    type="text"
-                    :value="formatNumber(getQuota(window)?.tokenLimit)"
-                    @blur="(e) => updateTokenLimit(window, (e.target as HTMLInputElement).value)"
-                    @keyup.enter="(e) => updateTokenLimit(window, (e.target as HTMLInputElement).value)"
-                    :placeholder="t(store.settings.locale, 'settings.unlimited')"
-                    class="w-full mt-1 bg-gray-50 dark:bg-neutral-800 text-gray-600 dark:text-gray-300 text-xs font-mono outline-none text-right p-1.5 rounded border border-gray-200 dark:border-neutral-700 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
-                  />
-                </div>
-
-                <!-- 请求限额 -->
-                <div v-if="showRequestLimit" class="flex-1">
-                  <div class="flex items-center justify-between">
-                    <span class="text-[10px] text-gray-400 dark:text-gray-500">{{ t(store.settings.locale, 'settings.requestLimitPlaceholder') }}</span>
-                  </div>
-                  <input
-                    type="text"
-                    :value="formatNumber(getQuota(window)?.requestLimit)"
-                    @blur="(e) => updateRequestLimit(window, (e.target as HTMLInputElement).value)"
-                    @keyup.enter="(e) => updateRequestLimit(window, (e.target as HTMLInputElement).value)"
-                    :placeholder="t(store.settings.locale, 'settings.unlimited')"
-                    class="w-full mt-1 bg-gray-50 dark:bg-neutral-800 text-gray-600 dark:text-gray-300 text-xs font-mono outline-none text-right p-1.5 rounded border border-gray-200 dark:border-neutral-700 focus:border-blue-400 focus:ring-1 focus:ring-blue-400"
-                  />
-                </div>
-              </div>
+        <!-- 窗口配额入口 -->
+        <div
+          @click="openWindowQuotas"
+          class="p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors"
+        >
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.manageQuotas') }}</div>
+              <div class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.manageQuotasDesc') }}</div>
             </div>
+            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
           </div>
         </div>
+
       </div>
     </div>
 
