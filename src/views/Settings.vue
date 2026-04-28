@@ -3,7 +3,7 @@ import { ref, watch, computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useMonitorStore } from '../stores/monitor'
 import { t, windowNameLabel } from '../i18n'
-import type { BillingType, WindowName, DataSource, ThemeMode } from '../types'
+import { WINDOW_ORDER, type BillingType, type WindowName, type DataSource, type ThemeMode } from '../types'
 import ModelPricingSettings from '../components/ModelPricingSettings.vue'
 import ApiSourceList from '../components/ApiSourceList.vue'
 import WindowQuotaSettings from '../components/WindowQuotaSettings.vue'
@@ -166,9 +166,6 @@ const handleIncludeErrorRequestsChange = async () => {
   await store.saveSettings()
 }
 
-// 窗口顺序
-const windowOrder: WindowName[] = ['5h', '24h', 'today', '7d', '30d', 'current_month']
-
 // 代理控制
 const proxyEnabled = computed(() => store.isProxyRunning)
 
@@ -262,325 +259,325 @@ const formatUptime = (seconds: number): string => {
 
     <!-- 主设置页面 -->
     <div v-show="subView === 'main'" class="space-y-5 animate-in fade-in zoom-in-95 duration-300 pb-6">
-    <div class="space-y-2">
-      <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.general') }}</h3>
-      <div class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 overflow-hidden divide-y divide-gray-50 dark:divide-neutral-800/50 shadow-sm">
-        <div class="p-3 px-4 flex items-center justify-between text-[13px]">
-          <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.locale') }}</span>
-          <select
-            v-model="localLocale"
-            @change="handleLocaleChange"
-            class="bg-transparent text-gray-500 dark:text-gray-400 text-sm outline-none text-right tracking-tight cursor-pointer appearance-none"
-          >
-            <option value="zh-CN">{{ t(store.settings.locale, 'settings.zhCN') }}</option>
-            <option value="zh-TW">{{ t(store.settings.locale, 'settings.zhTW') }}</option>
-            <option value="en-US">{{ t(store.settings.locale, 'settings.enUS') }}</option>
-          </select>
-        </div>
-        <div class="p-3 px-4 flex items-center justify-between text-[13px]">
-          <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.theme') }}</span>
-          <div class="flex gap-1.5">
-            <button
-              v-for="theme in ['light', 'dark', 'system'] as ThemeMode[]"
-              :key="theme"
-              @click="localTheme = theme; handleThemeChange()"
-              :class="[
-                'px-2.5 py-1 rounded-md text-xs font-medium transition-all',
-                localTheme === theme
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-gray-100 dark:bg-neutral-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-neutral-600'
-              ]"
+      <div class="space-y-2">
+        <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.general') }}</h3>
+        <div class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 overflow-hidden divide-y divide-gray-50 dark:divide-neutral-800/50 shadow-sm">
+          <div class="p-3 px-4 flex items-center justify-between text-[13px]">
+            <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.locale') }}</span>
+            <select
+              v-model="localLocale"
+              @change="handleLocaleChange"
+              class="bg-transparent text-gray-500 dark:text-gray-400 text-sm outline-none text-right tracking-tight cursor-pointer appearance-none"
             >
-              {{ t(store.settings.locale, `settings.theme${theme.charAt(0).toUpperCase() + theme.slice(1)}`) }}
-            </button>
+              <option value="zh-CN">{{ t(store.settings.locale, 'settings.zhCN') }}</option>
+              <option value="zh-TW">{{ t(store.settings.locale, 'settings.zhTW') }}</option>
+              <option value="en-US">{{ t(store.settings.locale, 'settings.enUS') }}</option>
+            </select>
           </div>
-        </div>
-        <div class="p-3 px-4 flex items-center justify-between text-[13px]">
-          <div class="flex flex-col">
-            <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.autoStart') }}</span>
-            <span class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.autoStartDesc') }}</span>
-          </div>
-          <div
-            :class="[
-              'w-10 h-6 rounded-full relative cursor-pointer flex items-center shrink-0 transition-colors',
-              autoStartEnabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-neutral-600'
-            ]"
-            @click="toggleAutoStart"
-          >
-            <div
-              :class="[
-                'w-[20px] h-[20px] bg-white rounded-full absolute shadow shadow-black/10 transition-all',
-                autoStartEnabled ? 'right-[2px]' : 'left-[2px]'
-              ]"
-            ></div>
-          </div>
-        </div>
-        <div class="p-3 px-4 flex items-center justify-between text-[13px]">
-          <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.summaryWindow') }}</span>
-          <select
-            v-model="localSummaryWindow"
-            @change="handleSummaryWindowChange"
-            class="bg-transparent text-gray-500 dark:text-gray-400 text-sm outline-none text-right tracking-tight cursor-pointer appearance-none"
-          >
-            <option v-for="window in windowOrder" :key="window" :value="window">
-              {{ windowNameLabel(store.settings.locale, window) }}
-            </option>
-          </select>
-        </div>
-        <div class="p-3 px-4 flex items-center justify-between text-[13px]">
-          <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.warningThreshold') }}</span>
-          <div class="flex items-center gap-1">
-            <input
-              type="number"
-              v-model.number="localWarningThreshold"
-              @blur="handleWarningThresholdChange"
-              @keyup.enter="handleWarningThresholdChange"
-              min="0"
-              max="99"
-              class="w-12 bg-transparent text-gray-500 dark:text-gray-400 text-sm font-mono outline-none text-right p-0"
-            />
-            <span class="text-xs text-gray-400">%</span>
-          </div>
-        </div>
-        <div class="p-3 px-4 flex items-center justify-between text-[13px]">
-          <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.criticalThreshold') }}</span>
-          <div class="flex items-center gap-1">
-            <input
-              type="number"
-              v-model.number="localCriticalThreshold"
-              @blur="handleCriticalThresholdChange"
-              @keyup.enter="handleCriticalThresholdChange"
-              min="1"
-              max="100"
-              class="w-12 bg-transparent text-gray-500 dark:text-gray-400 text-sm font-mono outline-none text-right p-0"
-            />
-            <span class="text-xs text-gray-400">%</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 数据统计方式 -->
-    <div class="space-y-2">
-      <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.dataSource') }}</h3>
-      <div class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 overflow-hidden divide-y divide-gray-50 dark:divide-neutral-800/50 shadow-sm">
-        <div class="p-3 px-4">
-          <div class="flex gap-2">
-            <button
-              v-for="source in ['ccusage', 'proxy'] as DataSource[]"
-              :key="source"
-              @click="localDataSource = source; handleDataSourceChange()"
-              :class="[
-                'flex-1 py-2 px-3 rounded-lg text-xs font-medium transition-all',
-                localDataSource === source
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-gray-100 dark:bg-neutral-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-neutral-700'
-              ]"
-            >
-              {{ t(store.settings.locale, `settings.dataSource${source.charAt(0).toUpperCase() + source.slice(1)}`) }}
-            </button>
-          </div>
-          <!-- 数据源说明 -->
-          <p class="mt-2 text-[10px] text-gray-400 dark:text-gray-500 leading-relaxed">
-            {{ t(store.settings.locale, localDataSource === 'ccusage' ? 'settings.dataSourceCcusageDesc' : 'settings.dataSourceProxyDesc') }}
-          </p>
-        </div>
-
-        <!-- 代理开关 -->
-        <div class="p-3 px-4 flex items-center justify-between text-[13px]">
-          <div class="flex flex-col">
-            <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.interceptRequests') }}</span>
-            <span v-if="proxyEnabled && proxyStatusInfo" class="text-[10px] text-gray-400 mt-0.5">
-              {{ t(store.settings.locale, 'settings.proxyRunning') }} · {{ t(store.settings.locale, 'settings.port') }} {{ proxyStatusInfo.port }} · {{ proxyStatusInfo.uptime }}
-            </span>
-            <span v-else-if="localDataSource === 'proxy' && !proxyEnabled" class="text-[10px] text-amber-500 mt-0.5">
-              {{ t(store.settings.locale, 'settings.startProxyHint') }}
-            </span>
-          </div>
-          <!-- iOS styled switch -->
-          <div
-            :class="[
-              'w-10 h-6 rounded-full relative cursor-pointer flex items-center shrink-0 transition-colors',
-              proxyEnabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-neutral-600'
-            ]"
-            @click="toggleProxy"
-          >
-            <div
-              :class="[
-                'w-[20px] h-[20px] bg-white rounded-full absolute shadow shadow-black/10 transition-all',
-                proxyEnabled ? 'right-[2px]' : 'left-[2px]'
-              ]"
-            ></div>
-          </div>
-        </div>
-
-        <!-- 代理详细状态（仅在运行时显示） -->
-        <div v-if="proxyEnabled && proxyStatusInfo" class="p-3 px-4 bg-gray-50 dark:bg-neutral-800/50">
-          <div class="grid grid-cols-2 gap-2 text-[11px]">
-            <div class="flex items-center gap-1.5">
-              <span :class="['w-2 h-2 rounded-full', proxyStatusInfo.configTakenOver ? 'bg-green-500' : 'bg-amber-500']"></span>
-              <span class="text-gray-500 dark:text-gray-400">
-                {{ proxyStatusInfo.configTakenOver ? t(store.settings.locale, 'settings.configTakenOver') : t(store.settings.locale, 'settings.configNotTakenOver') }}
-              </span>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <span class="text-gray-500 dark:text-gray-400">{{ t(store.settings.locale, 'settings.requestCount') }}:</span>
-              <span class="text-gray-700 dark:text-gray-300 font-mono">{{ proxyStatusInfo.totalRequests }}</span>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <span class="text-gray-500 dark:text-gray-400">{{ t(store.settings.locale, 'settings.recordCount') }}:</span>
-              <span class="text-gray-700 dark:text-gray-300 font-mono">{{ proxyStatusInfo.recordCount }}</span>
-            </div>
-            <div class="flex items-center gap-1.5">
-              <span class="text-gray-500 dark:text-gray-400">{{ t(store.settings.locale, 'settings.activeConnections') }}:</span>
-              <span class="text-gray-700 dark:text-gray-300 font-mono">{{ proxyStatusInfo.activeConnections }}</span>
-            </div>
-          </div>
-        </div>
-
-        <!-- 包含错误请求（仅代理模式显示） -->
-        <div v-if="localDataSource === 'proxy'" class="p-3 px-4 flex items-center justify-between text-[13px]">
-          <div class="flex flex-col">
-            <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.includeErrorRequests') }}</span>
-            <span class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.includeErrorRequestsDesc') }}</span>
-          </div>
-          <!-- iOS styled switch -->
-          <div
-            :class="[
-              'w-10 h-6 rounded-full relative cursor-pointer flex items-center shrink-0 transition-colors',
-              localIncludeErrorRequests ? 'bg-green-500' : 'bg-gray-300 dark:bg-neutral-600'
-            ]"
-            @click="localIncludeErrorRequests = !localIncludeErrorRequests; handleIncludeErrorRequestsChange()"
-          >
-            <div
-              :class="[
-                'w-[20px] h-[20px] bg-white rounded-full absolute shadow shadow-black/10 transition-all',
-                localIncludeErrorRequests ? 'right-[2px]' : 'left-[2px]'
-              ]"
-            ></div>
-          </div>
-        </div>
-
-        <!-- 刷新间隔 -->
-        <div class="p-3 px-4 flex items-center justify-between text-[13px]">
-          <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.refreshInterval') }}</span>
-          <div class="flex items-center gap-1">
-            <input
-              type="number"
-              v-model.number="localRefreshInterval"
-              @blur="handleRefreshIntervalChange"
-              @keyup.enter="handleRefreshIntervalChange"
-              min="5"
-              max="300"
-              class="w-12 bg-transparent text-gray-500 dark:text-gray-400 text-sm font-mono outline-none text-right p-0"
-            />
-            <span class="text-xs text-gray-400">{{ t(store.settings.locale, 'common.seconds') }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 数据与配额 -->
-    <div class="space-y-2">
-      <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.dataManagement') }}</h3>
-      <div class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 overflow-hidden divide-y divide-gray-50 dark:divide-neutral-800/50 shadow-sm">
-
-        <!-- API 来源入口（仅代理模式显示） -->
-        <div
-          v-if="localDataSource === 'proxy'"
-          @click="openApiSources"
-          class="p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors"
-        >
-          <div class="flex items-center justify-between">
-            <div>
-              <div class="flex items-center gap-2">
-                <div class="text-[13px] text-gray-700 dark:text-gray-200">
-                  {{ t(store.settings.locale, 'sources.manage') }}
-                </div>
-                <span
-                  v-if="store.settings.sourceAware.sources.filter(s => s.autoDetected && !s.displayName).length > 0"
-                  class="px-1.5 py-0.5 text-[10px] font-medium bg-red-100 text-red-600 dark:bg-red-500/20 dark:text-red-400 rounded-full"
-                >
-                  {{ store.settings.sourceAware.sources.filter(s => s.autoDetected && !s.displayName).length }}
-                </span>
-              </div>
-              <div class="text-[10px] text-gray-400 mt-0.5">
-                {{ store.settings.sourceAware.sources.length > 0
-                  ? `${store.settings.sourceAware.sources.length} ${t(store.settings.locale, 'sources.sourcesCount')}`
-                  : t(store.settings.locale, 'sources.noSources')
-                }}
-              </div>
-            </div>
-            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-            </svg>
-          </div>
-        </div>
-
-        <!-- 模型价格入口 -->
-        <div
-          @click="openModelPricing"
-          class="p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors"
-        >
-          <div class="flex items-center justify-between">
-            <div>
-              <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.modelPricing') }}</div>
-              <div class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.modelPricingDesc') }}</div>
-            </div>
-            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-            </svg>
-          </div>
-        </div>
-
-        <!-- 计费类型 -->
-        <div class="p-3 px-4">
-          <div class="flex items-center justify-between">
-            <span class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.billingType') }}</span>
+          <div class="p-3 px-4 flex items-center justify-between text-[13px]">
+            <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.theme') }}</span>
             <div class="flex gap-1.5">
               <button
-                v-for="type in ['token', 'request', 'both'] as BillingType[]"
-                :key="type"
-                @click="localBillingType = type; handleBillingTypeChange()"
+                v-for="theme in ['light', 'dark', 'system'] as ThemeMode[]"
+                :key="theme"
+                @click="localTheme = theme; handleThemeChange()"
                 :class="[
-                  'py-1 px-2.5 rounded-md text-[11px] font-medium transition-all',
-                  localBillingType === type
+                  'px-2.5 py-1 rounded-md text-xs font-medium transition-all',
+                  localTheme === theme
+                    ? 'bg-blue-500 text-white'
+                    : 'bg-gray-100 dark:bg-neutral-700 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-neutral-600'
+                ]"
+              >
+                {{ t(store.settings.locale, `settings.theme${theme.charAt(0).toUpperCase() + theme.slice(1)}`) }}
+              </button>
+            </div>
+          </div>
+          <div class="p-3 px-4 flex items-center justify-between text-[13px]">
+            <div class="flex flex-col">
+              <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.autoStart') }}</span>
+              <span class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.autoStartDesc') }}</span>
+            </div>
+            <div
+              :class="[
+                'w-10 h-6 rounded-full relative cursor-pointer flex items-center shrink-0 transition-colors',
+                autoStartEnabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-neutral-600'
+              ]"
+              @click="toggleAutoStart"
+            >
+              <div
+                :class="[
+                  'w-[20px] h-[20px] bg-white rounded-full absolute shadow shadow-black/10 transition-all',
+                  autoStartEnabled ? 'right-[2px]' : 'left-[2px]'
+                ]"
+              ></div>
+            </div>
+          </div>
+          <div class="p-3 px-4 flex items-center justify-between text-[13px]">
+            <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.summaryWindow') }}</span>
+            <select
+              v-model="localSummaryWindow"
+              @change="handleSummaryWindowChange"
+              class="bg-transparent text-gray-500 dark:text-gray-400 text-sm outline-none text-right tracking-tight cursor-pointer appearance-none"
+            >
+              <option v-for="window in WINDOW_ORDER" :key="window" :value="window">
+                {{ windowNameLabel(store.settings.locale, window) }}
+              </option>
+            </select>
+          </div>
+          <div class="p-3 px-4 flex items-center justify-between text-[13px]">
+            <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.warningThreshold') }}</span>
+            <div class="flex items-center gap-1">
+              <input
+                type="number"
+                v-model.number="localWarningThreshold"
+                @blur="handleWarningThresholdChange"
+                @keyup.enter="handleWarningThresholdChange"
+                min="0"
+                max="99"
+                class="w-12 bg-transparent text-gray-500 dark:text-gray-400 text-sm font-mono outline-none text-right p-0"
+              />
+              <span class="text-xs text-gray-400">%</span>
+            </div>
+          </div>
+          <div class="p-3 px-4 flex items-center justify-between text-[13px]">
+            <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.criticalThreshold') }}</span>
+            <div class="flex items-center gap-1">
+              <input
+                type="number"
+                v-model.number="localCriticalThreshold"
+                @blur="handleCriticalThresholdChange"
+                @keyup.enter="handleCriticalThresholdChange"
+                min="1"
+                max="100"
+                class="w-12 bg-transparent text-gray-500 dark:text-gray-400 text-sm font-mono outline-none text-right p-0"
+              />
+              <span class="text-xs text-gray-400">%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+  
+      <!-- 数据统计方式 -->
+      <div class="space-y-2">
+        <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.dataSource') }}</h3>
+        <div class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 overflow-hidden divide-y divide-gray-50 dark:divide-neutral-800/50 shadow-sm">
+          <div class="p-3 px-4">
+            <div class="flex gap-2">
+              <button
+                v-for="source in ['ccusage', 'proxy'] as DataSource[]"
+                :key="source"
+                @click="localDataSource = source; handleDataSourceChange()"
+                :class="[
+                  'flex-1 py-2 px-3 rounded-lg text-xs font-medium transition-all',
+                  localDataSource === source
                     ? 'bg-blue-500 text-white'
                     : 'bg-gray-100 dark:bg-neutral-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-neutral-700'
                 ]"
               >
-                {{ t(store.settings.locale, `settings.billingType${type.charAt(0).toUpperCase() + type.slice(1)}`) }}
+                {{ t(store.settings.locale, `settings.dataSource${source.charAt(0).toUpperCase() + source.slice(1)}`) }}
               </button>
             </div>
+            <!-- 数据源说明 -->
+            <p class="mt-2 text-[10px] text-gray-400 dark:text-gray-500 leading-relaxed">
+              {{ t(store.settings.locale, localDataSource === 'ccusage' ? 'settings.dataSourceCcusageDesc' : 'settings.dataSourceProxyDesc') }}
+            </p>
           </div>
-        </div>
-
-        <!-- 窗口配额入口 -->
-        <div
-          @click="openWindowQuotas"
-          class="p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors"
-        >
-          <div class="flex items-center justify-between">
-            <div>
-              <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.manageQuotas') }}</div>
-              <div class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.manageQuotasDesc') }}</div>
+  
+          <!-- 代理开关 -->
+          <div class="p-3 px-4 flex items-center justify-between text-[13px]">
+            <div class="flex flex-col">
+              <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.interceptRequests') }}</span>
+              <span v-if="proxyEnabled && proxyStatusInfo" class="text-[10px] text-gray-400 mt-0.5">
+                {{ t(store.settings.locale, 'settings.proxyRunning') }} · {{ t(store.settings.locale, 'settings.port') }} {{ proxyStatusInfo.port }} · {{ proxyStatusInfo.uptime }}
+              </span>
+              <span v-else-if="localDataSource === 'proxy' && !proxyEnabled" class="text-[10px] text-amber-500 mt-0.5">
+                {{ t(store.settings.locale, 'settings.startProxyHint') }}
+              </span>
             </div>
-            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-            </svg>
+            <!-- iOS styled switch -->
+            <div
+              :class="[
+                'w-10 h-6 rounded-full relative cursor-pointer flex items-center shrink-0 transition-colors',
+                proxyEnabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-neutral-600'
+              ]"
+              @click="toggleProxy"
+            >
+              <div
+                :class="[
+                  'w-[20px] h-[20px] bg-white rounded-full absolute shadow shadow-black/10 transition-all',
+                  proxyEnabled ? 'right-[2px]' : 'left-[2px]'
+                ]"
+              ></div>
+            </div>
+          </div>
+  
+          <!-- 代理详细状态（仅在运行时显示） -->
+          <div v-if="proxyEnabled && proxyStatusInfo" class="p-3 px-4 bg-gray-50 dark:bg-neutral-800/50">
+            <div class="grid grid-cols-2 gap-2 text-[11px]">
+              <div class="flex items-center gap-1.5">
+                <span :class="['w-2 h-2 rounded-full', proxyStatusInfo.configTakenOver ? 'bg-green-500' : 'bg-amber-500']"></span>
+                <span class="text-gray-500 dark:text-gray-400">
+                  {{ proxyStatusInfo.configTakenOver ? t(store.settings.locale, 'settings.configTakenOver') : t(store.settings.locale, 'settings.configNotTakenOver') }}
+                </span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <span class="text-gray-500 dark:text-gray-400">{{ t(store.settings.locale, 'settings.requestCount') }}:</span>
+                <span class="text-gray-700 dark:text-gray-300 font-mono">{{ proxyStatusInfo.totalRequests }}</span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <span class="text-gray-500 dark:text-gray-400">{{ t(store.settings.locale, 'settings.recordCount') }}:</span>
+                <span class="text-gray-700 dark:text-gray-300 font-mono">{{ proxyStatusInfo.recordCount }}</span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <span class="text-gray-500 dark:text-gray-400">{{ t(store.settings.locale, 'settings.activeConnections') }}:</span>
+                <span class="text-gray-700 dark:text-gray-300 font-mono">{{ proxyStatusInfo.activeConnections }}</span>
+              </div>
+            </div>
+          </div>
+  
+          <!-- 包含错误请求（仅代理模式显示） -->
+          <div v-if="localDataSource === 'proxy'" class="p-3 px-4 flex items-center justify-between text-[13px]">
+            <div class="flex flex-col">
+              <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.includeErrorRequests') }}</span>
+              <span class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.includeErrorRequestsDesc') }}</span>
+            </div>
+            <!-- iOS styled switch -->
+            <div
+              :class="[
+                'w-10 h-6 rounded-full relative cursor-pointer flex items-center shrink-0 transition-colors',
+                localIncludeErrorRequests ? 'bg-green-500' : 'bg-gray-300 dark:bg-neutral-600'
+              ]"
+              @click="localIncludeErrorRequests = !localIncludeErrorRequests; handleIncludeErrorRequestsChange()"
+            >
+              <div
+                :class="[
+                  'w-[20px] h-[20px] bg-white rounded-full absolute shadow shadow-black/10 transition-all',
+                  localIncludeErrorRequests ? 'right-[2px]' : 'left-[2px]'
+                ]"
+              ></div>
+            </div>
+          </div>
+  
+          <!-- 刷新间隔 -->
+          <div class="p-3 px-4 flex items-center justify-between text-[13px]">
+            <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.refreshInterval') }}</span>
+            <div class="flex items-center gap-1">
+              <input
+                type="number"
+                v-model.number="localRefreshInterval"
+                @blur="handleRefreshIntervalChange"
+                @keyup.enter="handleRefreshIntervalChange"
+                min="5"
+                max="300"
+                class="w-12 bg-transparent text-gray-500 dark:text-gray-400 text-sm font-mono outline-none text-right p-0"
+              />
+              <span class="text-xs text-gray-400">{{ t(store.settings.locale, 'common.seconds') }}</span>
+            </div>
           </div>
         </div>
-
       </div>
-    </div>
-
-    <!-- 加载/保存状态 -->
-    <div v-if="store.saving" class="text-center text-xs text-gray-400">
-      {{ t(store.settings.locale, 'common.saving') }}
-    </div>
-    <div v-if="store.error" class="text-center text-xs text-red-500">
-      {{ store.error }}
-    </div>
+  
+      <!-- 数据与配额 -->
+      <div class="space-y-2">
+        <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.dataManagement') }}</h3>
+        <div class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 overflow-hidden divide-y divide-gray-50 dark:divide-neutral-800/50 shadow-sm">
+  
+          <!-- API 来源入口（仅代理模式显示） -->
+          <div
+            v-if="localDataSource === 'proxy'"
+            @click="openApiSources"
+            class="p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors"
+          >
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="flex items-center gap-2">
+                  <div class="text-[13px] text-gray-700 dark:text-gray-200">
+                    {{ t(store.settings.locale, 'sources.manage') }}
+                  </div>
+                  <span
+                    v-if="store.settings.sourceAware.sources.filter(s => s.autoDetected && !s.displayName).length > 0"
+                    class="px-1.5 py-0.5 text-[10px] font-medium bg-red-100 text-red-600 dark:bg-red-500/20 dark:text-red-400 rounded-full"
+                  >
+                    {{ store.settings.sourceAware.sources.filter(s => s.autoDetected && !s.displayName).length }}
+                  </span>
+                </div>
+                <div class="text-[10px] text-gray-400 mt-0.5">
+                  {{ store.settings.sourceAware.sources.length > 0
+                    ? `${store.settings.sourceAware.sources.length} ${t(store.settings.locale, 'sources.sourcesCount')}`
+                    : t(store.settings.locale, 'sources.noSources')
+                  }}
+                </div>
+              </div>
+              <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+              </svg>
+            </div>
+          </div>
+  
+          <!-- 模型价格入口 -->
+          <div
+            @click="openModelPricing"
+            class="p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors"
+          >
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.modelPricing') }}</div>
+                <div class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.modelPricingDesc') }}</div>
+              </div>
+              <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+              </svg>
+            </div>
+          </div>
+  
+          <!-- 计费类型 -->
+          <div class="p-3 px-4">
+            <div class="flex items-center justify-between">
+              <span class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.billingType') }}</span>
+              <div class="flex gap-1.5">
+                <button
+                  v-for="type in ['token', 'request', 'both'] as BillingType[]"
+                  :key="type"
+                  @click="localBillingType = type; handleBillingTypeChange()"
+                  :class="[
+                    'py-1 px-2.5 rounded-md text-[11px] font-medium transition-all',
+                    localBillingType === type
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-gray-100 dark:bg-neutral-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-neutral-700'
+                  ]"
+                >
+                  {{ t(store.settings.locale, `settings.billingType${type.charAt(0).toUpperCase() + type.slice(1)}`) }}
+                </button>
+              </div>
+            </div>
+          </div>
+  
+          <!-- 窗口配额入口 -->
+          <div
+            @click="openWindowQuotas"
+            class="p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors"
+          >
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.manageQuotas') }}</div>
+                <div class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.manageQuotasDesc') }}</div>
+              </div>
+              <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+              </svg>
+            </div>
+          </div>
+  
+        </div>
+      </div>
+  
+      <!-- 加载/保存状态 -->
+      <div v-if="store.saving" class="text-center text-xs text-gray-400">
+        {{ t(store.settings.locale, 'common.saving') }}
+      </div>
+      <div v-if="store.error" class="text-center text-xs text-red-500">
+        {{ store.error }}
+      </div>
   </div>
   </div>
 </template>

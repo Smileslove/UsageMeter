@@ -2,7 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import { t, windowNameLabel } from '../i18n'
-import type { WindowName } from '../types'
+import { WINDOW_ORDER, type WindowName } from '../types'
 
 const emit = defineEmits<{
   back: []
@@ -27,9 +27,6 @@ const showTokenLimit = computed(() => {
 const showRequestLimit = computed(() => {
   return store.settings.billingType === 'request' || store.settings.billingType === 'both'
 })
-
-// 窗口顺序
-const windowOrder: WindowName[] = ['5h', '24h', 'today', '7d', '30d', 'current_month']
 
 const getQuota = (window: WindowName) => {
   return localQuotas.value.find((q: any) => q.window === window)
@@ -88,7 +85,7 @@ const enabledCount = computed(() => {
         {{ t(store.settings.locale, 'settings.quotaTitle') }}
       </h2>
       <span class="text-[11px] text-gray-400">
-        {{ enabledCount }} / {{ windowOrder.length }} {{ t(store.settings.locale, 'common.enabled') }}
+        {{ enabledCount }} / {{ WINDOW_ORDER.length }} {{ t(store.settings.locale, 'common.enabled') }}
       </span>
     </div>
 
@@ -102,12 +99,12 @@ const enabledCount = computed(() => {
         <span class="w-9" />
       </div>
       <div
-        v-for="(window, idx) in windowOrder"
+        v-for="(window, idx) in WINDOW_ORDER"
         :key="window"
         :class="[
           'flex items-center gap-2 px-3 transition-colors',
           getQuota(window)?.enabled ? 'bg-white dark:bg-[#1C1C1E]' : 'bg-gray-50/50 dark:bg-neutral-900/30',
-          idx !== windowOrder.length - 1 ? 'border-b border-gray-50 dark:border-neutral-800/50' : ''
+          idx !== WINDOW_ORDER.length - 1 ? 'border-b border-gray-50 dark:border-neutral-800/50' : ''
         ]"
       >
         <!-- 主行：窗口名称 + 可选输入 + 开关 -->

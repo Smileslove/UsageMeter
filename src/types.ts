@@ -4,6 +4,8 @@ export type BillingType = 'token' | 'request' | 'both'
 
 export type WindowName = '5h' | '24h' | 'today' | '7d' | '30d' | 'current_month'
 
+export const WINDOW_ORDER: WindowName[] = ['5h', '24h', 'today', '7d', '30d', 'current_month']
+
 export type DataSource = 'ccusage' | 'proxy'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
