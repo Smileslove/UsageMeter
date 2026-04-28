@@ -1,11 +1,12 @@
 import { loadSessionBlockData } from 'ccusage/data-loader'
 
-// 计算 token：返回实际处理量（input + output），不含缓存
+// 计算 token：返回总 Token = input + cacheRead + output（不包含 cacheCreate）
 function entryTokens(entry) {
   const usage = entry?.usage ?? {}
   const input = Number(usage.inputTokens ?? 0)
   const output = Number(usage.outputTokens ?? 0)
-  return input + output
+  const cacheRead = Number(usage.cacheReadInputTokens ?? 0)
+  return input + output + cacheRead
 }
 
 // 返回四种 token 的详细分类

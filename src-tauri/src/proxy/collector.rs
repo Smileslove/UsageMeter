@@ -133,8 +133,8 @@ impl UsageCollector {
         {
             Ok(aggregate) => WindowStats {
                 window: window.to_string(),
+                // 总 Token = 输入 + 缓存读取 + 输出（不包含缓存创建）
                 token_used: (aggregate.input_tokens
-                    + aggregate.cache_create_tokens
                     + aggregate.cache_read_tokens
                     + aggregate.output_tokens) as u64,
                 input_tokens: aggregate.input_tokens as u64,
@@ -176,8 +176,8 @@ impl UsageCollector {
         {
             Ok(aggregate) => WindowStats {
                 window: window.to_string(),
+                // 总 Token = 输入 + 缓存读取 + 输出（不包含缓存创建）
                 token_used: (aggregate.input_tokens
-                    + aggregate.cache_create_tokens
                     + aggregate.cache_read_tokens
                     + aggregate.output_tokens) as u64,
                 input_tokens: aggregate.input_tokens as u64,

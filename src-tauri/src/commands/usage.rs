@@ -1426,7 +1426,8 @@ impl StatAccumulator {
         self.output_tokens += output;
         self.cache_create_tokens += cache_create;
         self.cache_read_tokens += cache_read;
-        self.total_tokens += input + output + cache_create + cache_read;
+        // 总 Token = 输入 + 缓存读取 + 输出（不包含缓存创建）
+        self.total_tokens += input + output + cache_read;
         self.cost += cost;
     }
 

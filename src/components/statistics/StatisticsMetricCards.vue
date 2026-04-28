@@ -14,8 +14,9 @@ function value(key: 'requests' | 'tokens' | 'input' | 'output' | 'cost'): string
   if (!totals) return key === 'cost' ? formatCost(0) : '0'
   if (key === 'requests') return formatRequestCount(totals.requestCount)
   if (key === 'tokens') return formatTokenValue(totals.totalTokens)
-  if (key === 'input') return formatTokenPair(totals.inputTokens, totals.outputTokens).input
-  if (key === 'output') return formatTokenPair(totals.inputTokens, totals.outputTokens).output
+  // 输入显示总输入（包含缓存读取）
+  if (key === 'input') return formatTokenPair(totals.inputTokens + (totals.cacheReadTokens ?? 0), totals.outputTokens).input
+  if (key === 'output') return formatTokenPair(totals.inputTokens + (totals.cacheReadTokens ?? 0), totals.outputTokens).output
   if (key === 'cost') return formatCost(totals.cost)
   return '0'
 }

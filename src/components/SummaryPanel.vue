@@ -12,6 +12,13 @@ const summaryWindowData = computed(() => {
   return store.windows.find(w => w.window === windowName)
 })
 
+// 计算总输入 Token（包含缓存读取）
+const totalInputTokens = computed(() => {
+  const data = summaryWindowData.value
+  if (!data) return 0
+  return (data.inputTokens ?? 0) + (data.cacheReadTokens ?? 0)
+})
+
 // 格式化请求数（小于1000显示整数，大于等于1000用K单位保留2位小数）
 const formatRequestNumber = (num: number): string => {
   if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(2)}M`
@@ -26,9 +33,9 @@ const formatTokenValue = (num: number, unit: 'K' | 'M' | 'none'): string => {
   return num.toFixed(2)
 }
 
-// 确定输入输出的统一单位
-const getTokenUnit = (input: number, output: number): 'K' | 'M' | 'none' => {
-  const maxVal = Math.max(input, output)
+// 确定输入输出的统一单位（使用总输入）
+const getTokenUnit = (totalInput: number, output: number): 'K' | 'M' | 'none' => {
+  const maxVal = Math.max(totalInput, output)
   if (maxVal >= 1_000_000) return 'M'
   if (maxVal >= 1_000) return 'K'
   return 'none'
@@ -138,11 +145,11 @@ onMounted(() => {
           <div class="flex flex-col items-center">
             <Activity class="w-3.5 h-3.5 text-emerald-500 mb-0.5" />
             <span class="text-[9px] font-semibold text-emerald-600 dark:text-emerald-400 leading-tight">{{ t(store.settings.locale, 'common.token') }}</span>
-            <span class="text-sm font-bold text-gray-800 dark:text-gray-100 font-mono leading-tight">{{ formatTokenValue(summaryWindowData.tokenUsed, getTokenUnit(summaryWindowData.inputTokens, summaryWindowData.outputTokens)) }}</span>
+            <span class="text-sm font-bold text-gray-800 dark:text-gray-100 font-mono leading-tight">{{ formatTokenValue(summaryWindowData.tokenUsed, getTokenUnit(totalInputTokens, summaryWindowData.outputTokens)) }}</span>
             <div class="flex items-center gap-0.5 text-[8px] leading-tight">
-              <span class="text-blue-500 font-medium">{{ formatTokenValue(summaryWindowData.inputTokens, getTokenUnit(summaryWindowData.inputTokens, summaryWindowData.outputTokens)) }}</span>
+              <span class="text-blue-500 font-medium">{{ formatTokenValue(totalInputTokens, getTokenUnit(totalInputTokens, summaryWindowData.outputTokens)) }}</span>
               <span class="text-gray-400">/</span>
-              <span class="text-teal-500 font-medium">{{ formatTokenValue(summaryWindowData.outputTokens, getTokenUnit(summaryWindowData.inputTokens, summaryWindowData.outputTokens)) }}</span>
+              <span class="text-teal-500 font-medium">{{ formatTokenValue(summaryWindowData.outputTokens, getTokenUnit(totalInputTokens, summaryWindowData.outputTokens)) }}</span>
             </div>
           </div>
         </div>
@@ -185,11 +192,11 @@ onMounted(() => {
           <div class="flex flex-col items-center">
             <Activity class="w-3.5 h-3.5 text-emerald-500 mb-0.5" />
             <span class="text-[9px] font-semibold text-emerald-600 dark:text-emerald-400 leading-tight">{{ t(store.settings.locale, 'common.token') }}</span>
-            <span class="text-sm font-bold text-gray-800 dark:text-gray-100 font-mono leading-tight">{{ formatTokenValue(summaryWindowData.tokenUsed, getTokenUnit(summaryWindowData.inputTokens, summaryWindowData.outputTokens)) }}</span>
+            <span class="text-sm font-bold text-gray-800 dark:text-gray-100 font-mono leading-tight">{{ formatTokenValue(summaryWindowData.tokenUsed, getTokenUnit(totalInputTokens, summaryWindowData.outputTokens)) }}</span>
             <div class="flex items-center gap-0.5 text-[8px] leading-tight">
-              <span class="text-blue-500 font-medium">{{ formatTokenValue(summaryWindowData.inputTokens, getTokenUnit(summaryWindowData.inputTokens, summaryWindowData.outputTokens)) }}</span>
+              <span class="text-blue-500 font-medium">{{ formatTokenValue(totalInputTokens, getTokenUnit(totalInputTokens, summaryWindowData.outputTokens)) }}</span>
               <span class="text-gray-400">/</span>
-              <span class="text-teal-500 font-medium">{{ formatTokenValue(summaryWindowData.outputTokens, getTokenUnit(summaryWindowData.inputTokens, summaryWindowData.outputTokens)) }}</span>
+              <span class="text-teal-500 font-medium">{{ formatTokenValue(summaryWindowData.outputTokens, getTokenUnit(totalInputTokens, summaryWindowData.outputTokens)) }}</span>
             </div>
           </div>
         </div>

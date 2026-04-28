@@ -280,7 +280,7 @@ fn append_utf8_safe(buffer: &mut String, remainder: &mut Vec<u8>, new_bytes: &[u
 ///
 /// 统一的计算逻辑：
 /// - input_tokens: 原始输入 Token（不含缓存）
-/// - total_tokens: input_tokens + cache_create_tokens + cache_read_tokens + output_tokens
+/// - total_tokens: input_tokens + cache_read_tokens + output_tokens（不包含缓存创建）
 /// - duration_ms: 请求耗时（从 start_time 到当前时间）
 /// - output_tokens_per_second: output_tokens / (duration_ms / 1000)
 pub fn create_database_collector(
@@ -306,11 +306,8 @@ pub fn create_database_collector(
             request_end_time - request_start_time
         };
 
-        // 计算总 Token：input + cache_create + cache_read + output（含缓存）
-        let total_tokens = usage.input_tokens
-            + usage.cache_create_tokens
-            + usage.cache_read_tokens
-            + usage.output_tokens;
+        // 计算总 Token：input + cache_read + output（不包含缓存创建）
+        let total_tokens = usage.input_tokens + usage.cache_read_tokens + usage.output_tokens;
 
         // 计算输出 Token 生成速率（tokens/s）
         let output_tokens_per_second = if duration_ms > 0 {
