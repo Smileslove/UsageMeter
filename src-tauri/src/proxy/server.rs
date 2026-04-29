@@ -4,6 +4,7 @@ use super::collector::UsageCollector;
 use super::config_manager::ClaudeConfigManager;
 use super::forwarder::{ForwardResult, RequestForwarder};
 use super::source_detector::{detect_source_info, normalize_base_url, register_source_to_settings};
+use super::source_registry::{ProxySourceHandle, ProxySourceRegistry};
 use super::types::{ProxyConfig, ProxyState, ProxyStatus, RequestContext};
 use crate::commands::{load_settings, save_settings};
 use crate::models::{ClientToolProfile, DEFAULT_CLIENT_DETECTION_METHOD, DEFAULT_CLIENT_TOOL};
@@ -19,12 +20,15 @@ use tauri::Emitter;
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, RwLock};
 
+const CONFIG_MONITOR_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
 struct ClientRoute {
     normalized_path: String,
     client_tool: String,
     proxy_profile_id: Option<String>,
     detection_method: String,
     target_base_url: Option<String>,
+    source_id: Option<String>,
 }
 
 fn trim_path_prefix(prefix: &str) -> String {
@@ -55,12 +59,18 @@ fn detect_client_route(path: &str) -> ClientRoute {
     let settings = load_settings().unwrap_or_default();
     for profile in &settings.client_tools.profiles {
         if let Some(normalized_path) = strip_prefix_path(path, &profile.path_prefix) {
+            let (normalized_path, source_id) = strip_source_handle_path(&normalized_path);
             return ClientRoute {
                 normalized_path,
                 client_tool: profile.tool.clone(),
                 proxy_profile_id: Some(profile.id.clone()),
-                detection_method: "path_prefix".to_string(),
+                detection_method: if source_id.is_some() {
+                    "path_prefix_source".to_string()
+                } else {
+                    "path_prefix".to_string()
+                },
                 target_base_url: profile.target_base_url.clone(),
+                source_id,
             };
         }
     }
@@ -74,6 +84,102 @@ fn detect_client_route(path: &str) -> ClientRoute {
         proxy_profile_id,
         detection_method: DEFAULT_CLIENT_DETECTION_METHOD.to_string(),
         target_base_url: None,
+        source_id: None,
+    }
+}
+
+fn strip_source_handle_path(path: &str) -> (String, Option<String>) {
+    let clean_path = path.trim();
+    let Some(rest) = clean_path.strip_prefix("/source/") else {
+        return (path.to_string(), None);
+    };
+
+    let mut parts = rest.splitn(2, '/');
+    let source_id = parts.next().unwrap_or_default().trim();
+    if source_id.is_empty() {
+        return (path.to_string(), None);
+    }
+
+    let normalized_path = parts
+        .next()
+        .map(|tail| format!("/{tail}"))
+        .unwrap_or_else(|| "/".to_string());
+    (normalized_path, Some(source_id.to_string()))
+}
+
+fn resolve_route_source(
+    client_route_source_id: Option<&str>,
+    active_source_id: Option<&str>,
+) -> Result<Option<ProxySourceHandle>, String> {
+    let registry = ProxySourceRegistry::new();
+    if let Some(id) = client_route_source_id {
+        return registry
+            .get(id)
+            .map(Some)
+            .ok_or_else(|| format!("Proxy source handle '{}' was not found", id));
+    }
+
+    Ok(active_source_id.and_then(|id| registry.get(id)))
+}
+
+struct ConfigChangeMonitor {
+    interval: tokio::time::Interval,
+}
+
+impl ConfigChangeMonitor {
+    fn new() -> Self {
+        // Keep this as a small abstraction so the proxy loop is not coupled to
+        // polling forever. A filesystem watcher can replace this later, but
+        // polling is deliberately the default for now: it is cross-platform,
+        // handles temp-file + rename writes from config switchers, and avoids
+        // watcher debounce edge cases. Five seconds is enough because provider
+        // switching is user-driven and not latency-sensitive.
+        Self {
+            interval: tokio::time::interval(CONFIG_MONITOR_POLL_INTERVAL),
+        }
+    }
+
+    async fn changed(&mut self) {
+        self.interval.tick().await;
+    }
+}
+
+async fn sync_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
+    let config_manager = ClaudeConfigManager::new();
+    let Ok(settings) = config_manager.read_settings() else {
+        return;
+    };
+
+    if let Some(base_url) = settings.get_base_url() {
+        if ClaudeConfigManager::is_usagemeter_proxy_url_for_port(&base_url, proxy_port) {
+            if let Some(source_id) =
+                ClaudeConfigManager::extract_source_id_from_proxy_url(&base_url)
+            {
+                if ProxySourceRegistry::new().get(&source_id).is_some() {
+                    *state.active_source_id.write().await = Some(source_id);
+                }
+            }
+            return;
+        }
+    }
+
+    let registry = ProxySourceRegistry::new();
+    match registry.upsert_from_settings(&settings) {
+        Ok(Some(handle)) => {
+            *state.active_source_id.write().await = Some(handle.id.clone());
+            if let Err(e) = config_manager.takeover_with_path_prefix_and_source(
+                proxy_port,
+                Some("claude-code"),
+                Some(&handle.id),
+            ) {
+                eprintln!("[proxy] Failed to re-apply source-aware takeover: {}", e);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => eprintln!(
+            "[proxy] Failed to update source handle from settings: {}",
+            e
+        ),
     }
 }
 
@@ -115,6 +221,7 @@ impl ProxyServer {
             status: Arc::new(RwLock::new(ProxyStatus::default())),
             start_time: Arc::new(RwLock::new(None)),
             app_handle: Arc::new(RwLock::new(None)),
+            active_source_id: Arc::new(RwLock::new(None)),
         });
 
         Self {
@@ -134,13 +241,38 @@ impl ProxyServer {
 
         // 从 Claude 配置获取 API 密钥和目标 URL
         let config_manager = ClaudeConfigManager::new();
-        let api_key = config_manager.get_api_key();
-        let target_base_url = config_manager
-            .get_original_base_url()
+        let registry = ProxySourceRegistry::new();
+        let current_settings = config_manager.read_settings()?;
+        let source_handle = current_settings
+            .get_base_url()
+            .and_then(|base_url| ClaudeConfigManager::extract_source_id_from_proxy_url(&base_url))
+            .and_then(|source_id| registry.get(&source_id))
+            .or_else(|| {
+                registry
+                    .upsert_from_settings(&current_settings)
+                    .ok()
+                    .flatten()
+            });
+
+        let api_key = source_handle
+            .as_ref()
+            .and_then(|handle| handle.api_key.clone())
+            .or_else(|| config_manager.get_api_key());
+        let target_base_url = source_handle
+            .as_ref()
+            .map(|handle| handle.real_base_url.clone())
+            .or_else(|| config_manager.get_original_base_url())
             .unwrap_or_else(|| "https://api.anthropic.com".to_string());
+        let source_id = source_handle.as_ref().map(|handle| handle.id.clone());
+
+        *self.state.active_source_id.write().await = source_id.clone();
 
         // 接管 Claude 配置。新配置使用路径前缀；服务端仍保留 /v1/messages 兼容旧配置。
-        config_manager.takeover_with_path_prefix(self.config.port, Some("claude-code"))?;
+        config_manager.takeover_with_path_prefix_and_source(
+            self.config.port,
+            Some("claude-code"),
+            source_id.as_deref(),
+        )?;
 
         // 创建转发器
         let forwarder = Arc::new(
@@ -150,7 +282,10 @@ impl ProxyServer {
 
         // 代理启动时先登记当前有效来源。这样即使 Claude Code 的入站请求不带
         // x-api-key，设置页也能立即看到本次接管对应的 API 来源。
-        if let Ok(api_key) = forwarder.get_api_key(None) {
+        if let Ok(api_key) = forwarder.get_api_key(
+            None,
+            source_handle.as_ref().and_then(|h| h.api_key.as_deref()),
+        ) {
             let target_base_url = forwarder.get_target_base_url();
             let (is_new, updated_settings) =
                 register_source_to_settings(&api_key, &target_base_url);
@@ -194,25 +329,35 @@ impl ProxyServer {
 
         // 克隆状态用于服务器任务
         let state = self.state.clone();
+        let proxy_port = self.config.port;
 
         // 启动服务器任务
         let handle = tokio::spawn(async move {
+            let mut config_monitor = ConfigChangeMonitor::new();
             loop {
                 // 接受新连接
-                let (stream, _remote_addr) = tokio::select! {
+                let accepted = tokio::select! {
                     result = listener.accept() => {
                         match result {
-                            Ok(conn) => conn,
+                            Ok(conn) => Some(conn),
                             Err(e) => {
                                 eprintln!("Accept error: {}", e);
-                                continue;
+                                None
                             }
                         }
+                    }
+                    _ = config_monitor.changed() => {
+                        sync_external_config_change(proxy_port, state.clone()).await;
+                        None
                     }
                     _ = &mut shutdown_rx => {
                         // 收到关闭信号
                         break;
                     }
+                };
+
+                let Some((stream, _remote_addr)) = accepted else {
+                    continue;
                 };
 
                 // 增加活跃连接数
@@ -269,9 +414,21 @@ impl ProxyServer {
             let _ = handle.await;
         }
 
-        // 恢复 Claude 配置
+        // 恢复 Claude 配置。source-aware URL 优先恢复对应来源的原始配置；
+        // 如果用户/外部工具已经写回真实配置，则不覆盖。
         let config_manager = ClaudeConfigManager::new();
-        config_manager.restore()?;
+        let current_settings = config_manager.read_settings()?;
+        if let Some(base_url) = current_settings.get_base_url() {
+            if ClaudeConfigManager::is_usagemeter_proxy_url_for_port(&base_url, self.config.port) {
+                if !config_manager.restore_from_active_source_handle()? {
+                    config_manager.restore()?;
+                }
+            } else {
+                config_manager.clear_backup()?;
+            }
+        } else {
+            config_manager.clear_backup()?;
+        }
 
         // 更新状态
         {
@@ -282,6 +439,7 @@ impl ProxyServer {
 
         // 清除启动时间
         *self.state.start_time.write().await = None;
+        *self.state.active_source_id.write().await = None;
 
         Ok(())
     }
@@ -385,13 +543,43 @@ async fn handle_request(
         // 收集请求体（这一步的耗时现在会被计入）
         let body_bytes = req.collect().await?.to_bytes();
 
-        // 获取目标 base_url（从 forwarder 获取）
-        let target_base_url = client_route
-            .target_base_url
-            .clone()
+        let active_source_id = state.active_source_id.read().await.clone();
+        let source_handle = match resolve_route_source(
+            client_route.source_id.as_deref(),
+            active_source_id.as_deref(),
+        ) {
+            Ok(handle) => handle,
+            Err(e) => {
+                let error_body = serde_json::json!({
+                    "error": {
+                        "type": "proxy_source_not_found",
+                        "message": e
+                    }
+                });
+                return Ok(Response::builder()
+                    .status(StatusCode::BAD_GATEWAY)
+                    .header("Content-Type", "application/json")
+                    .body(full(serde_json::to_string(&error_body).unwrap_or_default()))
+                    .unwrap());
+            }
+        };
+        if let Some(ref handle) = source_handle {
+            let _ = ProxySourceRegistry::new().touch_used(&handle.id);
+        }
+
+        // 获取目标 base_url（source 句柄优先，其次工具 profile，最后回退到启动默认值）
+        let target_base_url = source_handle
+            .as_ref()
+            .map(|handle| handle.real_base_url.clone())
+            .or_else(|| client_route.target_base_url.clone())
             .unwrap_or_else(|| forwarder.get_target_base_url());
 
-        let effective_api_key = forwarder.get_api_key(api_key_header.as_deref()).ok();
+        let source_api_key = source_handle
+            .as_ref()
+            .and_then(|handle| handle.api_key.as_deref());
+        let effective_api_key = forwarder
+            .get_api_key(api_key_header.as_deref(), source_api_key)
+            .ok();
 
         // 检测并注册来源
         let is_new_source = if let Some(ref api_key) = effective_api_key {
@@ -434,6 +622,7 @@ async fn handle_request(
             client_detection_method: client_route.detection_method,
             inbound_api_key: api_key_header.clone(),
             target_base_url: Some(target_base_url),
+            target_api_key: source_handle.and_then(|handle| handle.api_key),
             ..Default::default()
         };
 
@@ -502,5 +691,27 @@ async fn handle_request(
 impl Default for ProxyServer {
     fn default() -> Self {
         Self::new(ProxyConfig::default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_route_source_rejects_missing_explicit_source() {
+        let result = resolve_route_source(Some("src_missing"), Some("src_active"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_strip_source_handle_path() {
+        let (path, source_id) = strip_source_handle_path("/source/src_abc/v1/messages");
+        assert_eq!(path, "/v1/messages");
+        assert_eq!(source_id.as_deref(), Some("src_abc"));
+
+        let (path, source_id) = strip_source_handle_path("/v1/messages");
+        assert_eq!(path, "/v1/messages");
+        assert_eq!(source_id, None);
     }
 }

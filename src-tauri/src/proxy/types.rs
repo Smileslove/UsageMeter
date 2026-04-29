@@ -309,6 +309,8 @@ pub struct ProxyState {
     pub start_time: Arc<RwLock<Option<i64>>>,
     /// Tauri 应用句柄（用于发送事件）
     pub app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
+    /// 当前活动来源句柄 ID，用于兼容不带 source 路径的旧代理 URL。
+    pub active_source_id: Arc<RwLock<Option<String>>>,
 }
 
 /// Claude API 的 SSE 事件类型
@@ -373,6 +375,8 @@ pub struct RequestContext {
     pub inbound_api_key: Option<String>,
     /// 当前请求的实际转发目标地址。None 时使用代理启动时的兼容默认目标。
     pub target_base_url: Option<String>,
+    /// 当前请求指定来源句柄中保存的 API Key。
+    pub target_api_key: Option<String>,
 }
 
 impl Default for RequestContext {
@@ -394,6 +398,7 @@ impl Default for RequestContext {
             client_detection_method: default_client_detection_method(),
             inbound_api_key: None,
             target_base_url: None,
+            target_api_key: None,
         }
     }
 }

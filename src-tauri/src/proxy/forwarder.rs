@@ -37,6 +37,15 @@ pub enum ForwardResult {
     NonStreaming { content: Vec<u8> },
 }
 
+fn messages_endpoint_url(target_base_url: &str) -> String {
+    let base = target_base_url.trim_end_matches('/');
+    if let Some(prefix) = base.strip_suffix("/v1") {
+        format!("{}/v1/messages", prefix)
+    } else {
+        format!("{}/v1/messages", base)
+    }
+}
+
 impl RequestForwarder {
     /// 创建新的请求转发器
     pub fn new(
@@ -63,9 +72,14 @@ impl RequestForwarder {
     }
 
     /// 获取要使用的 API 密钥
-    pub(crate) fn get_api_key(&self, inbound_api_key: Option<&str>) -> Result<String, String> {
+    pub(crate) fn get_api_key(
+        &self,
+        inbound_api_key: Option<&str>,
+        target_api_key: Option<&str>,
+    ) -> Result<String, String> {
         inbound_api_key
             .map(|key| key.to_string())
+            .or_else(|| target_api_key.map(|key| key.to_string()))
             .or_else(|| self.api_key.clone())
             .or_else(|| {
                 // 尝试从 Claude 设置获取
@@ -84,7 +98,10 @@ impl RequestForwarder {
         body: bytes::Bytes,
         mut context: RequestContext,
     ) -> Result<ForwardResult, String> {
-        let api_key = match self.get_api_key(context.inbound_api_key.as_deref()) {
+        let api_key = match self.get_api_key(
+            context.inbound_api_key.as_deref(),
+            context.target_api_key.as_deref(),
+        ) {
             Ok(key) => key,
             Err(e) => {
                 // 记录无 key 的错误，确保请求被统计
@@ -122,7 +139,7 @@ impl RequestForwarder {
             .target_base_url
             .clone()
             .unwrap_or_else(|| self.target_base_url.clone());
-        let url = format!("{}/v1/messages", target_base_url.trim_end_matches('/'));
+        let url = messages_endpoint_url(&target_base_url);
 
         // 解析请求体以提取元数据
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) {
@@ -453,6 +470,22 @@ fn parse_sse_event(text: &str) -> Option<SseEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_messages_endpoint_url_normalizes_v1_suffix() {
+        assert_eq!(
+            messages_endpoint_url("https://api.example.com"),
+            "https://api.example.com/v1/messages"
+        );
+        assert_eq!(
+            messages_endpoint_url("https://api.example.com/v1"),
+            "https://api.example.com/v1/messages"
+        );
+        assert_eq!(
+            messages_endpoint_url("https://api.example.com/api/v1/"),
+            "https://api.example.com/api/v1/messages"
+        );
+    }
 
     #[test]
     fn test_parse_sse_message_start() {

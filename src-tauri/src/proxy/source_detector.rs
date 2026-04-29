@@ -18,10 +18,7 @@ pub fn compute_source_id(key_prefix: &str, base_url: Option<&str>) -> String {
         hasher.update(url.as_bytes());
     }
     let hash = hasher.finalize();
-    format!(
-        "{:016x}",
-        u128::from_be_bytes(hash[..16].try_into().unwrap())
-    )
+    format!("{:016x}", u64::from_be_bytes(hash[..8].try_into().unwrap()))
 }
 
 /// 标准化 base_url：官方 Anthropic 地址返回 None

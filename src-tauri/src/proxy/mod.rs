@@ -6,6 +6,7 @@ mod database;
 mod forwarder;
 mod server;
 mod source_detector;
+mod source_registry;
 mod sse;
 mod stream_processor;
 mod types;

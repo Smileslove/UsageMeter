@@ -2,6 +2,7 @@
 //!
 //! 处理 Claude Code settings.json 的接管和恢复
 
+use super::source_registry::ProxySourceRegistry;
 use super::types::ClaudeSettings;
 use std::fs;
 use std::path::PathBuf;
@@ -47,10 +48,64 @@ impl ClaudeConfigManager {
     pub fn is_takeover_active(&self) -> bool {
         if let Ok(settings) = self.read_settings() {
             if let Some(base_url) = settings.get_base_url() {
-                return base_url.contains("127.0.0.1") || base_url.contains("localhost");
+                return Self::is_usagemeter_proxy_url(&base_url);
             }
         }
         false
+    }
+
+    pub fn is_usagemeter_proxy_url(base_url: &str) -> bool {
+        let Ok(url) = reqwest::Url::parse(base_url) else {
+            return false;
+        };
+        Self::is_local_claude_code_proxy_url(&url)
+    }
+
+    pub fn is_usagemeter_proxy_url_for_port(base_url: &str, proxy_port: u16) -> bool {
+        let Ok(url) = reqwest::Url::parse(base_url) else {
+            return false;
+        };
+        if !Self::is_local_claude_code_proxy_url(&url) {
+            return false;
+        }
+
+        url.port() == Some(proxy_port)
+    }
+
+    fn is_local_claude_code_proxy_url(url: &reqwest::Url) -> bool {
+        let Some(host) = url.host_str() else {
+            return false;
+        };
+        if host != "127.0.0.1" && host != "localhost" {
+            return false;
+        }
+
+        let path = url.path().trim_end_matches('/');
+        path == "/claude-code" || path.starts_with("/claude-code/source/")
+    }
+
+    pub fn extract_source_id_from_proxy_url(base_url: &str) -> Option<String> {
+        if !Self::is_usagemeter_proxy_url(base_url) {
+            return None;
+        }
+
+        let marker = "/source/";
+        let marker_index = base_url.find(marker)?;
+        let rest = &base_url[(marker_index + marker.len())..];
+        let source_id = rest
+            .split('/')
+            .next()
+            .unwrap_or_default()
+            .split('?')
+            .next()
+            .unwrap_or_default()
+            .trim();
+
+        if source_id.is_empty() {
+            None
+        } else {
+            Some(source_id.to_string())
+        }
     }
 
     /// 检查备份是否存在
@@ -106,6 +161,15 @@ impl ClaudeConfigManager {
         proxy_port: u16,
         path_prefix: Option<&str>,
     ) -> Result<(), String> {
+        self.takeover_with_path_prefix_and_source(proxy_port, path_prefix, None)
+    }
+
+    pub fn takeover_with_path_prefix_and_source(
+        &self,
+        proxy_port: u16,
+        path_prefix: Option<&str>,
+        source_id: Option<&str>,
+    ) -> Result<(), String> {
         // 读取当前设置
         let mut settings = self.read_settings()?;
 
@@ -129,7 +193,10 @@ impl ClaudeConfigManager {
             .map(|p| p.trim().trim_matches('/'))
             .filter(|p| !p.is_empty())
         {
-            Some(prefix) => format!("http://127.0.0.1:{}/{}", proxy_port, prefix),
+            Some(prefix) => match source_id.map(str::trim).filter(|id| !id.is_empty()) {
+                Some(id) => format!("http://127.0.0.1:{}/{}/source/{}", proxy_port, prefix, id),
+                None => format!("http://127.0.0.1:{}/{}", proxy_port, prefix),
+            },
             None => format!("http://127.0.0.1:{}", proxy_port),
         };
         settings.set_base_url(&proxy_url);
@@ -138,6 +205,31 @@ impl ClaudeConfigManager {
         self.write_settings(&settings)?;
 
         Ok(())
+    }
+
+    pub fn clear_backup(&self) -> Result<(), String> {
+        if self.has_backup() {
+            fs::remove_file(&self.backup_path)
+                .map_err(|e| format!("Failed to remove backup: {}", e))?;
+        }
+        Ok(())
+    }
+
+    pub fn restore_from_active_source_handle(&self) -> Result<bool, String> {
+        let settings = self.read_settings()?;
+        let Some(base_url) = settings.get_base_url() else {
+            return Ok(false);
+        };
+        let Some(source_id) = Self::extract_source_id_from_proxy_url(&base_url) else {
+            return Ok(false);
+        };
+        let Some(handle) = ProxySourceRegistry::new().get(&source_id) else {
+            return Ok(false);
+        };
+
+        self.write_settings(&handle.original_settings_snapshot)?;
+        self.clear_backup()?;
+        Ok(true)
     }
 
     /// 从备份恢复原始 Claude 配置
@@ -227,8 +319,19 @@ impl ClaudeConfigManager {
             }
 
             // 情况2：接管但没有备份（异常情况）
-            // 可能是备份文件被意外删除，需要清除接管状态
+            // source-aware URL 可从 registry 恢复；legacy 接管才清除 BASE_URL。
             (false, true) => {
+                match self.restore_from_active_source_handle() {
+                    Ok(true) => {
+                        return Some(
+                            "Restored Claude config from source handle (no backup found)"
+                                .to_string(),
+                        );
+                    }
+                    Ok(false) => {}
+                    Err(e) => return Some(e),
+                }
+
                 // 读取当前设置并清除 BASE_URL
                 if let Ok(mut settings) = self.read_settings() {
                     settings.env.remove("ANTHROPIC_BASE_URL");
@@ -241,8 +344,19 @@ impl ClaudeConfigManager {
             }
 
             // 情况3：备份存在且接管活跃（崩溃残留）
-            // 这是应用崩溃后的典型状态，需要从备份恢复
+            // source-aware URL 优先从 registry 恢复当前 handle；backup 只作 legacy fallback。
             (true, true) => {
+                match self.restore_from_active_source_handle() {
+                    Ok(true) => {
+                        return Some(
+                            "Restored Claude config from source handle (recovered from crash)"
+                                .to_string(),
+                        );
+                    }
+                    Ok(false) => {}
+                    Err(e) => return Some(e),
+                }
+
                 if let Err(e) = self.restore() {
                     return Some(format!("Failed to restore from backup: {}", e));
                 }
@@ -273,5 +387,37 @@ mod tests {
             .settings_path()
             .to_string_lossy()
             .contains(".claude"));
+    }
+
+    #[test]
+    fn test_is_usagemeter_proxy_url_requires_claude_code_path() {
+        assert!(ClaudeConfigManager::is_usagemeter_proxy_url(
+            "http://127.0.0.1:18765/claude-code/source/src_abc"
+        ));
+        assert!(ClaudeConfigManager::is_usagemeter_proxy_url(
+            "http://localhost:18765/claude-code"
+        ));
+        assert!(!ClaudeConfigManager::is_usagemeter_proxy_url(
+            "http://127.0.0.1:4000/v1"
+        ));
+        assert!(!ClaudeConfigManager::is_usagemeter_proxy_url(
+            "https://api.anthropic.com"
+        ));
+    }
+
+    #[test]
+    fn test_is_usagemeter_proxy_url_for_port_requires_matching_port() {
+        assert!(ClaudeConfigManager::is_usagemeter_proxy_url_for_port(
+            "http://127.0.0.1:18765/claude-code/source/src_abc",
+            18765
+        ));
+        assert!(!ClaudeConfigManager::is_usagemeter_proxy_url_for_port(
+            "http://127.0.0.1:4000/claude-code/source/src_abc",
+            18765
+        ));
+        assert!(!ClaudeConfigManager::is_usagemeter_proxy_url_for_port(
+            "http://127.0.0.1:18765/v1",
+            18765
+        ));
     }
 }
