@@ -18,6 +18,8 @@ const activityView = ref<'month' | 'year'>('month')
 const selectedDate = ref('')
 const customStart = ref(toDateTimeInput(startOfLocalDay(new Date())))
 const customEnd = ref(toDateTimeInput(new Date()))
+// 标记是否已经初始化完成，用于区分用户操作和初始化
+const initialized = ref(false)
 
 const locale = computed(() => store.settings.locale)
 
@@ -122,9 +124,13 @@ function fetchMonth() {
 function moveMonth(delta: number) {
   if (activityView.value === 'year') {
     currentMonth.value = new Date(currentMonth.value.getFullYear() + delta, currentMonth.value.getMonth(), 1)
-    return
+  } else {
+    currentMonth.value = new Date(currentMonth.value.getFullYear(), currentMonth.value.getMonth() + delta, 1)
   }
-  currentMonth.value = new Date(currentMonth.value.getFullYear(), currentMonth.value.getMonth() + delta, 1)
+  // 切换月份/年后，自动更新下方的时间范围
+  if (initialized.value) {
+    updateRangeFromActivityView()
+  }
 }
 
 function selectDay(day: DayActivity) {
@@ -136,12 +142,46 @@ function selectDay(day: DayActivity) {
   preset.value = 'custom'
 }
 
+/**
+ * 根据当前月份/年度视图自动设置时间范围
+ */
+function updateRangeFromActivityView() {
+  const year = currentMonth.value.getFullYear()
+
+  if (activityView.value === 'year') {
+    // 年度视图：设置范围为该年的第一天到最后一天
+    customStart.value = `${year}-01-01T00:00`
+    customEnd.value = `${year}-12-31T23:59`
+  } else {
+    // 月份视图：设置范围为该月的第一天到最后一天
+    const month = currentMonth.value.getMonth() + 1
+    const monthStr = String(month).padStart(2, '0')
+    const lastDay = new Date(year, month, 0).getDate()
+    customStart.value = `${year}-${monthStr}-01T00:00`
+    customEnd.value = `${year}-${monthStr}-${String(lastDay).padStart(2, '0')}T23:59`
+  }
+  preset.value = 'custom'
+}
+
+/**
+ * 处理视图模式切换（月份/年度）
+ */
+function setActivityView(mode: 'month' | 'year') {
+  activityView.value = mode
+  // 切换视图后，自动更新下方的时间范围
+  if (initialized.value) {
+    updateRangeFromActivityView()
+  }
+}
+
 watch([range, bucket, analysisMetric], fetchSummary, { deep: true })
 watch([activityView, monthYear, monthNumber, monthMetric], fetchMonth)
 
 onMounted(() => {
   fetchSummary()
   fetchMonth()
+  // 延迟设置初始化标志，确保初始加载完成后才响应用户操作
+  initialized.value = true
 })
 </script>
 
@@ -166,7 +206,7 @@ onMounted(() => {
       @next="moveMonth(1)"
       @select-day="selectDay"
       @set-metric="monthMetric = $event"
-      @set-view="activityView = $event"
+      @set-view="setActivityView"
     />
 
     <section class="rounded-2xl border border-gray-50 bg-white p-3 shadow-[0_2px_10px_rgba(0,0,0,0.02)] dark:border-neutral-800 dark:bg-[#1C1C1E]">
