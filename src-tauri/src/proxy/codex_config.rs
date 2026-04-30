@@ -38,6 +38,11 @@ pub enum CodexAuthMode {
     ChatGpt,
 }
 
+pub fn codex_snapshot_uses_official_provider(snapshot: &CodexConfigSnapshot) -> bool {
+    snapshot.auth_mode == CodexAuthMode::ChatGpt
+        || is_official_openai_base_url(&snapshot.real_base_url)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexSourceHandle {
@@ -584,6 +589,21 @@ fn detect_auth_mode(auth: Option<&serde_json::Value>) -> CodexAuthMode {
     }
 }
 
+fn is_official_openai_base_url(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host != "api.openai.com" {
+        return false;
+    }
+
+    let path = url.path().trim_end_matches('/');
+    path.is_empty() || path == "/v1"
+}
+
 fn set_provider_base_url(
     doc: &mut DocumentMut,
     provider_id: &str,
@@ -905,6 +925,34 @@ codex_hooks = true
             Some("chatgpt-access-token")
         );
         assert_eq!(detect_auth_mode(Some(&auth)), CodexAuthMode::ChatGpt);
+    }
+
+    #[test]
+    fn detects_official_openai_provider_from_default_base_url() {
+        let snapshot = CodexConfigSnapshot {
+            config_toml: String::new(),
+            auth_json: None,
+            provider_id: ROOT_PROVIDER_ID.to_string(),
+            real_base_url: DEFAULT_OPENAI_BASE_URL.to_string(),
+            api_key: Some("sk-test".to_string()),
+            auth_mode: CodexAuthMode::ApiKey,
+        };
+
+        assert!(codex_snapshot_uses_official_provider(&snapshot));
+    }
+
+    #[test]
+    fn does_not_mark_openai_compatible_provider_as_official() {
+        let snapshot = CodexConfigSnapshot {
+            config_toml: String::new(),
+            auth_json: None,
+            provider_id: "openai".to_string(),
+            real_base_url: "https://api.example.com/v1".to_string(),
+            api_key: Some("sk-test".to_string()),
+            auth_mode: CodexAuthMode::ApiKey,
+        };
+
+        assert!(!codex_snapshot_uses_official_provider(&snapshot));
     }
 
     #[test]

@@ -115,6 +115,7 @@ export interface ToolTakeoverStatus {
   configPath?: string
   authPath?: string
   authMode?: 'api_key' | 'chat_gpt'
+  officialProvider: boolean
   activeSourceId?: string
   lastError?: string
 }

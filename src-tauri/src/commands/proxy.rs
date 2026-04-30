@@ -1,8 +1,8 @@
 //! 代理相关的 Tauri 命令
 
 use crate::proxy::{
-    ClaudeConfigManager, CodexConfigManager, CodexSourceRegistry, ProxyConfig, ProxyServer,
-    ProxyStatus,
+    codex_snapshot_uses_official_provider, ClaudeConfigManager, CodexConfigManager,
+    CodexSourceRegistry, ProxyConfig, ProxyServer, ProxyStatus,
 };
 use tauri::State;
 
@@ -305,6 +305,7 @@ pub struct ToolTakeoverStatus {
     pub config_path: Option<String>,
     pub auth_path: Option<String>,
     pub auth_mode: Option<String>,
+    pub official_provider: bool,
     pub active_source_id: Option<String>,
     pub last_error: Option<String>,
 }
@@ -314,14 +315,17 @@ pub async fn get_takeover_statuses() -> Result<Vec<ToolTakeoverStatus>, String> 
     let settings = load_settings().unwrap_or_default();
     let port = settings.proxy.port;
     let codex_manager = CodexConfigManager::new();
-    let codex_auth_mode =
-        codex_manager
-            .read_live_snapshot()
-            .ok()
-            .map(|snapshot| match snapshot.auth_mode {
-                crate::proxy::CodexAuthMode::ChatGpt => "chat_gpt".to_string(),
-                crate::proxy::CodexAuthMode::ApiKey => "api_key".to_string(),
-            });
+    let codex_snapshot = codex_manager.read_live_snapshot().ok();
+    let codex_auth_mode = codex_snapshot
+        .as_ref()
+        .map(|snapshot| match snapshot.auth_mode {
+            crate::proxy::CodexAuthMode::ChatGpt => "chat_gpt".to_string(),
+            crate::proxy::CodexAuthMode::ApiKey => "api_key".to_string(),
+        });
+    let codex_official_provider = codex_snapshot
+        .as_ref()
+        .map(codex_snapshot_uses_official_provider)
+        .unwrap_or(false);
     let (codex_active, codex_source, codex_error) = match codex_manager.is_takeover_active(port) {
         Ok(active) => (active, codex_manager.active_source_id(), None),
         Err(e) => (false, None, Some(e)),
@@ -350,6 +354,7 @@ pub async fn get_takeover_statuses() -> Result<Vec<ToolTakeoverStatus>, String> 
             config_path: Some(claude_manager.settings_path().display().to_string()),
             auth_path: None,
             auth_mode: None,
+            official_provider: claude_manager.uses_official_provider(),
             active_source_id: None,
             last_error: None,
         },
@@ -360,6 +365,7 @@ pub async fn get_takeover_statuses() -> Result<Vec<ToolTakeoverStatus>, String> 
             config_path: Some(codex_manager.config_path().display().to_string()),
             auth_path: Some(codex_manager.auth_path().display().to_string()),
             auth_mode: codex_auth_mode,
+            official_provider: codex_official_provider,
             active_source_id: codex_source,
             last_error: codex_error,
         },

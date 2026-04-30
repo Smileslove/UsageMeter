@@ -62,8 +62,8 @@ const localCriticalThreshold = ref(store.settings.criticalThreshold)
 const localIncludeErrorRequests = ref(store.settings.proxy.includeErrorRequests ?? true)
 const takeoverStatuses = ref<ToolTakeoverStatus[]>([])
 const takeoverLoading = ref<Record<string, boolean>>({})
-const showCodexOauthWarning = ref(false)
-let resolveCodexOauthWarning: ((accepted: boolean) => void) | null = null
+const showOfficialApiWarning = ref(false)
+let resolveOfficialApiWarning: ((accepted: boolean) => void) | null = null
 
 // 开机自启动状态（从配置初始化，页面加载后同步系统状态）
 const autoStartEnabled = ref(store.settings.autoStart)
@@ -210,25 +210,33 @@ const takeoverEnabledFor = (tool: string) => {
   return takeoverStatusFor(tool)?.enabled ?? managedToolProfiles.value.find(profile => profile.tool === tool)?.enabled ?? false
 }
 
+const ensureTakeoverStatusFor = async (tool: string) => {
+  let status = takeoverStatusFor(tool)
+  if (status) return status
+  await loadTakeoverStatuses()
+  return takeoverStatusFor(tool)
+}
+
 const getToolIcon = (tool: string, icon?: string) => {
   return icon || TOOL_LOBE_ICONS[tool] || null
 }
 
-const confirmCodexOauthRisk = () => new Promise<boolean>((resolve) => {
-  resolveCodexOauthWarning = resolve
-  showCodexOauthWarning.value = true
+const confirmOfficialApiRisk = () => new Promise<boolean>((resolve) => {
+  resolveOfficialApiWarning = resolve
+  showOfficialApiWarning.value = true
 })
 
-const closeCodexOauthWarning = (accepted: boolean) => {
-  showCodexOauthWarning.value = false
-  resolveCodexOauthWarning?.(accepted)
-  resolveCodexOauthWarning = null
+const closeOfficialApiWarning = (accepted: boolean) => {
+  showOfficialApiWarning.value = false
+  resolveOfficialApiWarning?.(accepted)
+  resolveOfficialApiWarning = null
 }
 
 const toggleToolTakeover = async (tool: string) => {
   const nextEnabled = !takeoverEnabledFor(tool)
-  if (tool === 'codex' && nextEnabled && takeoverStatusFor(tool)?.authMode === 'chat_gpt') {
-    const accepted = await confirmCodexOauthRisk()
+  const status = nextEnabled ? await ensureTakeoverStatusFor(tool) : takeoverStatusFor(tool)
+  if (nextEnabled && (!status || status.officialProvider)) {
+    const accepted = await confirmOfficialApiRisk()
     if (!accepted) {
       return
     }
@@ -738,12 +746,12 @@ const formatUptime = (seconds: number): string => {
       </div>
     </div>
 
-    <!-- Codex OAuth 风险确认 -->
+    <!-- 官方 API 风险确认 -->
     <Teleport to="body">
       <div
-        v-if="showCodexOauthWarning"
+        v-if="showOfficialApiWarning"
         class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-        @click.self="closeCodexOauthWarning(false)"
+        @click.self="closeOfficialApiWarning(false)"
       >
         <div class="w-[320px] overflow-hidden rounded-2xl bg-white shadow-xl dark:bg-[#1C1C1E]" @click.stop>
           <div class="p-4">
@@ -753,26 +761,26 @@ const formatUptime = (seconds: number): string => {
               </svg>
             </div>
             <h3 class="mb-2 text-center text-sm font-semibold text-gray-900 dark:text-gray-100">
-              {{ t(store.settings.locale, 'settings.codexOauthRiskTitle') }}
+              {{ t(store.settings.locale, 'settings.officialApiRiskTitle') }}
             </h3>
             <div class="space-y-2 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
-              <p>{{ t(store.settings.locale, 'settings.codexOauthRiskBody') }}</p>
-              <p>{{ t(store.settings.locale, 'settings.codexOauthRiskAccount') }}</p>
-              <p class="font-medium text-amber-600 dark:text-amber-400">{{ t(store.settings.locale, 'settings.codexOauthRiskAccept') }}</p>
+              <p>{{ t(store.settings.locale, 'settings.officialApiRiskBody') }}</p>
+              <p>{{ t(store.settings.locale, 'settings.officialApiRiskAccount') }}</p>
+              <p class="font-medium text-amber-600 dark:text-amber-400">{{ t(store.settings.locale, 'settings.officialApiRiskAccept') }}</p>
             </div>
           </div>
           <div class="flex border-t border-gray-100 dark:border-neutral-800">
             <button
-              @click="closeCodexOauthWarning(false)"
+              @click="closeOfficialApiWarning(false)"
               class="flex-1 py-2.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-neutral-800"
             >
               {{ t(store.settings.locale, 'common.cancel') }}
             </button>
             <button
-              @click="closeCodexOauthWarning(true)"
+              @click="closeOfficialApiWarning(true)"
               class="flex-1 border-l border-gray-100 py-2.5 text-xs font-medium text-amber-600 transition-colors hover:bg-amber-50 dark:border-neutral-800 dark:text-amber-400 dark:hover:bg-amber-500/10"
             >
-              {{ t(store.settings.locale, 'settings.codexOauthRiskContinue') }}
+              {{ t(store.settings.locale, 'settings.officialApiRiskContinue') }}
             </button>
           </div>
         </div>

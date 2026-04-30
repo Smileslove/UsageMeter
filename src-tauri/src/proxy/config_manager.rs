@@ -72,6 +72,12 @@ impl ClaudeConfigManager {
         url.port() == Some(proxy_port)
     }
 
+    pub fn uses_official_provider(&self) -> bool {
+        self.get_original_base_url()
+            .map(|base_url| is_official_anthropic_base_url(&base_url))
+            .unwrap_or(true)
+    }
+
     fn is_local_claude_code_proxy_url(url: &reqwest::Url) -> bool {
         let Some(host) = url.host_str() else {
             return false;
@@ -375,6 +381,21 @@ impl Default for ClaudeConfigManager {
     }
 }
 
+fn is_official_anthropic_base_url(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host != "api.anthropic.com" {
+        return false;
+    }
+
+    let path = url.path().trim_end_matches('/');
+    path.is_empty() || path == "/v1"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,6 +439,21 @@ mod tests {
         assert!(!ClaudeConfigManager::is_usagemeter_proxy_url_for_port(
             "http://127.0.0.1:18765/v1",
             18765
+        ));
+    }
+
+    #[test]
+    fn detects_official_anthropic_base_url() {
+        assert!(is_official_anthropic_base_url("https://api.anthropic.com"));
+        assert!(is_official_anthropic_base_url(
+            "https://api.anthropic.com/v1"
+        ));
+    }
+
+    #[test]
+    fn does_not_mark_anthropic_compatible_provider_as_official() {
+        assert!(!is_official_anthropic_base_url(
+            "https://api.example.com/v1"
         ));
     }
 }

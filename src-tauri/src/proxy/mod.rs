@@ -13,7 +13,9 @@ mod sse;
 mod stream_processor;
 mod types;
 
-pub use codex_config::{CodexAuthMode, CodexConfigManager, CodexSourceRegistry};
+pub use codex_config::{
+    codex_snapshot_uses_official_provider, CodexAuthMode, CodexConfigManager, CodexSourceRegistry,
+};
 pub use collector::UsageCollector;
 pub use config_manager::ClaudeConfigManager;
 pub use database::{ModelDistribution, ProxyDatabase};
