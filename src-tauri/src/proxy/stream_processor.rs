@@ -3,7 +3,7 @@
 //! 提供流式响应处理，在实时转发数据的同时在后台收集使用量统计
 
 use super::collector::UsageCollector;
-use super::sse::strip_sse_field;
+use super::sse::{strip_sse_field, take_sse_block};
 use super::types::UsageRecord;
 use async_stream::stream;
 use bytes::Bytes;
@@ -183,8 +183,13 @@ fn parse_usage_from_events(events: &[Value]) -> Option<UsageData> {
                     }
                 }
                 "message_delta" => {
-                    // 最终 usage 数据（最精确），message_delta 中只含 output_tokens
+                    // 最终 usage 数据（最精确）。部分 Anthropic-compatible
+                    // 服务会在 message_delta 中同时返回 input/output。
                     if let Some(delta_usage) = event.get("usage") {
+                        usage.input_tokens = delta_usage
+                            .get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(usage.input_tokens);
                         // 输出 Token（最终真实值）
                         usage.output_tokens = delta_usage
                             .get("output_tokens")
@@ -234,9 +239,7 @@ pub fn create_passthrough_stream(
                     append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
 
                     // 解析完整的 SSE 事件以收集使用量
-                    while let Some(pos) = buffer.find("\n\n") {
-                        let event_text = buffer[..pos].to_string();
-                        buffer = buffer[pos + 2..].to_string();
+                    while let Some(event_text) = take_sse_block(&mut buffer) {
 
                         // 提取并解析 SSE 数据
                         for line in event_text.lines() {

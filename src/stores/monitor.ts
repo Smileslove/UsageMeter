@@ -185,10 +185,19 @@ export const useMonitorStore = defineStore('monitor', {
         } else {
           if (!this.settings.clientTools.profiles?.length) {
             this.settings.clientTools.profiles = defaultClientTools.profiles
+          } else {
+            for (const defaultProfile of defaultClientTools.profiles) {
+              if (!this.settings.clientTools.profiles.some(profile => profile.tool === defaultProfile.tool)) {
+                this.settings.clientTools.profiles.push(defaultProfile)
+              }
+            }
           }
           if (this.settings.clientTools.activeToolFilter === undefined) {
             this.settings.clientTools.activeToolFilter = null
           }
+        }
+        if (this.settings.clientTools.profiles.some(profile => profile.enabled)) {
+          this.settings.proxy.enabled = true
         }
 
         // 确保货币设置存在（迁移兼容）
@@ -375,6 +384,7 @@ export const useMonitorStore = defineStore('monitor', {
       try {
         this.error = ''
         await invoke('stop_proxy')
+        await this.loadSettings()
         this.settings.proxy.enabled = false
         await this.saveSettings()
         await this.getProxyStatus()

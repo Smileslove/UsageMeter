@@ -27,6 +27,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"
 chrono = { version = "0.4", features = ["clock"] }
+toml_edit = "0.22"
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
@@ -36,6 +37,7 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 reqwest = { version = "0.12", features = ["json", "stream"] }
+tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 
 # Async utilities
 futures = "0.3"
@@ -48,6 +50,8 @@ tempfile = "3"  # For testing
 
 # Cryptography
 sha2 = "0.10"
+base64 = "0.22"
+thiserror = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

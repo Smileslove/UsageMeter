@@ -1,6 +1,7 @@
 //! 代理类型和数据结构定义
 
 use super::collector::UsageCollector;
+use super::openai_forwarder::OpenAiForwarder;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -311,6 +312,8 @@ pub struct ProxyState {
     pub app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
     /// 当前活动来源句柄 ID，用于兼容不带 source 路径的旧代理 URL。
     pub active_source_id: Arc<RwLock<Option<String>>>,
+    /// OpenAI-compatible 转发器（Codex 等），在服务器启动时创建一次并复用。
+    pub openai_forwarder: Arc<RwLock<Option<Arc<OpenAiForwarder>>>>,
 }
 
 /// Claude API 的 SSE 事件类型
@@ -377,6 +380,8 @@ pub struct RequestContext {
     pub target_base_url: Option<String>,
     /// 当前请求指定来源句柄中保存的 API Key。
     pub target_api_key: Option<String>,
+    /// ChatGPT OAuth 账号 ID。仅用于 Codex OAuth 后端路由，不写入使用记录。
+    pub chatgpt_account_id: Option<String>,
 }
 
 impl Default for RequestContext {
@@ -399,6 +404,7 @@ impl Default for RequestContext {
             inbound_api_key: None,
             target_base_url: None,
             target_api_key: None,
+            chatgpt_account_id: None,
         }
     }
 }

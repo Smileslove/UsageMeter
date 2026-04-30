@@ -27,6 +27,9 @@ pub fn load_settings() -> Result<AppSettings, String> {
     // 确保货币配置存在（迁移旧配置）
     migrate_currency(&mut settings);
 
+    // 确保客户端工具配置完整（迁移旧配置）
+    migrate_client_tools(&mut settings);
+
     Ok(settings)
 }
 
@@ -102,5 +105,27 @@ fn migrate_currency(settings: &mut AppSettings) {
         .contains(&settings.currency.display_currency)
     {
         settings.currency.display_currency = "USD".to_string();
+    }
+}
+
+fn migrate_client_tools(settings: &mut AppSettings) {
+    let defaults = crate::models::default_client_tool_profiles();
+    for default_profile in defaults {
+        if !settings
+            .client_tools
+            .profiles
+            .iter()
+            .any(|profile| profile.tool == default_profile.tool)
+        {
+            settings.client_tools.profiles.push(default_profile);
+        }
+    }
+    if settings
+        .client_tools
+        .profiles
+        .iter()
+        .any(|profile| profile.enabled)
+    {
+        settings.proxy.enabled = true;
     }
 }

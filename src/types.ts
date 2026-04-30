@@ -108,6 +108,17 @@ export interface ClientToolSettings {
   activeToolFilter: string | null
 }
 
+export interface ToolTakeoverStatus {
+  tool: string
+  enabled: boolean
+  takeoverActive: boolean
+  configPath?: string
+  authPath?: string
+  authMode?: 'api_key' | 'chat_gpt'
+  activeSourceId?: string
+  lastError?: string
+}
+
 export interface WindowUsage {
   window: string
   tokenUsed: number

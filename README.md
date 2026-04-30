@@ -87,6 +87,24 @@ UsageMeter supports two data collection strategies:
 > - Proxy mode enriches the same views with runtime metrics that are not available in JSONL files, such as generation rate, TTFT, response time, and status code distribution.
 > - Cost estimation uses synced open-source model pricing plus user-defined custom prices. Custom prices take priority.
 
+### Proxy Provider Configs
+
+When local proxy mode takes over Claude Code, UsageMeter writes a provider-specific proxy URL such as `http://127.0.0.1:18765/claude-code/source/<id>` into Claude settings. The real provider config is stored separately in `~/.usagemeter/proxy_source_handles.json`, so external switchers can change providers without permanently replacing their profiles with the local proxy URL. When the proxy stops or recovers from a crash, UsageMeter restores the active provider config from that saved mapping.
+
+### Codex OAuth Proxy Risk Notice
+
+Codex proxy takeover supports both API-key style OpenAI-compatible providers and experimental ChatGPT OAuth traffic proxying. When UsageMeter detects that Codex is currently using ChatGPT OAuth, it will show a risk confirmation every time you manually enable Codex takeover.
+
+Please read this carefully before continuing:
+
+- The Codex OAuth proxy path is experimental and still under active development.
+- ChatGPT OAuth is the official account flow. UsageMeter does not recommend enabling local proxy takeover for this mode.
+- This flow may be affected by upstream authentication or detection changes at any time.
+- Unusual usage patterns may lead to account access limits, warnings, or service suspension.
+- Continuing to enable this feature means you understand and accept the risks yourself.
+
+For lower-risk usage, prefer third-party providers, API-key based providers, or OpenAI-compatible configurations when possible.
+
 ## Development
 
 ### Prerequisites

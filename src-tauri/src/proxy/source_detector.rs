@@ -212,7 +212,7 @@ mod tests {
         assert!(!is_new);
 
         // 新来源
-        let (prefix2, base_url2, is_new2) = detect_source_info(
+        let (prefix2, _base_url2, is_new2) = detect_source_info(
             "sk-ant-api04-yyyy",
             "https://openrouter.ai/api/v1",
             &sources,
@@ -221,7 +221,7 @@ mod tests {
         assert!(is_new2);
 
         // 官方 Anthropic
-        let (prefix3, base_url3, is_new3) =
+        let (_prefix3, base_url3, is_new3) =
             detect_source_info("sk-ant-api05-zzzz", "https://api.anthropic.com", &sources);
         assert_eq!(base_url3, None);
         assert!(is_new3);

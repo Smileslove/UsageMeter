@@ -72,6 +72,27 @@ pub fn append_utf8_safe(buffer: &mut String, remainder: &mut Vec<u8>, new_bytes:
     }
 }
 
+/// Take one complete SSE block from the front of the buffer.
+///
+/// The SSE spec uses a blank line as the event delimiter. In practice streams
+/// may delimit with either `\n\n` or `\r\n\r\n`; supporting both is important
+/// because upstream HTTP stacks often normalize line endings differently.
+pub fn take_sse_block(buffer: &mut String) -> Option<String> {
+    let lf_pos = buffer.find("\n\n");
+    let crlf_pos = buffer.find("\r\n\r\n");
+
+    let (pos, delimiter_len) = match (lf_pos, crlf_pos) {
+        (Some(lf), Some(crlf)) if crlf <= lf => (crlf, 4),
+        (Some(lf), _) => (lf, 2),
+        (None, Some(crlf)) => (crlf, 4),
+        (None, None) => return None,
+    };
+
+    let block = buffer[..pos].to_string();
+    buffer.drain(..pos + delimiter_len);
+    Some(block)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,5 +226,20 @@ mod tests {
         let data = strip_sse_field(buf.lines().next().unwrap(), "data").unwrap();
         let parsed: serde_json::Value = serde_json::from_str(data).unwrap();
         assert_eq!(parsed["text"], "你好");
+    }
+
+    #[test]
+    fn take_sse_block_accepts_lf_and_crlf_delimiters() {
+        let mut lf = "data: {\"a\":1}\n\ndata: {\"b\":2}\n\n".to_string();
+        assert_eq!(take_sse_block(&mut lf).as_deref(), Some("data: {\"a\":1}"));
+        assert_eq!(take_sse_block(&mut lf).as_deref(), Some("data: {\"b\":2}"));
+        assert!(take_sse_block(&mut lf).is_none());
+
+        let mut crlf = "event: done\r\ndata: {\"ok\":true}\r\n\r\n".to_string();
+        assert_eq!(
+            take_sse_block(&mut crlf).as_deref(),
+            Some("event: done\r\ndata: {\"ok\":true}")
+        );
+        assert!(take_sse_block(&mut crlf).is_none());
     }
 }

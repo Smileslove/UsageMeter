@@ -238,6 +238,8 @@ pub fn run() {
             commands::get_proxy_status,
             commands::is_proxy_running,
             commands::get_proxy_usage,
+            commands::set_takeover_for_app,
+            commands::get_takeover_statuses,
             // 模型价格命令
             commands::sync_model_pricing_from_api,
             commands::search_model_pricing,

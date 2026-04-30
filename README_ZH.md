@@ -90,6 +90,24 @@ UsageMeter 支持两种数据采集策略：
 > - 代理模式会为同一套视图补充 JSONL 中没有的运行时指标，例如生成速率、TTFT、响应时间和状态码分布。
 > - 费用估算使用同步的开源模型价格库和用户自定义价格；自定义价格优先级更高。
 
+### 代理供应商配置
+
+本地代理接管 Claude Code 时，UsageMeter 会在 Claude settings 中写入带配置 ID 的代理地址，例如 `http://127.0.0.1:18765/claude-code/source/<id>`。真实供应商配置会单独保存到 `~/.usagemeter/proxy_source_handles.json`，避免 CC Switch 等外部切换工具把自己的供应商配置永久替换成本地代理地址。代理停止或崩溃恢复时，UsageMeter 会根据该映射恢复当前供应商的原始配置。
+
+### Codex OAuth 代理风险提示
+
+Codex 代理接管支持 API Key 形式的 OpenAI 兼容供应商，也支持仍处于试验开发中的 ChatGPT OAuth 流量代理。当 UsageMeter 检测到当前 Codex 使用 ChatGPT OAuth 时，每次你手动开启 Codex 接管都会弹出风险确认。
+
+继续使用前请注意：
+
+- Codex OAuth 代理路径仍是试验功能，正在开发和验证中。
+- ChatGPT OAuth 属于官方账号链路。UsageMeter 不建议在该模式下开启本地代理接管。
+- 该链路可能随上游认证或检测机制变化而失效。
+- 异常使用模式可能带来账号访问限制、警告或服务暂停等风险。
+- 继续开启该功能即表示你理解并自行承担相关风险。
+
+如需更低风险的使用方式，建议优先使用第三方供应商、API Key 或 OpenAI 兼容配置。
+
 ## 开发
 
 ### 环境要求
