@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import type { DayActivity, StatisticsBucket, StatisticsMetric, StatisticsRangePreset } from '../types'
-import MonthActivityGrid from '../components/statistics/MonthActivityGrid.vue'
+import ActivityGrid from '../components/statistics/ActivityGrid.vue'
 import StatisticsRangePicker from '../components/statistics/StatisticsRangePicker.vue'
 import StatisticsMetricCards from '../components/statistics/StatisticsMetricCards.vue'
 import StatisticsTrendChart from '../components/statistics/StatisticsTrendChart.vue'
@@ -151,7 +151,7 @@ onMounted(() => {
       {{ backendErrorLabel(locale, store.statisticsError) }}
     </div>
 
-    <MonthActivityGrid
+    <ActivityGrid
       :activity="store.monthActivity"
       :year-activity="store.yearActivity"
       :locale="locale"

@@ -347,7 +347,19 @@ const messages: Record<AppLocale, TranslationNode> = {
       weekThu: '四',
       weekFri: '五',
       weekSat: '六',
-      weekSun: '日'
+      weekSun: '日',
+      month1: '1月',
+      month2: '2月',
+      month3: '3月',
+      month4: '4月',
+      month5: '5月',
+      month6: '6月',
+      month7: '7月',
+      month8: '8月',
+      month9: '9月',
+      month10: '10月',
+      month11: '11月',
+      month12: '12月'
     },
     tools: {
       all: '全部工具'
@@ -723,7 +735,19 @@ const messages: Record<AppLocale, TranslationNode> = {
       weekThu: '四',
       weekFri: '五',
       weekSat: '六',
-      weekSun: '日'
+      weekSun: '日',
+      month1: '1月',
+      month2: '2月',
+      month3: '3月',
+      month4: '4月',
+      month5: '5月',
+      month6: '6月',
+      month7: '7月',
+      month8: '8月',
+      month9: '9月',
+      month10: '10月',
+      month11: '11月',
+      month12: '12月'
     },
     tools: {
       all: '全部工具'
@@ -1099,7 +1123,19 @@ const messages: Record<AppLocale, TranslationNode> = {
       weekThu: 'Thu',
       weekFri: 'Fri',
       weekSat: 'Sat',
-      weekSun: 'Sun'
+      weekSun: 'Sun',
+      month1: 'Jan',
+      month2: 'Feb',
+      month3: 'Mar',
+      month4: 'Apr',
+      month5: 'May',
+      month6: 'Jun',
+      month7: 'Jul',
+      month8: 'Aug',
+      month9: 'Sep',
+      month10: 'Oct',
+      month11: 'Nov',
+      month12: 'Dec'
     },
     tools: {
       all: 'All Tools'
