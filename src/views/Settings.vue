@@ -2,8 +2,8 @@
 import { ref, watch, computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useMonitorStore } from '../stores/monitor'
-import { t, windowNameLabel } from '../i18n'
-import { WINDOW_ORDER, type BillingType, type WindowName, type DataSource, type ThemeMode, type ToolTakeoverStatus } from '../types'
+import { t } from '../i18n'
+import { type BillingType, type DataSource, type ThemeMode, type ToolTakeoverStatus } from '../types'
 import ModelPricingSettings from '../components/ModelPricingSettings.vue'
 import ApiSourceList from '../components/ApiSourceList.vue'
 import WindowQuotaSettings from '../components/WindowQuotaSettings.vue'
@@ -54,7 +54,6 @@ const openCurrency = () => {
 const localLocale = ref(store.settings.locale)
 const localRefreshInterval = ref(store.settings.refreshIntervalSeconds)
 const localBillingType = ref<BillingType>(store.settings.billingType)
-const localSummaryWindow = ref<WindowName>(store.settings.summaryWindow)
 const localDataSource = ref<DataSource>(store.settings.dataSource)
 const localTheme = ref<ThemeMode>(store.settings.theme || 'system')
 const localWarningThreshold = ref(store.settings.warningThreshold)
@@ -82,10 +81,6 @@ watch(() => store.settings.refreshIntervalSeconds, (val) => {
 
 watch(() => store.settings.billingType, (val) => {
   localBillingType.value = val
-})
-
-watch(() => store.settings.summaryWindow, (val) => {
-  localSummaryWindow.value = val
 })
 
 watch(() => store.settings.dataSource, (val) => {
@@ -127,17 +122,6 @@ const handleRefreshIntervalChange = async () => {
 
 const handleBillingTypeChange = async () => {
   store.settings.billingType = localBillingType.value
-  await store.saveSettings()
-}
-
-const handleSummaryWindowChange = async () => {
-  // 自动启用选中的汇总窗口
-  const quota = localQuotas.value.find((q: any) => q.window === localSummaryWindow.value)
-  if (quota && !quota.enabled) {
-    quota.enabled = true
-    store.settings.quotas = JSON.parse(JSON.stringify(localQuotas.value))
-  }
-  store.settings.summaryWindow = localSummaryWindow.value
   await store.saveSettings()
 }
 
@@ -399,18 +383,6 @@ const formatUptime = (seconds: number): string => {
                 ]"
               ></div>
             </div>
-          </div>
-          <div class="p-3 px-4 flex items-center justify-between text-[13px]">
-            <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.summaryWindow') }}</span>
-            <select
-              v-model="localSummaryWindow"
-              @change="handleSummaryWindowChange"
-              class="bg-transparent text-gray-500 dark:text-gray-400 text-sm outline-none text-right tracking-tight cursor-pointer appearance-none"
-            >
-              <option v-for="window in WINDOW_ORDER" :key="window" :value="window">
-                {{ windowNameLabel(store.settings.locale, window) }}
-              </option>
-            </select>
           </div>
           <div class="p-3 px-4 flex items-center justify-between text-[13px]">
             <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.warningThreshold') }}</span>

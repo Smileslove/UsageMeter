@@ -476,6 +476,9 @@ export const useMonitorStore = defineStore('monitor', {
         return
       }
 
+      // 先重置，避免旧窗口数据残留
+      this.rateSummary = null
+
       try {
         this.rateSummary = await invoke<WindowRateSummary>('get_window_rate_summary', { window })
       } catch (e) {
