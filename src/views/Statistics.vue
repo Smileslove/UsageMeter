@@ -33,7 +33,8 @@ function toDateInput(date: Date): string {
 function toDateTimeInput(date: Date): string {
   const hours = String(date.getHours()).padStart(2, '0')
   const minutes = String(date.getMinutes()).padStart(2, '0')
-  return `${toDateInput(date)}T${hours}:${minutes}`
+  const seconds = String(date.getSeconds()).padStart(2, '0')
+  return `${toDateInput(date)}T${hours}:${minutes}:${seconds}`
 }
 
 function startOfLocalDay(date: Date): Date {
@@ -44,6 +45,12 @@ function addDays(date: Date, days: number): Date {
   const next = new Date(date)
   next.setDate(next.getDate() + days)
   return next
+}
+
+function nextDayDateStr(dateStr: string): string {
+  const date = new Date(dateStr)
+  const next = addDays(date, 1)
+  return toDateInput(next)
 }
 
 function presetRangeDates(value: StatisticsRangePreset): { start: Date; end: Date } {
@@ -135,30 +142,34 @@ function moveMonth(delta: number) {
 
 function selectDay(day: DayActivity) {
   selectedDate.value = day.date
-  customStart.value = `${day.date}T00:00`
+  customStart.value = `${day.date}T00:00:00`
   // 如果是今天，截止时间使用当前时刻，避免展示未来空数据
+  // 后端使用半开区间 [start, end)，所以非今天需要使用次日 00:00:00 来包含当天所有数据
   const todayStr = toDateInput(new Date())
-  customEnd.value = day.date === todayStr ? toDateTimeInput(new Date()) : `${day.date}T23:59`
+  customEnd.value = day.date === todayStr ? toDateTimeInput(new Date()) : `${nextDayDateStr(day.date)}T00:00:00`
   preset.value = 'custom'
 }
 
 /**
  * 根据当前月份/年度视图自动设置时间范围
+ * 后端使用半开区间 [start, end)，所以结束时间需要使用次日/下月/下年的 00:00:00
  */
 function updateRangeFromActivityView() {
   const year = currentMonth.value.getFullYear()
 
   if (activityView.value === 'year') {
-    // 年度视图：设置范围为该年的第一天到最后一天
-    customStart.value = `${year}-01-01T00:00`
-    customEnd.value = `${year}-12-31T23:59`
+    // 年度视图：设置范围为该年的第一天到次年第一天
+    customStart.value = `${year}-01-01T00:00:00`
+    customEnd.value = `${year + 1}-01-01T00:00:00`
   } else {
-    // 月份视图：设置范围为该月的第一天到最后一天
+    // 月份视图：设置范围为该月的第一天到下月第一天
     const month = currentMonth.value.getMonth() + 1
     const monthStr = String(month).padStart(2, '0')
-    const lastDay = new Date(year, month, 0).getDate()
-    customStart.value = `${year}-${monthStr}-01T00:00`
-    customEnd.value = `${year}-${monthStr}-${String(lastDay).padStart(2, '0')}T23:59`
+    customStart.value = `${year}-${monthStr}-01T00:00:00`
+    // 计算下月第一天的日期
+    const nextMonthDate = new Date(year, month, 1)
+    const nextMonthStr = toDateInput(nextMonthDate)
+    customEnd.value = `${nextMonthStr}T00:00:00`
   }
   preset.value = 'custom'
 }
