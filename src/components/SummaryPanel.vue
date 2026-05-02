@@ -81,14 +81,9 @@ function toggleDetailByKey(event: KeyboardEvent, metric: DetailMetric) {
   toggleDetail(metric)
 }
 
-// 详细数字格式化（使用紧凑格式，如 4.32M）
+// 详细数字格式化（使用千位分隔符显示精确数字）
 function detailedNumber(value: number | null | undefined): string {
-  const num = Math.round(value ?? 0)
-  // 使用紧凑格式化，保留 2 位小数
-  return new Intl.NumberFormat(store.settings.locale, {
-    notation: 'compact',
-    maximumFractionDigits: 2
-  }).format(num)
+  return new Intl.NumberFormat(store.settings.locale).format(Math.round(value ?? 0))
 }
 
 // 请求数显示
