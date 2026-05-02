@@ -6,6 +6,7 @@ mod commands;
 mod models;
 mod proxy;
 mod session;
+mod subscription;
 mod utils;
 
 use tauri::menu::{Menu, MenuItem};
@@ -84,6 +85,7 @@ pub fn run() {
             None,
         ))
         .manage(commands::ProxyState::default())
+        .manage(subscription::SubscriptionState::new())
         .on_window_event(|window, event| match event {
             WindowEvent::Focused(false) => {
                 let _ = window.hide();
@@ -264,6 +266,11 @@ pub fn run() {
             // 退出命令
             commands::prepare_exit,
             commands::confirm_exit,
+            // 订阅查询命令
+            commands::get_subscription_quota,
+            commands::refresh_subscription_quota,
+            commands::has_chatgpt_oauth,
+            commands::clear_subscription_cache,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

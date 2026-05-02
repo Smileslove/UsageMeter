@@ -5,6 +5,7 @@ import { t, windowNameLabel } from '../i18n'
 import { MessageSquare, Sigma, CircleDollarSign, Database } from 'lucide-vue-next'
 import { formatRequestCount, formatTokenValue, formatTokenPair, formatCost } from '../utils/format'
 import { WINDOW_ORDER, type WindowName } from '../types'
+import SubscriptionQuotaCard from './SubscriptionQuotaCard.vue'
 
 const store = useMonitorStore()
 
@@ -348,6 +349,9 @@ onMounted(() => {
         </div>
       </div>
     </div>
+
+    <!-- 订阅配额卡片（仅在 ChatGPT OAuth 模式下显示） -->
+    <SubscriptionQuotaCard v-if="store.hasChatGptOAuth" />
   </div>
 </template>
 

@@ -454,3 +454,42 @@ export interface YearActivity {
   metric: StatisticsMetric
   days: DayActivity[]
 }
+
+// ============ Subscription Types ============
+
+/// Quota tier for a time window (5h or 7d)
+export interface QuotaTier {
+  name: string           // "five_hour" or "seven_day"
+  utilization: number    // Usage percentage 0-100
+  resetsAt?: string      // ISO 8601 format reset time
+}
+
+/// Subscription quota data for different providers
+export interface SubscriptionQuota {
+  provider: string
+  tool: string           // "codex" or "codex_oauth"
+  credentialStatus: string
+  credentialMessage?: string
+  success: boolean
+  tiers: QuotaTier[]
+  updatedAt: number
+  fromCache: boolean
+  error?: string
+}
+
+/// Credential status for subscription queries
+export type CredentialStatus =
+  | 'notConfigured'
+  | 'valid'
+  | 'expired'
+  | { refreshFailed: { error: string } }
+  | { queryFailed: { error: string } }
+
+/// Result of a subscription query
+export interface SubscriptionQueryResult {
+  success: boolean
+  quota?: SubscriptionQuota
+  credentialStatus: CredentialStatus
+  error?: string
+  queriedAt: number
+}

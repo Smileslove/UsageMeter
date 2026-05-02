@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AlertEvent, AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageSnapshot, WindowQuota, WindowRateSummary, YearActivity, SourceAwareSettings } from '../types'
+import type { AlertEvent, AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageSnapshot, WindowQuota, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult } from '../types'
 
 const defaultQuotas: WindowQuota[] = [
   { window: '5h', enabled: true, tokenLimit: 500000, requestLimit: 500 },
@@ -111,7 +111,11 @@ export const useMonitorStore = defineStore('monitor', {
     statisticsError: '' as string,
     statisticsRequestSeq: 0,
     monthActivityRequestSeq: 0,
-    yearActivityRequestSeq: 0
+    yearActivityRequestSeq: 0,
+    // 订阅查询
+    subscriptionQuota: null as SubscriptionQueryResult | null,
+    subscriptionLoading: false,
+    hasChatGptOAuth: false
   }),
   getters: {
     hasData: state => !!state.snapshot,
@@ -138,6 +142,12 @@ export const useMonitorStore = defineStore('monitor', {
       // 如果是代理模式，获取速率数据（解决初始化时序问题）
       if (this.settings.dataSource === 'proxy' && this.settings.summaryWindow) {
         await this.fetchRateSummary(this.settings.summaryWindow)
+      }
+
+      // 检查是否有 ChatGPT OAuth 配置，如果有则查询订阅
+      await this.checkChatGptOAuth()
+      if (this.hasChatGptOAuth) {
+        await this.fetchSubscriptionQuota()
       }
     },
     async loadSettings() {
@@ -646,6 +656,58 @@ export const useMonitorStore = defineStore('monitor', {
       }
       await invoke('update_api_source_key_note', { sourceId, keyPrefix, note })
       await this.loadSettings()
+    },
+    // === 订阅查询 ===
+    /**
+     * 检查是否有 ChatGPT OAuth 配置
+     */
+    async checkChatGptOAuth() {
+      try {
+        this.hasChatGptOAuth = await invoke<boolean>('has_chatgpt_oauth')
+      } catch (e) {
+        console.error('Failed to check ChatGPT OAuth:', e)
+        this.hasChatGptOAuth = false
+      }
+    },
+    /**
+     * 获取订阅配额
+     */
+    async fetchSubscriptionQuota() {
+      this.subscriptionLoading = true
+      try {
+        this.subscriptionQuota = await invoke<SubscriptionQueryResult>('get_subscription_quota', { provider: 'gpt' })
+      } catch (e) {
+        console.error('Failed to fetch subscription quota:', e)
+        // 设置错误状态，避免显示旧数据
+        this.subscriptionQuota = {
+          success: false,
+          credentialStatus: { queryFailed: { error: String(e) } },
+          error: String(e),
+          queriedAt: Date.now()
+        }
+      } finally {
+        this.subscriptionLoading = false
+      }
+    },
+    /**
+     * 刷新订阅配额（强制刷新）
+     */
+    async refreshSubscriptionQuota() {
+      this.subscriptionLoading = true
+      try {
+        this.subscriptionQuota = await invoke<SubscriptionQueryResult>('refresh_subscription_quota', { provider: 'gpt' })
+      } catch (e) {
+        console.error('Failed to refresh subscription quota:', e)
+        // 设置错误状态，避免显示旧数据
+        this.subscriptionQuota = {
+          success: false,
+          credentialStatus: { queryFailed: { error: String(e) } },
+          error: String(e),
+          queriedAt: Date.now()
+        }
+      } finally {
+        this.subscriptionLoading = false
+      }
     }
   }
 })

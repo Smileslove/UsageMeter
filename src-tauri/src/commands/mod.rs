@@ -6,6 +6,7 @@ mod model_pricing;
 mod proxy;
 mod settings;
 mod sources;
+mod subscription;
 mod usage;
 
 pub use autostart::*;
@@ -14,4 +15,5 @@ pub use model_pricing::*;
 pub use proxy::*;
 pub use settings::*;
 pub use sources::*;
+pub use subscription::*;
 pub use usage::*;

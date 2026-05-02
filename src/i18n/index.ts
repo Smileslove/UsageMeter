@@ -394,6 +394,26 @@ const messages: Record<AppLocale, TranslationNode> = {
       changeIcon: '更换图标',
       removeIcon: '移除图标',
       searchIcon: '搜索图标...'
+    },
+    subscription: {
+      codex: 'Codex',
+      usageQuery: '用量查询',
+      gptCodex: 'GPT Codex 配额',
+      quota: '订阅配额',
+      fiveHour: '5小时',
+      sevenDay: '7天',
+      refresh: '刷新',
+      updatedAt: '更新',
+      resets: '重置',
+      resetNow: '即将重置',
+      unitMinuteShort: 'm',
+      unitHourShort: 'h',
+      unitDayShort: 'd',
+      errorNotConfigured: '未配置登录信息',
+      errorExpired: '登录已过期，请重新登录',
+      errorRefreshFailed: '刷新失败，请重新登录',
+      errorQueryFailed: '查询失败，请稍后再试',
+      errorUnknown: '未知错误'
     }
   },
   'zh-TW': {
@@ -785,6 +805,26 @@ const messages: Record<AppLocale, TranslationNode> = {
       changeIcon: '更換圖標',
       removeIcon: '移除圖標',
       searchIcon: '搜尋圖標...'
+    },
+    subscription: {
+      codex: 'Codex',
+      usageQuery: '用量查詢',
+      gptCodex: 'GPT Codex 配額',
+      quota: '訂閱配額',
+      fiveHour: '5小時',
+      sevenDay: '7天',
+      refresh: '重新整理',
+      updatedAt: '更新',
+      resets: '重置',
+      resetNow: '即將重置',
+      unitMinuteShort: 'm',
+      unitHourShort: 'h',
+      unitDayShort: 'd',
+      errorNotConfigured: '未設定登入資訊',
+      errorExpired: '登入已過期，請重新登入',
+      errorRefreshFailed: '更新失敗，請重新登入',
+      errorQueryFailed: '查詢失敗，請稍後再試',
+      errorUnknown: '未知錯誤'
     }
   },
   'en-US': {
@@ -1176,6 +1216,26 @@ const messages: Record<AppLocale, TranslationNode> = {
       changeIcon: 'Change icon',
       removeIcon: 'Remove icon',
       searchIcon: 'Search icons...'
+    },
+    subscription: {
+      codex: 'Codex',
+      usageQuery: 'Usage Query',
+      gptCodex: 'GPT Codex Quota',
+      quota: 'Subscription',
+      fiveHour: '5 Hours',
+      sevenDay: '7 Days',
+      refresh: 'Refresh',
+      updatedAt: 'Updated',
+      resets: 'Resets',
+      resetNow: 'Resetting',
+      unitMinuteShort: 'm',
+      unitHourShort: 'h',
+      unitDayShort: 'd',
+      errorNotConfigured: 'Not signed in',
+      errorExpired: 'Session expired, please sign in again',
+      errorRefreshFailed: 'Refresh failed, please sign in again',
+      errorQueryFailed: 'Query failed, try again later',
+      errorUnknown: 'Unknown error'
     }
   }
 }
@@ -1291,7 +1351,7 @@ export function windowNameLabel(locale: string | undefined, window: string): str
   const keyMap: Record<string, string> = {
     '5h': 'settings.window5h',
     '24h': 'settings.window24h',
-    'today': 'settings.windowToday',
+    today: 'settings.windowToday',
     '7d': 'settings.window7d',
     '30d': 'settings.window30d',
     current_month: 'settings.windowCurrentMonth',
