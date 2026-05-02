@@ -276,8 +276,11 @@ impl RequestForwarder {
         };
 
         // 创建使用量收集器，用于记录到数据库
-        let collector =
-            create_database_collector(self.usage_collector.clone(), stream_context, ttft_start_time);
+        let collector = create_database_collector(
+            self.usage_collector.clone(),
+            stream_context,
+            ttft_start_time,
+        );
 
         // 获取响应的字节流
         let stream = response.bytes_stream();

@@ -147,13 +147,13 @@ const formattedOutput = computed(() => {
       </svg>
       <!-- 中心百分比 -->
       <div class="absolute inset-0 flex items-center justify-center">
-        <span class="text-[17px] font-mono transition-colors tracking-tight" :class="textClass">{{ Math.round(percent) }}%</span>
+        <span class="text-[19px] font-mono transition-colors tracking-tight" :class="textClass">{{ Math.round(percent) }}%</span>
       </div>
     </div>
 
     <!-- 统一底部的图例说明 / 数值区 -->
-    <div class="mt-1.5 flex flex-col w-full px-1 gap-0.5">
-      <div class="flex items-center justify-between text-[11px] font-mono" v-if="usedValue !== undefined">
+    <div class="mt-3 flex flex-col w-full px-1 gap-0.5">
+      <div class="flex items-center justify-between text-[12px] font-mono" v-if="usedValue !== undefined">
         <div class="flex items-center gap-1.5 min-w-0">
           <div class="w-1.5 h-1.5 rounded-full shrink-0" :style="{ backgroundColor: strokeColor }"></div>
           <span class="text-gray-500 dark:text-gray-400 truncate">
@@ -167,7 +167,7 @@ const formattedOutput = computed(() => {
       </div>
 
       <!-- 输入/输出详情（仅 Token 环） -->
-      <div v-if="showDetails && inputTokens !== undefined && outputTokens !== undefined" class="text-[10px] text-gray-400 text-right w-full pr-1">In: {{ formattedInput }} | Out: {{ formattedOutput }}</div>
+      <div v-if="showDetails && inputTokens !== undefined && outputTokens !== undefined" class="text-[10px] text-gray-400 text-right w-full pr-1">{{ t(store.settings.locale, 'statistics.input') }}: {{ formattedInput }} | {{ t(store.settings.locale, 'statistics.output') }}: {{ formattedOutput }}</div>
     </div>
   </div>
 </template>

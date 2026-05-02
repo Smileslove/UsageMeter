@@ -43,6 +43,14 @@ const showRequestRing = computed(() => store.settings.billingType === 'request' 
 
 // 是否显示输入/输出详情（仅 Token 环）
 const showTokenDetails = computed(() => showTokenRing.value)
+
+// 根据单个圆环自身的百分比计算风险等级（而非使用 window 级别的 max）
+function getRingRiskLevel(percent: number | null): 'safe' | 'warning' | 'critical' {
+  const p = percent ?? 0
+  if (p >= store.settings.criticalThreshold) return 'critical'
+  if (p >= store.settings.warningThreshold) return 'warning'
+  return 'safe'
+}
 </script>
 
 <template>
@@ -66,14 +74,14 @@ const showTokenDetails = computed(() => showTokenRing.value)
     </div>
 
     <!-- 单环模式 -->
-    <div v-if="isSingleRing" class="flex flex-col items-center pt-0.5 pb-0 min-h-[125px] justify-between">
+    <div v-if="isSingleRing" class="flex flex-col items-center pt-0.5 pb-0 min-h-[140px] justify-between">
       <!-- Token 环 -->
       <DonutChart
         v-if="showTokenRing"
         :percent="window.tokenPercent ?? 0"
-        :risk-level="window.riskLevel"
-        :size="80"
-        :stroke-width="8"
+        :risk-level="getRingRiskLevel(window.tokenPercent)"
+        :size="100"
+        :stroke-width="10"
         :used-value="window.tokenUsed"
         :limit-value="window.tokenLimit"
         value-type="token"
@@ -82,20 +90,20 @@ const showTokenDetails = computed(() => showTokenRing.value)
         :output-tokens="window.outputTokens"
       />
       <!-- 请求环 -->
-      <DonutChart v-if="showRequestRing" :percent="window.requestPercent ?? 0" :risk-level="window.riskLevel" :size="80" :stroke-width="8" :used-value="window.requestUsed" :limit-value="window.requestLimit" value-type="request" :show-details="false" />
+      <DonutChart v-if="showRequestRing" :percent="window.requestPercent ?? 0" :risk-level="getRingRiskLevel(window.requestPercent)" :size="100" :stroke-width="10" :used-value="window.requestUsed" :limit-value="window.requestLimit" value-type="request" :show-details="false" />
     </div>
 
     <!-- 双环模式 (Apple Fitness Rings Style) -->
     <div v-else class="flex flex-col items-center pt-0.5 pb-0 min-h-[125px] justify-between">
       <NestedDonutChart
         :token-percent="window.tokenPercent ?? 0"
-        :token-risk-level="window.riskLevel"
+        :token-risk-level="getRingRiskLevel(window.tokenPercent)"
         :token-used="window.tokenUsed"
         :token-limit="window.tokenLimit"
         :input-tokens="window.inputTokens"
         :output-tokens="window.outputTokens"
         :request-percent="window.requestPercent ?? 0"
-        :request-risk-level="window.riskLevel"
+        :request-risk-level="getRingRiskLevel(window.requestPercent)"
         :request-used="window.requestUsed"
         :request-limit="window.requestLimit"
         :outer-size="80"
