@@ -257,8 +257,8 @@ impl RequestForwarder {
         response: reqwest::Response,
         context: RequestContext,
     ) -> Result<ForwardResult, String> {
-        // 使用 RequestContext 中的真实开始时间，确保 duration_ms 计算准确
-        let start_time = context.start_time;
+        // TTFT 从收到上游响应头开始计时
+        let ttft_start_time = std::time::Instant::now();
         let status_code = response.status().as_u16();
 
         // 创建流上下文用于使用量收集
@@ -277,7 +277,7 @@ impl RequestForwarder {
 
         // 创建使用量收集器，用于记录到数据库
         let collector =
-            create_database_collector(self.usage_collector.clone(), stream_context, start_time);
+            create_database_collector(self.usage_collector.clone(), stream_context, ttft_start_time);
 
         // 获取响应的字节流
         let stream = response.bytes_stream();

@@ -274,8 +274,8 @@ impl OpenAiForwarder {
         let collector = self.usage_collector.clone();
         let usage_candidate = Arc::new(Mutex::new(None::<OpenAiUsage>));
         let first_token_time = Arc::new(Mutex::new(None::<Instant>));
-        // 使用 RequestContext 中的真实开始时间，确保 TTFT 计算准确
-        let start = context.start_time;
+        // TTFT 从收到上游响应头开始计时
+        let ttft_start = std::time::Instant::now();
         let context_for_finish = context.clone();
         let stream = response.bytes_stream();
 
@@ -320,7 +320,7 @@ impl OpenAiForwarder {
             let ttft_ms = first_token_time
                 .lock()
                 .await
-                .map(|instant| instant.duration_since(start).as_millis() as u64);
+                .map(|instant| instant.duration_since(ttft_start).as_millis() as u64);
             record_usage_with_collector_optional(
                 collector,
                 usage,
