@@ -11,7 +11,7 @@ use http_body_util::{BodyExt, StreamBody};
 use hyper::body::Frame;
 use reqwest::Client;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// UnsyncBoxBody 类型别名，用于响应体（不需要 Sync）
 /// 错误类型为 std::io::Error，实现了 Into<Box<dyn StdError + Send + Sync>>
@@ -257,7 +257,8 @@ impl RequestForwarder {
         response: reqwest::Response,
         context: RequestContext,
     ) -> Result<ForwardResult, String> {
-        let start_time = Instant::now();
+        // 使用 RequestContext 中的真实开始时间，确保 duration_ms 计算准确
+        let start_time = context.start_time;
         let status_code = response.status().as_u16();
 
         // 创建流上下文用于使用量收集

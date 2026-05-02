@@ -1574,7 +1574,8 @@ impl ProxyDatabase {
     /// 获取时间窗口内按模型分组的速率统计
     ///
     /// 只统计 duration_ms > 0 且 output_tokens_per_second IS NOT NULL 的记录
-    /// 结果按平均速率降序排列
+    /// 使用加权平均计算各模型速率：total_output_tokens * 1000.0 / total_duration_ms
+    /// 结果按加权平均速率降序排列
     pub async fn get_model_rate_stats(
         &self,
         cutoff_ms: i64,
@@ -1592,7 +1593,12 @@ impl ProxyDatabase {
                     COUNT(*) as request_count,
                     COALESCE(SUM(output_tokens), 0) as total_output_tokens,
                     COALESCE(SUM(duration_ms), 0) as total_duration_ms,
-                    COALESCE(AVG(output_tokens_per_second), 0) as avg_rate,
+                    -- 加权平均速率：总 tokens / 总时间（毫秒转秒需要乘 1000）
+                    CASE
+                        WHEN SUM(duration_ms) > 0
+                        THEN SUM(output_tokens) * 1000.0 / SUM(duration_ms)
+                        ELSE 0
+                    END as avg_rate,
                     COALESCE(MIN(output_tokens_per_second), 0) as min_rate,
                     COALESCE(MAX(output_tokens_per_second), 0) as max_rate
                 FROM usage_records

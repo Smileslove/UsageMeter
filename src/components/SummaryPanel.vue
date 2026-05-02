@@ -50,10 +50,12 @@ async function selectWindow(window: WindowName) {
 // 速率摘要数据
 const rateSummary = computed(() => store.rateSummary)
 
-// 是否有速率数据（代理模式下且窗口匹配时展示速率）
+// 是否有速率数据（代理模式下且窗口匹配且有实际请求时展示速率）
 const hasRateData = computed(() => {
   if (!store.isProxyMode || !rateSummary.value) return false
-  return rateSummary.value.window === store.settings.summaryWindow
+  if (rateSummary.value.window !== store.settings.summaryWindow) return false
+  // 必须有实际请求才算有数据，避免错误时返回的空统计显示为 0.00
+  return rateSummary.value.overall.requestCount > 0
 })
 
 // 格式化速率显示（保留两位小数）

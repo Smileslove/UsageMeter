@@ -32,8 +32,6 @@ pub struct UsageData {
     pub cache_create_tokens: u64,
     pub cache_read_tokens: u64,
     pub session_id: Option<String>,
-    /// 请求开始时间（Unix 毫秒）
-    pub request_start_time: i64,
     /// HTTP 响应状态码
     #[allow(dead_code)]
     pub status_code: u16,
@@ -291,8 +289,8 @@ pub fn create_database_collector(
     context: StreamContext,
     start_time: Instant,
 ) -> SseUsageCollector {
-    // 记录请求开始时间
-    let request_start_time = chrono::Utc::now().timestamp_millis();
+    // 使用 StreamContext 中的真实开始时间，确保 duration_ms 计算准确
+    let request_start_time = context.request_start_time;
     let status_code = context.status_code;
     let api_key_prefix = context.api_key_prefix.clone();
     let request_base_url = context.request_base_url.clone();
@@ -303,11 +301,8 @@ pub fn create_database_collector(
     SseUsageCollector::new(start_time, move |usage| {
         // 计算请求结束时间和耗时
         let request_end_time = chrono::Utc::now().timestamp_millis();
-        let duration_ms = if usage.request_start_time > 0 {
-            request_end_time - usage.request_start_time
-        } else {
-            request_end_time - request_start_time
-        };
+        // 使用 StreamContext 中传递的真实开始时间
+        let duration_ms = request_end_time - request_start_time;
 
         // 计算总 Token：input + cache_read + output（不包含缓存创建）
         let total_tokens = usage.input_tokens + usage.cache_read_tokens + usage.output_tokens;
@@ -317,13 +312,6 @@ pub fn create_database_collector(
             Some((usage.output_tokens as f64) / (duration_ms as f64 / 1000.0))
         } else {
             None
-        };
-
-        // 使用记录的开始时间，如果没有则使用当前测量的开始时间
-        let actual_start_time = if usage.request_start_time > 0 {
-            usage.request_start_time
-        } else {
-            request_start_time
         };
 
         let record = UsageRecord {
@@ -336,7 +324,7 @@ pub fn create_database_collector(
             total_tokens,
             model: usage.model.clone(),
             session_id: usage.session_id.clone(),
-            request_start_time: actual_start_time,
+            request_start_time,
             request_end_time,
             duration_ms: duration_ms as u64,
             output_tokens_per_second,
