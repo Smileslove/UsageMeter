@@ -245,6 +245,9 @@ pub fn run() {
             // 模型价格命令
             commands::sync_model_pricing_from_api,
             commands::search_model_pricing,
+            commands::get_custom_model_pricings,
+            commands::count_synced_model_pricings,
+            commands::clear_synced_model_pricings,
             commands::add_custom_model_pricing,
             commands::update_custom_model_pricing,
             commands::delete_model_pricing,

@@ -68,7 +68,7 @@ watch(inputCurrency, (newCurrency) => {
 // 保存（将输入币种价格转换为 USD 存储）
 const handleSave = () => {
   if (!modelId.value.trim()) return
-  if (inputPrice.value <= 0 || outputPrice.value <= 0) return
+  if (isNaN(inputPrice.value) || isNaN(outputPrice.value) || inputPrice.value < 0 || outputPrice.value < 0) return
 
   const r = store.settings.currency.exchangeRates[inputCurrency.value] || 1.0
 
@@ -88,7 +88,7 @@ const handleSave = () => {
 
 // 验证
 const isValid = () => {
-  return modelId.value.trim() && inputPrice.value > 0 && outputPrice.value > 0
+  return modelId.value.trim() && !isNaN(inputPrice.value) && !isNaN(outputPrice.value) && inputPrice.value >= 0 && outputPrice.value >= 0
 }
 </script>
 

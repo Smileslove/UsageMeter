@@ -20,12 +20,11 @@ interface ModelPricingSearchResult {
 }
 
 // 本地状态
-const searchQuery = ref('')
+const syncedSearchQuery = ref('')
 const syncing = ref(false)
 const syncError = ref('')
 const showEditModal = ref(false)
 const editingPricing = ref<ModelPricingConfig | null>(null)
-const loading = ref(true)
 const loadError = ref('')
 
 // 删除确认弹窗状态
@@ -36,8 +35,12 @@ const deletingModelId = ref<string | null>(null)
 const activeTab = ref<'custom' | 'synced'>('custom')
 
 // 数据库中的价格列表
-const pricingList = ref<ModelPricingConfig[]>([])
-const totalCount = ref(0)
+const customPricingList = ref<ModelPricingConfig[]>([])
+const customLoading = ref(true)
+const customSearchQuery = ref('')
+const syncedPricingList = ref<ModelPricingConfig[]>([])
+const syncedTotalCount = ref(0)
+const syncedLoading = ref(false)
 
 // 本地匹配模式
 const localMatchMode = ref(store.settings.modelPricing?.matchMode ?? 'fuzzy')
@@ -54,13 +57,9 @@ watch(() => store.settings.modelPricing?.matchMode, (val) => {
 })
 
 // 分离自定义模型和同步模型
-const customPricings = computed(() =>
-  pricingList.value.filter(p => p.source === 'custom')
-)
+const customPricings = computed(() => customPricingList.value)
 
-const syncedPricings = computed(() =>
-  pricingList.value.filter(p => p.source !== 'custom')
-)
+const syncedPricings = computed(() => syncedPricingList.value)
 
 // 显示 tooltip（仅当内容被截断时）
 const showTooltip = (content: string, event: MouseEvent) => {
@@ -86,50 +85,88 @@ const hideTooltip = () => {
   tooltipVisible.value = false
 }
 
-// 加载价格列表
-const loadPricings = async () => {
-  loading.value = true
+// 加载自定义模型列表
+const loadCustomPricings = async () => {
+  customLoading.value = true
+  try {
+    const jsonString = await invoke<string>('get_custom_model_pricings', {
+      query: customSearchQuery.value || null
+    })
+    customPricingList.value = JSON.parse(jsonString) || []
+  } catch (e) {
+    console.error('[ModelPricingSettings] Failed to load custom pricings:', e)
+    customPricingList.value = []
+  } finally {
+    customLoading.value = false
+  }
+}
+
+// 加载同步模型总数
+const loadSyncedCount = async () => {
+  try {
+    syncedTotalCount.value = await invoke<number>('count_synced_model_pricings', {
+      query: null
+    })
+  } catch (e) {
+    console.error('[ModelPricingSettings] Failed to load synced count:', e)
+    syncedTotalCount.value = 0
+  }
+}
+
+// 加载同步模型列表
+const loadSyncedPricings = async () => {
+  syncedLoading.value = true
   loadError.value = ''
 
   try {
     const jsonString = await invoke<string>('search_model_pricing', {
-      query: searchQuery.value || null,
+      query: syncedSearchQuery.value || null,
       limit: 100,
       offset: 0
     })
 
     const result = JSON.parse(jsonString) as ModelPricingSearchResult
-    pricingList.value = result.pricings || []
-    totalCount.value = result.total || 0
+    syncedPricingList.value = result.pricings || []
+    syncedTotalCount.value = result.total || 0
   } catch (e) {
-    console.error('[ModelPricingSettings] Failed to load pricings:', e)
+    console.error('[ModelPricingSettings] Failed to load synced pricings:', e)
     loadError.value = String(e)
-    pricingList.value = []
-    totalCount.value = 0
+    syncedPricingList.value = []
+    syncedTotalCount.value = 0
   } finally {
-    loading.value = false
+    syncedLoading.value = false
   }
 }
 
-// 组件挂载时加载数据
-onMounted(() => {
-  loadPricings()
+// 组件挂载时加载自定义模型和同步模型总数
+onMounted(async () => {
+  await Promise.all([loadCustomPricings(), loadSyncedCount()])
 })
 
-// 搜索防抖
-let searchTimeout: ReturnType<typeof setTimeout> | null = null
-watch(searchQuery, () => {
+// 自定义模型搜索防抖
+let customSearchTimeout: ReturnType<typeof setTimeout> | null = null
+watch(customSearchQuery, () => {
+  if (activeTab.value !== 'custom') return
+  if (customSearchTimeout) clearTimeout(customSearchTimeout)
+  customSearchTimeout = setTimeout(() => {
+    loadCustomPricings()
+  }, 300)
+})
+
+// 同步模型搜索防抖
+let syncedSearchTimeout: ReturnType<typeof setTimeout> | null = null
+watch(syncedSearchQuery, () => {
   if (activeTab.value !== 'synced') return
-  if (searchTimeout) clearTimeout(searchTimeout)
-  searchTimeout = setTimeout(() => {
-    loadPricings()
+  if (syncedSearchTimeout) clearTimeout(syncedSearchTimeout)
+  syncedSearchTimeout = setTimeout(() => {
+    loadSyncedPricings()
   }, 300)
 })
 
 // 切换标签时
 watch(activeTab, (newTab) => {
   if (newTab === 'synced') {
-    loadPricings()
+    loadSyncedPricings()
   }
 })
 
@@ -155,13 +192,46 @@ const syncPricing = async () => {
       await store.saveSettings()
     }
 
-    // 重新加载列表
-    await loadPricings()
+    // 重新加载同步模型总数
+    await loadSyncedCount()
+    // 如果当前在同步模型页面，重新加载列表
+    if (activeTab.value === 'synced') {
+      await loadSyncedPricings()
+    }
   } catch (e) {
     syncError.value = String(e)
     console.error('[ModelPricingSettings] Failed to sync pricing:', e)
   } finally {
     syncing.value = false
+  }
+}
+
+// 清空同步数据
+const clearing = ref(false)
+const clearSyncedPricings = async () => {
+  clearing.value = true
+  syncError.value = ''
+
+  try {
+    await invoke('clear_synced_model_pricings')
+
+    // 清除同步时间
+    if (store.settings.modelPricing) {
+      store.settings.modelPricing.lastSyncTime = null
+      await store.saveSettings()
+    }
+
+    // 重新加载同步模型总数
+    await loadSyncedCount()
+    // 如果当前在同步模型页面，重新加载列表
+    if (activeTab.value === 'synced') {
+      await loadSyncedPricings()
+    }
+  } catch (e) {
+    syncError.value = String(e)
+    console.error('[ModelPricingSettings] Failed to clear synced pricing:', e)
+  } finally {
+    clearing.value = false
   }
 }
 
@@ -189,7 +259,7 @@ const deletePricing = async () => {
 
   try {
     await invoke('delete_model_pricing', { modelId: deletingModelId.value })
-    await loadPricings()
+    await loadCustomPricings()
     showDeleteConfirm.value = false
     deletingModelId.value = null
   } catch (e) {
@@ -197,8 +267,12 @@ const deletePricing = async () => {
   }
 }
 
+// 保存错误
+const saveError = ref('')
+
 // 保存编辑
 const savePricing = async (pricing: ModelPricingConfig) => {
+  saveError.value = ''
   try {
     // 确保 source 为 custom
     const customPricing = { ...pricing, source: 'custom' }
@@ -209,10 +283,11 @@ const savePricing = async (pricing: ModelPricingConfig) => {
       await invoke('add_custom_model_pricing', { pricing: customPricing })
     }
 
-    await loadPricings()
+    await loadCustomPricings()
     showEditModal.value = false
   } catch (e) {
     console.error('[ModelPricingSettings] Failed to save pricing:', e)
+    saveError.value = String(e)
   }
 }
 
@@ -248,22 +323,11 @@ const formatTime = (timestamp: number | null): string => {
       <h2 class="text-sm font-semibold text-gray-800 dark:text-gray-100">
         {{ t(store.settings.locale, 'settings.modelPricingTitle') }}
       </h2>
-      <button
-        @click="syncPricing"
-        :disabled="syncing"
-        class="flex items-center justify-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-all bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        <svg v-if="syncing" class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-        </svg>
-        <span v-if="!syncing">{{ t(store.settings.locale, 'settings.modelPricingSync') }}</span>
-        <span v-else>{{ t(store.settings.locale, 'settings.modelPricingSyncing') }}</span>
-      </button>
+      <div class="w-20"></div>
     </div>
 
     <!-- 加载状态 -->
-    <div v-if="loading" class="text-center py-8 text-gray-400 text-sm">
+    <div v-if="customLoading" class="text-center py-8 text-gray-400 text-sm">
       {{ t(store.settings.locale, 'common.syncing') }}
     </div>
 
@@ -341,12 +405,26 @@ const formatTime = (timestamp: number | null): string => {
               : 'bg-white dark:bg-[#1C1C1E] text-gray-600 dark:text-gray-400 border border-gray-100 dark:border-neutral-800'
           ]"
         >
-          {{ t(store.settings.locale, 'settings.modelPricingTabSynced') }} ({{ totalCount }})
+          {{ t(store.settings.locale, 'settings.modelPricingTabSynced') }} ({{ syncedTotalCount }})
         </button>
       </div>
 
       <!-- 自定义模型列表 -->
       <template v-if="activeTab === 'custom'">
+        <!-- 搜索框 -->
+        <div class="relative">
+          <svg class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            v-model="customSearchQuery"
+            type="text"
+            :placeholder="t(store.settings.locale, 'settings.modelPricingSearch')"
+            class="w-full pl-9 pr-10 py-2 bg-white dark:bg-[#1C1C1E] border border-gray-100 dark:border-neutral-800 rounded-xl text-sm outline-none focus:border-blue-400 transition-colors"
+          />
+          <span v-if="customPricings.length > 0" class="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-gray-400">{{ customPricings.length }}</span>
+        </div>
+
         <!-- 添加按钮 -->
         <button
           @click="addCustom"
@@ -359,9 +437,12 @@ const formatTime = (timestamp: number | null): string => {
         </button>
 
         <!-- 列表 -->
-        <div class="space-y-2 max-h-[300px] overflow-y-auto">
+        <div v-if="customLoading" class="text-center py-8 text-gray-400 text-sm">
+          {{ t(store.settings.locale, 'common.syncing') }}
+        </div>
+        <div v-else class="space-y-2 max-h-[250px] overflow-y-auto">
           <div v-if="customPricings.length === 0" class="text-center py-8 text-gray-400 text-sm">
-            {{ t(store.settings.locale, 'settings.modelPricingNoCustom') }}
+            {{ customSearchQuery ? t(store.settings.locale, 'settings.modelPricingNoResults') : t(store.settings.locale, 'settings.modelPricingNoCustom') }}
           </div>
 
           <div
@@ -416,18 +497,53 @@ const formatTime = (timestamp: number | null): string => {
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
           </svg>
           <input
-            v-model="searchQuery"
+            v-model="syncedSearchQuery"
             type="text"
             :placeholder="t(store.settings.locale, 'settings.modelPricingSearch')"
             class="w-full pl-9 pr-10 py-2 bg-white dark:bg-[#1C1C1E] border border-gray-100 dark:border-neutral-800 rounded-xl text-sm outline-none focus:border-blue-400 transition-colors"
           />
-          <span v-if="totalCount > 0" class="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-gray-400">{{ totalCount }}</span>
+          <span v-if="syncedTotalCount > 0" class="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-gray-400">{{ syncedTotalCount }}</span>
+        </div>
+
+        <!-- 更新和清空按钮 -->
+        <div class="flex gap-2">
+          <button
+            @click="syncPricing"
+            :disabled="syncing"
+            class="flex-1 py-2 bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 rounded-xl text-[12px] font-medium text-white transition-colors flex items-center justify-center gap-1.5"
+          >
+            <svg v-if="syncing" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            {{ syncing ? t(store.settings.locale, 'common.syncing') : t(store.settings.locale, 'settings.modelPricingSync') }}
+          </button>
+          <button
+            @click="clearSyncedPricings"
+            :disabled="clearing"
+            class="flex-1 py-2 bg-gray-500 hover:bg-gray-600 disabled:bg-gray-300 rounded-xl text-[12px] font-medium text-white transition-colors flex items-center justify-center gap-1.5"
+          >
+            <svg v-if="clearing" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+            {{ clearing ? t(store.settings.locale, 'settings.modelPricingClearing') : t(store.settings.locale, 'settings.modelPricingClear') }}
+          </button>
         </div>
 
         <!-- 列表 -->
-        <div class="space-y-1 max-h-[300px] overflow-y-auto">
+        <div v-if="syncedLoading" class="text-center py-8 text-gray-400 text-sm">
+          {{ t(store.settings.locale, 'common.syncing') }}
+        </div>
+        <div v-else class="space-y-1 max-h-[300px] overflow-y-auto">
           <div v-if="syncedPricings.length === 0" class="text-center py-8 text-gray-400 text-sm">
-            {{ searchQuery ? t(store.settings.locale, 'settings.modelPricingNoResults') : t(store.settings.locale, 'settings.modelPricingNoData') }}
+            {{ syncedSearchQuery ? t(store.settings.locale, 'settings.modelPricingNoResults') : t(store.settings.locale, 'settings.modelPricingNoData') }}
           </div>
 
           <div
@@ -476,6 +592,10 @@ const formatTime = (timestamp: number | null): string => {
     <Teleport to="body">
       <div v-if="showEditModal" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" @click.self="showEditModal = false">
         <div class="bg-white dark:bg-[#1C1C1E] rounded-2xl shadow-xl overflow-hidden" @click.stop>
+          <!-- 保存错误提示 -->
+          <div v-if="saveError" class="mx-3 mt-3 px-2.5 py-2 bg-red-50 dark:bg-red-900/20 rounded-lg text-xs text-red-600 dark:text-red-400">
+            {{ t(store.settings.locale, 'settings.modelPricingSaveError') }}: {{ saveError }}
+          </div>
           <ModelPricingEditModal
             :pricing="editingPricing"
             :locale="store.settings.locale"

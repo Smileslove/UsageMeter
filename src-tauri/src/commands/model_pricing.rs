@@ -69,6 +69,8 @@ pub async fn sync_model_pricing_from_api() -> Result<usize, String> {
         name: Option<String>,
         #[serde(default)]
         cost: Option<ModelsDevCost>,
+        #[serde(default)]
+        last_updated: Option<String>,
     }
 
     #[derive(Debug, serde::Deserialize)]
@@ -89,33 +91,58 @@ pub async fn sync_model_pricing_from_api() -> Result<usize, String> {
         .map_err(|e| format!("Failed to parse JSON response: {}", e))?;
 
     let now = chrono::Utc::now().timestamp();
-    let mut pricings = Vec::new();
+    let mut pricings_map: std::collections::HashMap<String, ModelPricingConfig> =
+        std::collections::HashMap::new();
 
-    // 遍历所有厂商和模型
+    // 遍历所有厂商和模型，按 model_id 去重，保留 last_updated 最新的
     for (_provider_id, provider) in data.providers {
-        for (model_id, model) in provider.models {
+        for (model_key, model) in provider.models {
             if let Some(cost) = model.cost {
                 if cost.input > 0.0 && cost.output > 0.0 {
-                    pricings.push(ModelPricingConfig {
-                        model_id: if model.id.is_empty() {
-                            model_id
-                        } else {
-                            model.id
-                        },
+                    let model_id = if model.id.is_empty() {
+                        model_key
+                    } else {
+                        model.id
+                    };
+
+                    // 解析模型的 last_updated 日期作为时间戳
+                    let model_last_updated = model.last_updated
+                        .and_then(|date_str| {
+                            chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
+                                .ok()
+                                .map(|d| d.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc().timestamp())
+                        })
+                        .unwrap_or_else(|| {
+                            eprintln!("[ModelPricing] Failed to parse last_updated for model '{}', using current time", model_id);
+                            now
+                        });
+
+                    let new_pricing = ModelPricingConfig {
+                        model_id: model_id.clone(),
                         display_name: model.name,
                         input_price: cost.input,
                         output_price: cost.output,
                         cache_write_price: cost.cache_write,
                         cache_read_price: cost.cache_read,
                         source: "api".to_string(),
-                        last_updated: now,
-                    });
+                        last_updated: model_last_updated,
+                    };
+
+                    // 如果已存在，比较 last_updated，保留更新的
+                    if let Some(existing) = pricings_map.get(&model_id) {
+                        if model_last_updated > existing.last_updated {
+                            pricings_map.insert(model_id, new_pricing);
+                        }
+                    } else {
+                        pricings_map.insert(model_id, new_pricing);
+                    }
                 }
             }
         }
     }
 
-    // 按模型 ID 排序
+    // 转换为向量并按模型 ID 排序
+    let mut pricings: Vec<ModelPricingConfig> = pricings_map.into_values().collect();
     pricings.sort_by(|a, b| a.model_id.cmp(&b.model_id));
 
     // 3. 存入数据库（使用 tauri async_runtime spawn_blocking 避免阻塞异步运行时）
@@ -162,7 +189,7 @@ pub async fn search_model_pricing(
             database.create_model_pricing_table()?;
 
             let pricings = database.search_model_pricings(query_clone.as_deref(), limit, offset)?;
-            let total = database.count_model_pricings(query_clone.as_deref())?;
+            let total = database.count_synced_model_pricings(query_clone.as_deref())?;
 
             Ok(ModelPricingSearchResult { pricings, total })
         } else {
@@ -173,6 +200,50 @@ pub async fn search_model_pricing(
     .map_err(|e| format!("Task error: {}", e))??;
 
     serde_json::to_string(&result).map_err(|e| format!("Serialization error: {}", e))
+}
+
+/// 获取自定义模型价格列表（支持搜索）
+#[tauri::command]
+pub async fn get_custom_model_pricings(query: Option<String>) -> Result<String, String> {
+    let db_arc = get_pricing_db()?;
+
+    let query_clone = query.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let db_guard = db_arc.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+        if let Some(database) = db_guard.as_ref() {
+            database.create_model_pricing_table()?;
+            database.get_custom_model_pricings(query_clone.as_deref())
+        } else {
+            Err("Database not available".to_string())
+        }
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))??;
+
+    serde_json::to_string(&result).map_err(|e| format!("Serialization error: {}", e))
+}
+
+/// 获取同步模型总数
+#[tauri::command]
+pub async fn count_synced_model_pricings(query: Option<String>) -> Result<i64, String> {
+    let db_arc = get_pricing_db()?;
+
+    let query_clone = query.clone();
+    let count = tauri::async_runtime::spawn_blocking(move || {
+        let db_guard = db_arc.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+        if let Some(database) = db_guard.as_ref() {
+            database.create_model_pricing_table()?;
+            database.count_synced_model_pricings(query_clone.as_deref())
+        } else {
+            Err("Database not available".to_string())
+        }
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))??;
+
+    Ok(count)
 }
 
 /// 添加自定义模型价格
@@ -231,6 +302,24 @@ pub async fn delete_model_pricing(model_id: String) -> Result<(), String> {
 
         if let Some(database) = db_guard.as_ref() {
             database.delete_model_pricing(&model_id)
+        } else {
+            Err("Database not available".to_string())
+        }
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+}
+
+/// 清空所有同步的模型价格（保留自定义模型）
+#[tauri::command]
+pub async fn clear_synced_model_pricings() -> Result<usize, String> {
+    let db_arc = get_pricing_db()?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_guard = db_arc.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+        if let Some(database) = db_guard.as_ref() {
+            database.clear_synced_model_pricings()
         } else {
             Err("Database not available".to_string())
         }
