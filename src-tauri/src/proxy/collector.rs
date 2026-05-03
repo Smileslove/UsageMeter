@@ -616,6 +616,7 @@ mod tests {
             output_tokens: 200,
             cache_create_tokens: 10,
             cache_read_tokens: 20,
+            reasoning_tokens: 0,
             total_tokens: 330, // 总 Token = input(100) + cache_create(10) + cache_read(20) + output(200)
             model: "claude-sonnet-4".to_string(),
             session_id: Some("session-123".to_string()),

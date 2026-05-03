@@ -102,6 +102,9 @@ pub struct UsageRecord {
     pub cache_create_tokens: u64,
     /// 缓存读取 Token
     pub cache_read_tokens: u64,
+    /// 推理 Token（包含在 output_tokens 中，用于区分普通输出和推理输出）
+    #[serde(default)]
+    pub reasoning_tokens: u64,
     /// 总 Token 数 = input + cache_create + cache_read + output（含缓存）
     pub total_tokens: u64,
     /// 使用的模型
@@ -158,6 +161,7 @@ impl Default for UsageRecord {
             output_tokens: 0,
             cache_create_tokens: 0,
             cache_read_tokens: 0,
+            reasoning_tokens: 0,
             total_tokens: 0,
             model: String::new(),
             session_id: None,

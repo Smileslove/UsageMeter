@@ -53,6 +53,7 @@ struct OpenAiUsage {
     output_tokens: u64,
     cache_read_tokens: u64,
     cache_create_tokens: u64,
+    reasoning_tokens: u64,
 }
 
 impl OpenAiForwarder {
@@ -361,7 +362,10 @@ async fn record_usage_with_collector(
     } else {
         usage.message_id.clone()
     };
-    let total_tokens = usage.input_tokens + usage.cache_create_tokens + usage.cache_read_tokens + usage.output_tokens;
+    let total_tokens = usage.input_tokens
+        + usage.cache_create_tokens
+        + usage.cache_read_tokens
+        + usage.output_tokens;
     let record = UsageRecord {
         timestamp: now,
         message_id,
@@ -369,6 +373,7 @@ async fn record_usage_with_collector(
         output_tokens: usage.output_tokens,
         cache_create_tokens: usage.cache_create_tokens,
         cache_read_tokens: usage.cache_read_tokens,
+        reasoning_tokens: usage.reasoning_tokens,
         total_tokens,
         model: if usage.model.is_empty() {
             context.model.clone().unwrap_or_default()
@@ -416,6 +421,7 @@ async fn record_usage_with_collector_optional(
                 output_tokens: 0,
                 cache_create_tokens: 0,
                 cache_read_tokens: 0,
+                reasoning_tokens: 0,
                 total_tokens: 0,
                 model: context.model.clone().unwrap_or_default(),
                 session_id: context.session_id.clone(),
@@ -657,6 +663,11 @@ fn parse_openai_usage(value: &Value) -> Option<OpenAiUsage> {
         .and_then(|cc| cc.get("cache_creation_input_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    let reasoning_tokens = usage
+        .get("output_tokens_details")
+        .and_then(|details| details.get("reasoning_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     let raw_input = usage
         .get("prompt_tokens")
         .or_else(|| usage.get("input_tokens"))
@@ -683,6 +694,7 @@ fn parse_openai_usage(value: &Value) -> Option<OpenAiUsage> {
         output_tokens: output,
         cache_read_tokens: cached_tokens,
         cache_create_tokens,
+        reasoning_tokens,
     })
 }
 
@@ -729,7 +741,7 @@ mod tests {
         });
         let usage = parse_openai_usage(&value).unwrap();
         assert_eq!(usage.message_id, "chatcmpl_2");
-        assert_eq!(usage.input_tokens, 971);       // 3019 - 2048
+        assert_eq!(usage.input_tokens, 971); // 3019 - 2048
         assert_eq!(usage.cache_read_tokens, 2048);
         assert_eq!(usage.cache_create_tokens, 500);
         assert_eq!(usage.output_tokens, 104);
@@ -983,6 +995,74 @@ mod tests {
             }),
         ];
         assert!(parse_openai_stream_usage(&events).is_none());
+    }
+
+    #[test]
+    fn parses_response_api_with_reasoning_tokens() {
+        // Response API 非流式响应，包含 output_tokens_details.reasoning_tokens
+        let value = serde_json::json!({
+            "id": "c9f9c06b-032d-4525-a422-ac8ab5eccxxx",
+            "model": "qwen3.6-plus",
+            "object": "response",
+            "status": "completed",
+            "usage": {
+                "input_tokens": 55,
+                "input_tokens_details": { "cached_tokens": 10 },
+                "output_tokens": 43,
+                "output_tokens_details": { "reasoning_tokens": 15 },
+                "total_tokens": 98
+            }
+        });
+        let usage = parse_openai_usage(&value).unwrap();
+        assert_eq!(usage.message_id, "c9f9c06b-032d-4525-a422-ac8ab5eccxxx");
+        assert_eq!(usage.model, "qwen3.6-plus");
+        assert_eq!(usage.input_tokens, 45); // 55 - 10
+        assert_eq!(usage.output_tokens, 43);
+        assert_eq!(usage.cache_read_tokens, 10);
+        assert_eq!(usage.cache_create_tokens, 0);
+        assert_eq!(usage.reasoning_tokens, 15);
+    }
+
+    #[test]
+    fn parses_response_api_without_output_tokens_details() {
+        // Response API 无 output_tokens_details 时 reasoning_tokens 默认为 0
+        let value = serde_json::json!({
+            "id": "resp_no_details",
+            "model": "gpt-4o",
+            "usage": {
+                "input_tokens": 100,
+                "input_tokens_details": { "cached_tokens": 20 },
+                "output_tokens": 50
+            }
+        });
+        let usage = parse_openai_usage(&value).unwrap();
+        assert_eq!(usage.input_tokens, 80);
+        assert_eq!(usage.output_tokens, 50);
+        assert_eq!(usage.reasoning_tokens, 0);
+    }
+
+    #[test]
+    fn stream_response_completed_with_reasoning_tokens() {
+        // 流式 response.completed 事件包含 reasoning_tokens
+        let events = vec![serde_json::json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_reasoning",
+                "model": "qwen3.6-plus",
+                "usage": {
+                    "input_tokens": 200,
+                    "output_tokens": 100,
+                    "input_tokens_details": { "cached_tokens": 50 },
+                    "output_tokens_details": { "reasoning_tokens": 30 }
+                }
+            }
+        })];
+        let usage = parse_openai_stream_usage(&events).unwrap();
+        assert_eq!(usage.message_id, "resp_reasoning");
+        assert_eq!(usage.input_tokens, 150); // 200 - 50
+        assert_eq!(usage.output_tokens, 100);
+        assert_eq!(usage.cache_read_tokens, 50);
+        assert_eq!(usage.reasoning_tokens, 30);
     }
 
     #[test]

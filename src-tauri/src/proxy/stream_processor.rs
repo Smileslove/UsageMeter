@@ -304,7 +304,10 @@ pub fn create_database_collector(
         let duration_ms = request_end_time - request_start_time;
 
         // 计算总 Token：input + cache_read + output（不包含缓存创建）
-        let total_tokens = usage.input_tokens + usage.cache_create_tokens + usage.cache_read_tokens + usage.output_tokens;
+        let total_tokens = usage.input_tokens
+            + usage.cache_create_tokens
+            + usage.cache_read_tokens
+            + usage.output_tokens;
 
         // 计算输出 Token 生成速率（tokens/s）
         let output_tokens_per_second = if duration_ms > 0 {
@@ -320,6 +323,7 @@ pub fn create_database_collector(
             output_tokens: usage.output_tokens,
             cache_create_tokens: usage.cache_create_tokens,
             cache_read_tokens: usage.cache_read_tokens,
+            reasoning_tokens: 0,
             total_tokens,
             model: usage.model.clone(),
             session_id: usage.session_id.clone(),

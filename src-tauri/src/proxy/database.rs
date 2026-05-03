@@ -421,6 +421,7 @@ impl ProxyDatabase {
             output_tokens: output,
             cache_create_tokens: cache_create,
             cache_read_tokens: cache_read,
+            reasoning_tokens: 0,
             total_tokens: input + cache_create + cache_read + output,
             model: row.get(6)?,
             session_id: row.get(7)?,
