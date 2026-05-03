@@ -52,6 +52,7 @@ struct OpenAiUsage {
     input_tokens: u64,
     output_tokens: u64,
     cache_read_tokens: u64,
+    cache_create_tokens: u64,
 }
 
 impl OpenAiForwarder {
@@ -360,13 +361,13 @@ async fn record_usage_with_collector(
     } else {
         usage.message_id.clone()
     };
-    let total_tokens = usage.input_tokens + usage.cache_read_tokens + usage.output_tokens;
+    let total_tokens = usage.input_tokens + usage.cache_create_tokens + usage.cache_read_tokens + usage.output_tokens;
     let record = UsageRecord {
         timestamp: now,
         message_id,
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
-        cache_create_tokens: 0,
+        cache_create_tokens: usage.cache_create_tokens,
         cache_read_tokens: usage.cache_read_tokens,
         total_tokens,
         model: if usage.model.is_empty() {
@@ -575,8 +576,10 @@ fn parse_openai_stream_usage_event(event: &Value) -> Option<OpenAiUsage> {
         return event.get("response").and_then(parse_openai_usage);
     }
 
-    if event.get("usage").is_some() {
-        return parse_openai_usage(event);
+    if let Some(usage) = event.get("usage") {
+        if !usage.is_null() {
+            return parse_openai_usage(event);
+        }
     }
 
     None
@@ -596,9 +599,11 @@ fn parse_openai_stream_usage(events: &[Value]) -> Option<OpenAiUsage> {
     }
     // 阶段 2: OpenAI Chat Completions — 最后一个有 usage 的 chunk
     for event in events.iter().rev() {
-        if event.get("usage").is_some() {
-            if let Some(usage) = parse_openai_usage(event) {
-                return Some(usage);
+        if let Some(usage) = event.get("usage") {
+            if !usage.is_null() {
+                if let Some(usage) = parse_openai_usage(event) {
+                    return Some(usage);
+                }
             }
         }
     }
@@ -640,10 +645,16 @@ fn parse_openai_usage(value: &Value) -> Option<OpenAiUsage> {
     }
 
     let usage = value.get("usage")?;
-    let cached_tokens = usage
+    let token_details = usage
         .get("prompt_tokens_details")
-        .or_else(|| usage.get("input_tokens_details"))
+        .or_else(|| usage.get("input_tokens_details"));
+    let cached_tokens = token_details
         .and_then(|details| details.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let cache_create_tokens = token_details
+        .and_then(|details| details.get("cache_creation"))
+        .and_then(|cc| cc.get("cache_creation_input_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     let raw_input = usage
@@ -671,6 +682,7 @@ fn parse_openai_usage(value: &Value) -> Option<OpenAiUsage> {
         input_tokens: input,
         output_tokens: output,
         cache_read_tokens: cached_tokens,
+        cache_create_tokens,
     })
 }
 
@@ -693,7 +705,34 @@ mod tests {
         assert_eq!(usage.message_id, "chatcmpl_1");
         assert_eq!(usage.input_tokens, 80);
         assert_eq!(usage.cache_read_tokens, 20);
+        assert_eq!(usage.cache_create_tokens, 0);
         assert_eq!(usage.output_tokens, 50);
+    }
+
+    #[test]
+    fn parses_chat_completion_with_cache_creation() {
+        let value = serde_json::json!({
+            "id": "chatcmpl_2",
+            "model": "qwen-plus",
+            "usage": {
+                "prompt_tokens": 3019,
+                "completion_tokens": 104,
+                "total_tokens": 3123,
+                "prompt_tokens_details": {
+                    "cached_tokens": 2048,
+                    "cache_creation": {
+                        "cache_creation_input_tokens": 500,
+                        "cache_type": "ephemeral"
+                    }
+                }
+            }
+        });
+        let usage = parse_openai_usage(&value).unwrap();
+        assert_eq!(usage.message_id, "chatcmpl_2");
+        assert_eq!(usage.input_tokens, 971);       // 3019 - 2048
+        assert_eq!(usage.cache_read_tokens, 2048);
+        assert_eq!(usage.cache_create_tokens, 500);
+        assert_eq!(usage.output_tokens, 104);
     }
 
     #[test]
@@ -710,6 +749,7 @@ mod tests {
         let usage = parse_openai_usage(&value).unwrap();
         assert_eq!(usage.input_tokens, 170);
         assert_eq!(usage.cache_read_tokens, 30);
+        assert_eq!(usage.cache_create_tokens, 0);
         assert_eq!(usage.output_tokens, 75);
     }
 
@@ -732,6 +772,7 @@ mod tests {
         assert_eq!(usage.model, "gpt-5.4");
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.cache_read_tokens, 20);
+        assert_eq!(usage.cache_create_tokens, 0);
         assert_eq!(usage.output_tokens, 40);
     }
 
@@ -894,6 +935,53 @@ mod tests {
     #[test]
     fn stream_empty_events() {
         let events: Vec<Value> = vec![];
+        assert!(parse_openai_stream_usage(&events).is_none());
+    }
+
+    #[test]
+    fn stream_ignores_null_usage_chunks() {
+        // 中间 chunk 的 "usage": null 不应被解析为有效 usage
+        let events = vec![
+            serde_json::json!({
+                "id": "chatcmpl-null",
+                "model": "qwen-plus",
+                "choices": [{"delta": {"content": "hello"}}],
+                "usage": null
+            }),
+            serde_json::json!({
+                "id": "chatcmpl-null",
+                "model": "qwen-plus",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "total_tokens": 120,
+                    "prompt_tokens_details": { "cached_tokens": 0 }
+                }
+            }),
+        ];
+        let usage = parse_openai_stream_usage(&events).unwrap();
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 20);
+    }
+
+    #[test]
+    fn stream_all_null_usage_returns_none() {
+        // 所有 chunk 的 usage 都是 null，不应产生记录
+        let events = vec![
+            serde_json::json!({
+                "id": "chatcmpl-all-null",
+                "model": "qwen-plus",
+                "choices": [{"delta": {"content": "hi"}}],
+                "usage": null
+            }),
+            serde_json::json!({
+                "id": "chatcmpl-all-null",
+                "model": "qwen-plus",
+                "choices": [],
+                "usage": null
+            }),
+        ];
         assert!(parse_openai_stream_usage(&events).is_none());
     }
 
