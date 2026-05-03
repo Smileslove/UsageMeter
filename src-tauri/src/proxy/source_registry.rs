@@ -149,10 +149,8 @@ impl ProxySourceRegistry {
         }
         let content = serde_json::to_string_pretty(data)
             .map_err(|e| format!("Failed to serialize proxy source registry: {}", e))?;
-        let temp_path = self.path.with_extension("json.tmp");
-        fs::write(&temp_path, content)
-            .map_err(|e| format!("Failed to write proxy source registry temp file: {}", e))?;
-        fs::rename(&temp_path, &self.path)
+        // 直接写入目标文件，避免 Windows 上 rename 因文件锁定失败
+        fs::write(&self.path, content)
             .map_err(|e| format!("Failed to save proxy source registry: {}", e))?;
         Ok(())
     }

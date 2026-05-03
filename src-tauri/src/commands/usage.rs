@@ -667,11 +667,27 @@ fn run_ccusage_json() -> Result<serde_json::Value, String> {
 
     let script_path = app_root.join("scripts").join("ccusage-snapshot.mjs");
 
-    let output = Command::new("node")
-        .current_dir(&app_root)
-        .arg(script_path)
-        .output()
-        .map_err(|e| format!("ERR_CCUSAGE_SCRIPT_FAILED: {e}"))?;
+    // Windows 兼容：先尝试直接调用 node，失败时使用 cmd /c node
+    let output = if cfg!(target_os = "windows") {
+        Command::new("cmd")
+            .args(["/c", "node"])
+            .current_dir(&app_root)
+            .arg(&script_path)
+            .output()
+            .or_else(|_| {
+                Command::new("node")
+                    .current_dir(&app_root)
+                    .arg(&script_path)
+                    .output()
+            })
+            .map_err(|e| format!("ERR_CCUSAGE_NODE_NOT_FOUND: Node.js is required to read ccusage data. Please install Node.js and ensure it is in your PATH. Error: {e}"))?
+    } else {
+        Command::new("node")
+            .current_dir(&app_root)
+            .arg(&script_path)
+            .output()
+            .map_err(|e| format!("ERR_CCUSAGE_NODE_NOT_FOUND: Node.js is required to read ccusage data. Please install Node.js and ensure it is in your PATH. Error: {e}"))?
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

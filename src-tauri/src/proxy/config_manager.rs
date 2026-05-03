@@ -143,13 +143,10 @@ impl ClaudeConfigManager {
         let content = serde_json::to_string_pretty(settings)
             .map_err(|e| format!("Failed to serialize Claude settings: {}", e))?;
 
-        // 原子写入：先写入临时文件，然后重命名
-        let temp_path = self.settings_path.with_extension("json.tmp");
-        fs::write(&temp_path, content)
-            .map_err(|e| format!("Failed to write temp settings: {}", e))?;
-
-        fs::rename(&temp_path, &self.settings_path)
-            .map_err(|e| format!("Failed to rename settings file: {}", e))?;
+        // 直接写入目标文件。不使用 write+rename 模式，因为在 Windows 上
+        // 如果目标文件被其他进程锁定（杀毒软件、Claude Code 读取等），rename 会失败。
+        fs::write(&self.settings_path, content)
+            .map_err(|e| format!("Failed to write settings file: {}", e))?;
 
         Ok(())
     }

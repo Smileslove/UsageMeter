@@ -176,10 +176,8 @@ impl CodexSourceRegistry {
         }
         let content = serde_json::to_string_pretty(data)
             .map_err(|e| format!("Failed to serialize Codex source registry: {}", e))?;
-        let temp_path = self.path.with_extension("json.tmp");
-        fs::write(&temp_path, content)
-            .map_err(|e| format!("Failed to write Codex source registry temp file: {}", e))?;
-        fs::rename(&temp_path, &self.path)
+        // 直接写入目标文件，避免 Windows 上 rename 因文件锁定失败
+        fs::write(&self.path, content)
             .map_err(|e| format!("Failed to save Codex source registry: {}", e))?;
         Ok(())
     }
@@ -465,10 +463,8 @@ impl CodexConfigManager {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create Codex config directory: {}", e))?;
         }
-        let temp_path = self.config_path.with_extension("toml.tmp");
-        fs::write(&temp_path, content)
-            .map_err(|e| format!("Failed to write Codex config temp file: {}", e))?;
-        fs::rename(&temp_path, &self.config_path)
+        // 直接写入目标文件，避免 Windows 上 rename 因文件锁定失败
+        fs::write(&self.config_path, content)
             .map_err(|e| format!("Failed to save Codex config.toml: {}", e))?;
         Ok(())
     }
@@ -480,10 +476,8 @@ impl CodexConfigManager {
         }
         let content = serde_json::to_string_pretty(auth)
             .map_err(|e| format!("Failed to serialize Codex auth.json: {}", e))?;
-        let temp_path = self.auth_path.with_extension("json.tmp");
-        fs::write(&temp_path, content)
-            .map_err(|e| format!("Failed to write Codex auth temp file: {}", e))?;
-        fs::rename(&temp_path, &self.auth_path)
+        // 直接写入目标文件，避免 Windows 上 rename 因文件锁定失败
+        fs::write(&self.auth_path, content)
             .map_err(|e| format!("Failed to save Codex auth.json: {}", e))?;
         Ok(())
     }
