@@ -126,22 +126,19 @@ impl SseUsageCollector {
 /// ## SSE 事件顺序与数据语义
 ///
 /// Anthropic API 的 SSE 流事件顺序：
-/// 1. `message_start` - 流开始，包含初始占位 usage（input_tokens 通常为 0 或占位值）
-/// 2. `content_block_start` - 内容块开始
-/// 3. `content_block_delta` - 内容增量（多次）
-/// 4. `message_delta` - **流结束前最后一个数据事件，包含最终 usage**
-/// 5. `message_stop` - 流结束信号
+/// 1. `message_start` - 流开始，包含 Message 对象和初始 usage
+/// 2. `content_block_start/delta/stop` - 内容块（可能多个）
+/// 3. `message_delta` - 流结束前的最终数据，usage 为累积值
+/// 4. `message_stop` - 流结束信号
 ///
 /// ## Token 统计策略
 ///
-/// **精确统计原则**：优先使用 `message_delta` 中的最终值
+/// **累积值覆盖原则**：`message_delta` 中的 usage 字段为累积值，优先级最高
 ///
-/// - `input_tokens`: 从 `message_delta.usage.input_tokens` 获取（最终真实值）
-/// - `output_tokens`: 从 `message_delta.usage.output_tokens` 获取（最终真实值）
-/// - `cache_create_tokens`: 从 `message_start.message.usage.cache_creation_input_tokens` 获取
-/// - `cache_read_tokens`: 从 `message_start.message.usage.cache_read_input_tokens` 获取
-///
-/// 注意：缓存相关 Token 只在 `message_start` 中返回，`message_delta` 中不包含
+/// - `input_tokens`: `message_delta` 有则用其值，否则保留 `message_start` 的值
+/// - `output_tokens`: 从 `message_delta` 获取（最终累积值）
+/// - `cache_create_tokens`: `message_delta` 有则用其值，否则保留 `message_start` 的值
+/// - `cache_read_tokens`: `message_delta` 有则用其值，否则保留 `message_start` 的值
 fn parse_usage_from_events(events: &[Value]) -> Option<UsageData> {
     let mut usage = UsageData::default();
 
@@ -158,41 +155,43 @@ fn parse_usage_from_events(events: &[Value]) -> Option<UsageData> {
                         if let Some(m) = message.get("model").and_then(|v| v.as_str()) {
                             usage.model = m.to_string();
                         }
-                        // 提取缓存相关 Token 和输入 Token（只在 message_start 中返回）
+                        // 提取初始 usage 数据（message_start 中的值可能被 message_delta 覆盖）
                         if let Some(msg_usage) = message.get("usage") {
-                            // 输入 Token（最终真实值，message_start 中即为准确值）
                             usage.input_tokens = msg_usage
                                 .get("input_tokens")
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or(0);
-                            // 缓存读取 Token
                             usage.cache_read_tokens = msg_usage
                                 .get("cache_read_input_tokens")
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or(0);
-                            // 缓存创建 Token
                             usage.cache_create_tokens = msg_usage
                                 .get("cache_creation_input_tokens")
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or(0);
-                            // 注意：不使用 message_start 中的 input_tokens
-                            // 因为它通常是 0 或占位值，真实值在 message_delta 中
                         }
                     }
                 }
                 "message_delta" => {
-                    // 最终 usage 数据（最精确）。部分 Anthropic-compatible
-                    // 服务会在 message_delta 中同时返回 input/output。
+                    // 最终 usage 数据（累积值，最精确）
                     if let Some(delta_usage) = event.get("usage") {
                         usage.input_tokens = delta_usage
                             .get("input_tokens")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(usage.input_tokens);
-                        // 输出 Token（最终真实值）
                         usage.output_tokens = delta_usage
                             .get("output_tokens")
                             .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
+                            .unwrap_or(usage.output_tokens);
+                        // 缓存字段在 message_delta 中也是累积值，覆盖 message_start 的初始值
+                        usage.cache_create_tokens = delta_usage
+                            .get("cache_creation_input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(usage.cache_create_tokens);
+                        usage.cache_read_tokens = delta_usage
+                            .get("cache_read_input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(usage.cache_read_tokens);
                     }
                 }
                 _ => {}
@@ -281,7 +280,7 @@ fn append_utf8_safe(buffer: &mut String, remainder: &mut Vec<u8>, new_bytes: &[u
 ///
 /// 统一的计算逻辑：
 /// - input_tokens: 原始输入 Token（不含缓存）
-/// - total_tokens: input_tokens + cache_read_tokens + output_tokens（不包含缓存创建）
+/// - total_tokens: input_tokens + cache_create_tokens + cache_read_tokens + output_tokens
 /// - duration_ms: 请求耗时（从 start_time 到当前时间）
 /// - output_tokens_per_second: output_tokens / (duration_ms / 1000)
 pub fn create_database_collector(
@@ -305,7 +304,7 @@ pub fn create_database_collector(
         let duration_ms = request_end_time - request_start_time;
 
         // 计算总 Token：input + cache_read + output（不包含缓存创建）
-        let total_tokens = usage.input_tokens + usage.cache_read_tokens + usage.output_tokens;
+        let total_tokens = usage.input_tokens + usage.cache_create_tokens + usage.cache_read_tokens + usage.output_tokens;
 
         // 计算输出 Token 生成速率（tokens/s）
         let output_tokens_per_second = if duration_ms > 0 {
@@ -397,9 +396,8 @@ mod tests {
 
     #[test]
     fn test_parse_usage_from_events() {
-        // 模拟真实的 API 响应流程：
-        // message_start 中 input_tokens 为 0（占位值）
-        // message_delta 中包含最终的 input_tokens 和 output_tokens
+        // 模拟 API 响应流程：
+        // message_start 提供初始 usage，message_delta 用累积值覆盖
         let events = vec![
             serde_json::json!({
                 "type": "message_start",
@@ -459,6 +457,43 @@ mod tests {
 
         let usage = parse_usage_from_events(&events).unwrap();
         assert_eq!(usage.cache_read_tokens, 100);
+    }
+
+    #[test]
+    fn test_parse_usage_delta_overrides_cache() {
+        // message_delta 中的缓存字段应覆盖 message_start 的值
+        // 模拟 web search 场景：message_delta 返回完整累积 usage
+        let events = vec![
+            serde_json::json!({
+                "type": "message_start",
+                "message": {
+                    "id": "msg_789",
+                    "model": "claude-opus-4-7",
+                    "usage": {
+                        "input_tokens": 2679,
+                        "output_tokens": 3,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0
+                    }
+                }
+            }),
+            serde_json::json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+                "usage": {
+                    "input_tokens": 10682,
+                    "cache_creation_input_tokens": 500,
+                    "cache_read_input_tokens": 200,
+                    "output_tokens": 510
+                }
+            }),
+        ];
+
+        let usage = parse_usage_from_events(&events).unwrap();
+        assert_eq!(usage.input_tokens, 10682); // message_delta 覆盖
+        assert_eq!(usage.output_tokens, 510);
+        assert_eq!(usage.cache_create_tokens, 500); // message_delta 覆盖 message_start 的 0
+        assert_eq!(usage.cache_read_tokens, 200); // message_delta 覆盖 message_start 的 0
     }
 
     #[test]

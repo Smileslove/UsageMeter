@@ -63,13 +63,9 @@ pub fn get_pricing(model: &str, pricings: &[ModelPricingConfig], match_mode: &st
         return ModelPricing {
             input: pricing.input_price,
             output: pricing.output_price,
-            // 如果有缓存写入价格则使用，否则估算
-            cache_write_5m: pricing
-                .cache_write_price
-                .unwrap_or(pricing.input_price * 1.25),
-            cache_write_1h: pricing
-                .cache_write_price
-                .unwrap_or(pricing.input_price * 0.5),
+            // 如果有缓存写入价格则使用，否则为 0（未配置不计费）
+            cache_write_5m: pricing.cache_write_price.unwrap_or(0.0),
+            cache_write_1h: pricing.cache_write_price.unwrap_or(0.0),
             // 如果有缓存读取价格则使用，否则估算
             cache_read: pricing
                 .cache_read_price
