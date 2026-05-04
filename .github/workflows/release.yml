@@ -89,7 +89,11 @@ jobs:
         run: |
           VERSION="${{ needs.verify.outputs.version }}"
           NOTES=$(sed -n "/^## \[$VERSION\]/,/^## \[/p" CHANGELOG.md | sed '$d')
-          echo "$NOTES" > /tmp/release_notes.md
+          {
+            echo "notes<<EOF"
+            echo "$NOTES"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
           echo "Extracted release notes for version $VERSION"
 
       - name: Build Tauri app
@@ -97,7 +101,7 @@ jobs:
         with:
           tagName: v${{ needs.verify.outputs.version }}
           releaseName: 'UsageMeter v${{ needs.verify.outputs.version }}'
-          releaseBodyFile: /tmp/release_notes.md
+          releaseBody: ${{ steps.changelog.outputs.notes }}
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
@@ -131,6 +135,9 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
@@ -149,8 +156,11 @@ jobs:
           $VERSION = "${{ needs.verify.outputs.version }}"
           $content = Get-Content CHANGELOG.md -Raw -Encoding UTF8
           if ($content -match "(?s)## \[$VERSION\].*?(?=\r?\n## \[)") {
-            $matches[0] | Set-Content "${{ runner.temp }}/release_notes.md" -Encoding UTF8
+            $notes = $matches[0]
           }
+          "notes<<EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $notes | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           Write-Host "Extracted release notes for version $VERSION"
 
       - name: Build Tauri app
@@ -158,7 +168,7 @@ jobs:
         with:
           tagName: v${{ needs.verify.outputs.version }}
           releaseName: 'UsageMeter v${{ needs.verify.outputs.version }}'
-          releaseBodyFile: ${{ runner.temp }}/release_notes.md
+          releaseBody: ${{ steps.changelog.outputs.notes }}
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
