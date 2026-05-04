@@ -204,8 +204,54 @@ pub fn run() {
                                 let _ = window.set_always_on_top(true);
                                 let size = window.outer_size().ok();
                                 let popup_width = size.map(|s| s.width as f64).unwrap_or(420.0);
+                                let popup_height = size.map(|s| s.height as f64).unwrap_or(600.0);
                                 let x = position.x - (popup_width / 2.0);
+
+                                // macOS: 托盘在屏幕顶部，窗口向下弹出
+                                // Windows: 托盘在屏幕底部，窗口向上弹出，底部贴着工作区底部
+                                #[cfg(target_os = "macos")]
                                 let y = position.y + 10.0;
+                                #[cfg(not(target_os = "macos"))]
+                                let y = {
+                                    const WORKAREA_MARGIN: f64 = 2.0; // 窗口底部与工作区底部的间距（像素）
+
+                                    let workarea_bottom = app
+                                        .available_monitors()
+                                        .ok()
+                                        .and_then(|monitors| {
+                                            monitors.into_iter().find_map(|m| {
+                                                let monitor_pos = m.position();
+                                                let monitor_size = m.size();
+                                                let tray_x = position.x as i32;
+                                                let tray_y = position.y as i32;
+
+                                                // 检查托盘图标是否在这个显示器的整体范围内
+                                                let in_monitor = tray_x >= monitor_pos.x
+                                                    && tray_x < monitor_pos.x + monitor_size.width as i32
+                                                    && tray_y >= monitor_pos.y
+                                                    && tray_y < monitor_pos.y + monitor_size.height as i32;
+
+                                                if in_monitor {
+                                                    let work_area = m.work_area();
+                                                    let bottom = work_area.position.y
+                                                        + work_area.size.height as i32;
+                                                    Some(bottom as f64)
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                        })
+                                        .unwrap_or_else(|| {
+                                            eprintln!(
+                                                "[UsageMeter] Warning: No monitor found for tray at ({}, {})",
+                                                position.x, position.y
+                                            );
+                                            position.y
+                                        });
+
+                                    workarea_bottom - popup_height - WORKAREA_MARGIN
+                                };
+
                                 let _ = window.set_position(Position::Physical(
                                     PhysicalPosition::new(x.round() as i32, y.round() as i32),
                                 ));
