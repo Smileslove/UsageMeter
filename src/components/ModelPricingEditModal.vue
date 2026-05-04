@@ -10,6 +10,7 @@ const store = useMonitorStore()
 const props = defineProps<{
   pricing: ModelPricingConfig | null
   locale: string
+  copySource?: ModelPricingConfig | null
 }>()
 
 const emit = defineEmits<{
@@ -32,18 +33,26 @@ const cacheWritePrice = ref<number | undefined>(undefined)
 const isEdit = ref(false)
 
 // 初始化
-watch(() => props.pricing, (pricing) => {
+watch(() => [props.pricing, props.copySource], ([pricing, copySource]) => {
   inputCurrency.value = store.settings.currency.displayCurrency
   if (pricing) {
     isEdit.value = true
     modelId.value = pricing.modelId
     displayName.value = pricing.displayName || ''
-    // 将存储的 USD 价格转换为当前输入币种显示
     const r = store.settings.currency.exchangeRates[inputCurrency.value] || 1.0
     inputPrice.value = parseFloat((pricing.inputPrice * r).toFixed(4))
     outputPrice.value = parseFloat((pricing.outputPrice * r).toFixed(4))
     cacheReadPrice.value = pricing.cacheReadPrice != null ? parseFloat((pricing.cacheReadPrice * r).toFixed(4)) : undefined
     cacheWritePrice.value = pricing.cacheWritePrice != null ? parseFloat((pricing.cacheWritePrice * r).toFixed(4)) : undefined
+  } else if (copySource) {
+    isEdit.value = false
+    modelId.value = copySource.modelId
+    displayName.value = copySource.displayName || ''
+    const r = store.settings.currency.exchangeRates[inputCurrency.value] || 1.0
+    inputPrice.value = parseFloat((copySource.inputPrice * r).toFixed(4))
+    outputPrice.value = parseFloat((copySource.outputPrice * r).toFixed(4))
+    cacheReadPrice.value = copySource.cacheReadPrice != null ? parseFloat((copySource.cacheReadPrice * r).toFixed(4)) : undefined
+    cacheWritePrice.value = copySource.cacheWritePrice != null ? parseFloat((copySource.cacheWritePrice * r).toFixed(4)) : undefined
   } else {
     isEdit.value = false
     modelId.value = ''
@@ -57,12 +66,13 @@ watch(() => props.pricing, (pricing) => {
 
 // 输入币种变化时重新转换显示值
 watch(inputCurrency, (newCurrency) => {
-  if (!props.pricing) return
+  const source = props.pricing || props.copySource
+  if (!source) return
   const r = store.settings.currency.exchangeRates[newCurrency] || 1.0
-  inputPrice.value = parseFloat((props.pricing.inputPrice * r).toFixed(4))
-  outputPrice.value = parseFloat((props.pricing.outputPrice * r).toFixed(4))
-  cacheReadPrice.value = props.pricing.cacheReadPrice != null ? parseFloat((props.pricing.cacheReadPrice * r).toFixed(4)) : undefined
-  cacheWritePrice.value = props.pricing.cacheWritePrice != null ? parseFloat((props.pricing.cacheWritePrice * r).toFixed(4)) : undefined
+  inputPrice.value = parseFloat((source.inputPrice * r).toFixed(4))
+  outputPrice.value = parseFloat((source.outputPrice * r).toFixed(4))
+  cacheReadPrice.value = source.cacheReadPrice != null ? parseFloat((source.cacheReadPrice * r).toFixed(4)) : undefined
+  cacheWritePrice.value = source.cacheWritePrice != null ? parseFloat((source.cacheWritePrice * r).toFixed(4)) : undefined
 })
 
 // 保存（将输入币种价格转换为 USD 存储）

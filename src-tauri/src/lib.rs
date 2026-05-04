@@ -252,6 +252,8 @@ pub fn run() {
             commands::update_custom_model_pricing,
             commands::delete_model_pricing,
             commands::get_all_model_pricings,
+            commands::preview_pricing_apply,
+            commands::apply_pricing_to_records,
             // 开机自启动命令
             commands::enable_autostart,
             commands::disable_autostart,

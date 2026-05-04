@@ -345,3 +345,54 @@ pub async fn get_all_model_pricings() -> Result<Vec<ModelPricingConfig>, String>
     .await
     .map_err(|e| format!("Task error: {}", e))?
 }
+
+/// 预览价格应用：返回匹配的记录数、当前费用、匹配的模型列表
+#[tauri::command]
+pub async fn preview_pricing_apply(
+    model_id: String,
+    match_mode: String,
+    time_range_start: Option<i64>,
+    time_range_end: Option<i64>,
+    client_tool_filter: Option<String>,
+    api_source_key_prefixes: Option<Vec<String>>,
+) -> Result<crate::proxy::PreviewPricingApplyResult, String> {
+    let db = crate::proxy::ProxyDatabase::get_global()
+        .ok_or_else(|| "Proxy database not available".to_string())?;
+
+    let filter = crate::proxy::PricingMatchFilter {
+        model_id: &model_id,
+        match_mode: &match_mode,
+        time_range_start,
+        time_range_end,
+        client_tool_filter: client_tool_filter.as_deref(),
+        api_source_key_prefixes: api_source_key_prefixes.as_deref(),
+    };
+
+    db.preview_pricing_apply(&filter).await
+}
+
+/// 将指定价格应用到匹配的历史记录
+#[tauri::command]
+pub async fn apply_pricing_to_records(
+    model_id: String,
+    pricing: ModelPricingConfig,
+    match_mode: String,
+    time_range_start: Option<i64>,
+    time_range_end: Option<i64>,
+    client_tool_filter: Option<String>,
+    api_source_key_prefixes: Option<Vec<String>>,
+) -> Result<i64, String> {
+    let db = crate::proxy::ProxyDatabase::get_global()
+        .ok_or_else(|| "Proxy database not available".to_string())?;
+
+    let filter = crate::proxy::PricingMatchFilter {
+        model_id: &model_id,
+        match_mode: &match_mode,
+        time_range_start,
+        time_range_end,
+        client_tool_filter: client_tool_filter.as_deref(),
+        api_source_key_prefixes: api_source_key_prefixes.as_deref(),
+    };
+
+    db.apply_pricing_to_records(&pricing, &filter).await
+}

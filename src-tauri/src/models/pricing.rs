@@ -77,7 +77,13 @@ pub fn get_pricing(model: &str, pricings: &[ModelPricingConfig], match_mode: &st
     ModelPricing::default()
 }
 
-fn normalize_model_id(model: &str) -> String {
+/// 标准化模型 ID（移除所有非字母数字字符并转小写）
+///
+/// 用于模糊匹配时的模型 ID 比较，忽略分隔符和大小写差异。
+/// 例如：`MiniMax-M2.5` -> `minimaxm25`
+///
+/// 此函数公开以支持 `proxy::database` 中的批量价格应用逻辑。
+pub fn normalize_model_id(model: &str) -> String {
     model
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric())
@@ -85,7 +91,18 @@ fn normalize_model_id(model: &str) -> String {
         .collect()
 }
 
-fn fuzzy_match_score(
+/// 计算模型与价格配置的模糊匹配分数
+///
+/// 返回 `Some(score)` 表示匹配成功，分数越小匹配度越高：
+/// - `0`: 完全相等
+/// - `1`: 忽略大小写相等
+/// - `2`: 互相包含（大小写）
+/// - `3`: 标准化后互相包含
+///
+/// 返回 `None` 表示不匹配。
+///
+/// 此函数公开以支持 `proxy::database` 中的批量价格应用逻辑。
+pub fn fuzzy_match_score(
     model: &str,
     normalized_model: &str,
     pricing: &ModelPricingConfig,

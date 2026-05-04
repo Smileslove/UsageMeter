@@ -5,6 +5,7 @@ import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import type { ModelPricingConfig } from '../types'
 import ModelPricingEditModal from './ModelPricingEditModal.vue'
+import PricingApplyModal from './PricingApplyModal.vue'
 import { formatCost as formatCostUtil } from '../utils/format'
 
 const emit = defineEmits<{
@@ -30,6 +31,10 @@ const loadError = ref('')
 // 删除确认弹窗状态
 const showDeleteConfirm = ref(false)
 const deletingModelId = ref<string | null>(null)
+
+// 价格应用弹窗状态
+const showApplyModal = ref(false)
+const applyingPricing = ref<ModelPricingConfig | null>(null)
 
 // 当前标签页：custom 或 synced
 const activeTab = ref<'custom' | 'synced'>('custom')
@@ -238,13 +243,41 @@ const clearSyncedPricings = async () => {
 // 添加自定义模型
 const addCustom = () => {
   editingPricing.value = null
+  copySourcePricing.value = null
   showEditModal.value = true
 }
 
 // 编辑模型
 const editPricing = (pricing: ModelPricingConfig) => {
   editingPricing.value = { ...pricing }
+  copySourcePricing.value = null
   showEditModal.value = true
+}
+
+// 复制模型
+const copySourcePricing = ref<ModelPricingConfig | null>(null)
+const copyPricing = (pricing: ModelPricingConfig) => {
+  editingPricing.value = null
+  copySourcePricing.value = { ...pricing }
+  showEditModal.value = true
+}
+
+// 打开价格应用弹窗
+const openApplyModal = (pricing: ModelPricingConfig) => {
+  applyingPricing.value = pricing
+  showApplyModal.value = true
+}
+
+// 价格应用完成回调
+const onPricingApplied = async (_count: number) => {
+  showApplyModal.value = false
+  applyingPricing.value = null
+  // 刷新当前标签页数据以反映新费用
+  if (activeTab.value === 'custom') {
+    await loadCustomPricings()
+  } else {
+    await loadSyncedPricings()
+  }
 }
 
 // 删除模型 - 显示确认弹窗
@@ -470,6 +503,16 @@ const formatTime = (timestamp: number | null): string => {
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                   </svg>
                 </button>
+                <button @click="copyPricing(pricing)" class="p-1 hover:bg-gray-100 dark:hover:bg-neutral-700 rounded transition-colors" :title="t(store.settings.locale, 'settings.modelPricingCopy')">
+                  <svg class="w-3.5 h-3.5 text-gray-400 hover:text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" stroke-width="2" /><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button>
+                <button @click="openApplyModal(pricing)" class="p-1 hover:bg-gray-100 dark:hover:bg-neutral-700 rounded transition-colors" :title="t(store.settings.locale, 'settings.pricingApply')">
+                  <svg class="w-3.5 h-3.5 text-gray-400 hover:text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <rect width="16" height="20" x="4" y="2" rx="2" stroke-width="2" /><line x1="8" x2="16" y1="6" y2="6" stroke-width="2" /><path d="M16 10h.01M12 10h.01M8 10h.01M16 14h.01M12 14h.01M8 14h.01M16 18h.01M12 18h.01M8 18h.01" stroke-width="2" stroke-linecap="round" />
+                  </svg>
+                </button>
                 <button @click="confirmDelete(pricing.modelId)" class="p-1 hover:bg-gray-100 dark:hover:bg-neutral-700 rounded transition-colors">
                   <svg class="w-3.5 h-3.5 text-gray-400 hover:text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -551,7 +594,7 @@ const formatTime = (timestamp: number | null): string => {
             :key="pricing.modelId"
             class="bg-white dark:bg-[#1C1C1E] rounded-lg border border-gray-100 dark:border-neutral-800 px-2.5 py-2"
           >
-            <!-- 第一行：模型名称 + 模型ID -->
+            <!-- 第一行：模型名称 + 模型ID + 操作按钮 -->
             <div class="flex items-center gap-2 mb-1.5">
               <span class="px-1.5 py-0.5 bg-gray-100 dark:bg-neutral-800 rounded text-[11px] font-medium text-gray-700 dark:text-gray-300 shrink-0">
                 {{ pricing.displayName || pricing.modelId }}
@@ -563,6 +606,11 @@ const formatTime = (timestamp: number | null): string => {
                 @mousemove="updateTooltipPosition"
                 @mouseleave="hideTooltip"
               >{{ pricing.modelId }}</span>
+              <button @click="openApplyModal(pricing)" class="p-1 hover:bg-gray-100 dark:hover:bg-neutral-700 rounded transition-colors shrink-0 ml-auto" :title="t(store.settings.locale, 'settings.pricingApply')">
+                <svg class="w-3.5 h-3.5 text-gray-400 hover:text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <rect width="16" height="20" x="4" y="2" rx="2" stroke-width="2" /><line x1="8" x2="16" y1="6" y2="6" stroke-width="2" /><path d="M16 10h.01M12 10h.01M8 10h.01M16 14h.01M12 14h.01M8 14h.01M16 18h.01M12 18h.01M8 18h.01" stroke-width="2" stroke-linecap="round" />
+                </svg>
+              </button>
             </div>
 
             <!-- 第二行：价格信息 -->
@@ -598,9 +646,10 @@ const formatTime = (timestamp: number | null): string => {
           </div>
           <ModelPricingEditModal
             :pricing="editingPricing"
+            :copy-source="copySourcePricing"
             :locale="store.settings.locale"
             @save="savePricing"
-            @close="showEditModal = false"
+            @close="showEditModal = false; copySourcePricing = null"
           />
         </div>
       </div>
@@ -639,6 +688,19 @@ const formatTime = (timestamp: number | null): string => {
               {{ t(store.settings.locale, 'common.confirm') }}
             </button>
           </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 价格应用弹窗 -->
+    <Teleport to="body">
+      <div v-if="showApplyModal && applyingPricing" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" @click.self="showApplyModal = false">
+        <div class="bg-white dark:bg-[#1C1C1E] rounded-2xl shadow-xl overflow-hidden" @click.stop>
+          <PricingApplyModal
+            :pricing="applyingPricing"
+            @close="showApplyModal = false"
+            @applied="onPricingApplied"
+          />
         </div>
       </div>
     </Teleport>

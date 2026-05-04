@@ -410,10 +410,10 @@ impl ProxyDatabase {
     }
 
     fn usage_record_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageRecord> {
-        let input = row.get::<_, i64>(2)? as u64;
-        let output = row.get::<_, i64>(3)? as u64;
-        let cache_create = row.get::<_, i64>(4)? as u64;
-        let cache_read = row.get::<_, i64>(5)? as u64;
+        let input = Self::safe_i64_to_u64(row.get::<_, i64>(2)?);
+        let output = Self::safe_i64_to_u64(row.get::<_, i64>(3)?);
+        let cache_create = Self::safe_i64_to_u64(row.get::<_, i64>(4)?);
+        let cache_read = Self::safe_i64_to_u64(row.get::<_, i64>(5)?);
         Ok(UsageRecord {
             timestamp: row.get::<_, i64>(0)?,
             message_id: row.get(1)?,
@@ -604,10 +604,10 @@ impl ProxyDatabase {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)? as u64,
-                        row.get::<_, i64>(3)? as u64,
-                        row.get::<_, i64>(4)? as u64,
-                        row.get::<_, i64>(5)? as u64,
+                        Self::safe_i64_to_u64(row.get::<_, i64>(2)?),
+                        Self::safe_i64_to_u64(row.get::<_, i64>(3)?),
+                        Self::safe_i64_to_u64(row.get::<_, i64>(4)?),
+                        Self::safe_i64_to_u64(row.get::<_, i64>(5)?),
                         row.get::<_, String>(6)?,
                     ))
                 })
@@ -660,6 +660,348 @@ impl ProxyDatabase {
             records.len()
         );
         Ok(records.len())
+    }
+
+    /// 构建匹配模型列表和查询参数
+    ///
+    /// 精确模式：直接构造 `model = ?`，无需查询全表去重模型。
+    /// 模糊模式：查询所有去重模型名，在 Rust 侧做模糊匹配后构造 `model IN (?...)`。
+    ///
+    /// 安全说明：此函数用 `format!` 构建 SQL 骨架（占位符编号、IN 子句结构），
+    /// 所有实际值均通过 `rusqlite::params!` 参数化绑定，不存在 SQL 注入风险。
+    fn build_pricing_match_params(
+        conn: &rusqlite::Connection,
+        filter: &PricingMatchFilter<'_>,
+    ) -> Result<PricingMatchQuery, String> {
+        if filter.match_mode == "exact" {
+            return Self::build_exact_match_params(filter);
+        }
+        Self::build_fuzzy_match_params(conn, filter)
+    }
+
+    /// 附加筛选条件：时间范围、client_tool、api_key_prefix
+    ///
+    /// 将非模型匹配的筛选条件追加到 `params` 和 `extra_conditions` 中。
+    /// 占位符编号从当前 params 长度 + 1 开始，保证与上游参数顺序一致。
+    fn push_extra_conditions(
+        filter: &PricingMatchFilter<'_>,
+        params: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
+        extra_conditions: &mut String,
+    ) {
+        if let Some(start) = filter.time_range_start {
+            extra_conditions.push_str(&format!(" AND timestamp >= ?{}", params.len() + 1));
+            params.push(Box::new(start));
+        }
+        if let Some(end) = filter.time_range_end {
+            extra_conditions.push_str(&format!(" AND timestamp <= ?{}", params.len() + 1));
+            params.push(Box::new(end));
+        }
+        if let Some(tool) = filter.client_tool_filter {
+            extra_conditions.push_str(&format!(" AND client_tool = ?{}", params.len() + 1));
+            params.push(Box::new(tool.to_string()));
+        }
+        if let Some(prefixes) = filter.api_source_key_prefixes {
+            if !prefixes.is_empty() {
+                let prefix_placeholders: Vec<String> = prefixes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("?{}", params.len() + 1 + i))
+                    .collect();
+                extra_conditions.push_str(&format!(
+                    " AND api_key_prefix IN ({})",
+                    prefix_placeholders.join(",")
+                ));
+                for p in prefixes {
+                    params.push(Box::new(p.clone()));
+                }
+            }
+        }
+    }
+
+    /// 精确匹配：直接使用 `model = ?`，无需查询全表
+    fn build_exact_match_params(filter: &PricingMatchFilter<'_>) -> Result<PricingMatchQuery, String> {
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+            vec![Box::new(filter.model_id.to_string())];
+        let mut extra_conditions = String::new();
+
+        Self::push_extra_conditions(filter, &mut params, &mut extra_conditions);
+
+        Ok(PricingMatchQuery {
+            matched_models: vec![filter.model_id.to_string()],
+            where_clause: format!("= ?1{}", extra_conditions),
+            params,
+        })
+    }
+
+    /// 模糊匹配：查询所有去重模型后在 Rust 侧做模糊匹配
+    fn build_fuzzy_match_params(
+        conn: &rusqlite::Connection,
+        filter: &PricingMatchFilter<'_>,
+    ) -> Result<PricingMatchQuery, String> {
+        // 注意：format! 仅用于构建占位符编号骨架，所有值通过 params 参数化绑定
+        // 获取所有去重的模型名
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT model FROM usage_records WHERE model != ''")
+            .map_err(|e| format!("Failed to prepare model query: {}", e))?;
+        let all_models: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("Failed to query models: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect models: {}", e))?;
+
+        let pricing_config = crate::models::ModelPricingConfig {
+            model_id: filter.model_id.to_string(),
+            display_name: None,
+            input_price: 0.0,
+            output_price: 0.0,
+            cache_write_price: None,
+            cache_read_price: None,
+            source: String::new(),
+            last_updated: 0,
+        };
+        let normalized = crate::models::normalize_model_id(filter.model_id);
+        let matched_models: Vec<String> = all_models
+            .into_iter()
+            .filter(|m| {
+                crate::models::fuzzy_match_score(m, &normalized, &pricing_config).is_some()
+            })
+            .collect();
+
+        if matched_models.is_empty() {
+            return Ok(PricingMatchQuery {
+                matched_models: vec![],
+                where_clause: String::new(),
+                params: vec![],
+            });
+        }
+
+        // 构建 IN 子句
+        let placeholders: Vec<String> = matched_models
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect();
+        let in_clause = placeholders.join(",");
+
+        let mut extra_conditions = String::new();
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = matched_models
+            .iter()
+            .map(|m| Box::new(m.clone()) as Box<dyn rusqlite::types::ToSql>)
+            .collect();
+
+        Self::push_extra_conditions(filter, &mut params, &mut extra_conditions);
+
+        Ok(PricingMatchQuery {
+            matched_models,
+            where_clause: format!("IN ({}){}", in_clause, extra_conditions),
+            params,
+        })
+    }
+
+    /// 安全地将 i64 转换为 u64，负值返回 0
+    fn safe_i64_to_u64(v: i64) -> u64 {
+        if v < 0 {
+            0
+        } else {
+            v as u64
+        }
+    }
+
+    /// 预览按模型名和时间范围匹配的记录
+    pub async fn preview_pricing_apply(
+        &self,
+        filter: &PricingMatchFilter<'_>,
+    ) -> Result<PreviewPricingApplyResult, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+        let query = Self::build_pricing_match_params(&conn, filter)?;
+
+        if query.matched_models.is_empty() {
+            return Ok(PreviewPricingApplyResult {
+                matched_count: 0,
+                total_current_cost: 0.0,
+                model_counts: vec![],
+            });
+        }
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            query.params.iter().map(|p| p.as_ref()).collect();
+
+        // 总计查询（仅统计未被锁定的记录，与 apply 保持一致）
+        // where_clause 由 build_*_match_params 构建，占位符均参数化绑定
+        let sql = format!(
+            r#"
+            SELECT COUNT(*), COALESCE(SUM(estimated_cost), 0)
+            FROM usage_records
+            WHERE model {}
+              AND (cost_locked = 0 OR cost_locked IS NULL)
+            "#,
+            query.where_clause
+        );
+        let (matched_count, total_current_cost) = conn
+            .query_row(&sql, param_refs.as_slice(), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+            })
+            .map_err(|e| format!("Failed to preview pricing apply: {}", e))?;
+
+        // 按模型分组查询（仅统计未被锁定的记录）
+        let sql_models = format!(
+            r#"
+            SELECT model, COUNT(*) as cnt
+            FROM usage_records
+            WHERE model {}
+              AND (cost_locked = 0 OR cost_locked IS NULL)
+            GROUP BY model
+            ORDER BY cnt DESC
+            "#,
+            query.where_clause
+        );
+        let mut stmt = conn
+            .prepare(&sql_models)
+            .map_err(|e| format!("Failed to prepare model count query: {}", e))?;
+        let model_counts: Vec<ModelMatchCount> = stmt
+            .query_map(param_refs.as_slice(), |row| {
+                Ok(ModelMatchCount {
+                    model: row.get::<_, String>(0)?,
+                    count: row.get::<_, i64>(1)?,
+                })
+            })
+            .map_err(|e| format!("Failed to query model counts: {}", e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to collect model counts: {}", e))?;
+
+        Ok(PreviewPricingApplyResult {
+            matched_count,
+            total_current_cost,
+            model_counts,
+        })
+    }
+
+    /// 将指定价格应用到匹配的历史记录
+    pub async fn apply_pricing_to_records(
+        &self,
+        pricing: &crate::models::ModelPricingConfig,
+        filter: &PricingMatchFilter<'_>,
+    ) -> Result<i64, String> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+
+        let query = Self::build_pricing_match_params(&conn, filter)?;
+
+        if query.matched_models.is_empty() {
+            return Ok(0);
+        }
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            query.params.iter().map(|p| p.as_ref()).collect();
+
+        // where_clause 由 build_*_match_params 构建，占位符均参数化绑定
+        let sql = format!(
+            r#"
+            SELECT id, timestamp, input_tokens, output_tokens, cache_create_tokens,
+                   cache_read_tokens, model
+            FROM usage_records
+            WHERE model {}
+              AND (cost_locked = 0 OR cost_locked IS NULL)
+            "#,
+            query.where_clause
+        );
+
+        let records: Vec<(i64, i64, u64, u64, u64, u64, String)> = {
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| format!("Failed to prepare apply query: {}", e))?;
+            let rows: Vec<(i64, i64, u64, u64, u64, u64, String)> = stmt
+                .query_map(param_refs.as_slice(), |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        Self::safe_i64_to_u64(row.get::<_, i64>(2)?),
+                        Self::safe_i64_to_u64(row.get::<_, i64>(3)?),
+                        Self::safe_i64_to_u64(row.get::<_, i64>(4)?),
+                        Self::safe_i64_to_u64(row.get::<_, i64>(5)?),
+                        row.get::<_, String>(6)?,
+                    ))
+                })
+                .map_err(|e| format!("Failed to query records for apply: {}", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to collect records for apply: {}", e))?;
+            rows
+        };
+
+        if records.is_empty() {
+            return Ok(0);
+        }
+
+        // 使用传入的 pricing 计算新费用
+        let pricings = vec![pricing.clone()];
+        let snapshot_id = Self::pricing_snapshot_id(&pricings, "exact");
+
+        // 收集需要刷新的历史日期（今天之前的）
+        let touched_dates: std::collections::HashSet<String> = records
+            .iter()
+            .filter(|(_, timestamp, _, _, _, _, _)| {
+                let date = Self::record_local_date(*timestamp);
+                date < Self::today_local_date()
+            })
+            .map(|(_, timestamp, _, _, _, _, _)| Self::record_local_date(*timestamp))
+            .collect();
+
+        // 使用事务确保原子性，分批处理以减少内存峰值
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+
+        const BATCH_SIZE: usize = 1000;
+        let mut total_updated: i64 = 0;
+
+        let mut update_stmt = tx
+            .prepare(
+                r#"
+                UPDATE usage_records
+                SET estimated_cost = ?1, pricing_snapshot_id = ?2, cost_locked = 1
+                WHERE id = ?3
+                "#,
+            )
+            .map_err(|e| format!("Failed to prepare update statement: {}", e))?;
+
+        for batch in records.chunks(BATCH_SIZE) {
+            for (id, _timestamp, input, output, cache_create, cache_read, model) in batch {
+                let cost = crate::models::estimate_session_cost(
+                    *input,
+                    *output,
+                    *cache_create,
+                    *cache_read,
+                    model,
+                    &pricings,
+                    "exact",
+                );
+                update_stmt
+                    .execute(rusqlite::params![cost, &snapshot_id, id])
+                    .map_err(|e| format!("Failed to update record: {}", e))?;
+                total_updated += 1;
+            }
+        }
+        drop(update_stmt);
+
+        // 刷新受影响日期的 daily_summary（在事务内）
+        for date in &touched_dates {
+            Self::refresh_daily_summary_for_date_conn(&tx, date)?;
+        }
+
+        tx.commit()
+            .map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+        eprintln!(
+            "[database] Applied pricing to {} records for model '{}'",
+            total_updated, filter.model_id
+        );
+        Ok(total_updated)
     }
 
     pub async fn ensure_daily_summaries(
@@ -1639,6 +1981,41 @@ impl Default for ProxyDatabase {
     }
 }
 
+/// 价格应用筛选参数
+#[derive(Debug, Clone, Default)]
+pub struct PricingMatchFilter<'a> {
+    pub model_id: &'a str,
+    pub match_mode: &'a str,
+    pub time_range_start: Option<i64>,
+    pub time_range_end: Option<i64>,
+    pub client_tool_filter: Option<&'a str>,
+    pub api_source_key_prefixes: Option<&'a [String]>,
+}
+
+/// 模型匹配查询结果
+struct PricingMatchQuery {
+    matched_models: Vec<String>,
+    where_clause: String,
+    params: Vec<Box<dyn rusqlite::types::ToSql>>,
+}
+
+/// 单模型匹配计数
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelMatchCount {
+    pub model: String,
+    pub count: i64,
+}
+
+/// 价格应用预览结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewPricingApplyResult {
+    pub matched_count: i64,
+    pub total_current_cost: f64,
+    pub model_counts: Vec<ModelMatchCount>,
+}
+
 /// 时间窗口的聚合统计
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
@@ -1923,6 +2300,7 @@ impl ProxyDatabase {
                     cache_write_price = excluded.cache_write_price,
                     source = excluded.source,
                     last_updated = excluded.last_updated
+                WHERE source != 'custom'
                 "#,
                 rusqlite::params![
                     pricing.model_id,
