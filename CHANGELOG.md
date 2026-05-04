@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.0] - 2026-05-04
+
+### Added
+
+- **Codex Proxy Takeover**: Added full Codex proxy takeover support — config takeover, source handle save/restore, OpenAI-compatible / Responses API forwarding, usage collection, independent Claude Code & Codex toggle switches in Settings, risk confirmation for ChatGPT OAuth mode, and improved SSE chunk parsing for streaming usage
+- **Multi-Currency Support**: Added exchange rate synchronization and automatic currency conversion — all cost displays now support multiple currency symbols with optimized currency list layout
+- **ChatGPT Subscription Query**: Added ChatGPT subscription plan and quota query integration for tracking OpenAI-managed subscription limits
+- **API Source Detection**: Added API source awareness and client tool identification to distinguish traffic from different API clients (Claude Code, Codex, etc.)
+- **Batch Pricing Apply**: Added ability to bulk-apply model pricing to historical records — supports exact/fuzzy matching modes, time range & source filters, preview before apply, protects cost-locked records, batch processing (1000 records per batch)
+- **Reasoning Tokens**: Added `reasoning_tokens` field extraction from OpenAI Response API `output_tokens_details`, with backward-compatible schema migration
+- **Overview Panel Refactor**: Redesigned overview panel with time range quick-switch support, optimized metric cards, and compact Bento-style layout
+- **Statistics Enhancements**: Refactored activity graph with improved year-view interaction, auto time-range switching on month/year toggle, and optimized statistics metric cards
+
+### Changed
+
+- **Provider Config Preservation**: Proxy now preserves the original Claude provider configuration during takeover — configs are stored separately, proxy routing continues working when external tools switch providers, and the active provider config is restored on stop or crash recovery
+- **Window Quota Management**: Moved window quota management to a secondary settings page for cleaner UI organization
+- **Shared Constants**: Extracted `WINDOW_ORDER` shared constant to eliminate three duplicate definitions across the codebase
+
+### Fixed
+
+- **Token Calculation**: Corrected total token formula to `total = input + cacheRead + output`, fixing discrepancies in usage statistics
+- **OpenAI Usage Parsing**: Fixed multiple issues with OpenAI Chat format usage parsing, improving compatibility with various API response shapes
+- **Model Pricing**: Fixed custom model price deletion, separated custom vs. synced model query logic, fixed synced model count including custom models, allowed custom price set to zero, deduplicated same-name models by last_updated, added clear-sync-data option, and fixed async loading race conditions
+- **Token Generation Rate**: Fixed time-base deviation in streaming request duration calculation and corrected per-model rate statistics from simple average to weighted average
+- **TTFT Calculation**: Fixed Time-to-First-Token calculation using the correct time benchmark
+- **Overview Panel**: Fixed donut chart risk level misjudgment, click-switch compact format display issues, and layout optimizations
+- **Statistics Coverage**: Fixed incomplete data issue with time-range filtering in statistics panel
+- **Risk Warning**: Added missing risk warning notice for official API proxy takeover
+- **Windows Compatibility**: Preliminary fixes for Windows platform compatibility issues
+
+---
+
+### 新增
+
+- **Codex 代理接管**：新增完整的 Codex 代理接管功能 — 配置接管、来源句柄保存与恢复、OpenAI 兼容 / Responses API 请求转发与用量采集、设置页独立 Claude Code 与 Codex 接管开关、ChatGPT OAuth 模式风险确认提示、改进 SSE 分块解析与流式用量统计兼容性
+- **多币种支持**：新增汇率同步与多币种自动换算 — 所有费用显示支持多货币符号，优化货币列表布局
+- **ChatGPT 订阅查询**：新增 ChatGPT 订阅套餐与配额查询功能，追踪 OpenAI 管理的订阅限额
+- **API 来源感知**：新增 API 来源感知与客户端工具识别，区分不同 API 客户端流量（Claude Code、Codex 等）
+- **价格批量应用**：支持将模型价格批量应用到历史记录 — 精确/模糊匹配模式、时间范围和来源筛选、应用前预览、保护已锁定费用记录、分批处理（每批 1000 条）
+- **推理 Token 统计**：新增 OpenAI Response API `reasoning_tokens` 字段提取，向后兼容的数据库迁移
+- **概览面板重构**：重新设计概览面板，支持时间范围快速切换，优化指标卡片与紧凑 Bento 布局
+- **统计面板增强**：重构活动图组件，优化年视图交互，月/年切换自动更新时间范围，优化统计指标卡片
+
+### 变更
+
+- **供应商配置保留**：代理接管过程中保留原始 Claude 供应商配置 — 配置独立保存，外部工具切换供应商时代理路由继续工作，停止或崩溃恢复时还原当前活动供应商配置
+- **窗口配额管理**：将窗口配额管理移至设置的二级页面，优化 UI 组织
+- **共享常量提取**：抽取 `WINDOW_ORDER` 共享常量消除三处重复定义
+
+### 修复
+
+- **Token 计算**：修正总 Token 计算公式为 `total = input + cacheRead + output`，修复用量统计偏差
+- **OpenAI 用量解析**：修复 OpenAI Chat 格式 usage 解析多项问题，提升不同 API 响应格式兼容性
+- **模型价格**：修复自定义模型价格删除、分离自定义与同步模型查询逻辑、修复同步模型计数包含自定义模型、允许自定义价格为零、同名模型按 last_updated 去重、新增清空同步数据、修复异步加载竞态问题
+- **Token 生成速率**：修复流式请求 duration_ms 时间基准偏差、修复按模型分组速率统计从简单平均改为加权平均
+- **TTFT 计算**：修复首 Token 时间计算的时间基准问题
+- **概览面板**：修复圆环图风险等级误判、点击切换紧凑格式显示问题及布局优化
+- **统计数据完整性**：修复时间范围筛选下统计数据不全的问题
+- **风险提示**：补充官方 API 代理接管的风险提示
+- **Windows 兼容性**：初步修复 Windows 平台兼容性问题
+
+---
+
 ## [0.3.0] - 2026-04-26
 
 ### Added
@@ -245,6 +309,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.4.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.4.0
 [0.3.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.3.0
 [0.2.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.2.2
 [0.2.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.2.1

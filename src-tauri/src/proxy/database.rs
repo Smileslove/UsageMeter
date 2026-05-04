@@ -719,7 +719,9 @@ impl ProxyDatabase {
     }
 
     /// 精确匹配：直接使用 `model = ?`，无需查询全表
-    fn build_exact_match_params(filter: &PricingMatchFilter<'_>) -> Result<PricingMatchQuery, String> {
+    fn build_exact_match_params(
+        filter: &PricingMatchFilter<'_>,
+    ) -> Result<PricingMatchQuery, String> {
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
             vec![Box::new(filter.model_id.to_string())];
         let mut extra_conditions = String::new();
@@ -762,9 +764,7 @@ impl ProxyDatabase {
         let normalized = crate::models::normalize_model_id(filter.model_id);
         let matched_models: Vec<String> = all_models
             .into_iter()
-            .filter(|m| {
-                crate::models::fuzzy_match_score(m, &normalized, &pricing_config).is_some()
-            })
+            .filter(|m| crate::models::fuzzy_match_score(m, &normalized, &pricing_config).is_some())
             .collect();
 
         if matched_models.is_empty() {

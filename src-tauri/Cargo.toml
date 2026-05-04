@@ -1,6 +1,6 @@
 [package]
 name = "usagemeter"
-version = "0.3.0"
+version = "0.4.0"
 description = "A lightweight tray application for monitoring Claude Code usage"
 authors = ["Smileslove"]
 license = "MIT"

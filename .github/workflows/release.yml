@@ -47,7 +47,7 @@ jobs:
           echo "Changelog entry found for version $VERSION"
 
   build-macos:
-    name: Build macOS (${{ matrix.target }})
+    name: Build macOS (${{ matrix.arch }})
     needs: verify
     runs-on: macos-latest
     strategy:
@@ -98,6 +98,67 @@ jobs:
           tagName: v${{ needs.verify.outputs.version }}
           releaseName: 'UsageMeter v${{ needs.verify.outputs.version }}'
           releaseBodyFile: /tmp/release_notes.md
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-windows:
+    name: Build Windows (${{ matrix.arch }})
+    needs: verify
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            arch: x64
+          - target: aarch64-pc-windows-msvc
+            arch: ARM64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Extract changelog
+        id: changelog
+        shell: pwsh
+        run: |
+          $VERSION = "${{ needs.verify.outputs.version }}"
+          $content = Get-Content CHANGELOG.md -Raw -Encoding UTF8
+          if ($content -match "(?s)## \[$VERSION\].*?(?=\r?\n## \[)") {
+            $matches[0] | Set-Content "${{ runner.temp }}/release_notes.md" -Encoding UTF8
+          }
+          Write-Host "Extracted release notes for version $VERSION"
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        with:
+          tagName: v${{ needs.verify.outputs.version }}
+          releaseName: 'UsageMeter v${{ needs.verify.outputs.version }}'
+          releaseBodyFile: ${{ runner.temp }}/release_notes.md
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
