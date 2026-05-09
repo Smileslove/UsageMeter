@@ -235,7 +235,7 @@ onUnmounted(() => {
               <svg class="w-[11px] h-[11px] text-orange-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
               <span class="text-gray-400">{{ t(store.settings.locale, 'common.totalTokens') }}</span>
             </div>
-            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ formatTokens((session.totalInputTokens || 0) + (session.totalOutputTokens || 0)) }}</span>
+            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ formatTokens((session.totalInputTokens || 0) + (session.totalOutputTokens || 0) + (session.totalCacheCreateTokens || 0) + (session.totalCacheReadTokens || 0)) }}</span>
           </div>
 
           <!-- 平均 Token 速率 -->
@@ -343,7 +343,7 @@ onUnmounted(() => {
               <svg class="w-[11px] h-[11px] text-orange-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
               <span class="text-gray-400">{{ t(store.settings.locale, 'common.totalTokens') }}</span>
             </div>
-            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ formatTokens(project.totalInputTokens + project.totalOutputTokens) }}</span>
+            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ formatTokens(project.totalInputTokens + project.totalOutputTokens + project.totalCacheCreateTokens + project.totalCacheReadTokens) }}</span>
           </div>
 
           <!-- 总成本 -->

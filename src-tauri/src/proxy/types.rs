@@ -295,6 +295,12 @@ pub struct ProjectStats {
     pub total_input_tokens: u64,
     /// 总输出 Token
     pub total_output_tokens: u64,
+    /// 总缓存创建 Token
+    #[serde(default)]
+    pub total_cache_create_tokens: u64,
+    /// 总缓存读取 Token
+    #[serde(default)]
+    pub total_cache_read_tokens: u64,
     /// 总费用
     pub total_cost: f64,
     /// 最后活跃时间（Unix 时间戳）

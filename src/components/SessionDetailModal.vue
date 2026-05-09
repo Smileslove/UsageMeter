@@ -121,7 +121,7 @@ const inputOutputRatio = computed(() => {
             <div class="bg-gray-50 dark:bg-neutral-800/50 rounded-xl p-2.5 text-center">
               <div class="text-[10px] text-gray-400">{{ t(store.settings.locale, 'sessions.totalTokens') }}</div>
               <div class="text-sm font-mono font-semibold text-gray-800 dark:text-gray-100">
-                {{ formatTokens(session.totalInputTokens + session.totalOutputTokens) }}
+                {{ formatTokens(session.totalInputTokens + session.totalOutputTokens + session.totalCacheCreateTokens + session.totalCacheReadTokens) }}
               </div>
             </div>
             <div class="bg-gray-50 dark:bg-neutral-800/50 rounded-xl p-2.5 text-center">

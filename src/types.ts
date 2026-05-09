@@ -298,6 +298,8 @@ export interface ProjectStats {
   sessionCount: number
   totalInputTokens: number
   totalOutputTokens: number
+  totalCacheCreateTokens: number
+  totalCacheReadTokens: number
   totalCost: number
   lastActive: number
 }

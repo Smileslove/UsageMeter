@@ -7,10 +7,7 @@ use crate::models::{
 };
 use crate::proxy::{ProxyServer, SessionStats, UsageRecord};
 use chrono::{Datelike, Local, NaiveDate, TimeZone};
-use std::collections::{HashMap, VecDeque};
-use std::fs;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -345,8 +342,7 @@ async fn get_proxy_usage_snapshot(
         // 计算总 token 用于百分比
         let total_model_tokens: i64 = model_distribution_raw.iter().map(|m| m.total_tokens).sum();
 
-        // 转换为前端 ModelUsage 格式，同时计算总费用
-        let mut total_cost = 0.0;
+        // 转换为前端 ModelUsage 格式
         let model_distribution: Vec<crate::models::ModelUsage> = model_distribution_raw
             .into_iter()
             .map(|m| {
@@ -358,18 +354,6 @@ async fn get_proxy_usage_snapshot(
                 // 解析状态码 JSON
                 let status_codes: Vec<crate::models::StatusCodeCount> =
                     serde_json::from_str(&m.status_codes_json).unwrap_or_default();
-
-                // 计算该模型的费用
-                let model_cost = crate::models::estimate_session_cost(
-                    m.input_tokens as u64,
-                    m.output_tokens as u64,
-                    m.cache_create_tokens as u64,
-                    m.cache_read_tokens as u64,
-                    &m.model,
-                    &pricings,
-                    match_mode,
-                );
-                total_cost += model_cost;
 
                 crate::models::ModelUsage {
                     model_name: m.model,
@@ -385,20 +369,14 @@ async fn get_proxy_usage_snapshot(
             })
             .collect();
 
-        // 更新 summary 中的总费用
-        let summary = crate::models::UsageSummary {
-            total_tokens: windows.iter().map(|w| w.token_used).sum(),
-            total_requests: windows.iter().map(|w| w.request_used).sum(),
-            total_input_tokens: windows.iter().map(|w| w.input_tokens).sum(),
-            total_output_tokens: windows.iter().map(|w| w.output_tokens).sum(),
-            total_cache_create_tokens: windows.iter().map(|w| w.cache_create_tokens).sum(),
-            total_cache_read_tokens: windows.iter().map(|w| w.cache_read_tokens).sum(),
-            total_cost,
+        let summary = build_usage_summary_from_window(
+            &windows,
+            &settings.summary_window,
             overall_risk_level,
             total_success_requests,
             total_client_error_requests,
             total_server_error_requests,
-        };
+        );
 
         Ok(UsageSnapshot {
             generated_at_epoch: now,
@@ -493,6 +471,30 @@ fn estimate_cost_from_model_distribution(
         .sum()
 }
 
+fn estimate_cost_for_local_request(
+    record: &crate::session::LocalRequestRecord,
+    pricings: &[crate::models::ModelPricingConfig],
+    match_mode: &str,
+) -> f64 {
+    crate::models::estimate_session_cost(
+        record.input_tokens,
+        record.output_tokens,
+        record.cache_create_tokens,
+        record.cache_read_tokens,
+        &record.model,
+        pricings,
+        match_mode,
+    )
+}
+
+fn local_request_records(settings: &AppSettings) -> Vec<crate::session::LocalRequestRecord> {
+    let tool_filter = settings.client_tools.build_filter();
+    crate::session::get_all_local_request_records_cached()
+        .into_iter()
+        .filter(|record| crate::session::matches_request_tool_filter(record, &tool_filter))
+        .collect()
+}
+
 fn effective_model_pricings(settings: &AppSettings) -> Vec<crate::models::ModelPricingConfig> {
     let mut pricings = settings.model_pricing.pricings.clone();
 
@@ -514,77 +516,9 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
         .unwrap_or_default()
         .as_secs();
 
-    let files = collect_claude_jsonl_files();
-    if files.is_empty() {
+    let requests = local_request_records(settings);
+    if requests.is_empty() {
         return Err("ERR_LOCAL_JSONL_NOT_FOUND".to_string());
-    }
-
-    // 使用 HashMap 按 message.id 去重，保留最新（token 数最多）的记录
-    let mut request_map: std::collections::HashMap<String, RequestRecord> =
-        std::collections::HashMap::new();
-
-    for file in files {
-        let file_handle = match fs::File::open(&file) {
-            Ok(h) => h,
-            Err(_) => continue,
-        };
-        let reader = BufReader::new(file_handle);
-
-        for line in reader.lines().map_while(Result::ok) {
-            let parsed: serde_json::Value = match serde_json::from_str(&line) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            // 仅处理助手类型的消息
-            if parsed.get("type").and_then(|t| t.as_str()) != Some("assistant") {
-                continue;
-            }
-
-            let message_id = match extract_message_id(&parsed) {
-                Some(id) => id,
-                None => continue,
-            };
-
-            let event_time = match extract_event_epoch(&parsed) {
-                Some(t) if now >= t => t,
-                _ => continue,
-            };
-
-            let tokens = extract_total_tokens(&parsed).unwrap_or(0);
-            if tokens == 0 {
-                continue;
-            }
-
-            let breakdown = extract_token_breakdown(&parsed);
-
-            // 提取模型名称
-            let model = extract_model_name(&parsed);
-
-            // 对于相同的 message.id，保留 token 数最多的记录（最终统计）
-            request_map
-                .entry(message_id)
-                .and_modify(|existing| {
-                    if tokens > existing.tokens {
-                        existing.tokens = tokens;
-                        existing.input_tokens = breakdown.input;
-                        existing.output_tokens = breakdown.output;
-                        existing.cache_create_tokens = breakdown.cache_create;
-                        existing.cache_read_tokens = breakdown.cache_read;
-                        existing.timestamp = event_time;
-                        existing.model = model.clone();
-                    }
-                })
-                .or_insert(RequestRecord {
-                    timestamp: event_time,
-                    tokens,
-                    input_tokens: breakdown.input,
-                    output_tokens: breakdown.output,
-                    cache_create_tokens: breakdown.cache_create,
-                    cache_read_tokens: breakdown.cache_read,
-                    model,
-                });
-        }
     }
 
     // 计算各时间窗口的统计数据
@@ -651,17 +585,18 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             .unwrap_or(0)
     };
 
-    // 模型分布统计（仅统计30天内的数据）
-    // (tokens, input, output, cache_create, cache_read, requests) 总Token, 输入, 输出, 缓存创建, 缓存读取, 请求数
-    let mut model_stats: HashMap<String, (u64, u64, u64, u64, u64, u64)> = HashMap::new();
+    // 各窗口模型统计
     let mut window_model_stats: HashMap<String, HashMap<String, ModelTokenTotals>> = HashMap::new();
     let pricings = effective_model_pricings(settings);
     let match_mode = &settings.model_pricing.match_mode;
 
-    for record in request_map.values() {
-        let age = now - record.timestamp;
+    for record in &requests {
+        let record_timestamp = record.timestamp.max(0) as u64;
+        let Some(age) = local_record_age_seconds(record_timestamp, now) else {
+            continue;
+        };
         if age <= 5 * 60 * 60 {
-            total_5h_tokens += record.tokens;
+            total_5h_tokens += record.total_tokens;
             total_5h_input_tokens += record.input_tokens;
             total_5h_output_tokens += record.output_tokens;
             total_5h_cache_create_tokens += record.cache_create_tokens;
@@ -670,7 +605,7 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             add_window_model_stats(&mut window_model_stats, "5h", record);
         }
         if age <= 24 * 60 * 60 {
-            total_24h_tokens += record.tokens;
+            total_24h_tokens += record.total_tokens;
             total_24h_input_tokens += record.input_tokens;
             total_24h_output_tokens += record.output_tokens;
             total_24h_cache_create_tokens += record.cache_create_tokens;
@@ -679,8 +614,8 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             add_window_model_stats(&mut window_model_stats, "24h", record);
         }
         // 今天：记录时间戳在今天内
-        if record.timestamp >= today_start {
-            total_today_tokens += record.tokens;
+        if record_timestamp >= today_start {
+            total_today_tokens += record.total_tokens;
             total_today_input_tokens += record.input_tokens;
             total_today_output_tokens += record.output_tokens;
             total_today_cache_create_tokens += record.cache_create_tokens;
@@ -689,7 +624,7 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             add_window_model_stats(&mut window_model_stats, "today", record);
         }
         if age <= 7 * 24 * 60 * 60 {
-            total_7d_tokens += record.tokens;
+            total_7d_tokens += record.total_tokens;
             total_7d_input_tokens += record.input_tokens;
             total_7d_output_tokens += record.output_tokens;
             total_7d_cache_create_tokens += record.cache_create_tokens;
@@ -698,30 +633,17 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             add_window_model_stats(&mut window_model_stats, "7d", record);
         }
         if age <= 30 * 24 * 60 * 60 {
-            total_30d_tokens += record.tokens;
+            total_30d_tokens += record.total_tokens;
             total_30d_input_tokens += record.input_tokens;
             total_30d_output_tokens += record.output_tokens;
             total_30d_cache_create_tokens += record.cache_create_tokens;
             total_30d_cache_read_tokens += record.cache_read_tokens;
             total_30d_requests += 1;
             add_window_model_stats(&mut window_model_stats, "30d", record);
-
-            // 累计模型统计
-            if !record.model.is_empty() {
-                let entry = model_stats
-                    .entry(record.model.clone())
-                    .or_insert((0, 0, 0, 0, 0, 0));
-                entry.0 += record.tokens;
-                entry.1 += record.input_tokens;
-                entry.2 += record.output_tokens;
-                entry.3 += record.cache_create_tokens;
-                entry.4 += record.cache_read_tokens;
-                entry.5 += 1;
-            }
         }
         // 当前月份：记录时间戳在本月内
-        if record.timestamp >= current_month_start {
-            total_current_month_tokens += record.tokens;
+        if record_timestamp >= current_month_start {
+            total_current_month_tokens += record.total_tokens;
             total_current_month_input_tokens += record.input_tokens;
             total_current_month_output_tokens += record.output_tokens;
             total_current_month_cache_create_tokens += record.cache_create_tokens;
@@ -840,67 +762,18 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
         .unwrap_or(&"safe".to_string())
         .clone();
 
-    // 计算模型分布
-    let total_model_tokens: u64 = model_stats.values().map(|(t, _, _, _, _, _)| t).sum();
+    let model_distribution = build_model_distribution_from_window_stats(
+        window_model_stats.get(&settings.summary_window),
+    );
 
-    // 计算总费用（在截断之前，基于所有模型计算）
-    let total_cost: f64 = model_stats
-        .iter()
-        .map(
-            |(model_name, (_tokens, input, output, cache_create, cache_read, _requests))| {
-                crate::models::estimate_session_cost(
-                    *input,
-                    *output,
-                    *cache_create,
-                    *cache_read,
-                    model_name,
-                    &pricings,
-                    match_mode,
-                )
-            },
-        )
-        .sum();
-
-    let mut model_distribution: Vec<crate::models::ModelUsage> = model_stats
-        .into_iter()
-        .map(
-            |(model_name, (tokens, input, output, cache_create, cache_read, requests))| {
-                let percent = if total_model_tokens > 0 {
-                    (tokens as f64 / total_model_tokens as f64) * 100.0
-                } else {
-                    0.0
-                };
-                crate::models::ModelUsage {
-                    model_name,
-                    token_used: tokens,
-                    input_tokens: input,
-                    output_tokens: output,
-                    cache_create_tokens: cache_create,
-                    cache_read_tokens: cache_read,
-                    request_count: requests,
-                    percent,
-                    status_codes: Vec::new(), // 本地 JSONL 模式不包含状态码信息
-                }
-            },
-        )
-        .collect();
-    // 按 token 使用量降序排序，取 Top 5（仅用于显示，不影响费用计算）
-    model_distribution.sort_by_key(|b| std::cmp::Reverse(b.token_used));
-    model_distribution.truncate(5);
-
-    let summary = crate::models::UsageSummary {
-        total_tokens: windows.iter().map(|w| w.token_used).sum(),
-        total_requests: windows.iter().map(|w| w.request_used).sum(),
-        total_input_tokens: windows.iter().map(|w| w.input_tokens).sum(),
-        total_output_tokens: windows.iter().map(|w| w.output_tokens).sum(),
-        total_cache_create_tokens: windows.iter().map(|w| w.cache_create_tokens).sum(),
-        total_cache_read_tokens: windows.iter().map(|w| w.cache_read_tokens).sum(),
-        total_cost,
+    let summary = build_usage_summary_from_window(
+        &windows,
+        &settings.summary_window,
         overall_risk_level,
-        total_success_requests: 0,
-        total_client_error_requests: 0,
-        total_server_error_requests: 0,
-    };
+        0,
+        0,
+        0,
+    );
 
     Ok(UsageSnapshot {
         generated_at_epoch: now,
@@ -913,28 +786,19 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
 }
 
 // 辅助类型和函数
-struct RequestRecord {
-    timestamp: u64,
-    tokens: u64, // total_tokens: 总 Token = input + cache_create + cache_read + output
-    input_tokens: u64, // input_tokens: 实际输入（不含缓存）
-    output_tokens: u64,
-    cache_create_tokens: u64,
-    cache_read_tokens: u64,
-    model: String, // model: 模型名称
-}
-
 #[derive(Default)]
 struct ModelTokenTotals {
     input_tokens: u64,
     output_tokens: u64,
     cache_create_tokens: u64,
     cache_read_tokens: u64,
+    request_count: u64,
 }
 
 fn add_window_model_stats(
     window_model_stats: &mut HashMap<String, HashMap<String, ModelTokenTotals>>,
     window: &str,
-    record: &RequestRecord,
+    record: &crate::session::LocalRequestRecord,
 ) {
     if record.model.is_empty() {
         return;
@@ -949,6 +813,7 @@ fn add_window_model_stats(
     entry.output_tokens += record.output_tokens;
     entry.cache_create_tokens += record.cache_create_tokens;
     entry.cache_read_tokens += record.cache_read_tokens;
+    entry.request_count += 1;
 }
 
 fn estimate_cost_from_window_model_stats(
@@ -973,177 +838,91 @@ fn estimate_cost_from_window_model_stats(
         .sum()
 }
 
+fn build_model_distribution_from_window_stats(
+    window_stats: Option<&HashMap<String, ModelTokenTotals>>,
+) -> Vec<crate::models::ModelUsage> {
+    let total_model_tokens: u64 = window_stats
+        .into_iter()
+        .flat_map(|stats| stats.values())
+        .map(|totals| {
+            totals.input_tokens
+                + totals.output_tokens
+                + totals.cache_create_tokens
+                + totals.cache_read_tokens
+        })
+        .sum();
+
+    let mut model_distribution: Vec<crate::models::ModelUsage> = window_stats
+        .into_iter()
+        .flat_map(|stats| stats.iter())
+        .map(|(model_name, totals)| {
+            let tokens = totals.input_tokens
+                + totals.output_tokens
+                + totals.cache_create_tokens
+                + totals.cache_read_tokens;
+            let percent = if total_model_tokens > 0 {
+                (tokens as f64 / total_model_tokens as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            crate::models::ModelUsage {
+                model_name: model_name.clone(),
+                token_used: tokens,
+                input_tokens: totals.input_tokens,
+                output_tokens: totals.output_tokens,
+                cache_create_tokens: totals.cache_create_tokens,
+                cache_read_tokens: totals.cache_read_tokens,
+                request_count: totals.request_count,
+                percent,
+                status_codes: Vec::new(),
+            }
+        })
+        .collect();
+
+    model_distribution.sort_by_key(|entry| std::cmp::Reverse(entry.token_used));
+    model_distribution.truncate(5);
+    model_distribution
+}
+
+fn build_usage_summary_from_window(
+    windows: &[WindowUsage],
+    summary_window: &str,
+    overall_risk_level: String,
+    total_success_requests: u64,
+    total_client_error_requests: u64,
+    total_server_error_requests: u64,
+) -> crate::models::UsageSummary {
+    let selected_window = windows.iter().find(|w| w.window == summary_window);
+
+    crate::models::UsageSummary {
+        total_tokens: selected_window.map(|w| w.token_used).unwrap_or(0),
+        total_requests: selected_window.map(|w| w.request_used).unwrap_or(0),
+        total_input_tokens: selected_window.map(|w| w.input_tokens).unwrap_or(0),
+        total_output_tokens: selected_window.map(|w| w.output_tokens).unwrap_or(0),
+        total_cache_create_tokens: selected_window.map(|w| w.cache_create_tokens).unwrap_or(0),
+        total_cache_read_tokens: selected_window.map(|w| w.cache_read_tokens).unwrap_or(0),
+        total_cost: selected_window.map(|w| w.cost).unwrap_or(0.0),
+        overall_risk_level,
+        total_success_requests,
+        total_client_error_requests,
+        total_server_error_requests,
+    }
+}
+
+fn local_record_age_seconds(record_timestamp: u64, now: u64) -> Option<u64> {
+    if record_timestamp > now {
+        None
+    } else {
+        Some(now - record_timestamp)
+    }
+}
+
 fn local_tool_filter_matches_claude(settings: &AppSettings) -> bool {
     match settings.client_tools.build_filter() {
         ToolFilter::All => true,
         ToolFilter::Tool(tool) => tool.trim().is_empty() || tool == "claude_code",
     }
-}
-
-fn collect_claude_jsonl_files() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Some(home) = dirs::home_dir() {
-        roots.push(home.join(".config").join("claude").join("projects"));
-        roots.push(home.join(".claude").join("projects"));
-    }
-
-    let mut queue: VecDeque<PathBuf> = roots.into_iter().filter(|p| p.exists()).collect();
-    let mut files = Vec::new();
-
-    while let Some(path) = queue.pop_front() {
-        if let Ok(read_dir) = fs::read_dir(path) {
-            for entry in read_dir.flatten() {
-                let entry_path = entry.path();
-                if entry_path.is_dir() {
-                    queue.push_back(entry_path);
-                } else if entry_path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e.eq_ignore_ascii_case("jsonl"))
-                    .unwrap_or(false)
-                {
-                    files.push(entry_path);
-                }
-            }
-        }
-    }
-
-    files
-}
-
-fn extract_message_id(value: &serde_json::Value) -> Option<String> {
-    value
-        .get("message")
-        .and_then(|m| m.get("id"))
-        .and_then(|id| id.as_str())
-        .map(|s| s.to_string())
-}
-
-fn extract_event_epoch(value: &serde_json::Value) -> Option<u64> {
-    let ts_keys = ["timestamp", "created_at", "createdAt", "time", "date"];
-
-    let raw_ts = ts_keys
-        .iter()
-        .find_map(|k| find_number_by_keys(value, &[*k]))
-        .or_else(|| match value {
-            serde_json::Value::Object(map) => ts_keys.iter().find_map(|k| {
-                map.get(*k).and_then(|v| v.as_str()).and_then(|text| {
-                    chrono::DateTime::parse_from_rfc3339(text)
-                        .ok()
-                        .map(|dt| dt.timestamp() as u64)
-                })
-            }),
-            _ => None,
-        });
-
-    raw_ts.map(|num| {
-        if num > 10_000_000_000 {
-            num / 1000
-        } else {
-            num
-        }
-    })
-}
-
-fn extract_total_tokens(value: &serde_json::Value) -> Option<u64> {
-    // 计算总 Token：input + cache_create + cache_read + output（含缓存）
-    let in_keys = ["input_tokens", "inputTokens", "input"];
-    let out_keys = ["output_tokens", "outputTokens", "output"];
-    let cache_create_keys = [
-        "cache_creation_input_tokens",
-        "cacheCreationInputTokens",
-        "cache_create_tokens",
-    ];
-    let cache_read_keys = [
-        "cache_read_input_tokens",
-        "cacheReadInputTokens",
-        "cache_read_tokens",
-    ];
-
-    let input = find_number_by_keys(value, &in_keys).unwrap_or(0);
-    let output = find_number_by_keys(value, &out_keys).unwrap_or(0);
-    let cache_create = find_number_by_keys(value, &cache_create_keys).unwrap_or(0);
-    let cache_read = find_number_by_keys(value, &cache_read_keys).unwrap_or(0);
-
-    let sum = input + cache_create + cache_read + output;
-    if sum > 0 {
-        Some(sum)
-    } else {
-        None
-    }
-}
-
-fn extract_model_name(value: &serde_json::Value) -> String {
-    // 模型名称可能在 message.model 或直接在顶层 model 字段
-    value
-        .get("message")
-        .and_then(|m| m.get("model"))
-        .and_then(|m| m.as_str())
-        .or_else(|| value.get("model").and_then(|m| m.as_str()))
-        .unwrap_or("unknown")
-        .to_string()
-}
-
-struct TokenBreakdown {
-    input: u64,
-    output: u64,
-    cache_create: u64,
-    cache_read: u64,
-}
-
-fn extract_token_breakdown(value: &serde_json::Value) -> TokenBreakdown {
-    let in_keys = ["input_tokens", "inputTokens", "input"];
-    let out_keys = ["output_tokens", "outputTokens", "output"];
-    let cache_create_keys = ["cache_creation_input_tokens", "cacheCreateTokens"];
-    let cache_read_keys = ["cache_read_input_tokens", "cacheReadTokens"];
-
-    TokenBreakdown {
-        input: find_number_by_keys(value, &in_keys).unwrap_or(0),
-        output: find_number_by_keys(value, &out_keys).unwrap_or(0),
-        cache_create: find_number_by_keys(value, &cache_create_keys).unwrap_or(0),
-        cache_read: find_number_by_keys(value, &cache_read_keys).unwrap_or(0),
-    }
-}
-
-fn find_number_by_keys(value: &serde_json::Value, keys: &[&str]) -> Option<u64> {
-    match value {
-        serde_json::Value::Object(map) => {
-            for key in keys {
-                if let Some(found) = map.get(*key).and_then(parse_u64_from_value) {
-                    return Some(found);
-                }
-            }
-
-            for child in map.values() {
-                if let Some(found) = find_number_by_keys(child, keys) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        serde_json::Value::Array(items) => {
-            for item in items {
-                if let Some(found) = find_number_by_keys(item, keys) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-fn parse_u64_from_value(value: &serde_json::Value) -> Option<u64> {
-    if let Some(v) = value.as_u64() {
-        return Some(v);
-    }
-    if let Some(v) = value.as_f64() {
-        return Some(v.max(0.0) as u64);
-    }
-    if let Some(v) = value.as_i64() {
-        return Some(v.max(0) as u64);
-    }
-    None
 }
 
 #[derive(Default, Clone)]
@@ -1180,8 +959,8 @@ impl StatAccumulator {
         self.output_tokens += output;
         self.cache_create_tokens += cache_create;
         self.cache_read_tokens += cache_read;
-        // 总 Token = 输入 + 缓存读取 + 输出（不包含缓存创建）
-        self.total_tokens += input + output + cache_read;
+        // 总 Token = 输入 + 缓存创建 + 缓存读取 + 输出
+        self.total_tokens += input + output + cache_create + cache_read;
         self.cost += cost;
     }
 
@@ -1564,56 +1343,40 @@ fn build_jsonl_statistics(query: &StatisticsQuery, settings: &AppSettings) -> St
     let mut model_map: HashMap<String, StatAccumulator> = HashMap::new();
     let mut model_trend_map: HashMap<String, HashMap<i64, StatAccumulator>> = HashMap::new();
 
-    for meta in crate::session::get_all_session_meta_cached() {
-        if !crate::session::matches_tool_filter(&meta, &settings.client_tools.build_filter()) {
-            continue;
-        }
-        let event_epoch = if meta.end_time > 0 {
-            meta.end_time
-        } else {
-            meta.last_modified
-        };
+    for record in local_request_records(settings) {
+        let event_epoch = record.timestamp;
         if event_epoch < start_epoch || event_epoch >= end_epoch {
             continue;
         }
-        let model = meta
-            .models
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "unknown".to_string());
-        let cost = crate::models::estimate_session_cost(
-            meta.total_input_tokens,
-            meta.total_output_tokens,
-            meta.total_cache_create_tokens,
-            meta.total_cache_read_tokens,
-            &model,
-            &pricings,
-            &match_mode,
-        );
-        let requests = meta.message_count.max(1);
+        let model = if record.model.is_empty() {
+            "unknown".to_string()
+        } else {
+            record.model.clone()
+        };
+        let cost = estimate_cost_for_local_request(&record, &pricings, &match_mode);
         let bucket = bucket_start(event_epoch, &query.bucket);
         total.add_tokens(
-            meta.total_input_tokens,
-            meta.total_output_tokens,
-            meta.total_cache_create_tokens,
-            meta.total_cache_read_tokens,
-            requests,
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_create_tokens,
+            record.cache_read_tokens,
+            1,
             cost,
         );
         trend_map.entry(bucket).or_default().add_tokens(
-            meta.total_input_tokens,
-            meta.total_output_tokens,
-            meta.total_cache_create_tokens,
-            meta.total_cache_read_tokens,
-            requests,
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_create_tokens,
+            record.cache_read_tokens,
+            1,
             cost,
         );
         model_map.entry(model.clone()).or_default().add_tokens(
-            meta.total_input_tokens,
-            meta.total_output_tokens,
-            meta.total_cache_create_tokens,
-            meta.total_cache_read_tokens,
-            requests,
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_create_tokens,
+            record.cache_read_tokens,
+            1,
             cost,
         );
         model_trend_map
@@ -1622,11 +1385,11 @@ fn build_jsonl_statistics(query: &StatisticsQuery, settings: &AppSettings) -> St
             .entry(bucket)
             .or_default()
             .add_tokens(
-                meta.total_input_tokens,
-                meta.total_output_tokens,
-                meta.total_cache_create_tokens,
-                meta.total_cache_read_tokens,
-                requests,
+                record.input_tokens,
+                record.output_tokens,
+                record.cache_create_tokens,
+                record.cache_read_tokens,
+                1,
                 cost,
             );
     }
@@ -1896,16 +1659,8 @@ pub async fn get_month_activity(
             }
         }
     } else {
-        let tool_filter = settings.client_tools.build_filter();
-        for meta in crate::session::get_all_session_meta_cached() {
-            if !crate::session::matches_tool_filter(&meta, &tool_filter) {
-                continue;
-            }
-            let event_epoch = if meta.end_time > 0 {
-                meta.end_time
-            } else {
-                meta.last_modified
-            };
+        for record in local_request_records(&settings) {
+            let event_epoch = record.timestamp;
             if event_epoch < month_start || event_epoch >= month_end {
                 continue;
             }
@@ -1915,31 +1670,18 @@ pub async fn get_month_activity(
                 .unwrap_or_else(Local::now)
                 .format("%Y-%m-%d")
                 .to_string();
-            let model = meta
-                .models
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string());
-            let cost = crate::models::estimate_session_cost(
-                meta.total_input_tokens,
-                meta.total_output_tokens,
-                meta.total_cache_create_tokens,
-                meta.total_cache_read_tokens,
-                &model,
-                &pricings,
-                &match_mode,
-            );
+            let cost = estimate_cost_for_local_request(&record, &pricings, &match_mode);
             let entry = day_map.entry(date).or_default();
             entry.0.add_tokens(
-                meta.total_input_tokens,
-                meta.total_output_tokens,
-                meta.total_cache_create_tokens,
-                meta.total_cache_read_tokens,
-                meta.message_count.max(1),
+                record.input_tokens,
+                record.output_tokens,
+                record.cache_create_tokens,
+                record.cache_read_tokens,
+                1,
                 cost,
             );
-            for model in meta.models {
-                entry.1.insert(model);
+            if !record.model.is_empty() {
+                entry.1.insert(record.model);
             }
         }
     }
@@ -2098,16 +1840,8 @@ pub async fn get_year_activity(
             }
         }
     } else {
-        let tool_filter = settings.client_tools.build_filter();
-        for meta in crate::session::get_all_session_meta_cached() {
-            if !crate::session::matches_tool_filter(&meta, &tool_filter) {
-                continue;
-            }
-            let event_epoch = if meta.end_time > 0 {
-                meta.end_time
-            } else {
-                meta.last_modified
-            };
+        for record in local_request_records(&settings) {
+            let event_epoch = record.timestamp;
             if event_epoch < year_start || event_epoch >= year_end {
                 continue;
             }
@@ -2117,31 +1851,18 @@ pub async fn get_year_activity(
                 .unwrap_or_else(Local::now)
                 .format("%Y-%m-%d")
                 .to_string();
-            let model = meta
-                .models
-                .first()
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string());
-            let cost = crate::models::estimate_session_cost(
-                meta.total_input_tokens,
-                meta.total_output_tokens,
-                meta.total_cache_create_tokens,
-                meta.total_cache_read_tokens,
-                &model,
-                &pricings,
-                &match_mode,
-            );
+            let cost = estimate_cost_for_local_request(&record, &pricings, &match_mode);
             let entry = day_map.entry(date).or_default();
             entry.0.add_tokens(
-                meta.total_input_tokens,
-                meta.total_output_tokens,
-                meta.total_cache_create_tokens,
-                meta.total_cache_read_tokens,
-                meta.message_count.max(1),
+                record.input_tokens,
+                record.output_tokens,
+                record.cache_create_tokens,
+                record.cache_read_tokens,
+                1,
                 cost,
             );
-            for model in meta.models {
-                entry.1.insert(model);
+            if !record.model.is_empty() {
+                entry.1.insert(record.model);
             }
         }
     }
@@ -2364,17 +2085,12 @@ pub async fn get_sessions(
     let sessions: Vec<SessionStats> = meta_list
         .into_iter()
         .map(|meta| {
-            // 计算基于 JSONL 的费用
-            let first_model = meta.models.first().map(|s| s.as_str()).unwrap_or("");
-            let jsonl_cost = crate::models::estimate_session_cost(
-                meta.total_input_tokens,
-                meta.total_output_tokens,
-                meta.total_cache_create_tokens,
-                meta.total_cache_read_tokens,
-                first_model,
-                &pricings,
-                &match_mode,
-            );
+            let session_requests =
+                crate::session::get_local_request_records_by_session_cached(&meta.session_id);
+            let jsonl_cost: f64 = session_requests
+                .iter()
+                .map(|record| estimate_cost_for_local_request(record, &pricings, &match_mode))
+                .sum();
 
             // 尝试从 session_stats 获取性能指标
             if let Some(proxy) = proxy_stats_map.get(&meta.session_id) {
@@ -2486,16 +2202,11 @@ pub async fn get_session_detail(
     };
 
     // 2. 计算基于 JSONL 的费用
-    let first_model = meta.models.first().map(|s| s.as_str()).unwrap_or("");
-    let jsonl_cost = crate::models::estimate_session_cost(
-        meta.total_input_tokens,
-        meta.total_output_tokens,
-        meta.total_cache_create_tokens,
-        meta.total_cache_read_tokens,
-        first_model,
-        &pricings,
-        &match_mode,
-    );
+    let jsonl_cost: f64 =
+        crate::session::get_local_request_records_by_session_cached(&meta.session_id)
+            .iter()
+            .map(|record| estimate_cost_for_local_request(record, &pricings, &match_mode))
+            .sum();
 
     // 3. 仅在代理模式下从 session_stats 表获取性能指标
     let proxy_stats: Option<SessionStats> = if settings.data_source == "proxy" {
@@ -2604,17 +2315,11 @@ pub async fn get_project_stats(
             .clone()
             .unwrap_or_else(|| "未命名项目".to_string());
 
-        // 计算费用（JSONL token 统计 + 价格配置）
-        let first_model = meta.models.first().map(|s| s.as_str()).unwrap_or("");
-        let cost = crate::models::estimate_session_cost(
-            meta.total_input_tokens,
-            meta.total_output_tokens,
-            meta.total_cache_create_tokens,
-            meta.total_cache_read_tokens,
-            first_model,
-            &pricings,
-            &match_mode,
-        );
+        let cost: f64 =
+            crate::session::get_local_request_records_by_session_cached(&meta.session_id)
+                .iter()
+                .map(|record| estimate_cost_for_local_request(record, &pricings, &match_mode))
+                .sum();
 
         let entry = project_map
             .entry(project_name)
@@ -2623,6 +2328,8 @@ pub async fn get_project_stats(
                 session_count: 0,
                 total_input_tokens: 0,
                 total_output_tokens: 0,
+                total_cache_create_tokens: 0,
+                total_cache_read_tokens: 0,
                 total_cost: 0.0,
                 last_active: 0,
             });
@@ -2634,6 +2341,8 @@ pub async fn get_project_stats(
         entry.session_count += 1;
         entry.total_input_tokens += meta.total_input_tokens;
         entry.total_output_tokens += meta.total_output_tokens;
+        entry.total_cache_create_tokens += meta.total_cache_create_tokens;
+        entry.total_cache_read_tokens += meta.total_cache_read_tokens;
         entry.total_cost += cost;
         if meta.end_time > entry.last_active {
             entry.last_active = meta.end_time;
@@ -2645,4 +2354,112 @@ pub async fn get_project_stats(
     projects.sort_by_key(|b| std::cmp::Reverse(b.last_active));
 
     Ok(projects)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn local_record_age_seconds_rejects_future_timestamps() {
+        assert_eq!(local_record_age_seconds(100, 100), Some(0));
+        assert_eq!(local_record_age_seconds(80, 100), Some(20));
+        assert_eq!(local_record_age_seconds(101, 100), None);
+    }
+
+    #[test]
+    fn build_usage_summary_from_window_keeps_cost_in_same_window() {
+        let windows = vec![
+            WindowUsage {
+                window: "5h".to_string(),
+                token_used: 120,
+                input_tokens: 70,
+                output_tokens: 40,
+                cache_create_tokens: 5,
+                cache_read_tokens: 5,
+                request_used: 3,
+                token_limit: None,
+                request_limit: None,
+                token_percent: None,
+                request_percent: None,
+                risk_level: "safe".to_string(),
+                cost: 1.25,
+                success_requests: 0,
+                client_error_requests: 0,
+                server_error_requests: 0,
+            },
+            WindowUsage {
+                window: "30d".to_string(),
+                token_used: 2400,
+                input_tokens: 1400,
+                output_tokens: 800,
+                cache_create_tokens: 100,
+                cache_read_tokens: 100,
+                request_used: 60,
+                token_limit: None,
+                request_limit: None,
+                token_percent: None,
+                request_percent: None,
+                risk_level: "warning".to_string(),
+                cost: 9.75,
+                success_requests: 0,
+                client_error_requests: 0,
+                server_error_requests: 0,
+            },
+        ];
+
+        let summary =
+            build_usage_summary_from_window(&windows, "5h", "warning".to_string(), 0, 0, 0);
+
+        assert_eq!(summary.total_tokens, 120);
+        assert_eq!(summary.total_requests, 3);
+        assert_eq!(summary.total_input_tokens, 70);
+        assert_eq!(summary.total_output_tokens, 40);
+        assert_eq!(summary.total_cache_create_tokens, 5);
+        assert_eq!(summary.total_cache_read_tokens, 5);
+        assert_eq!(summary.total_cost, 1.25);
+        assert_eq!(summary.overall_risk_level, "warning");
+    }
+
+    #[test]
+    fn build_model_distribution_from_window_stats_uses_selected_window_only() {
+        let mut five_hour = HashMap::new();
+        five_hour.insert(
+            "model-a".to_string(),
+            ModelTokenTotals {
+                input_tokens: 70,
+                output_tokens: 30,
+                cache_create_tokens: 0,
+                cache_read_tokens: 0,
+                request_count: 2,
+            },
+        );
+
+        let mut thirty_day = HashMap::new();
+        thirty_day.insert(
+            "model-b".to_string(),
+            ModelTokenTotals {
+                input_tokens: 700,
+                output_tokens: 300,
+                cache_create_tokens: 0,
+                cache_read_tokens: 0,
+                request_count: 20,
+            },
+        );
+
+        let five_hour_distribution = build_model_distribution_from_window_stats(Some(&five_hour));
+        let thirty_day_distribution = build_model_distribution_from_window_stats(Some(&thirty_day));
+
+        assert_eq!(five_hour_distribution.len(), 1);
+        assert_eq!(five_hour_distribution[0].model_name, "model-a");
+        assert_eq!(five_hour_distribution[0].token_used, 100);
+        assert_eq!(five_hour_distribution[0].request_count, 2);
+        assert_eq!(five_hour_distribution[0].percent, 100.0);
+
+        assert_eq!(thirty_day_distribution.len(), 1);
+        assert_eq!(thirty_day_distribution[0].model_name, "model-b");
+        assert_eq!(thirty_day_distribution[0].token_used, 1000);
+        assert_eq!(thirty_day_distribution[0].request_count, 20);
+    }
 }

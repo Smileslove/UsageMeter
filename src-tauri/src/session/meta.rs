@@ -1,11 +1,11 @@
 //! 会话元数据模块
 //!
-//! 从 JSONL 文件提取会话元数据，包括：
+//! 从 JSONL 文件提取会话元数据和本地请求事实，包括：
 //! - 工作目录（cwd）
 //! - 会话主题（首条用户消息）
 //! - 最后提示（最后一条用户消息）
 //! - 自定义会话名称（slug/customTitle）
-//! - 基本 Token 统计（JSONL 中可用时）
+//! - 去重后的 assistant request 统计
 
 use serde::{Deserialize, Serialize};
 
@@ -50,7 +50,7 @@ pub struct SessionMeta {
     /// 模型列表
     #[serde(default)]
     pub models: Vec<String>,
-    /// 消息数量
+    /// 请求数量（去重后的 assistant message.id 数）
     #[serde(default)]
     pub message_count: u64,
     /// 开始时间（Unix timestamp）
@@ -67,6 +67,42 @@ pub struct SessionMeta {
     pub message_ids: Vec<String>,
 }
 
+/// 本地 transcript 中抽取出的单条请求事实
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalRequestRecord {
+    /// 所属会话 ID
+    pub session_id: String,
+    /// 客户端工具标识
+    #[serde(default)]
+    pub tool: String,
+    /// 请求时间（Unix 时间戳，秒）
+    pub timestamp: i64,
+    /// assistant message.id
+    pub message_id: String,
+    /// 输入 Token（不含缓存）
+    #[serde(default)]
+    pub input_tokens: u64,
+    /// 输出 Token
+    #[serde(default)]
+    pub output_tokens: u64,
+    /// 缓存创建 Token
+    #[serde(default)]
+    pub cache_create_tokens: u64,
+    /// 缓存读取 Token
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    /// 总 Token = input + cache_create + cache_read + output
+    #[serde(default)]
+    pub total_tokens: u64,
+    /// 使用模型
+    #[serde(default)]
+    pub model: String,
+    /// 是否来自子代理 transcript
+    #[serde(default)]
+    pub is_subagent: bool,
+}
+
 /// 会话文件信息（用于扫描）
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -77,10 +113,14 @@ pub struct SessionFile {
     pub tool: String,
     /// 项目路径名（如 "-Users-xxx-ProjectA"）
     pub project_path: String,
-    /// 完整 JSONL 文件路径
+    /// 主 transcript 文件路径（优先顶层会话文件）
     pub file_path: String,
-    /// 文件大小（字节）
+    /// 该会话归属的所有 transcript 路径（含子代理）
+    pub transcript_paths: Vec<String>,
+    /// 所有 transcript 文件总大小（字节）
     pub file_size: u64,
-    /// 最后修改时间（Unix 时间戳）
+    /// 所有 transcript 的最新修改时间（Unix 时间戳）
     pub last_modified: i64,
+    /// 内容指纹，用于增量缓存判定
+    pub fingerprint: u64,
 }

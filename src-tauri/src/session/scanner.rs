@@ -1,272 +1,224 @@
 //! 会话文件扫描器
 //!
-//! 扫描 ~/.claude/projects/ 目录下的 JSONL 会话文件
-//! 并从中提取元数据。
+//! 统一扫描 Claude Code transcript，并构建两类缓存：
+//! - session 级聚合结果（会话列表 / 详情 / 项目统计）
+//! - request 级事实记录（概览 / 趋势 / 活动图）
 //!
-//! 使用增量缓存策略：
-//! - 首次调用：全量扫描，构建缓存
-//! - 后续调用：只扫描新增/修改的文件
+//! 关键原则：
+//! - assistant `message.id` 是本地统计的基础主键
+//! - 子代理 transcript 合并到所属主 session
+//! - 所有页面从同一批去重后的 request 事实层聚合
 
-use super::meta::{SessionFile, SessionMeta};
+use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
 use crate::models::ToolFilter;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// 缓存条目
 struct CacheEntry {
-    /// 缓存数据
+    /// 会话级聚合结果
     data: Vec<SessionMeta>,
-    /// message_id -> session_id 的索引（用于快速查找）
-    message_to_session: std::collections::HashMap<String, String>,
-    /// 文件路径 -> 最后修改时间（用于增量更新检测）
-    file_mtimes: std::collections::HashMap<PathBuf, i64>,
+    /// 去重后的请求事实
+    requests: Vec<LocalRequestRecord>,
+    /// message_id -> session_id 索引（用于快速查找）
+    message_to_session: HashMap<String, String>,
+    /// session_id -> 内容指纹（用于增量更新检测）
+    session_fingerprints: HashMap<String, u64>,
+}
+
+/// 解析后的单个会话结果
+struct ParsedSessionData {
+    meta: SessionMeta,
+    requests: Vec<LocalRequestRecord>,
 }
 
 /// 全局会话元数据缓存
 static SESSION_CACHE: OnceLock<Arc<Mutex<Option<CacheEntry>>>> = OnceLock::new();
 
-/// 获取缓存实例
 fn get_cache() -> &'static Arc<Mutex<Option<CacheEntry>>> {
     SESSION_CACHE.get_or_init(|| Arc::new(Mutex::new(None)))
 }
 
-/// 获取会话元数据（带增量缓存）
-///
-/// 首次调用：全量扫描，初始化缓存
-/// 后续调用：只扫描新增/修改的文件，增量更新缓存
 pub fn get_all_session_meta_cached() -> Vec<SessionMeta> {
+    ensure_cache_ready().data
+}
+
+pub fn get_all_local_request_records_cached() -> Vec<LocalRequestRecord> {
+    ensure_cache_ready().requests
+}
+
+pub fn get_local_request_records_by_session_cached(session_id: &str) -> Vec<LocalRequestRecord> {
+    ensure_cache_ready()
+        .requests
+        .into_iter()
+        .filter(|record| record.session_id == session_id)
+        .collect()
+}
+
+struct CacheSnapshot {
+    data: Vec<SessionMeta>,
+    requests: Vec<LocalRequestRecord>,
+}
+
+fn ensure_cache_ready() -> CacheSnapshot {
     let cache = get_cache();
 
-    // 检查缓存是否存在
     {
         let cache_guard = cache.lock().unwrap();
         if cache_guard.is_some() {
-            // 缓存存在，执行增量更新
             drop(cache_guard);
             return incremental_update_cache();
         }
     }
 
-    // 缓存不存在，执行全量扫描
     full_scan_and_cache()
 }
 
-/// 全量扫描并初始化缓存
-fn full_scan_and_cache() -> Vec<SessionMeta> {
+fn full_scan_and_cache() -> CacheSnapshot {
     let cache = get_cache();
     let session_files = scan_session_files();
-    let data: Vec<SessionMeta> = session_files.iter().map(extract_session_meta).collect();
 
-    // 构建 message_id -> session_id 索引
-    let mut message_to_session = std::collections::HashMap::new();
-    for meta in &data {
-        for msg_id in &meta.message_ids {
-            message_to_session.insert(msg_id.clone(), meta.session_id.clone());
+    let mut data = Vec::new();
+    let mut requests = Vec::new();
+    let mut message_to_session = HashMap::new();
+    let mut session_fingerprints = HashMap::new();
+
+    for session_file in &session_files {
+        let parsed = parse_session_file(session_file);
+        for request in &parsed.requests {
+            message_to_session.insert(request.message_id.clone(), request.session_id.clone());
         }
+        session_fingerprints.insert(session_file.session_id.clone(), session_file.fingerprint);
+        requests.extend(parsed.requests);
+        data.push(parsed.meta);
     }
 
-    // 构建文件修改时间映射
-    let mut file_mtimes = std::collections::HashMap::new();
-    for file in &session_files {
-        file_mtimes.insert(PathBuf::from(&file.file_path), file.last_modified);
-    }
+    data.sort_by_key(|meta| std::cmp::Reverse(meta.last_modified));
+    requests.sort_by_key(|record| record.timestamp);
 
-    // 更新缓存
     {
         let mut cache_guard = cache.lock().unwrap();
         *cache_guard = Some(CacheEntry {
             data: data.clone(),
+            requests: requests.clone(),
             message_to_session,
-            file_mtimes,
+            session_fingerprints,
         });
     }
 
-    data
+    CacheSnapshot { data, requests }
 }
 
-/// 增量更新缓存
-///
-/// 只扫描新增或修改的文件，更新缓存
-fn incremental_update_cache() -> Vec<SessionMeta> {
+fn incremental_update_cache() -> CacheSnapshot {
     let cache = get_cache();
-
-    // 获取当前文件列表和修改时间
     let current_files = scan_session_files();
-    let current_mtimes: std::collections::HashMap<PathBuf, i64> = current_files
+    let current_file_map: HashMap<String, SessionFile> = current_files
+        .into_iter()
+        .map(|file| (file.session_id.clone(), file))
+        .collect();
+    let current_fingerprints: HashMap<String, u64> = current_file_map
         .iter()
-        .map(|f| (PathBuf::from(&f.file_path), f.last_modified))
+        .map(|(session_id, file)| (session_id.clone(), file.fingerprint))
         .collect();
 
-    // 获取缓存并检查变化
-    let (new_files, modified_files, deleted_paths) = {
-        let cache_guard = cache.lock().unwrap();
-        let entry = match cache_guard.as_ref() {
-            Some(e) => e,
-            None => return full_scan_and_cache(),
-        };
-
-        let mut new_files: Vec<SessionFile> = Vec::new();
-        let mut modified_files: Vec<SessionFile> = Vec::new();
-        let mut deleted_paths: Vec<PathBuf> = Vec::new();
-
-        // 检查缓存中的文件是否被删除
-        for path in entry.file_mtimes.keys() {
-            if !current_mtimes.contains_key(path) {
-                deleted_paths.push(path.clone());
-            }
-        }
-
-        // 检查新文件和修改的文件
-        for file in &current_files {
-            let path = PathBuf::from(&file.file_path);
-            match entry.file_mtimes.get(&path) {
-                None => {
-                    // 新文件
-                    new_files.push(file.clone());
-                }
-                Some(&cached_mtime) if cached_mtime != file.last_modified => {
-                    // 修改的文件
-                    modified_files.push(file.clone());
-                }
-                _ => {
-                    // 未变化的文件，跳过
-                }
-            }
-        }
-
-        (new_files, modified_files, deleted_paths)
-    };
-
-    // 如果没有变化，直接返回缓存
-    if new_files.is_empty() && modified_files.is_empty() && deleted_paths.is_empty() {
-        let cache_guard = cache.lock().unwrap();
-        return cache_guard
-            .as_ref()
-            .map(|e| e.data.clone())
-            .unwrap_or_default();
-    }
-
-    // 有变化，更新缓存
     let mut cache_guard = cache.lock().unwrap();
     let entry = match cache_guard.as_mut() {
-        Some(e) => e,
+        Some(entry) => entry,
         None => return full_scan_and_cache(),
     };
 
-    // 移除已删除文件的 message_ids
-    for path in &deleted_paths {
-        // 找到对应的 session_id
-        if let Some(meta) = entry
-            .data
-            .iter()
-            .find(|m| m.file_path == path.to_string_lossy())
-        {
-            // 移除该 session 的 message_ids
-            for msg_id in &meta.message_ids {
-                entry.message_to_session.remove(msg_id);
-            }
+    let cached_ids: HashSet<String> = entry.session_fingerprints.keys().cloned().collect();
+    let current_ids: HashSet<String> = current_fingerprints.keys().cloned().collect();
+
+    let deleted_ids: HashSet<String> = cached_ids.difference(&current_ids).cloned().collect();
+    let mut changed_ids: HashSet<String> = deleted_ids.clone();
+
+    for session_id in current_ids.intersection(&cached_ids) {
+        let current = current_fingerprints
+            .get(session_id)
+            .copied()
+            .unwrap_or_default();
+        let cached = entry
+            .session_fingerprints
+            .get(session_id)
+            .copied()
+            .unwrap_or_default();
+        if current != cached {
+            changed_ids.insert(session_id.clone());
         }
     }
 
-    // 从 data 中移除已删除的会话
-    entry.data.retain(|m| {
-        !deleted_paths
-            .iter()
-            .any(|p| m.file_path == p.to_string_lossy())
+    let new_ids: Vec<String> = current_ids.difference(&cached_ids).cloned().collect();
+
+    if changed_ids.is_empty() && new_ids.is_empty() {
+        return CacheSnapshot {
+            data: entry.data.clone(),
+            requests: entry.requests.clone(),
+        };
+    }
+
+    entry.data.retain(|meta| {
+        !changed_ids.contains(&meta.session_id) && !new_ids.contains(&meta.session_id)
     });
+    entry.requests.retain(|record| {
+        !changed_ids.contains(&record.session_id) && !new_ids.contains(&record.session_id)
+    });
+    entry
+        .message_to_session
+        .retain(|_, session_id| !changed_ids.contains(session_id) && !new_ids.contains(session_id));
+    entry
+        .session_fingerprints
+        .retain(|session_id, _| !changed_ids.contains(session_id) && !new_ids.contains(session_id));
 
-    // 移除已删除文件的 mtimes
-    for path in &deleted_paths {
-        entry.file_mtimes.remove(path);
-    }
-
-    // 处理修改的文件：先移除旧数据，再添加新数据
-    for file in &modified_files {
-        let path = PathBuf::from(&file.file_path);
-
-        // 移除旧的 message_ids
-        if let Some(meta) = entry.data.iter().find(|m| m.file_path == file.file_path) {
-            for msg_id in &meta.message_ids {
-                entry.message_to_session.remove(msg_id);
-            }
-        }
-
-        // 从 data 中移除旧的会话数据
-        entry.data.retain(|m| m.file_path != file.file_path);
-
-        // 提取新的会话数据
-        let new_meta = extract_session_meta(file);
-
-        // 添加新的 message_ids
-        for msg_id in &new_meta.message_ids {
+    for session_id in changed_ids.into_iter().chain(new_ids.into_iter()) {
+        let Some(file) = current_file_map.get(&session_id) else {
+            continue;
+        };
+        let parsed = parse_session_file(file);
+        for request in &parsed.requests {
             entry
                 .message_to_session
-                .insert(msg_id.clone(), new_meta.session_id.clone());
+                .insert(request.message_id.clone(), request.session_id.clone());
         }
-
-        // 添加新的会话数据
-        entry.data.push(new_meta);
-
-        // 更新 mtime
-        entry.file_mtimes.insert(path, file.last_modified);
+        entry
+            .session_fingerprints
+            .insert(session_id, file.fingerprint);
+        entry.requests.extend(parsed.requests);
+        entry.data.push(parsed.meta);
     }
 
-    // 处理新文件
-    for file in &new_files {
-        let path = PathBuf::from(&file.file_path);
-        let new_meta = extract_session_meta(file);
-
-        // 添加 message_ids
-        for msg_id in &new_meta.message_ids {
-            entry
-                .message_to_session
-                .insert(msg_id.clone(), new_meta.session_id.clone());
-        }
-
-        // 添加会话数据
-        entry.data.push(new_meta);
-
-        // 添加 mtime
-        entry.file_mtimes.insert(path, file.last_modified);
-    }
-
-    // 按修改时间排序（最新的在前）
     entry
         .data
-        .sort_by_key(|m| std::cmp::Reverse(m.last_modified));
+        .sort_by_key(|meta| std::cmp::Reverse(meta.last_modified));
+    entry.requests.sort_by_key(|record| record.timestamp);
 
-    entry.data.clone()
+    CacheSnapshot {
+        data: entry.data.clone(),
+        requests: entry.requests.clone(),
+    }
 }
 
-/// 通过 message_id 查找对应的 session_id（使用缓存索引）
-///
-/// 使用 HashMap 索引，O(1) 时间复杂度
 pub fn find_session_id_by_message_id(message_id: &str) -> Option<String> {
     let cache = get_cache();
 
-    // 确保缓存已初始化
     {
         let cache_guard = cache.lock().unwrap();
         if cache_guard.is_none() {
             drop(cache_guard);
-            // 初始化缓存
-            get_all_session_meta_cached();
+            let _ = ensure_cache_ready();
         }
     }
 
-    // 从缓存索引查找
     let cache_guard = cache.lock().unwrap();
-    if let Some(entry) = cache_guard.as_ref() {
-        entry.message_to_session.get(message_id).cloned()
-    } else {
-        None
-    }
+    cache_guard
+        .as_ref()
+        .and_then(|entry| entry.message_to_session.get(message_id).cloned())
 }
 
-/// 清除缓存（用于强制刷新）
 #[allow(dead_code)]
 pub fn invalidate_cache() {
     let cache = get_cache();
@@ -274,7 +226,7 @@ pub fn invalidate_cache() {
     *cache_guard = None;
 }
 
-/// 扫描 Claude 项目目录中的所有会话文件
+/// 扫描 Claude 项目目录中的所有会话 transcript 组
 pub fn scan_session_files() -> Vec<SessionFile> {
     let mut roots: Vec<(&str, PathBuf)> = Vec::new();
     if let Some(home) = dirs::home_dir() {
@@ -285,123 +237,195 @@ pub fn scan_session_files() -> Vec<SessionFile> {
         ));
     }
 
-    let mut sessions = Vec::new();
+    #[derive(Default)]
+    struct SessionGroupBuilder {
+        tool: String,
+        project_path: String,
+        session_id: String,
+        primary_file_path: Option<String>,
+        transcript_paths: Vec<String>,
+        file_size: u64,
+        last_modified: i64,
+        fingerprint: u64,
+    }
+
+    let mut groups: HashMap<String, SessionGroupBuilder> = HashMap::new();
 
     for (tool, root) in roots {
         if !root.exists() {
             continue;
         }
 
-        if let Ok(entries) = fs::read_dir(&root) {
-            for entry in entries.flatten() {
-                let project_path = entry.path();
-                if !project_path.is_dir() {
+        let Ok(entries) = fs::read_dir(&root) else {
+            continue;
+        };
+
+        for entry in entries.flatten() {
+            let project_path = entry.path();
+            if !project_path.is_dir() {
+                continue;
+            }
+
+            let project_name = project_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            let jsonl_files = collect_jsonl_files(&project_path);
+
+            for path in jsonl_files {
+                let Some(raw_session_id) = derive_root_session_id(&project_path, &path) else {
+                    continue;
+                };
+
+                let metadata = fs::metadata(&path).ok();
+                let file_size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                if file_size < 100 {
                     continue;
                 }
 
-                let project_name = project_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
+                let last_modified = metadata
+                    .and_then(|m| m.modified().ok())
+                    .map(|t| {
+                        t.duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64
+                    })
+                    .unwrap_or(0);
 
-                // 扫描项目目录中的 JSONL 文件
-                if let Ok(files) = fs::read_dir(&project_path) {
-                    for file in files.flatten() {
-                        let path = file.path();
-                        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                            continue;
-                        }
-
-                        let session_id = path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
-
-                        // 生成唯一 ID：project_name::session_id
-                        let unique_id = format!("{}::{}", project_name, session_id);
-
-                        let metadata = fs::metadata(&path).ok();
-                        let file_size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-                        let last_modified = metadata
-                            .and_then(|m| m.modified().ok())
-                            .map(|t| {
-                                t.duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_secs() as i64
-                            })
-                            .unwrap_or(0);
-
-                        // 跳过太小的文件（可能是空会话）
-                        if file_size < 100 {
-                            continue;
-                        }
-
-                        sessions.push(SessionFile {
-                            session_id: unique_id,
+                let unique_id = format!("{project_name}::{raw_session_id}");
+                let group =
+                    groups
+                        .entry(unique_id.clone())
+                        .or_insert_with(|| SessionGroupBuilder {
                             tool: tool.to_string(),
                             project_path: project_name.to_string(),
-                            file_path: path.to_string_lossy().to_string(),
-                            file_size,
-                            last_modified,
+                            session_id: unique_id.clone(),
+                            ..Default::default()
                         });
-                    }
+
+                let path_string = path.to_string_lossy().to_string();
+                if is_primary_transcript(&project_path, &path) {
+                    group.primary_file_path = Some(path_string.clone());
                 }
+
+                group.transcript_paths.push(path_string.clone());
+                group.file_size += file_size;
+                group.last_modified = group.last_modified.max(last_modified);
+
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                path_string.hash(&mut hasher);
+                file_size.hash(&mut hasher);
+                last_modified.hash(&mut hasher);
+                group.fingerprint ^= hasher.finish();
             }
         }
     }
 
-    // 按修改时间排序（最新的在前）
-    sessions.sort_by_key(|b| std::cmp::Reverse(b.last_modified));
+    let mut sessions: Vec<SessionFile> = groups
+        .into_values()
+        .map(|mut group| {
+            group.transcript_paths.sort();
+            SessionFile {
+                session_id: group.session_id,
+                tool: group.tool,
+                project_path: group.project_path,
+                file_path: group
+                    .primary_file_path
+                    .or_else(|| group.transcript_paths.first().cloned())
+                    .unwrap_or_default(),
+                transcript_paths: group.transcript_paths,
+                file_size: group.file_size,
+                last_modified: group.last_modified,
+                fingerprint: group.fingerprint,
+            }
+        })
+        .filter(|session| !session.file_path.is_empty() && !session.transcript_paths.is_empty())
+        .collect();
+
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.last_modified));
     sessions
 }
 
-/// 检查用户消息是否为系统/元消息，应跳过
-fn is_system_message(text: &str) -> bool {
-    let trimmed = text.trim();
-    // 跳过本地命令提示
-    if trimmed.starts_with("<local-command-caveat>") || trimmed.contains("<local-command-caveat>") {
-        return true;
+fn collect_jsonl_files(project_path: &Path) -> Vec<PathBuf> {
+    let mut queue = VecDeque::from([project_path.to_path_buf()]);
+    let mut files = Vec::new();
+
+    while let Some(path) = queue.pop_front() {
+        let Ok(read_dir) = fs::read_dir(&path) else {
+            continue;
+        };
+
+        for entry in read_dir.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                queue.push_back(entry_path);
+                continue;
+            }
+
+            if entry_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("jsonl"))
+                .unwrap_or(false)
+            {
+                files.push(entry_path);
+            }
+        }
     }
-    // 跳过命令调用
-    if trimmed.starts_with("<command-name>") || trimmed.contains("<command-name>") {
-        return true;
-    }
-    // 跳过命令输出
-    if trimmed.starts_with("<local-command-stdout>") || trimmed.contains("<local-command-stdout>") {
-        return true;
-    }
-    // 跳过系统提醒
-    if trimmed.starts_with("<system-reminder>") || trimmed.contains("<system-reminder>") {
-        return true;
-    }
-    // 跳过过短消息（可能只是空白或单字符）
-    if trimmed.chars().count() < 3 {
-        return true;
-    }
-    false
+
+    files
 }
 
-/// 从 cwd 路径提取项目名称
-fn extract_project_name(cwd: &str) -> Option<String> {
-    if cwd.is_empty() {
-        return None;
+fn derive_root_session_id(project_path: &Path, transcript_path: &Path) -> Option<String> {
+    let relative = transcript_path.strip_prefix(project_path).ok()?;
+    let components: Vec<String> = relative
+        .components()
+        .map(|comp| comp.as_os_str().to_string_lossy().to_string())
+        .collect();
+
+    if components.len() == 1 {
+        return Path::new(&components[0])
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(|stem| stem.to_string());
     }
-    // 获取路径的最后一部分
-    let normalized = cwd.replace('\\', "/");
-    let parts: Vec<&str> = normalized.split('/').filter(|p| !p.is_empty()).collect();
-    parts.last().map(|s| s.to_string())
+
+    if let Some(subagent_index) = components
+        .iter()
+        .position(|component| component == "subagents")
+    {
+        if subagent_index >= 1 {
+            return Some(components[subagent_index - 1].clone());
+        }
+    }
+
+    None
 }
 
-/// 从 JSONL 文件提取会话元数据
-pub fn extract_session_meta(file: &SessionFile) -> SessionMeta {
+fn is_primary_transcript(project_path: &Path, transcript_path: &Path) -> bool {
+    transcript_path
+        .strip_prefix(project_path)
+        .ok()
+        .map(|relative| relative.components().count() == 1)
+        .unwrap_or(false)
+}
+
+fn is_subagent_transcript(session: &SessionFile, transcript_path: &str) -> bool {
+    transcript_path != session.file_path
+}
+
+fn parse_session_file(session: &SessionFile) -> ParsedSessionData {
     let mut meta = SessionMeta {
-        session_id: file.session_id.clone(),
-        tool: file.tool.clone(),
+        session_id: session.session_id.clone(),
+        tool: session.tool.clone(),
         cwd: None,
         project_name: None,
         topic: None,
         last_prompt: None,
         session_name: None,
-        file_path: file.file_path.clone(),
-        file_size: file.file_size,
-        last_modified: file.last_modified,
+        file_path: session.file_path.clone(),
+        file_size: session.file_size,
+        last_modified: session.last_modified,
         total_input_tokens: 0,
         total_output_tokens: 0,
         total_cache_create_tokens: 0,
@@ -414,123 +438,201 @@ pub fn extract_session_meta(file: &SessionFile) -> SessionMeta {
         message_ids: Vec::new(),
     };
 
-    // 打开并读取文件
-    let file_handle = match fs::File::open(&file.file_path) {
-        Ok(f) => f,
-        Err(_) => return meta,
-    };
-    let reader = BufReader::new(file_handle);
-
     let mut first_user_message: Option<String> = None;
     let mut last_user_message: Option<String> = None;
     let mut cwd_found: Option<String> = None;
     let mut session_name_found: Option<String> = None;
-    let mut models_set: HashSet<String> = HashSet::new();
-    let mut first_timestamp: Option<i64> = None;
-    let mut last_timestamp: Option<i64> = None;
+    let mut models_set: BTreeSet<String> = BTreeSet::new();
+    let mut earliest_timestamp: Option<i64> = None;
+    let mut latest_timestamp: Option<i64> = None;
+    let mut request_map: HashMap<String, LocalRequestRecord> = HashMap::new();
 
-    // 解析每一行
-    for line in reader.lines().map_while(Result::ok) {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
-            // 提取 cwd（仅从首次出现）
-            if cwd_found.is_none() {
-                if let Some(cwd) = json.get("cwd").and_then(|v| v.as_str()) {
-                    cwd_found = Some(cwd.to_string());
-                }
-            }
+    for transcript_path in &session.transcript_paths {
+        let file_handle = match fs::File::open(transcript_path) {
+            Ok(file) => file,
+            Err(_) => continue,
+        };
+        let reader = BufReader::new(file_handle);
+        let is_primary = transcript_path == &session.file_path;
+        let is_subagent = is_subagent_transcript(session, transcript_path);
 
-            // 提取会话名称（slug 或 customTitle）
-            if session_name_found.is_none() {
-                if let Some(slug) = json.get("slug").and_then(|v| v.as_str()) {
-                    session_name_found = Some(slug.to_string());
-                }
-                if let Some(title) = json.get("customTitle").and_then(|v| v.as_str()) {
-                    session_name_found = Some(title.to_string());
-                }
-            }
+        for line in reader.lines().map_while(Result::ok) {
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
 
-            // 提取时间戳
             if let Some(ts) = extract_timestamp(&json) {
-                if first_timestamp.is_none() {
-                    first_timestamp = Some(ts);
-                }
-                last_timestamp = Some(ts);
+                earliest_timestamp = Some(
+                    earliest_timestamp
+                        .map(|current| current.min(ts))
+                        .unwrap_or(ts),
+                );
+                latest_timestamp = Some(
+                    latest_timestamp
+                        .map(|current| current.max(ts))
+                        .unwrap_or(ts),
+                );
             }
 
-            // 提取用户消息
-            let msg_type = json.get("type").and_then(|v| v.as_str());
-            if msg_type == Some("user") || msg_type == Some("human") {
-                if let Some(text) = extract_user_text(&json) {
-                    // 跳过系统消息作为首个用户消息（话题）
-                    if first_user_message.is_none() && !is_system_message(&text) {
-                        first_user_message = Some(text.clone());
+            if is_primary {
+                if cwd_found.is_none() {
+                    if let Some(cwd) = json.get("cwd").and_then(|value| value.as_str()) {
+                        cwd_found = Some(cwd.to_string());
                     }
-                    // 始终跟踪最后用户消息（但跳过系统消息）
-                    if !is_system_message(&text) {
-                        last_user_message = Some(text);
+                }
+
+                if session_name_found.is_none() {
+                    if let Some(slug) = json.get("slug").and_then(|value| value.as_str()) {
+                        session_name_found = Some(slug.to_string());
+                    }
+                    if let Some(title) = json.get("customTitle").and_then(|value| value.as_str()) {
+                        session_name_found = Some(title.to_string());
                     }
                 }
-                meta.message_count += 1;
+
+                let msg_type = json.get("type").and_then(|value| value.as_str());
+                if msg_type == Some("user") || msg_type == Some("human") {
+                    if let Some(text) = extract_user_text(&json) {
+                        if first_user_message.is_none() && !is_system_message(&text) {
+                            first_user_message = Some(text.clone());
+                        }
+                        if !is_system_message(&text) {
+                            last_user_message = Some(text);
+                        }
+                    }
+                }
             }
 
-            // 从消息或 usage 字段提取 Token 使用量
-            if let Some(usage) = extract_token_usage(&json) {
-                meta.total_input_tokens += usage.input;
-                meta.total_output_tokens += usage.output;
-                meta.total_cache_create_tokens += usage.cache_create;
-                meta.total_cache_read_tokens += usage.cache_read;
-            }
-
-            // 提取模型
             if let Some(model) = extract_model(&json) {
                 models_set.insert(model);
             }
 
-            // 从 assistant 消息提取 message.id（用于关联代理数据）
-            // message.id 格式如 "msg_73424337149139748084"，与代理数据库中的 message_id 一致
-            if msg_type == Some("assistant") {
-                if let Some(msg_id) = json
-                    .get("message")
-                    .and_then(|m| m.get("id"))
-                    .and_then(|v| v.as_str())
-                {
-                    meta.message_ids.push(msg_id.to_string());
-                }
-            }
+            let Some(request) = extract_request_record(&json, session, is_subagent) else {
+                continue;
+            };
+            let request_key = request.message_id.clone();
+            request_map
+                .entry(request_key)
+                .and_modify(|existing| {
+                    if request.total_tokens > existing.total_tokens
+                        || (request.total_tokens == existing.total_tokens
+                            && request.timestamp > existing.timestamp)
+                    {
+                        *existing = request.clone();
+                    }
+                })
+                .or_insert(request);
         }
     }
 
-    // 设置提取结果并进行截断处理
+    let mut requests: Vec<LocalRequestRecord> = request_map.into_values().collect();
+    requests.sort_by_key(|request| request.timestamp);
+
     meta.cwd = cwd_found.clone();
-    meta.project_name = cwd_found.as_ref().and_then(|cwd| extract_project_name(cwd));
-    meta.topic = first_user_message.map(|s| truncate_string(&s, 50));
-    meta.last_prompt = last_user_message.map(|s| truncate_string(&s, 100));
-
-    // 保留 session_name 以向后兼容（将作为 UI 中的备用显示）
-    // 现在我们优先使用分离的 project_name + topic 显示
+    meta.project_name = cwd_found
+        .as_ref()
+        .and_then(|cwd| extract_project_name(cwd))
+        .or_else(|| Some(session.project_path.clone()).filter(|value| !value.is_empty()));
+    meta.topic = first_user_message.map(|text| truncate_string(&text, 50));
+    meta.last_prompt = last_user_message.map(|text| truncate_string(&text, 100));
     meta.session_name = session_name_found;
-
     meta.models = models_set.into_iter().collect();
-    meta.start_time = first_timestamp.unwrap_or(file.last_modified);
-    meta.end_time = last_timestamp.unwrap_or(file.last_modified);
+    meta.start_time = earliest_timestamp.unwrap_or(session.last_modified);
+    meta.end_time = latest_timestamp.unwrap_or(session.last_modified);
+    meta.message_count = requests.len() as u64;
+    meta.message_ids = requests
+        .iter()
+        .map(|request| request.message_id.clone())
+        .collect();
 
-    meta
+    for request in &requests {
+        meta.total_input_tokens += request.input_tokens;
+        meta.total_output_tokens += request.output_tokens;
+        meta.total_cache_create_tokens += request.cache_create_tokens;
+        meta.total_cache_read_tokens += request.cache_read_tokens;
+    }
+
+    ParsedSessionData { meta, requests }
 }
 
-/// 从 JSON 消息提取用户文本
+fn extract_request_record(
+    json: &serde_json::Value,
+    session: &SessionFile,
+    is_subagent: bool,
+) -> Option<LocalRequestRecord> {
+    if json.get("type").and_then(|value| value.as_str()) != Some("assistant") {
+        return None;
+    }
+
+    let message_id = json
+        .get("message")
+        .and_then(|message| message.get("id"))
+        .and_then(|value| value.as_str())?
+        .to_string();
+
+    let usage = extract_token_usage(json)?;
+    let total_tokens = usage.input + usage.output + usage.cache_create + usage.cache_read;
+    if total_tokens == 0 {
+        return None;
+    }
+
+    let timestamp = extract_timestamp(json).unwrap_or(session.last_modified);
+
+    Some(LocalRequestRecord {
+        session_id: session.session_id.clone(),
+        tool: session.tool.clone(),
+        timestamp,
+        message_id,
+        input_tokens: usage.input,
+        output_tokens: usage.output,
+        cache_create_tokens: usage.cache_create,
+        cache_read_tokens: usage.cache_read,
+        total_tokens,
+        model: extract_model(json).unwrap_or_else(|| "unknown".to_string()),
+        is_subagent,
+    })
+}
+
+fn is_system_message(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.starts_with("<local-command-caveat>") || trimmed.contains("<local-command-caveat>") {
+        return true;
+    }
+    if trimmed.starts_with("<command-name>") || trimmed.contains("<command-name>") {
+        return true;
+    }
+    if trimmed.starts_with("<local-command-stdout>") || trimmed.contains("<local-command-stdout>") {
+        return true;
+    }
+    if trimmed.starts_with("<system-reminder>") || trimmed.contains("<system-reminder>") {
+        return true;
+    }
+    trimmed.chars().count() < 3
+}
+
+fn extract_project_name(cwd: &str) -> Option<String> {
+    if cwd.is_empty() {
+        return None;
+    }
+
+    let normalized = cwd.replace('\\', "/");
+    let parts: Vec<&str> = normalized
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    parts.last().map(|value| value.to_string())
+}
+
 fn extract_user_text(json: &serde_json::Value) -> Option<String> {
-    // 尝试从 message.content 获取
     if let Some(message) = json.get("message") {
-        // 字符串内容
-        if let Some(content) = message.get("content").and_then(|v| v.as_str()) {
+        if let Some(content) = message.get("content").and_then(|value| value.as_str()) {
             return Some(content.to_string());
         }
 
-        // 数组内容（内容块）
-        if let Some(content_arr) = message.get("content").and_then(|v| v.as_array()) {
+        if let Some(content_arr) = message.get("content").and_then(|value| value.as_array()) {
             for item in content_arr {
-                if item.get("type").and_then(|v| v.as_str()) == Some("text") {
-                    if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                if item.get("type").and_then(|value| value.as_str()) == Some("text") {
+                    if let Some(text) = item.get("text").and_then(|value| value.as_str()) {
                         return Some(text.to_string());
                     }
                 }
@@ -541,7 +643,6 @@ fn extract_user_text(json: &serde_json::Value) -> Option<String> {
     None
 }
 
-/// 从 JSON 提取的 Token 使用量
 struct TokenUsage {
     input: u64,
     output: u64,
@@ -549,168 +650,191 @@ struct TokenUsage {
     cache_read: u64,
 }
 
-/// 从 JSON 消息提取 Token 使用量
 fn extract_token_usage(json: &serde_json::Value) -> Option<TokenUsage> {
-    // 先尝试 message.usage
     let usage = json
         .get("message")
-        .and_then(|m| m.get("usage"))
+        .and_then(|message| message.get("usage"))
         .or_else(|| json.get("usage"));
 
-    if let Some(usage) = usage {
-        let input = usage
-            .get("input_tokens")
-            .or_else(|| usage.get("inputTokens"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+    usage
+        .and_then(|value| extract_token_usage_from_value(value, true))
+        .or_else(|| find_nested_token_usage(json))
+}
 
-        let output = usage
-            .get("output_tokens")
-            .or_else(|| usage.get("outputTokens"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-
-        let cache_create = usage
-            .get("cache_creation_input_tokens")
-            .or_else(|| usage.get("cacheCreationInputTokens"))
-            .or_else(|| usage.get("cache_create_tokens"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-
-        let cache_read = usage
-            .get("cache_read_input_tokens")
-            .or_else(|| usage.get("cacheReadInputTokens"))
-            .or_else(|| usage.get("cache_read_tokens"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-
-        if input > 0 || output > 0 {
-            return Some(TokenUsage {
-                input,
-                output,
-                cache_create,
-                cache_read,
-            });
-        }
+fn extract_token_usage_from_value(
+    value: &serde_json::Value,
+    allow_short_aliases: bool,
+) -> Option<TokenUsage> {
+    let mut input_keys = vec!["input_tokens", "inputTokens"];
+    let mut output_keys = vec!["output_tokens", "outputTokens"];
+    if allow_short_aliases {
+        input_keys.push("input");
+        output_keys.push("output");
     }
 
+    let input = extract_u64_by_keys(value, &input_keys);
+    let output = extract_u64_by_keys(value, &output_keys);
+    let cache_create = extract_u64_by_keys(
+        value,
+        &[
+            "cache_creation_input_tokens",
+            "cacheCreationInputTokens",
+            "cache_create_tokens",
+            "cacheCreateTokens",
+        ],
+    );
+    let cache_read = extract_u64_by_keys(
+        value,
+        &[
+            "cache_read_input_tokens",
+            "cacheReadInputTokens",
+            "cache_read_tokens",
+            "cacheReadTokens",
+        ],
+    );
+
+    if input > 0 || output > 0 || cache_create > 0 || cache_read > 0 {
+        Some(TokenUsage {
+            input,
+            output,
+            cache_create,
+            cache_read,
+        })
+    } else {
+        None
+    }
+}
+
+fn find_nested_token_usage(value: &serde_json::Value) -> Option<TokenUsage> {
+    if let Some(usage) = extract_token_usage_from_value(value, false) {
+        return Some(usage);
+    }
+
+    match value {
+        serde_json::Value::Array(items) => items.iter().find_map(find_nested_token_usage),
+        serde_json::Value::Object(map) => map.values().find_map(find_nested_token_usage),
+        _ => None,
+    }
+}
+
+fn extract_u64_by_keys(value: &serde_json::Value, keys: &[&str]) -> u64 {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(parse_u64_from_value))
+        .unwrap_or(0)
+}
+
+fn parse_u64_from_value(value: &serde_json::Value) -> Option<u64> {
+    if let Some(num) = value.as_u64() {
+        return Some(num);
+    }
+    if let Some(num) = value.as_i64() {
+        return Some(num.max(0) as u64);
+    }
+    if let Some(num) = value.as_f64() {
+        return Some(num.max(0.0) as u64);
+    }
     None
 }
 
-/// 从 JSON 提取模型名称
 fn extract_model(json: &serde_json::Value) -> Option<String> {
-    // 先尝试 message.model
     let model = json
         .get("message")
-        .and_then(|m| m.get("model"))
-        .and_then(|v| v.as_str())
-        .or_else(|| json.get("model").and_then(|v| v.as_str()));
+        .and_then(|message| message.get("model"))
+        .and_then(|value| value.as_str())
+        .or_else(|| json.get("model").and_then(|value| value.as_str()));
 
-    // 过滤掉合成/内部模型名称
-    if let Some(m) = model {
-        // 跳过合成模型（无响应的内部消息）
-        if m.starts_with('<') && m.ends_with('>') {
-            return None;
-        }
-        // 跳过空或占位符模型名称
-        if m.is_empty() || m == "unknown" {
-            return None;
-        }
-        return Some(m.to_string());
+    let model = model?;
+    if model.is_empty() || model == "unknown" {
+        return None;
     }
-
-    None
+    if model.starts_with('<') && model.ends_with('>') {
+        return None;
+    }
+    Some(model.to_string())
 }
 
-/// 从 JSON 提取时间戳
 fn extract_timestamp(json: &serde_json::Value) -> Option<i64> {
-    // 尝试各种时间戳字段
     let ts = json
         .get("timestamp")
         .or_else(|| json.get("createdAt"))
         .or_else(|| json.get("created_at"))
-        .or_else(|| json.get("time"));
+        .or_else(|| json.get("time"))
+        .or_else(|| json.get("date"));
 
-    if let Some(ts) = ts {
-        // 尝试作为数字（可能是秒或毫秒）
-        if let Some(num) = ts.as_u64() {
-            // 如果大于 100 亿，假设为毫秒
-            return Some(if num > 10_000_000_000 {
-                (num / 1000) as i64
-            } else {
-                num as i64
-            });
-        }
-        // 尝试作为字符串（ISO 格式）
-        if let Some(s) = ts.as_str() {
-            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
-                return Some(dt.timestamp());
-            }
+    let ts = ts?;
+    if let Some(num) = ts.as_u64() {
+        return Some(if num > 10_000_000_000 {
+            (num / 1000) as i64
+        } else {
+            num as i64
+        });
+    }
+    if let Some(text) = ts.as_str() {
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(text) {
+            return Some(dt.timestamp());
         }
     }
-
     None
 }
 
-/// 将字符串截断到最大长度，如被截断则添加省略号
-fn truncate_string(s: &str, max_len: usize) -> String {
-    let trimmed = s.trim();
+fn truncate_string(value: &str, max_len: usize) -> String {
+    let trimmed = value.trim();
     if trimmed.chars().count() <= max_len {
         trimmed.to_string()
     } else {
         let truncated: String = trimmed.chars().take(max_len).collect();
-        format!("{}...", truncated)
+        format!("{truncated}...")
     }
 }
 
-/// 根据会话 ID 获取会话元数据
 pub fn get_session_meta_by_id(session_id: &str) -> Option<SessionMeta> {
-    let files = scan_session_files();
+    let all_meta = get_all_session_meta_cached();
+    all_meta
+        .iter()
+        .find(|meta| meta.session_id == session_id)
+        .cloned()
+        .or_else(|| {
+            let id_suffix = session_id.split("::").last().unwrap_or(session_id);
+            all_meta.into_iter().find(|meta| {
+                meta.session_id
+                    .split("::")
+                    .last()
+                    .unwrap_or(&meta.session_id)
+                    == id_suffix
+            })
+        })
+}
 
-    // 先尝试精确匹配
-    for file in &files {
-        if file.session_id == session_id {
-            return Some(extract_session_meta(file));
-        }
+fn matches_tool(tool: &str, filter: &ToolFilter) -> bool {
+    match filter {
+        ToolFilter::All => true,
+        ToolFilter::Tool(tool_filter) if tool_filter.trim().is_empty() => true,
+        ToolFilter::Tool(tool_filter) => tool == *tool_filter,
     }
-
-    // 尝试匹配 session_id 的最后一部分（:: 之后）
-    let id_suffix = session_id.split("::").last().unwrap_or(session_id);
-    for file in &files {
-        let file_suffix = file
-            .session_id
-            .split("::")
-            .last()
-            .unwrap_or(&file.session_id);
-        if file_suffix == id_suffix {
-            return Some(extract_session_meta(file));
-        }
-    }
-
-    None
 }
 
 pub fn matches_tool_filter(meta: &SessionMeta, filter: &ToolFilter) -> bool {
-    match filter {
-        ToolFilter::All => true,
-        ToolFilter::Tool(tool) if tool.trim().is_empty() => true,
-        ToolFilter::Tool(tool) => meta.tool == *tool,
-    }
+    matches_tool(&meta.tool, filter)
 }
 
-/// 获取所有会话元数据（限制数量）
+pub fn matches_request_tool_filter(record: &LocalRequestRecord, filter: &ToolFilter) -> bool {
+    matches_tool(&record.tool, filter)
+}
+
 #[allow(dead_code)]
 pub fn get_all_session_meta(limit: usize) -> Vec<SessionMeta> {
-    scan_session_files()
+    get_all_session_meta_cached()
         .into_iter()
         .take(limit)
-        .map(|f| extract_session_meta(&f))
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::io::Write;
+    use tempfile::tempdir;
 
     #[test]
     fn test_truncate_string() {
@@ -720,7 +844,6 @@ mod tests {
 
     #[test]
     fn test_is_system_message() {
-        // 应跳过系统消息
         assert!(is_system_message("<local-command-caveat>some text"));
         assert!(is_system_message("prefix <local-command-caveat> content"));
         assert!(is_system_message("<command-name>/model</command-name>"));
@@ -730,9 +853,8 @@ mod tests {
         assert!(is_system_message(
             "<system-reminder>Some reminder</system-reminder>"
         ));
-        assert!(is_system_message("ab")); // 太短
+        assert!(is_system_message("ab"));
 
-        // 不应跳过真实用户消息
         assert!(!is_system_message("请帮我分析这段代码"));
         assert!(!is_system_message("How do I fix this bug?"));
         assert!(!is_system_message("分析一下项目结构"));
@@ -754,5 +876,196 @@ mod tests {
         );
         assert_eq!(extract_project_name(""), None);
         assert_eq!(extract_project_name("/"), None);
+    }
+
+    #[test]
+    fn test_derive_root_session_id() {
+        let project = Path::new("/tmp/projects/my-project");
+        let top_level = Path::new("/tmp/projects/my-project/abc-session.jsonl");
+        let subagent = Path::new("/tmp/projects/my-project/abc-session/subagents/agent-1.jsonl");
+
+        assert_eq!(
+            derive_root_session_id(project, top_level),
+            Some("abc-session".to_string())
+        );
+        assert_eq!(
+            derive_root_session_id(project, subagent),
+            Some("abc-session".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_token_usage_supports_multiple_key_styles() {
+        let json = serde_json::json!({
+            "message": {
+                "usage": {
+                    "inputTokens": 10,
+                    "outputTokens": 20,
+                    "cacheCreationInputTokens": 3,
+                    "cacheReadTokens": 4
+                }
+            }
+        });
+
+        let usage = extract_token_usage(&json).unwrap();
+        assert_eq!(usage.input, 10);
+        assert_eq!(usage.output, 20);
+        assert_eq!(usage.cache_create, 3);
+        assert_eq!(usage.cache_read, 4);
+    }
+
+    #[test]
+    fn test_extract_token_usage_falls_back_to_nested_payload_tokens() {
+        let json = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg_123"
+            },
+            "payload": {
+                "metrics": {
+                    "input_tokens": 42,
+                    "output_tokens": 24,
+                    "cache_creation_input_tokens": 5,
+                    "cache_read_input_tokens": 6
+                }
+            }
+        });
+
+        let usage = extract_token_usage(&json).unwrap();
+        assert_eq!(usage.input, 42);
+        assert_eq!(usage.output, 24);
+        assert_eq!(usage.cache_create, 5);
+        assert_eq!(usage.cache_read, 6);
+    }
+
+    #[test]
+    fn test_extract_token_usage_prefers_nested_payload_when_standard_usage_is_empty() {
+        let json = serde_json::json!({
+            "message": {
+                "usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0
+                }
+            },
+            "payload": {
+                "usage_breakdown": {
+                    "input_tokens": 11,
+                    "output_tokens": 7
+                }
+            }
+        });
+
+        let usage = extract_token_usage(&json).unwrap();
+        assert_eq!(usage.input, 11);
+        assert_eq!(usage.output, 7);
+        assert_eq!(usage.cache_create, 0);
+        assert_eq!(usage.cache_read, 0);
+    }
+
+    #[test]
+    fn test_extract_token_usage_does_not_treat_generic_input_output_fields_as_usage() {
+        let json = serde_json::json!({
+            "payload": {
+                "stats": {
+                    "input": 10,
+                    "output": 20
+                }
+            }
+        });
+
+        assert!(extract_token_usage(&json).is_none());
+    }
+
+    #[test]
+    fn test_parse_session_file_uses_min_max_timestamps_across_transcripts() {
+        let temp = tempdir().unwrap();
+        let project_dir = temp.path().join("project");
+        let subagent_dir = project_dir.join("session-1").join("subagents");
+        fs::create_dir_all(&subagent_dir).unwrap();
+
+        let primary_path = project_dir.join("session-1.jsonl");
+        let subagent_path = subagent_dir.join("agent-1.jsonl");
+
+        {
+            let mut file = fs::File::create(&primary_path).unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "type": "assistant",
+                    "timestamp": 300,
+                    "message": {
+                        "id": "msg_primary",
+                        "model": "claude-3-7-sonnet",
+                        "usage": { "input_tokens": 10, "output_tokens": 5 }
+                    }
+                })
+            )
+            .unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "type": "assistant",
+                    "timestamp": 100,
+                    "message": {
+                        "id": "msg_primary_early",
+                        "model": "claude-3-7-sonnet",
+                        "usage": { "input_tokens": 8, "output_tokens": 4 }
+                    }
+                })
+            )
+            .unwrap();
+        }
+
+        {
+            let mut file = fs::File::create(&subagent_path).unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "type": "assistant",
+                    "timestamp": 500,
+                    "message": {
+                        "id": "msg_subagent",
+                        "model": "claude-3-7-sonnet",
+                        "usage": { "input_tokens": 6, "output_tokens": 3 }
+                    }
+                })
+            )
+            .unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "type": "assistant",
+                    "timestamp": 200,
+                    "message": {
+                        "id": "msg_subagent_mid",
+                        "model": "claude-3-7-sonnet",
+                        "usage": { "input_tokens": 4, "output_tokens": 2 }
+                    }
+                })
+            )
+            .unwrap();
+        }
+
+        let session = SessionFile {
+            session_id: "project::session-1".to_string(),
+            tool: "claude_code".to_string(),
+            project_path: "project".to_string(),
+            file_path: primary_path.to_string_lossy().to_string(),
+            transcript_paths: vec![
+                primary_path.to_string_lossy().to_string(),
+                subagent_path.to_string_lossy().to_string(),
+            ],
+            file_size: 0,
+            last_modified: 999,
+            fingerprint: 0,
+        };
+
+        let parsed = parse_session_file(&session);
+        assert_eq!(parsed.meta.start_time, 100);
+        assert_eq!(parsed.meta.end_time, 500);
     }
 }

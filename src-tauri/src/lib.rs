@@ -204,7 +204,6 @@ pub fn run() {
                                 let _ = window.set_always_on_top(true);
                                 let size = window.outer_size().ok();
                                 let popup_width = size.map(|s| s.width as f64).unwrap_or(420.0);
-                                let popup_height = size.map(|s| s.height as f64).unwrap_or(600.0);
                                 let x = position.x - (popup_width / 2.0);
 
                                 // macOS: 托盘在屏幕顶部，窗口向下弹出
@@ -214,6 +213,8 @@ pub fn run() {
                                 #[cfg(not(target_os = "macos"))]
                                 let y = {
                                     const WORKAREA_MARGIN: f64 = 2.0; // 窗口底部与工作区底部的间距（像素）
+                                    let popup_height =
+                                        size.map(|s| s.height as f64).unwrap_or(600.0);
 
                                     let workarea_bottom = app
                                         .available_monitors()
