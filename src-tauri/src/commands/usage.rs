@@ -507,9 +507,12 @@ fn effective_model_pricings(settings: &AppSettings) -> Vec<crate::models::ModelP
 }
 
 fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, String> {
-    if !local_tool_filter_matches_claude(settings) {
+    if !local_tool_filter_matches_local_jsonl(settings) {
         return Ok(empty_usage_snapshot(settings, "local-files", String::new()));
     }
+
+    let tool_filter = settings.client_tools.build_filter();
+    let codex_only = matches!(&tool_filter, ToolFilter::Tool(tool) if tool.trim() == "codex");
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -719,7 +722,17 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
         };
 
         let token_percent = compute_percent(token_used, quota.token_limit);
-        let request_percent = compute_percent(request_used, quota.request_limit);
+        let request_used = if codex_only { 0 } else { request_used };
+        let request_limit = if codex_only {
+            None
+        } else {
+            quota.request_limit
+        };
+        let request_percent = if codex_only {
+            None
+        } else {
+            compute_percent(request_used, request_limit)
+        };
 
         windows.push(WindowUsage {
             window: quota.window.clone(),
@@ -730,7 +743,7 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             cache_read_tokens,
             request_used,
             token_limit: quota.token_limit,
-            request_limit: quota.request_limit,
+            request_limit,
             token_percent,
             request_percent,
             risk_level: risk_level(
@@ -918,10 +931,13 @@ fn local_record_age_seconds(record_timestamp: u64, now: u64) -> Option<u64> {
     }
 }
 
-fn local_tool_filter_matches_claude(settings: &AppSettings) -> bool {
+fn local_tool_filter_matches_local_jsonl(settings: &AppSettings) -> bool {
     match settings.client_tools.build_filter() {
         ToolFilter::All => true,
-        ToolFilter::Tool(tool) => tool.trim().is_empty() || tool == "claude_code",
+        ToolFilter::Tool(tool) => {
+            let tool = tool.trim();
+            tool.is_empty() || tool == "claude_code" || tool == "codex"
+        }
     }
 }
 
@@ -2015,6 +2031,10 @@ pub async fn get_sessions(
     // 获取价格配置
     let pricings = effective_model_pricings(&settings);
     let match_mode = settings.model_pricing.match_mode.clone();
+    let codex_only = matches!(
+        settings.client_tools.build_filter(),
+        ToolFilter::Tool(tool) if tool.trim() == "codex"
+    );
 
     if settings.data_source == "proxy" {
         let usage_filter = build_usage_query_filter(&settings);
@@ -2110,7 +2130,7 @@ pub async fn get_sessions(
                     success_requests: proxy.success_requests,
                     error_requests: proxy.error_requests,
                     // 其他
-                    total_requests: meta.message_count,
+                    total_requests: if codex_only { 0 } else { meta.message_count },
                     first_request_time: meta.start_time,
                     last_request_time: meta.end_time,
                     models: meta.models,
@@ -2128,7 +2148,7 @@ pub async fn get_sessions(
                 SessionStats {
                     session_id: meta.session_id,
                     tool: meta.tool,
-                    total_requests: meta.message_count,
+                    total_requests: if codex_only { 0 } else { meta.message_count },
                     total_input_tokens: meta.total_input_tokens,
                     total_output_tokens: meta.total_output_tokens,
                     total_cache_create_tokens: meta.total_cache_create_tokens,
@@ -2169,6 +2189,10 @@ pub async fn get_session_detail(
     // 获取价格配置
     let pricings = effective_model_pricings(&settings);
     let match_mode = settings.model_pricing.match_mode.clone();
+    let codex_only = matches!(
+        settings.client_tools.build_filter(),
+        ToolFilter::Tool(tool) if tool.trim() == "codex"
+    );
 
     if settings.data_source == "proxy" {
         let usage_filter = build_usage_query_filter(&settings);
@@ -2242,7 +2266,7 @@ pub async fn get_session_detail(
             success_requests: proxy.success_requests,
             error_requests: proxy.error_requests,
             // 其他
-            total_requests: meta.message_count,
+            total_requests: if codex_only { 0 } else { meta.message_count },
             first_request_time: meta.start_time,
             last_request_time: meta.end_time,
             models: meta.models,
@@ -2259,7 +2283,7 @@ pub async fn get_session_detail(
         SessionStats {
             session_id: meta.session_id,
             tool: meta.tool,
-            total_requests: meta.message_count,
+            total_requests: if codex_only { 0 } else { meta.message_count },
             total_input_tokens: meta.total_input_tokens,
             total_output_tokens: meta.total_output_tokens,
             total_cache_create_tokens: meta.total_cache_create_tokens,
