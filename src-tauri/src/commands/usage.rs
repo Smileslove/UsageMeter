@@ -11,7 +11,6 @@ use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -223,20 +222,13 @@ pub async fn get_usage_snapshot(
         return get_proxy_usage_snapshot(&settings, &proxy_state).await;
     }
 
-    // 默认：使用 ccusage
-    tauri::async_runtime::spawn_blocking(move || match snapshot_from_ccusage(&settings) {
+    tauri::async_runtime::spawn_blocking(move || match snapshot_from_local_jsonl(&settings) {
         Ok(snapshot) => Ok(snapshot),
-        Err(ccusage_err) => match snapshot_from_local_jsonl(&settings) {
-            Ok(mut snapshot) => {
-                snapshot.note = Some(format!("NOTE_LOCAL_JSONL_FALLBACK: {ccusage_err}"));
-                Ok(snapshot)
-            }
-            Err(local_err) => Ok(empty_usage_snapshot(
-                &settings,
-                "no-data",
-                format!("NOTE_NO_REAL_DATA: ccusage={ccusage_err}; local={local_err}"),
-            )),
-        },
+        Err(local_err) => Ok(empty_usage_snapshot(
+            &settings,
+            "no-data",
+            format!("NOTE_NO_REAL_DATA: local={local_err}"),
+        )),
     })
     .await
     .map_err(|e| format!("ERR_SNAPSHOT_TASK_FAILED: {e}"))?
@@ -474,232 +466,10 @@ fn empty_usage_snapshot(settings: &AppSettings, source: &str, note: String) -> U
         generated_at_epoch: now,
         windows,
         source: source.to_string(),
-        note: Some(note),
+        note: (!note.is_empty()).then_some(note),
         summary,
         model_distribution: Vec::new(),
     }
-}
-
-fn snapshot_from_ccusage(settings: &AppSettings) -> Result<UsageSnapshot, String> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let value = run_ccusage_json()?;
-    let windows_value = value
-        .get("windows")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| "ERR_CCUSAGE_MISSING_WINDOWS".to_string())?;
-
-    let source = value
-        .get("source")
-        .and_then(|v| v.as_str())
-        .unwrap_or("ccusage-api")
-        .to_string();
-    let pricings = effective_model_pricings(settings);
-    let match_mode = &settings.model_pricing.match_mode;
-
-    let mut windows = Vec::new();
-    for quota in &settings.quotas {
-        if !quota.enabled {
-            continue;
-        }
-
-        let metric = windows_value
-            .iter()
-            .find(|item| {
-                item.get("window")
-                    .and_then(|v| v.as_str())
-                    .map(|w| w == quota.window)
-                    .unwrap_or(false)
-            })
-            .ok_or_else(|| format!("ERR_CCUSAGE_MISSING_WINDOW_METRIC: {}", quota.window))?;
-
-        let token_used = metric
-            .get("tokenUsed")
-            .or_else(|| metric.get("token_used"))
-            .and_then(parse_u64_from_value)
-            .unwrap_or(0);
-
-        let input_tokens = metric
-            .get("inputTokens")
-            .or_else(|| metric.get("input_tokens"))
-            .and_then(parse_u64_from_value)
-            .unwrap_or(0);
-
-        let output_tokens = metric
-            .get("outputTokens")
-            .or_else(|| metric.get("output_tokens"))
-            .and_then(parse_u64_from_value)
-            .unwrap_or(0);
-
-        let cache_create_tokens = metric
-            .get("cacheCreateTokens")
-            .or_else(|| metric.get("cache_create_tokens"))
-            .and_then(parse_u64_from_value)
-            .unwrap_or(0);
-
-        let cache_read_tokens = metric
-            .get("cacheReadTokens")
-            .or_else(|| metric.get("cache_read_tokens"))
-            .and_then(parse_u64_from_value)
-            .unwrap_or(0);
-
-        let request_used = metric
-            .get("requestUsed")
-            .or_else(|| metric.get("request_used"))
-            .and_then(parse_u64_from_value)
-            .unwrap_or(0);
-
-        // ccusage 只负责提供窗口内按模型拆分的 token 用量；
-        // 费用统一使用 UsageMeter 本地价格表逐模型计算，避免和自定义价格口径不一致。
-        let window_cost =
-            estimate_ccusage_window_cost(&value, &quota.window, &pricings, match_mode);
-
-        let token_percent = compute_percent(token_used, quota.token_limit);
-        let request_percent = compute_percent(request_used, quota.request_limit);
-
-        windows.push(WindowUsage {
-            window: quota.window.clone(),
-            token_used,
-            input_tokens,
-            output_tokens,
-            cache_create_tokens,
-            cache_read_tokens,
-            request_used,
-            token_limit: quota.token_limit,
-            request_limit: quota.request_limit,
-            token_percent,
-            request_percent,
-            risk_level: risk_level(
-                token_percent,
-                request_percent,
-                settings.warning_threshold,
-                settings.critical_threshold,
-            ),
-            cost: window_cost,
-            success_requests: 0, // ccusage 模式不包含状态码信息
-            client_error_requests: 0,
-            server_error_requests: 0,
-        });
-    }
-
-    // 解析模型分布
-    let model_distribution: Vec<crate::models::ModelUsage> = value
-        .get("modelDistribution")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| {
-                    Some(crate::models::ModelUsage {
-                        model_name: item.get("modelName")?.as_str()?.to_string(),
-                        token_used: parse_u64_from_value(item.get("tokenUsed")?)?,
-                        input_tokens: parse_u64_from_value(item.get("inputTokens")?)?,
-                        output_tokens: parse_u64_from_value(item.get("outputTokens")?)?,
-                        cache_create_tokens: item
-                            .get("cacheCreateTokens")
-                            .and_then(parse_u64_from_value)
-                            .unwrap_or(0),
-                        cache_read_tokens: item
-                            .get("cacheReadTokens")
-                            .and_then(parse_u64_from_value)
-                            .unwrap_or(0),
-                        request_count: parse_u64_from_value(item.get("requestCount")?)?,
-                        percent: item.get("percent").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                        // ccusage 模式不包含状态码信息
-                        status_codes: Vec::new(),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // 计算总体风险等级
-    let overall_risk_level = windows
-        .iter()
-        .map(|w| &w.risk_level)
-        .max_by_key(|level| match level.as_str() {
-            "critical" => 2,
-            "warning" => 1,
-            _ => 0,
-        })
-        .unwrap_or(&"safe".to_string())
-        .clone();
-
-    // 总费用使用 summaryWindow 的费用，和概览面板展示窗口保持一致。
-    let summary_window = &settings.summary_window;
-    let total_cost = windows
-        .iter()
-        .find(|w| &w.window == summary_window)
-        .map(|w| w.cost)
-        .unwrap_or(0.0);
-
-    let summary = crate::models::UsageSummary {
-        total_tokens: windows.iter().map(|w| w.token_used).sum(),
-        total_requests: windows.iter().map(|w| w.request_used).sum(),
-        total_input_tokens: windows.iter().map(|w| w.input_tokens).sum(),
-        total_output_tokens: windows.iter().map(|w| w.output_tokens).sum(),
-        total_cache_create_tokens: windows.iter().map(|w| w.cache_create_tokens).sum(),
-        total_cache_read_tokens: windows.iter().map(|w| w.cache_read_tokens).sum(),
-        total_cost,
-        overall_risk_level,
-        total_success_requests: 0, // ccusage 模式不包含状态码信息
-        total_client_error_requests: 0,
-        total_server_error_requests: 0,
-    };
-
-    Ok(UsageSnapshot {
-        generated_at_epoch: now,
-        windows,
-        source,
-        note: None,
-        summary,
-        model_distribution,
-    })
-}
-
-fn run_ccusage_json() -> Result<serde_json::Value, String> {
-    let app_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or_else(|| "ERR_PROJECT_ROOT_NOT_FOUND".to_string())?
-        .to_path_buf();
-
-    let script_path = app_root.join("scripts").join("ccusage-snapshot.mjs");
-
-    // Windows 兼容：先尝试直接调用 node，失败时使用 cmd /c node
-    let output = if cfg!(target_os = "windows") {
-        Command::new("cmd")
-            .args(["/c", "node"])
-            .current_dir(&app_root)
-            .arg(&script_path)
-            .output()
-            .or_else(|_| {
-                Command::new("node")
-                    .current_dir(&app_root)
-                    .arg(&script_path)
-                    .output()
-            })
-            .map_err(|e| format!("ERR_CCUSAGE_NODE_NOT_FOUND: Node.js is required to read ccusage data. Please install Node.js and ensure it is in your PATH. Error: {e}"))?
-    } else {
-        Command::new("node")
-            .current_dir(&app_root)
-            .arg(&script_path)
-            .output()
-            .map_err(|e| format!("ERR_CCUSAGE_NODE_NOT_FOUND: Node.js is required to read ccusage data. Please install Node.js and ensure it is in your PATH. Error: {e}"))?
-    };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("ERR_CCUSAGE_SCRIPT_FAILED: {}", stderr.trim()));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if stdout.is_empty() {
-        return Err("ERR_CCUSAGE_OUTPUT_EMPTY".to_string());
-    }
-
-    serde_json::from_str(&stdout).map_err(|e| format!("ERR_CCUSAGE_PARSE_JSON_FAILED: {e}"))
 }
 
 fn estimate_cost_from_model_distribution(
@@ -723,49 +493,6 @@ fn estimate_cost_from_model_distribution(
         .sum()
 }
 
-fn estimate_ccusage_window_cost(
-    value: &serde_json::Value,
-    window: &str,
-    pricings: &[crate::models::ModelPricingConfig],
-    match_mode: &str,
-) -> f64 {
-    let Some(models) = value
-        .get("windowModelDistribution")
-        .and_then(|v| v.get(window))
-        .and_then(|v| v.as_array())
-    else {
-        return 0.0;
-    };
-
-    models
-        .iter()
-        .filter_map(|model| {
-            let model_name = model.get("modelName")?.as_str()?;
-            Some(crate::models::estimate_session_cost(
-                model
-                    .get("inputTokens")
-                    .and_then(parse_u64_from_value)
-                    .unwrap_or(0),
-                model
-                    .get("outputTokens")
-                    .and_then(parse_u64_from_value)
-                    .unwrap_or(0),
-                model
-                    .get("cacheCreateTokens")
-                    .and_then(parse_u64_from_value)
-                    .unwrap_or(0),
-                model
-                    .get("cacheReadTokens")
-                    .and_then(parse_u64_from_value)
-                    .unwrap_or(0),
-                model_name,
-                pricings,
-                match_mode,
-            ))
-        })
-        .sum()
-}
-
 fn effective_model_pricings(settings: &AppSettings) -> Vec<crate::models::ModelPricingConfig> {
     let mut pricings = settings.model_pricing.pricings.clone();
 
@@ -778,6 +505,10 @@ fn effective_model_pricings(settings: &AppSettings) -> Vec<crate::models::ModelP
 }
 
 fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, String> {
+    if !local_tool_filter_matches_claude(settings) {
+        return Ok(empty_usage_snapshot(settings, "local-files", String::new()));
+    }
+
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -1174,8 +905,8 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
     Ok(UsageSnapshot {
         generated_at_epoch: now,
         windows,
-        source: "local-jsonl".to_string(),
-        note: Some("NOTE_LOCAL_JSONL_FALLBACK".to_string()),
+        source: "local-files".to_string(),
+        note: None,
         summary,
         model_distribution,
     })
@@ -1240,6 +971,13 @@ fn estimate_cost_from_window_model_stats(
             )
         })
         .sum()
+}
+
+fn local_tool_filter_matches_claude(settings: &AppSettings) -> bool {
+    match settings.client_tools.build_filter() {
+        ToolFilter::All => true,
+        ToolFilter::Tool(tool) => tool.trim().is_empty() || tool == "claude_code",
+    }
 }
 
 fn collect_claude_jsonl_files() -> Vec<PathBuf> {
@@ -1827,6 +1565,9 @@ fn build_jsonl_statistics(query: &StatisticsQuery, settings: &AppSettings) -> St
     let mut model_trend_map: HashMap<String, HashMap<i64, StatAccumulator>> = HashMap::new();
 
     for meta in crate::session::get_all_session_meta_cached() {
+        if !crate::session::matches_tool_filter(&meta, &settings.client_tools.build_filter()) {
+            continue;
+        }
         let event_epoch = if meta.end_time > 0 {
             meta.end_time
         } else {
@@ -1928,7 +1669,7 @@ fn build_jsonl_statistics(query: &StatisticsQuery, settings: &AppSettings) -> St
 
     StatisticsSummary {
         generated_at_epoch: chrono::Utc::now().timestamp(),
-        source: "local-jsonl".to_string(),
+        source: "local-files".to_string(),
         capability: StatisticsCapability {
             has_basic_usage: true,
             has_performance: false,
@@ -2155,7 +1896,11 @@ pub async fn get_month_activity(
             }
         }
     } else {
+        let tool_filter = settings.client_tools.build_filter();
         for meta in crate::session::get_all_session_meta_cached() {
+            if !crate::session::matches_tool_filter(&meta, &tool_filter) {
+                continue;
+            }
             let event_epoch = if meta.end_time > 0 {
                 meta.end_time
             } else {
@@ -2353,7 +2098,11 @@ pub async fn get_year_activity(
             }
         }
     } else {
+        let tool_filter = settings.client_tools.build_filter();
         for meta in crate::session::get_all_session_meta_cached() {
+            if !crate::session::matches_tool_filter(&meta, &tool_filter) {
+                continue;
+            }
             let event_epoch = if meta.end_time > 0 {
                 meta.end_time
             } else {
@@ -2581,7 +2330,11 @@ pub async fn get_sessions(
 
     // 1. 从 JSONL 文件获取会话列表（主数据源）
     // 使用缓存版本避免频繁扫描文件系统
-    let all_meta = crate::session::get_all_session_meta_cached();
+    let tool_filter = settings.client_tools.build_filter();
+    let all_meta: Vec<_> = crate::session::get_all_session_meta_cached()
+        .into_iter()
+        .filter(|meta| crate::session::matches_tool_filter(meta, &tool_filter))
+        .collect();
 
     // 2. 应用分页
     let meta_list: Vec<_> = all_meta
@@ -2603,7 +2356,7 @@ pub async fn get_sessions(
                 None => std::collections::HashMap::new(),
             }
         } else {
-            // ccusage 模式下不查询代理性能数据
+            // 本地文件模式下不查询代理性能数据
             std::collections::HashMap::new()
         };
 
@@ -2628,6 +2381,7 @@ pub async fn get_sessions(
                 // 合并数据：JSONL 的 token 统计 + session_stats 的性能指标
                 SessionStats {
                     session_id: meta.session_id,
+                    tool: meta.tool,
                     // Token 统计来自 JSONL（完整数据）
                     total_input_tokens: meta.total_input_tokens,
                     total_output_tokens: meta.total_output_tokens,
@@ -2657,6 +2411,7 @@ pub async fn get_sessions(
                 // 没有代理数据，仅使用 JSONL
                 SessionStats {
                     session_id: meta.session_id,
+                    tool: meta.tool,
                     total_requests: meta.message_count,
                     total_input_tokens: meta.total_input_tokens,
                     total_output_tokens: meta.total_output_tokens,
@@ -2755,7 +2510,7 @@ pub async fn get_session_detail(
             None => None,
         }
     } else {
-        // ccusage 模式下不查询代理性能数据
+        // 本地文件模式下不查询代理性能数据
         None
     };
 
@@ -2763,6 +2518,7 @@ pub async fn get_session_detail(
     let stats = if let Some(proxy) = proxy_stats {
         SessionStats {
             session_id: meta.session_id,
+            tool: meta.tool,
             // Token 统计来自 JSONL（完整数据）
             total_input_tokens: meta.total_input_tokens,
             total_output_tokens: meta.total_output_tokens,
@@ -2791,6 +2547,7 @@ pub async fn get_session_detail(
     } else {
         SessionStats {
             session_id: meta.session_id,
+            tool: meta.tool,
             total_requests: meta.message_count,
             total_input_tokens: meta.total_input_tokens,
             total_output_tokens: meta.total_output_tokens,
@@ -2837,7 +2594,11 @@ pub async fn get_project_stats(
     let mut project_map: std::collections::HashMap<String, crate::proxy::ProjectStats> =
         std::collections::HashMap::new();
 
+    let tool_filter = settings.client_tools.build_filter();
     for meta in all_meta {
+        if !crate::session::matches_tool_filter(&meta, &tool_filter) {
+            continue;
+        }
         let project_name = meta
             .project_name
             .clone()

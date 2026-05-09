@@ -61,7 +61,7 @@ const defaultSettings: AppSettings = {
   billingType: 'both',
   quotas: defaultQuotas,
   summaryWindow: '24h',
-  dataSource: 'ccusage',
+  dataSource: 'local',
   proxy: {
     enabled: false,
     port: 18765,
@@ -250,7 +250,7 @@ export const useMonitorStore = defineStore('monitor', {
       try {
         this.error = ''
 
-        // 统一调用 - 后端会根据 settings.dataSource 选择代理或 ccusage
+        // 统一调用 - 后端会根据 settings.dataSource 选择代理或本地文件
         const data = await invoke<UsageSnapshot>('get_usage_snapshot', {
           settings: this.settings
         })
@@ -459,7 +459,7 @@ export const useMonitorStore = defineStore('monitor', {
       const cooldownPassed = now - this.lastAlertEpoch >= this.alertCooldownSeconds
 
       if (maxLevel !== 'safe' && (maxLevel !== this.lastAlertLevel || cooldownPassed)) {
-        const source = snapshot.source === 'ccusage-api' || snapshot.source === 'local-jsonl' || snapshot.source === 'no-data' || snapshot.source === 'simulated' || snapshot.source === 'proxy' ? snapshot.source : 'unknown'
+        const source = snapshot.source === 'local-files' || snapshot.source === 'no-data' || snapshot.source === 'simulated' || snapshot.source === 'proxy' ? snapshot.source : 'unknown'
         this.alerts.unshift({
           level: maxLevel,
           source,

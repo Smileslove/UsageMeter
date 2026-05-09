@@ -8,6 +8,7 @@
 //! - 后续调用：只扫描新增/修改的文件
 
 use super::meta::{SessionFile, SessionMeta};
+use crate::models::ToolFilter;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -275,15 +276,18 @@ pub fn invalidate_cache() {
 
 /// 扫描 Claude 项目目录中的所有会话文件
 pub fn scan_session_files() -> Vec<SessionFile> {
-    let mut roots = Vec::new();
+    let mut roots: Vec<(&str, PathBuf)> = Vec::new();
     if let Some(home) = dirs::home_dir() {
-        roots.push(home.join(".claude").join("projects"));
-        roots.push(home.join(".config").join("claude").join("projects"));
+        roots.push(("claude_code", home.join(".claude").join("projects")));
+        roots.push((
+            "claude_code",
+            home.join(".config").join("claude").join("projects"),
+        ));
     }
 
     let mut sessions = Vec::new();
 
-    for root in roots {
+    for (tool, root) in roots {
         if !root.exists() {
             continue;
         }
@@ -331,6 +335,7 @@ pub fn scan_session_files() -> Vec<SessionFile> {
 
                         sessions.push(SessionFile {
                             session_id: unique_id,
+                            tool: tool.to_string(),
                             project_path: project_name.to_string(),
                             file_path: path.to_string_lossy().to_string(),
                             file_size,
@@ -388,6 +393,7 @@ fn extract_project_name(cwd: &str) -> Option<String> {
 pub fn extract_session_meta(file: &SessionFile) -> SessionMeta {
     let mut meta = SessionMeta {
         session_id: file.session_id.clone(),
+        tool: file.tool.clone(),
         cwd: None,
         project_name: None,
         topic: None,
@@ -682,6 +688,14 @@ pub fn get_session_meta_by_id(session_id: &str) -> Option<SessionMeta> {
     }
 
     None
+}
+
+pub fn matches_tool_filter(meta: &SessionMeta, filter: &ToolFilter) -> bool {
+    match filter {
+        ToolFilter::All => true,
+        ToolFilter::Tool(tool) if tool.trim().is_empty() => true,
+        ToolFilter::Tool(tool) => meta.tool == *tool,
+    }
 }
 
 /// 获取所有会话元数据（限制数量）

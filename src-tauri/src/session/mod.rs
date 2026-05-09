@@ -9,4 +9,5 @@ mod scanner;
 pub use meta::SessionMeta;
 pub use scanner::{
     find_session_id_by_message_id, get_all_session_meta_cached, get_session_meta_by_id,
+    matches_tool_filter,
 };

@@ -227,6 +227,9 @@ pub struct WindowStats {
 pub struct SessionStats {
     /// 会话 ID
     pub session_id: String,
+    /// 客户端工具标识
+    #[serde(default)]
+    pub tool: String,
     /// 总请求数
     pub total_requests: u64,
     /// 总输入 Token

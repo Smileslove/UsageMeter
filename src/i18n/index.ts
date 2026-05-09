@@ -48,8 +48,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       confirm: '确认'
     },
     source: {
-      ccusageApi: 'ccusage',
-      localJsonl: '本地日志回退',
+      localFiles: '本地文件',
       noData: '无可用数据',
       simulated: '模拟数据',
       unknown: '未知来源'
@@ -97,8 +96,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       fromSource: '当前窗口已达到阈值（{source}）'
     },
     backendNote: {
-      simulatedData: '当前使用模拟数据；请安装并配置 ccusage 与 Claude 数据目录。',
-      localJsonlFallback: 'ccusage 失败，已回退到本地 JSONL 解析结果。',
+      simulatedData: '当前使用模拟数据；请确认本地会话文件可用。',
       noRealData: '未获取到真实数据，请确认 Claude Code 已产生会话。'
     },
     backendError: {
@@ -109,8 +107,6 @@ const messages: Record<AppLocale, TranslationNode> = {
       serializeSettings: '序列化配置失败',
       writeSettings: '写入配置失败',
       snapshotTaskFailed: '后台任务执行失败',
-      ccusageScriptFailed: 'ccusage 脚本执行失败',
-      ccusageEmpty: 'ccusage 输出为空',
       localJsonlNotFound: '未找到 Claude 本地 JSONL 会话文件',
       statisticsTimeout: '统计数据加载超时',
       unknown: '未知错误'
@@ -149,9 +145,9 @@ const messages: Record<AppLocale, TranslationNode> = {
       setLimit: '设置限额',
       summaryWindow: '汇总展示窗口',
       dataSource: '数据统计方式',
-      dataSourceCcusage: 'ccusage + 本地文件',
+      dataSourceLocal: '本地文件',
       dataSourceProxy: '本地代理',
-      dataSourceCcusageDesc: '基础统计和模型分布功能完整',
+      dataSourceLocalDesc: '直接解析本地会话文件，适合作为默认历史数据来源',
       dataSourceProxyDesc: '支持生成速率、状态码等实时统计功能',
       theme: '主题',
       themeLight: '明亮',
@@ -481,8 +477,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       confirm: '確認'
     },
     source: {
-      ccusageApi: 'ccusage',
-      localJsonl: '本地日誌回退',
+      localFiles: '本地檔案',
       noData: '無可用資料',
       simulated: '模擬資料',
       unknown: '未知來源'
@@ -530,8 +525,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       fromSource: '目前視窗已達到閾值（{source}）'
     },
     backendNote: {
-      simulatedData: '目前使用模擬資料；請安裝並設定 ccusage 與 Claude 資料目錄。',
-      localJsonlFallback: 'ccusage 失敗，已回退到本地 JSONL 解析結果。',
+      simulatedData: '目前使用模擬資料；請確認本地會話檔案可用。',
       noRealData: '未獲取到真實資料，請確認 Claude Code 已產生會話。'
     },
     backendError: {
@@ -542,8 +536,6 @@ const messages: Record<AppLocale, TranslationNode> = {
       serializeSettings: '序列化設定失敗',
       writeSettings: '寫入設定失敗',
       snapshotTaskFailed: '背景任務執行失敗',
-      ccusageScriptFailed: 'ccusage 腳本執行失敗',
-      ccusageEmpty: 'ccusage 輸出為空',
       localJsonlNotFound: '未找到 Claude 本地 JSONL 會話檔案',
       statisticsTimeout: '統計資料載入逾時',
       unknown: '未知錯誤'
@@ -582,9 +574,9 @@ const messages: Record<AppLocale, TranslationNode> = {
       setLimit: '設定限額',
       summaryWindow: '彙總展示視窗',
       dataSource: '資料統計方式',
-      dataSourceCcusage: 'ccusage + 本地檔案',
+      dataSourceLocal: '本地檔案',
       dataSourceProxy: '本地代理',
-      dataSourceCcusageDesc: '基礎統計和模型分佈功能完整',
+      dataSourceLocalDesc: '直接解析本地會話檔案，適合作為預設歷史資料來源',
       dataSourceProxyDesc: '支援生成速率、狀態碼等即時統計功能',
       theme: '主題',
       themeLight: '明亮',
@@ -914,8 +906,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       confirm: 'Confirm'
     },
     source: {
-      ccusageApi: 'ccusage',
-      localJsonl: 'Local JSONL fallback',
+      localFiles: 'Local Files',
       noData: 'No available data',
       simulated: 'Simulated data',
       unknown: 'Unknown source'
@@ -963,8 +954,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       fromSource: 'Current window reached threshold ({source})'
     },
     backendNote: {
-      simulatedData: 'Using simulated data. Please install and configure ccusage and Claude data directory.',
-      localJsonlFallback: 'ccusage failed, using local JSONL fallback.',
+      simulatedData: 'Using simulated data. Please ensure local session files are available.',
       noRealData: 'No real data available. Please confirm Claude Code has generated sessions.'
     },
     backendError: {
@@ -975,8 +965,6 @@ const messages: Record<AppLocale, TranslationNode> = {
       serializeSettings: 'Failed to serialize settings',
       writeSettings: 'Failed to write settings',
       snapshotTaskFailed: 'Background task execution failed',
-      ccusageScriptFailed: 'ccusage script execution failed',
-      ccusageEmpty: 'ccusage output is empty',
       localJsonlNotFound: 'Claude local JSONL session files not found',
       statisticsTimeout: 'Statistics data load timed out',
       unknown: 'Unknown error'
@@ -1015,9 +1003,9 @@ const messages: Record<AppLocale, TranslationNode> = {
       setLimit: 'Set Limit',
       summaryWindow: 'Summary Display Window',
       dataSource: 'Data Collection Method',
-      dataSourceCcusage: 'ccusage + Local Files',
+      dataSourceLocal: 'Local Files',
       dataSourceProxy: 'Local Proxy',
-      dataSourceCcusageDesc: 'Basic stats and model distribution fully supported',
+      dataSourceLocalDesc: 'Reads local session files directly and serves as the default history source',
       dataSourceProxyDesc: 'Supports generation rate, status codes and real-time statistics',
       theme: 'Theme',
       themeLight: 'Light',
@@ -1307,8 +1295,7 @@ const messages: Record<AppLocale, TranslationNode> = {
 }
 
 const SOURCE_KEY_MAP: Record<string, string> = {
-  'ccusage-api': 'source.ccusageApi',
-  'local-jsonl': 'source.localJsonl',
+  'local-files': 'source.localFiles',
   'no-data': 'source.noData',
   simulated: 'source.simulated',
   unknown: 'source.unknown'
@@ -1368,7 +1355,6 @@ export function alertMessage(locale: string | undefined, level: 'warning' | 'cri
 
 const NOTE_KEY_MAP: Record<string, string> = {
   NOTE_SIMULATED_DATA: 'backendNote.simulatedData',
-  NOTE_LOCAL_JSONL_FALLBACK: 'backendNote.localJsonlFallback',
   NOTE_NO_REAL_DATA: 'backendNote.noRealData'
 }
 
@@ -1380,8 +1366,6 @@ const ERROR_KEY_MAP: Record<string, string> = {
   ERR_SERIALIZE_SETTINGS: 'backendError.serializeSettings',
   ERR_WRITE_SETTINGS: 'backendError.writeSettings',
   ERR_SNAPSHOT_TASK_FAILED: 'backendError.snapshotTaskFailed',
-  ERR_CCUSAGE_SCRIPT_FAILED: 'backendError.ccusageScriptFailed',
-  ERR_CCUSAGE_OUTPUT_EMPTY: 'backendError.ccusageEmpty',
   ERR_LOCAL_JSONL_NOT_FOUND: 'backendError.localJsonlNotFound',
   ERR_STATISTICS_TIMEOUT: 'backendError.statisticsTimeout'
 }

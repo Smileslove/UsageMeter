@@ -431,7 +431,7 @@ pub fn default_summary_window() -> String {
 }
 
 pub fn default_data_source() -> String {
-    "ccusage".to_string()
+    "local".to_string()
 }
 
 pub fn default_theme() -> String {

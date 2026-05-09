@@ -49,11 +49,11 @@
 
 ## Screenshots
 
-| ![Overview Panel](assets/overview.png) | ![Activity Heatmap](assets/activity-heatmap.png) | ![Time Window Statistics](assets/time-window-statistics.png) |
-|:---:|:---:|:---:|
-| *Overview Panel* | *Activity Heatmap* | *Time Window Statistics* |
-| ![Model Usage](assets/model-usage-display.png) | ![Recent Sessions](assets/recent-sessions.png) | ![Project Statistics](assets/project-statistics.png) |
-| *Model Usage* | *Recent Sessions* | *Project Statistics* |
+|     ![Overview Panel](assets/overview.png)     | ![Activity Heatmap](assets/activity-heatmap.png) | ![Time Window Statistics](assets/time-window-statistics.png) |
+| :--------------------------------------------: | :----------------------------------------------: | :----------------------------------------------------------: |
+|                _Overview Panel_                |                _Activity Heatmap_                |                   _Time Window Statistics_                   |
+| ![Model Usage](assets/model-usage-display.png) |  ![Recent Sessions](assets/recent-sessions.png)  |     ![Project Statistics](assets/project-statistics.png)     |
+|                 _Model Usage_                  |                _Recent Sessions_                 |                     _Project Statistics_                     |
 
 ## Installation
 
@@ -77,12 +77,13 @@ Download the latest release from the [Releases](https://github.com/smileslove/Us
 
 UsageMeter supports two data collection strategies:
 
-| Mode | Description | Feature Differences |
-|------|-------------|---------------------|
-| **ccusage + Local Files** | Default mode. Uses ccusage first and falls back to local JSONL parsing when needed | Supports quota windows, token/request statistics, model distribution, cost estimation, sessions, and project summaries |
-| **Local Proxy** | Collects request data through a local Anthropic-compatible proxy | Adds real-time performance data such as generation rate, TTFT, status codes, request duration, and proxy-side request records |
+| Mode            | Description                                                                 | Feature Differences                                                                                                           |
+| --------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| **Local Files** | Default mode. Parses local session files directly for historical usage data | Supports quota windows, token/request statistics, model distribution, cost estimation, sessions, and project summaries        |
+| **Local Proxy** | Collects request data through a local Anthropic-compatible proxy            | Adds real-time performance data such as generation rate, TTFT, status codes, request duration, and proxy-side request records |
 
 > **Note**:
+>
 > - Local-file mode remains the default and is enough for most historical token, request, session, project, and cost statistics.
 > - Proxy mode enriches the same views with runtime metrics that are not available in JSONL files, such as generation rate, TTFT, response time, and status code distribution.
 > - Cost estimation uses synced open-source model pricing plus user-defined custom prices. Custom prices take priority.
@@ -136,6 +137,7 @@ npm run lint
 ```
 
 This script runs:
+
 - TypeScript type checking (`vue-tsc --noEmit`)
 - Rust formatting check (`cargo fmt -- --check`)
 - Rust clippy linting (`cargo clippy -- -D warnings`)
@@ -174,22 +176,22 @@ UsageMeter stores proxy records, aggregated statistics, and model pricing data i
 
 Stores proxy-side per-request data:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | INTEGER | Primary key |
-| `timestamp` | INTEGER | Request timestamp (milliseconds) |
-| `message_id` | TEXT | Unique message identifier |
-| `input_tokens` / `output_tokens` | INTEGER | Input and output token counts |
-| `cache_create_tokens` / `cache_read_tokens` | INTEGER | Cache write/read token counts |
-| `model` | TEXT | Model name |
-| `session_id` | TEXT | Session ID |
-| `request_start_time` / `request_end_time` | INTEGER | Request timing boundaries |
-| `duration_ms` / `ttft_ms` | INTEGER | Request duration and time to first token |
-| `output_tokens_per_second` | REAL | Output generation rate |
-| `status_code` | INTEGER | HTTP response status |
-| `estimated_cost` | REAL | Cost frozen at write/backfill time |
-| `pricing_snapshot_id` | TEXT | Pricing snapshot reference |
-| `cost_locked` | INTEGER | Whether cost has been frozen |
+| Field                                       | Type    | Description                              |
+| ------------------------------------------- | ------- | ---------------------------------------- |
+| `id`                                        | INTEGER | Primary key                              |
+| `timestamp`                                 | INTEGER | Request timestamp (milliseconds)         |
+| `message_id`                                | TEXT    | Unique message identifier                |
+| `input_tokens` / `output_tokens`            | INTEGER | Input and output token counts            |
+| `cache_create_tokens` / `cache_read_tokens` | INTEGER | Cache write/read token counts            |
+| `model`                                     | TEXT    | Model name                               |
+| `session_id`                                | TEXT    | Session ID                               |
+| `request_start_time` / `request_end_time`   | INTEGER | Request timing boundaries                |
+| `duration_ms` / `ttft_ms`                   | INTEGER | Request duration and time to first token |
+| `output_tokens_per_second`                  | REAL    | Output generation rate                   |
+| `status_code`                               | INTEGER | HTTP response status                     |
+| `estimated_cost`                            | REAL    | Cost frozen at write/backfill time       |
+| `pricing_snapshot_id`                       | TEXT    | Pricing snapshot reference               |
+| `cost_locked`                               | INTEGER | Whether cost has been frozen             |
 
 > **Note**: `total_tokens` is not stored redundantly. It is computed as `input_tokens + cache_create_tokens + cache_read_tokens + output_tokens`, while cost calculations keep the four token categories separate because they may use different prices.
 
@@ -197,54 +199,54 @@ Stores proxy-side per-request data:
 
 Stores proxy-only session aggregates and is merged with local JSONL session metadata in the UI:
 
-| Field | Description |
-|-------|-------------|
-| `session_id` | Primary key |
-| `total_duration_ms`, `avg_output_tokens_per_second`, `avg_ttft_ms` | Performance metrics |
-| `proxy_request_count`, `success_requests`, `error_requests` | Request counters |
-| `total_input_tokens`, `total_output_tokens`, `total_cache_create_tokens`, `total_cache_read_tokens` | Proxy token totals |
-| `models`, `first_request_time`, `last_request_time` | Session model and time range |
-| `estimated_cost`, `last_updated` | Cost and update timestamp |
+| Field                                                                                               | Description                  |
+| --------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `session_id`                                                                                        | Primary key                  |
+| `total_duration_ms`, `avg_output_tokens_per_second`, `avg_ttft_ms`                                  | Performance metrics          |
+| `proxy_request_count`, `success_requests`, `error_requests`                                         | Request counters             |
+| `total_input_tokens`, `total_output_tokens`, `total_cache_create_tokens`, `total_cache_read_tokens` | Proxy token totals           |
+| `models`, `first_request_time`, `last_request_time`                                                 | Session model and time range |
+| `estimated_cost`, `last_updated`                                                                    | Cost and update timestamp    |
 
 #### `daily_summary` - Daily Summary Table
 
 Accelerates historical daily aggregation queries:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `date` | TEXT | Date (primary key) |
-| `total_tokens` / token category fields | INTEGER | Total and category token counts |
-| `request_count` | INTEGER | Request count |
-| `cost` | REAL | Total estimated cost |
-| `success_*` fields | INTEGER / REAL | Successful-request token and cost aggregates |
-| `model_count` | INTEGER | Number of models used that day |
-| `success_requests` / `client_error_requests` / `server_error_requests` | INTEGER | Status-class counters |
-| `finalized_at` | INTEGER | Finalization timestamp for historical aggregation |
+| Field                                                                  | Type           | Description                                       |
+| ---------------------------------------------------------------------- | -------------- | ------------------------------------------------- |
+| `date`                                                                 | TEXT           | Date (primary key)                                |
+| `total_tokens` / token category fields                                 | INTEGER        | Total and category token counts                   |
+| `request_count`                                                        | INTEGER        | Request count                                     |
+| `cost`                                                                 | REAL           | Total estimated cost                              |
+| `success_*` fields                                                     | INTEGER / REAL | Successful-request token and cost aggregates      |
+| `model_count`                                                          | INTEGER        | Number of models used that day                    |
+| `success_requests` / `client_error_requests` / `server_error_requests` | INTEGER        | Status-class counters                             |
+| `finalized_at`                                                         | INTEGER        | Finalization timestamp for historical aggregation |
 
 #### `model_usage` - Model Usage Table
 
 Statistics grouped by date and model:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `date` | TEXT | Date (composite primary key) |
-| `model` | TEXT | Model name (composite primary key) |
-| `total_tokens` / token category fields | INTEGER | Total and category token counts |
-| `request_count` | INTEGER | Request count |
-| `cost` | REAL | Estimated cost |
-| `success_requests` / `client_error_requests` / `server_error_requests` | INTEGER | Status-class counters |
+| Field                                                                  | Type    | Description                        |
+| ---------------------------------------------------------------------- | ------- | ---------------------------------- |
+| `date`                                                                 | TEXT    | Date (composite primary key)       |
+| `model`                                                                | TEXT    | Model name (composite primary key) |
+| `total_tokens` / token category fields                                 | INTEGER | Total and category token counts    |
+| `request_count`                                                        | INTEGER | Request count                      |
+| `cost`                                                                 | REAL    | Estimated cost                     |
+| `success_requests` / `client_error_requests` / `server_error_requests` | INTEGER | Status-class counters              |
 
 #### `model_pricing` - Model Pricing Table
 
 Caches synced open-source model prices and user-defined custom prices:
 
-| Field | Description |
-|-------|-------------|
-| `model_id`, `display_name` | Model identity and display name |
-| `input_price`, `output_price` | Price per million input/output tokens |
-| `cache_read_price`, `cache_write_price` | Optional cache token prices |
-| `source` | `api` or `custom` |
-| `last_updated` | Last update timestamp |
+| Field                                   | Description                           |
+| --------------------------------------- | ------------------------------------- |
+| `model_id`, `display_name`              | Model identity and display name       |
+| `input_price`, `output_price`           | Price per million input/output tokens |
+| `cache_read_price`, `cache_write_price` | Optional cache token prices           |
+| `source`                                | `api` or `custom`                     |
+| `last_updated`                          | Last update timestamp                 |
 
 ### Configuration Storage
 
@@ -255,7 +257,7 @@ Application configuration is stored in JSON format at `~/.usagemeter/settings.js
 - Warning/danger thresholds
 - Billing type (token/request/both)
 - Quota limits for `5h`, `24h`, `today`, `7d`, `30d`, and `current_month`
-- Summary display window and data source (`ccusage` or `proxy`)
+- Summary display window and data source (`local` or `proxy`)
 - Proxy port, auto-start behavior, and whether error requests are counted
 - Theme settings and login auto-start
 - Model pricing match mode, last sync time, and custom pricing overrides
@@ -264,7 +266,7 @@ Application configuration is stored in JSON format at `~/.usagemeter/settings.js
 
 - **Frontend**: Vue 3 + TypeScript + Vite + Tailwind CSS + Pinia + ECharts / vue-echarts
 - **Backend**: Tauri 2.x (Rust) with tray icon, autostart, local proxy, and native window controls
-- **Data**: ccusage, local Claude Code JSONL parsing, SQLite (`rusqlite`), and synced/custom model pricing
+- **Data**: local Claude Code JSONL parsing, SQLite (`rusqlite`), and synced/custom model pricing
 - **Proxy Runtime**: Tokio + Hyper + Reqwest for local Anthropic-compatible request forwarding
 
 ## Contributing

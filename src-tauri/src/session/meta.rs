@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 pub struct SessionMeta {
     /// 会话 ID（从文件路径派生）
     pub session_id: String,
+    /// 客户端工具标识，如 claude_code / codex / opencode
+    #[serde(default)]
+    pub tool: String,
     /// 工作目录（从 JSONL cwd 字段提取）
     pub cwd: Option<String>,
     /// 项目名称（从 cwd 提取，路径最后部分）
@@ -70,6 +73,8 @@ pub struct SessionMeta {
 pub struct SessionFile {
     /// 会话 ID（唯一标识符）
     pub session_id: String,
+    /// 客户端工具标识
+    pub tool: String,
     /// 项目路径名（如 "-Users-xxx-ProjectA"）
     pub project_path: String,
     /// 完整 JSONL 文件路径

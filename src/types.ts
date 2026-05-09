@@ -6,7 +6,7 @@ export type WindowName = '5h' | '24h' | 'today' | '7d' | '30d' | 'current_month'
 
 export const WINDOW_ORDER: WindowName[] = ['5h', '24h', 'today', '7d', '30d', 'current_month']
 
-export type DataSource = 'ccusage' | 'proxy'
+export type DataSource = 'local' | 'proxy'
 
 export type ThemeMode = 'light' | 'dark' | 'system'
 
@@ -59,7 +59,7 @@ export interface AppSettings {
   billingType: BillingType
   quotas: WindowQuota[]
   summaryWindow: WindowName  // 概览面板汇总展示区显示的窗口
-  dataSource: DataSource     // 数据统计方式：ccusage 或 proxy
+  dataSource: DataSource     // 数据统计方式：local 或 proxy
   proxy: ProxyConfig         // 代理配置
   theme: ThemeMode           // 主题模式：light/dark/system
   modelPricing: ModelPricingSettings  // 模型价格设置
@@ -174,7 +174,7 @@ export interface UsageSummary {
 export interface UsageSnapshot {
   generatedAtEpoch: number
   windows: WindowUsage[]
-  source: 'ccusage' | 'simulated' | string
+  source: 'local-files' | 'simulated' | string
   note?: string | null
   summary: UsageSummary
   modelDistribution: ModelUsage[]
@@ -182,7 +182,7 @@ export interface UsageSnapshot {
 
 export interface AlertEvent {
   level: 'safe' | 'warning' | 'critical'
-  source: 'ccusage-api' | 'local-jsonl' | 'no-data' | 'simulated' | 'proxy' | 'unknown'
+  source: 'local-files' | 'no-data' | 'simulated' | 'proxy' | 'unknown'
   createdAtEpoch: number
 }
 
@@ -267,6 +267,7 @@ export interface ModelTtftStats {
 // 会话统计
 export interface SessionStats {
   sessionId: string
+  tool: string
   totalRequests: number
   totalInputTokens: number
   totalOutputTokens: number

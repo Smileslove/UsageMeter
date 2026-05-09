@@ -424,7 +424,7 @@ const formatUptime = (seconds: number): string => {
           <div class="p-3 px-4">
             <div class="flex gap-2">
               <button
-                v-for="source in ['ccusage', 'proxy'] as DataSource[]"
+                v-for="source in ['local', 'proxy'] as DataSource[]"
                 :key="source"
                 @click="localDataSource = source; handleDataSourceChange()"
                 :class="[
@@ -439,7 +439,7 @@ const formatUptime = (seconds: number): string => {
             </div>
             <!-- 数据源说明 -->
             <p class="mt-2 text-[10px] text-gray-400 dark:text-gray-500 leading-relaxed">
-              {{ t(store.settings.locale, localDataSource === 'ccusage' ? 'settings.dataSourceCcusageDesc' : 'settings.dataSourceProxyDesc') }}
+              {{ t(store.settings.locale, localDataSource === 'local' ? 'settings.dataSourceLocalDesc' : 'settings.dataSourceProxyDesc') }}
             </p>
           </div>
   

@@ -1728,6 +1728,7 @@ impl ProxyDatabase {
 
             Ok(SessionStats {
                 session_id: row.get(0)?,
+                tool: crate::models::DEFAULT_CLIENT_TOOL.to_string(),
                 total_requests: row.get::<_, i64>(1)? as u64,
                 total_input_tokens: total_input_tokens as u64,
                 total_output_tokens: total_output_tokens as u64,
@@ -1836,6 +1837,7 @@ impl ProxyDatabase {
 
                     Ok(SessionStats {
                         session_id: row.get(0)?,
+                        tool: crate::models::DEFAULT_CLIENT_TOOL.to_string(),
                         total_requests: row.get::<_, i64>(1)? as u64,
                         total_input_tokens: total_input_tokens as u64,
                         total_output_tokens: total_output_tokens as u64,
@@ -2692,6 +2694,7 @@ impl ProxyDatabase {
 
             Ok(SessionStats {
                 session_id: String::new(), // 调用方会填充
+                tool: crate::models::DEFAULT_CLIENT_TOOL.to_string(),
                 total_requests: row.get::<_, i64>(0)? as u64,
                 total_input_tokens: total_input_tokens as u64,
                 total_output_tokens: total_output_tokens as u64,
@@ -2934,6 +2937,7 @@ impl ProxyDatabase {
                     session_id.clone(),
                     SessionStats {
                         session_id,
+                        tool: crate::models::DEFAULT_CLIENT_TOOL.to_string(),
                         total_requests: proxy_request_count as u64,
                         total_input_tokens: total_input_tokens as u64,
                         total_output_tokens: total_output_tokens as u64,
@@ -3116,6 +3120,7 @@ impl ProxyDatabase {
 
         Ok(SessionStats {
             session_id,
+            tool: crate::models::DEFAULT_CLIENT_TOOL.to_string(),
             total_requests: total_requests as u64,
             total_input_tokens: total_input_tokens as u64,
             total_output_tokens: total_output_tokens as u64,
