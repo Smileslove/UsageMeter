@@ -15,7 +15,7 @@ const activeFilter = computed(() => store.settings.sourceAware.activeSourceFilte
 const sources = computed(() => store.settings.sourceAware.sources)
 
 const showSelector = computed(() => {
-  return store.settings.dataSource === 'proxy' && sources.value.length > 0
+  return store.settings.dataSource === 'proxy'
 })
 
 const getSourceName = (source: { id: string; displayName?: string; baseUrl?: string; apiKeyPrefixes: string[] }) => {

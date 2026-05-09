@@ -7,6 +7,7 @@ import LobeIcon from './LobeIcon.vue'
 import { TOOL_LOBE_ICONS } from '../iconConfig'
 
 const store = useMonitorStore()
+const LOCAL_SUPPORTED_TOOLS = new Set(['claude_code', 'codex'])
 
 const isOpen = ref(false)
 const dropdownRef = ref<HTMLElement | null>(null)
@@ -14,9 +15,15 @@ const iconFailed = ref(false)
 
 const activeFilter = computed(() => store.settings.clientTools.activeToolFilter)
 const profiles = computed(() => store.settings.clientTools.profiles)
+const visibleProfiles = computed(() => profiles.value.filter(profile => {
+  if (store.settings.dataSource === 'proxy') {
+    return profile.enabled
+  }
+  return LOCAL_SUPPORTED_TOOLS.has(profile.tool)
+}))
 
 const showSelector = computed(() => {
-  return store.settings.dataSource === 'proxy' && profiles.value.length > 0
+  return visibleProfiles.value.length > 0
 })
 
 const getToolName = (tool: string) => {
@@ -31,7 +38,7 @@ const getToolIcon = (tool: string) => {
 
 const currentProfile = computed(() => {
   if (!activeFilter.value) return null
-  return profiles.value.find(p => p.tool === activeFilter.value) || null
+  return visibleProfiles.value.find(p => p.tool === activeFilter.value) || null
 })
 
 const currentIcon = computed(() => {
@@ -121,7 +128,7 @@ onUnmounted(() => {
 
         <div class="border-t border-gray-50 dark:border-neutral-800">
           <button
-            v-for="profile in profiles"
+            v-for="profile in visibleProfiles"
             :key="profile.id"
             @click="selectTool(profile.tool)"
             :class="[

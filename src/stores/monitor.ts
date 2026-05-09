@@ -587,6 +587,13 @@ export const useMonitorStore = defineStore('monitor', {
         this.projectStatsLoading = false
       }
     },
+    async refreshFilteredViews() {
+      await this.refreshUsage()
+      await Promise.all([
+        this.fetchSessions(30, 0, false),
+        this.fetchProjectStats()
+      ])
+    },
     // === 来源管理 ===
     /**
      * 设置当前激活的来源过滤器
@@ -594,7 +601,7 @@ export const useMonitorStore = defineStore('monitor', {
     async setActiveSourceFilter(sourceId: string | null) {
       this.settings.sourceAware.activeSourceFilter = sourceId
       await this.saveSettings()
-      await this.refreshUsage()
+      await this.refreshFilteredViews()
     },
     /**
      * 设置当前激活的工具过滤器
@@ -602,7 +609,7 @@ export const useMonitorStore = defineStore('monitor', {
     async setActiveToolFilter(toolId: string | null) {
       this.settings.clientTools.activeToolFilter = toolId
       await this.saveSettings()
-      await this.refreshUsage()
+      await this.refreshFilteredViews()
     },
     /**
      * 重命名来源
