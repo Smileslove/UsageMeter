@@ -3,10 +3,12 @@
 //! 一款用于实时监控 Claude Code 使用情况的系统托盘应用。
 
 mod commands;
+mod local_usage;
 mod models;
 mod proxy;
 mod session;
 mod subscription;
+mod unified_usage;
 mod utils;
 
 use tauri::menu::{Menu, MenuItem};
@@ -99,6 +101,17 @@ pub fn run() {
         .setup(|app| {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(ActivationPolicy::Accessory);
+
+            {
+                tauri::async_runtime::spawn(async move {
+                    let _ = tauri::async_runtime::spawn_blocking(|| {
+                        if let Err(err) = crate::local_usage::ensure_local_usage_synced() {
+                            eprintln!("[UsageMeter] Failed to prewarm local usage database: {err}");
+                        }
+                    })
+                    .await;
+                });
+            }
 
             // 启动时检测并恢复孤立的代理状态
             // 如果上次应用异常崩溃，可能存在备份文件残留或配置未恢复的情况

@@ -6,9 +6,8 @@ mod meta;
 mod scanner;
 
 #[allow(unused_imports)]
-pub use meta::{LocalRequestRecord, SessionMeta};
+pub use meta::{LocalRequestRecord, SessionFile, SessionMeta};
 pub use scanner::{
-    find_session_id_by_message_id, get_all_local_request_records_cached,
-    get_all_session_meta_cached, get_local_request_records_by_session_cached,
-    get_session_meta_by_id, matches_request_tool_filter, matches_tool_filter,
+    find_session_id_by_message_id, get_all_session_meta_cached, parse_session_file_for_storage,
+    scan_session_files,
 };

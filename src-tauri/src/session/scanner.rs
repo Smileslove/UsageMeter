@@ -35,7 +35,7 @@ struct CacheEntry {
 }
 
 /// 解析后的单个会话结果
-struct ParsedSessionData {
+pub(crate) struct ParsedSessionData {
     meta: SessionMeta,
     requests: Vec<LocalRequestRecord>,
 }
@@ -51,10 +51,12 @@ pub fn get_all_session_meta_cached() -> Vec<SessionMeta> {
     ensure_cache_ready().data
 }
 
+#[allow(dead_code)]
 pub fn get_all_local_request_records_cached() -> Vec<LocalRequestRecord> {
     ensure_cache_ready().requests
 }
 
+#[allow(dead_code)]
 pub fn get_local_request_records_by_session_cached(session_id: &str) -> Vec<LocalRequestRecord> {
     ensure_cache_ready()
         .requests
@@ -63,6 +65,7 @@ pub fn get_local_request_records_by_session_cached(session_id: &str) -> Vec<Loca
         .collect()
 }
 
+#[allow(dead_code)]
 struct CacheSnapshot {
     data: Vec<SessionMeta>,
     requests: Vec<LocalRequestRecord>,
@@ -472,7 +475,7 @@ fn is_subagent_transcript(session: &SessionFile, transcript_path: &str) -> bool 
     transcript_path != session.file_path
 }
 
-fn parse_session_file(session: &SessionFile) -> ParsedSessionData {
+pub(crate) fn parse_session_file(session: &SessionFile) -> ParsedSessionData {
     if session.tool == TOOL_CODEX {
         return parse_codex_session_file(session);
     }
@@ -615,6 +618,13 @@ fn parse_session_file(session: &SessionFile) -> ParsedSessionData {
     }
 
     ParsedSessionData { meta, requests }
+}
+
+pub fn parse_session_file_for_storage(
+    session: &SessionFile,
+) -> (SessionMeta, Vec<LocalRequestRecord>) {
+    let parsed = parse_session_file(session);
+    (parsed.meta, parsed.requests)
 }
 
 fn parse_codex_session_file(session: &SessionFile) -> ParsedSessionData {
@@ -1344,6 +1354,7 @@ fn truncate_string(value: &str, max_len: usize) -> String {
     }
 }
 
+#[allow(dead_code)]
 pub fn get_session_meta_by_id(session_id: &str) -> Option<SessionMeta> {
     let all_meta = get_all_session_meta_cached();
     all_meta
@@ -1362,6 +1373,7 @@ pub fn get_session_meta_by_id(session_id: &str) -> Option<SessionMeta> {
         })
 }
 
+#[allow(dead_code)]
 fn matches_tool(tool: &str, filter: &ToolFilter) -> bool {
     match filter {
         ToolFilter::All => true,
@@ -1370,10 +1382,12 @@ fn matches_tool(tool: &str, filter: &ToolFilter) -> bool {
     }
 }
 
+#[allow(dead_code)]
 pub fn matches_tool_filter(meta: &SessionMeta, filter: &ToolFilter) -> bool {
     matches_tool(&meta.tool, filter)
 }
 
+#[allow(dead_code)]
 pub fn matches_request_tool_filter(record: &LocalRequestRecord, filter: &ToolFilter) -> bool {
     matches_tool(&record.tool, filter)
 }
