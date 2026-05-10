@@ -28,6 +28,8 @@ pub struct MergedCoverage {
 pub struct MergedRequestFact {
     pub session_id: String,
     pub project_name: Option<String>,
+    pub project_path: Option<String>,
+    pub tool: String,
     pub timestamp_sec: i64,
     pub timestamp_ms: i64,
     pub model: String,
@@ -47,10 +49,13 @@ pub struct MergedRequestFact {
 impl MergedRequestFact {
     pub fn from_local(record: &LocalRequestRecord, meta: Option<&SessionMeta>, cost: f64) -> Self {
         let project_name = meta.and_then(|m| m.project_name.clone());
+        let project_path = meta.and_then(|m| m.cwd.clone());
 
         Self {
             session_id: record.session_id.clone(),
             project_name,
+            project_path,
+            tool: record.tool.clone(),
             timestamp_sec: record.timestamp,
             timestamp_ms: record.timestamp.saturating_mul(1000),
             model: record.model.clone(),
@@ -68,10 +73,15 @@ impl MergedRequestFact {
         }
     }
 
-    pub fn from_proxy(record: &UsageRecord) -> Self {
+    pub fn from_proxy(record: &UsageRecord, meta: Option<&SessionMeta>) -> Self {
+        let project_name = meta.and_then(|m| m.project_name.clone());
+        let project_path = meta.and_then(|m| m.cwd.clone());
+
         Self {
             session_id: record.session_id.clone().unwrap_or_default(),
-            project_name: None,
+            project_name,
+            project_path,
+            tool: record.client_tool.clone(),
             timestamp_sec: record.timestamp / 1000,
             timestamp_ms: record.timestamp,
             model: record.model.clone(),
@@ -96,6 +106,7 @@ impl MergedRequestFact {
         fallback_cost: f64,
     ) -> Self {
         let project_name = meta.and_then(|m| m.project_name.clone());
+        let project_path = meta.and_then(|m| m.cwd.clone());
 
         Self {
             session_id: if !local.session_id.trim().is_empty() {
@@ -104,6 +115,12 @@ impl MergedRequestFact {
                 proxy.session_id.clone().unwrap_or_default()
             },
             project_name,
+            project_path,
+            tool: if !local.tool.trim().is_empty() {
+                local.tool.clone()
+            } else {
+                proxy.client_tool.clone()
+            },
             timestamp_sec: local.timestamp,
             timestamp_ms: proxy.timestamp,
             model: if !proxy.model.trim().is_empty() {

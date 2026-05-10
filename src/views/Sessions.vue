@@ -1,24 +1,151 @@
 <script setup lang="ts">
+import { LayoutGrid } from 'lucide-vue-next'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
-import { onMounted, onUnmounted, ref, watch } from 'vue'
-import type { SessionStats } from '../types'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import type { ProjectStats, SessionStats } from '../types'
 import SessionDetailModal from '../components/SessionDetailModal.vue'
+import LobeIcon from '../components/LobeIcon.vue'
+import { TOOL_LOBE_ICONS } from '../iconConfig'
 import { formatCost as formatCostUtil } from '../utils/format'
 
 const store = useMonitorStore()
+const SESSION_SOURCE_TOOLS = new Set(['claude_code', 'codex'])
+const normalizeSessionTool = (tool: string | null | undefined) => (
+  tool && SESSION_SOURCE_TOOLS.has(tool) ? tool : null
+)
+const uuidLikePattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 // 视图切换状态
 const activeTab = ref<'recent' | 'projects'>('recent')
+const selectedTool = ref<string | null>(normalizeSessionTool(store.settings.clientTools.activeToolFilter))
+const lastGlobalTool = ref<string | null>(normalizeSessionTool(store.settings.clientTools.activeToolFilter))
 
 // 选中的会话（用于模态框）
 const selectedSession = ref<SessionStats | null>(null)
 const showModal = ref(false)
 
+interface SessionCacheEntry {
+  items: SessionStats[]
+  currentPage: number
+  hasMore: boolean
+}
+
+const sessionCache = new Map<string, SessionCacheEntry>()
+const projectCache = new Map<string, ProjectStats[]>()
+const lastProxyRecordCount = ref<number | null>(null)
+const proxyRefreshDebounceMs = 1500
+const copiedProjectPath = ref<string | null>(null)
+let proxyRefreshTimer: ReturnType<typeof setTimeout> | null = null
+let copiedProjectPathTimer: ReturnType<typeof setTimeout> | null = null
+
+const cacheKey = () => `${store.settings.dataSource}:${selectedTool.value ?? '__all__'}`
+
+const sourceOptions = computed(() => {
+  const profiles = store.settings.clientTools.profiles
+    .filter(profile => SESSION_SOURCE_TOOLS.has(profile.tool))
+    .sort((a, b) => {
+      if (a.tool === 'claude_code') return -1
+      if (b.tool === 'claude_code') return 1
+      return (a.displayName || a.tool).localeCompare(b.displayName || b.tool)
+    })
+
+  return [
+    {
+      key: '__all__',
+      tool: null,
+      label: t(store.settings.locale, 'tools.all'),
+      icon: null
+    },
+    ...profiles.map(profile => ({
+      key: profile.tool,
+      tool: profile.tool,
+      label: profile.displayName || profile.tool,
+      icon: profile.icon || TOOL_LOBE_ICONS[profile.tool] || null
+    }))
+  ]
+})
+
+const applySessionCache = (entry: SessionCacheEntry) => {
+  store.sessions = entry.items
+  currentPage.value = entry.currentPage
+  hasMore.value = entry.hasMore
+  store.sessionsLoading = false
+}
+
+const rememberSessionCache = (key: string) => {
+  sessionCache.set(key, {
+    items: [...store.sessions],
+    currentPage: currentPage.value,
+    hasMore: hasMore.value
+  })
+}
+
+const clearViewCaches = () => {
+  sessionCache.clear()
+  projectCache.clear()
+}
+
+const projectCacheKey = () => `${store.settings.dataSource}:projects:all-tools`
+
+const triggerSessionViewRefresh = async () => {
+  clearViewCaches()
+  await reloadSessions(true)
+  if (activeTab.value === 'projects') {
+    await reloadProjectStats(true)
+  } else {
+    store.projectStats = []
+  }
+}
+
+const scheduleProxyRefresh = () => {
+  if (proxyRefreshTimer) {
+    clearTimeout(proxyRefreshTimer)
+  }
+  proxyRefreshTimer = setTimeout(() => {
+    proxyRefreshTimer = null
+    void triggerSessionViewRefresh()
+  }, proxyRefreshDebounceMs)
+}
+
+const reloadSessions = async (force = false) => {
+  const key = cacheKey()
+  if (!force) {
+    const cached = sessionCache.get(key)
+    if (cached) {
+      applySessionCache(cached)
+      return
+    }
+  }
+
+  currentPage.value = 0
+  hasMore.value = true
+  const count = await store.fetchSessionsForTool(selectedTool.value, pageSize, 0, false)
+  if (count < pageSize) {
+    hasMore.value = false
+  }
+  rememberSessionCache(key)
+}
+
+const reloadProjectStats = async (force = false) => {
+  const key = projectCacheKey()
+  if (!force) {
+    const cached = projectCache.get(key)
+    if (cached) {
+      store.projectStats = [...cached]
+      store.projectStatsLoading = false
+      return
+    }
+  }
+
+  await store.fetchProjectStatsForTool(null)
+  projectCache.set(key, [...store.projectStats])
+}
+
 // 切换 tab 时加载项目统计
 watch(activeTab, async (newTab) => {
-  if (newTab === 'projects' && store.projectStats.length === 0) {
-    await store.fetchProjectStats()
+  if (newTab === 'projects') {
+    await reloadProjectStats()
   }
 })
 
@@ -41,9 +168,9 @@ const formatTime = (epoch: number) => {
   const locale = store.settings.locale.replace('_', '-') // 确保传入合法的语言标签(如 zh-CN)
 
   // 1小时内显示分钟前，24小时内显示小时前
-  if (diffMins < 1) return '刚刚'
-  if (diffMins < 60) return `${diffMins}分钟前`
-  if (diffHours < 24) return `${diffHours}小时前`
+  if (diffMins < 1) return t(store.settings.locale, 'common.justNow')
+  if (diffMins < 60) return t(store.settings.locale, 'sessions.timeMinutesAgo', { count: diffMins })
+  if (diffHours < 24) return t(store.settings.locale, 'sessions.timeHoursAgo', { count: diffHours })
 
   // 超过24小时就直接显示具体的月日+时间(如果是当年)，否则带上年份
   return date.toLocaleString(locale, {
@@ -69,6 +196,87 @@ const formatCost = (cost: number | undefined) => {
   return formatCostUtil(cost, store.settings.currency, 4)
 }
 
+const displaySessionTitle = (session: SessionStats) => {
+  const sessionName = session.sessionName?.trim()
+  if (session.topic?.trim()) return session.topic
+  if (sessionName && !uuidLikePattern.test(sessionName)) return sessionName
+  if (session.lastPrompt?.trim()) return session.lastPrompt
+  if (session.projectName?.trim()) return session.projectName
+  return t(store.settings.locale, 'sessions.untitled')
+}
+
+const getToolProfile = (tool: string) => (
+  store.settings.clientTools.profiles.find(profile => profile.tool === tool)
+)
+
+const getToolIcon = (tool: string) => {
+  const profile = getToolProfile(tool)
+  return profile?.icon || TOOL_LOBE_ICONS[tool] || null
+}
+
+const projectToolRows = (project: ProjectStats) => {
+  const rows = project.toolBreakdown?.length
+    ? project.toolBreakdown
+    : [{
+        tool: 'unknown',
+        requestCount: project.requestCount,
+        sessionCount: project.sessionCount,
+        totalInputTokens: project.totalInputTokens,
+        totalOutputTokens: project.totalOutputTokens,
+        totalCacheCreateTokens: project.totalCacheCreateTokens,
+        totalCacheReadTokens: project.totalCacheReadTokens,
+        totalCost: project.totalCost,
+        lastActive: project.lastActive
+      }]
+
+  return [...rows].sort((a, b) => b.lastActive - a.lastActive)
+}
+
+const projectTotalTokens = (project: ProjectStats) => (
+  project.totalInputTokens
+  + project.totalOutputTokens
+  + project.totalCacheCreateTokens
+  + project.totalCacheReadTokens
+)
+
+const shouldShowProjectTotalRow = (project: ProjectStats) => projectToolRows(project).length > 1
+
+const copyProjectPath = async (projectPath?: string | null) => {
+  if (!projectPath) return
+
+  let copied = false
+
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(projectPath)
+      copied = true
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = projectPath
+      textarea.setAttribute('readonly', 'true')
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      copied = document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
+  } catch {
+    return
+  }
+
+  if (!copied) return
+
+  copiedProjectPath.value = projectPath
+  if (copiedProjectPathTimer) {
+    clearTimeout(copiedProjectPathTimer)
+  }
+  copiedProjectPathTimer = setTimeout(() => {
+    copiedProjectPath.value = null
+    copiedProjectPathTimer = null
+  }, 1200)
+}
+
 // 打开会话详情
 const openSessionDetail = (session: SessionStats) => {
   selectedSession.value = session
@@ -88,21 +296,58 @@ const loadMore = async () => {
   loadingMore.value = true
   currentPage.value++
 
-  const count = await store.fetchSessions(pageSize, currentPage.value * pageSize, true)
+  const count = await store.fetchSessionsForTool(selectedTool.value, pageSize, currentPage.value * pageSize, true)
   if (count < pageSize) {
     hasMore.value = false
   }
+  rememberSessionCache(cacheKey())
   loadingMore.value = false
 }
 
-// 监听数据源变化，重新加载会话列表
-watch(() => store.settings.dataSource, async () => {
-  currentPage.value = 0
-  hasMore.value = true
-  const count = await store.fetchSessions(pageSize, 0, false)
-  if (count < pageSize) {
-    hasMore.value = false
+// 监听数据源与页面内来源筛选变化
+watch([() => store.settings.dataSource, selectedTool], async () => {
+  await reloadSessions()
+  if (activeTab.value === 'projects') {
+    await reloadProjectStats()
+  } else {
+    store.projectStats = []
   }
+})
+
+watch(() => store.settings.clientTools.activeToolFilter, globalTool => {
+  const normalizedGlobalTool = normalizeSessionTool(globalTool)
+  if (selectedTool.value === lastGlobalTool.value) {
+    selectedTool.value = normalizedGlobalTool
+  }
+  lastGlobalTool.value = normalizedGlobalTool
+})
+
+watch(() => store.sessionViewsRevision, async (current, previous) => {
+  if (current === previous) {
+    return
+  }
+
+  await triggerSessionViewRefresh()
+})
+
+watch(() => store.proxyStatus?.recordCount ?? null, async (current, previous) => {
+  if (store.settings.dataSource !== 'proxy' || current === null) {
+    lastProxyRecordCount.value = current
+    return
+  }
+
+  if (previous === null || lastProxyRecordCount.value === null) {
+    lastProxyRecordCount.value = current
+    return
+  }
+
+  if (current <= lastProxyRecordCount.value) {
+    lastProxyRecordCount.value = current
+    return
+  }
+
+  lastProxyRecordCount.value = current
+  scheduleProxyRefresh()
 })
 
 // 触底加载触发元素
@@ -111,12 +356,7 @@ let observer: IntersectionObserver | null = null
 
 // 初始加载
 onMounted(async () => {
-  currentPage.value = 0
-  hasMore.value = true
-  const count = await store.fetchSessions(pageSize, 0, false)
-  if (count < pageSize) {
-    hasMore.value = false
-  }
+  await reloadSessions()
 
   // 监听触底加载
   setTimeout(() => {
@@ -138,6 +378,14 @@ onUnmounted(() => {
   if (observer) {
     observer.disconnect()
   }
+  if (proxyRefreshTimer) {
+    clearTimeout(proxyRefreshTimer)
+    proxyRefreshTimer = null
+  }
+  if (copiedProjectPathTimer) {
+    clearTimeout(copiedProjectPathTimer)
+    copiedProjectPathTimer = null
+  }
 })
 </script>
 
@@ -150,6 +398,32 @@ onUnmounted(() => {
       </button>
       <button @click="activeTab = 'projects'" :class="['flex-1 py-1.5 text-[12px] font-medium rounded-md transition-all', activeTab === 'projects' ? 'bg-white dark:bg-[#2A2D32] shadow-sm text-gray-800 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300']">
         {{ t(store.settings.locale, 'sessions.tabs.projects') }}
+      </button>
+    </div>
+
+    <div v-if="activeTab === 'recent'" class="flex items-center gap-1.5 overflow-x-auto px-0.5 pb-0.5">
+      <button
+        v-for="option in sourceOptions"
+        :key="option.key"
+        @click="selectedTool = option.tool"
+        :class="[
+          'inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors',
+          selectedTool === option.tool
+            ? 'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/15 dark:text-sky-300'
+            : 'border-gray-200 bg-white text-gray-500 dark:border-white/8 dark:bg-[#1E2024] dark:text-gray-400'
+        ]"
+      >
+        <LayoutGrid
+          v-if="!option.icon"
+          class="h-3.5 w-3.5"
+        />
+        <LobeIcon
+          v-else
+          :slug="option.icon"
+          :size="14"
+          @error="() => {}"
+        />
+        <span>{{ option.label }}</span>
       </button>
     </div>
 
@@ -205,7 +479,7 @@ onUnmounted(() => {
 
           <!-- 话题内容 -->
           <span class="text-sm text-gray-800 dark:text-gray-200 line-clamp-2 min-w-0 font-medium leading-snug">
-            {{ session.topic || session.sessionName || session.sessionId.split('::').pop() }}
+            {{ displaySessionTitle(session) }}
           </span>
         </div>
 
@@ -290,71 +564,99 @@ onUnmounted(() => {
 
       <!-- 项目列表 -->
       <template v-else>
-        <div v-for="project in store.projectStats" :key="project.name" class="bg-white dark:bg-[#1E2024] rounded-xl border border-gray-100 dark:border-white/5 py-2.5 px-2.5 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors flex flex-col gap-1.5">
+        <div v-for="project in store.projectStats" :key="project.projectPath || project.name" class="bg-white dark:bg-[#1E2024] rounded-xl border border-gray-100 dark:border-white/5 py-2 px-2 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors flex flex-col gap-1">
         <!-- 顶部：项目名称与最后活跃时间 -->
-        <div class="flex items-center justify-between w-full px-0.5">
-          <div class="flex items-center gap-2">
-            <span class="text-[11px] font-bold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-500/30">
+        <div class="flex items-center justify-between gap-2 w-full px-0.5">
+          <div class="flex min-w-0 flex-1 items-center gap-1.5">
+            <span class="shrink-0 text-[11px] font-bold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-600 dark:bg-indigo-500/20 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-500/30 leading-none">
               {{ project.name }}
             </span>
+            <button
+              v-if="project.projectPath"
+              type="button"
+              class="group flex min-w-0 flex-1 items-center gap-1 rounded-md border border-gray-200/90 bg-gray-50 px-1.5 py-0.5 text-left text-[10px] font-medium leading-none text-gray-500 transition-colors hover:border-sky-200 hover:bg-sky-50 hover:text-sky-700 dark:border-white/8 dark:bg-white/[0.03] dark:text-gray-400 dark:hover:border-sky-400/20 dark:hover:bg-sky-400/10 dark:hover:text-sky-300"
+              :title="project.projectPath"
+              @click.stop="copyProjectPath(project.projectPath)"
+            >
+              <svg class="h-2.5 w-2.5 shrink-0 text-gray-400 transition-colors group-hover:text-sky-500 dark:text-gray-500 dark:group-hover:text-sky-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7.5A2.5 2.5 0 015.5 5H9l2 2h7.5A2.5 2.5 0 0121 9.5v7A2.5 2.5 0 0118.5 19h-13A2.5 2.5 0 013 16.5v-9z" />
+              </svg>
+              <span class="block min-w-0 truncate font-mono">{{ project.projectPath }}</span>
+              <span
+                v-if="copiedProjectPath === project.projectPath"
+                class="shrink-0 rounded bg-sky-100/90 px-1 py-[1px] text-[8px] font-semibold leading-none text-sky-600 dark:bg-sky-400/15 dark:text-sky-300"
+              >
+                {{ t(store.settings.locale, 'sessions.copied') }}
+              </span>
+            </button>
           </div>
-          <div class="flex items-center gap-1 shrink-0 text-[11px] text-gray-400">
-            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <div class="flex items-center gap-1 shrink-0 text-[10px] leading-none text-gray-400">
+            <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             <span>{{ t(store.settings.locale, 'sessions.lastActive') }}: {{ formatTime(project.lastActive).split(' ')[0] }}</span>
           </div>
         </div>
 
-        <!-- 数据明细网格 -->
-        <div class="grid grid-cols-5 w-full items-start text-[10px] pt-1.5 border-t border-gray-50 dark:border-white/5 gap-y-0.5">
-          <!-- 会话总数 -->
-          <div class="flex flex-col gap-0.5 min-w-0 items-center">
-            <div class="flex items-center gap-0.5">
-              <svg class="w-[11px] h-[11px] text-blue-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.requests') }}</span>
-            </div>
-            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ project.sessionCount }}</span>
+        <!-- 项目统计表格 -->
+        <div class="overflow-hidden rounded-xl border border-gray-100/90 bg-gray-50/40 dark:border-white/6 dark:bg-white/[0.02]">
+          <div class="grid grid-cols-[36px_0.68fr_0.92fr_0.92fr_1fr_1fr] bg-gray-50/90 px-2 py-1 text-[8.5px] font-medium uppercase tracking-[0.05em] text-gray-400 dark:bg-white/[0.04] dark:text-gray-500">
+            <span class="text-center leading-none">{{ t(store.settings.locale, 'sessions.tool') }}</span>
+            <span class="flex items-center justify-center gap-1 leading-none">
+              <svg class="h-2.5 w-2.5 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+              <span>{{ t(store.settings.locale, 'sessions.requests') }}</span>
+            </span>
+            <span class="flex items-center justify-center gap-1 leading-none">
+              <svg class="h-2.5 w-2.5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+              <span>{{ t(store.settings.locale, 'sessions.input') }}</span>
+            </span>
+            <span class="flex items-center justify-center gap-1 leading-none">
+              <svg class="h-2.5 w-2.5 text-purple-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+              <span>{{ t(store.settings.locale, 'sessions.output') }}</span>
+            </span>
+            <span class="flex items-center justify-center gap-1 leading-none">
+              <svg class="h-2.5 w-2.5 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
+              <span>{{ t(store.settings.locale, 'common.totalTokens') }}</span>
+            </span>
+            <span class="flex items-center justify-center gap-1 leading-none">
+              <svg class="h-2.5 w-2.5 text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              <span>{{ t(store.settings.locale, 'sessions.cost') }}</span>
+            </span>
           </div>
-
-          <!-- 总输入 -->
-          <div class="flex flex-col gap-0.5 min-w-0 items-center">
-            <div class="flex items-center gap-0.5">
-              <svg class="w-[11px] h-[11px] text-green-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.input') }}</span>
+          <div
+            v-if="shouldShowProjectTotalRow(project)"
+            class="grid grid-cols-[36px_0.68fr_0.92fr_0.92fr_1fr_1fr] items-center border-t border-white/60 bg-white/80 px-2 py-1 text-[9.5px] dark:border-white/6 dark:bg-white/[0.03]"
+          >
+            <div class="flex items-center justify-center">
+              <span class="inline-flex h-4 min-w-7 items-center justify-center rounded-md border border-sky-100 bg-sky-50 px-1 text-[8px] font-semibold leading-none text-sky-600 dark:border-sky-400/20 dark:bg-sky-400/10 dark:text-sky-300">
+                {{ t(store.settings.locale, 'sessions.totalRow') }}
+              </span>
             </div>
-            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ formatTokens(project.totalInputTokens) }}</span>
+            <span class="text-center font-semibold leading-none text-gray-700 dark:text-gray-200">{{ project.requestCount }}</span>
+            <span class="text-center font-semibold leading-none text-gray-700 dark:text-gray-200">{{ formatTokens(project.totalInputTokens) }}</span>
+            <span class="text-center font-semibold leading-none text-gray-700 dark:text-gray-200">{{ formatTokens(project.totalOutputTokens) }}</span>
+            <span class="text-center font-semibold leading-none text-gray-700 dark:text-gray-200">{{ formatTokens(projectTotalTokens(project)) }}</span>
+            <span class="text-center font-semibold leading-none text-cyan-600 dark:text-cyan-300">{{ formatCost(project.totalCost) }}</span>
           </div>
-
-          <!-- 总输出 -->
-          <div class="flex flex-col gap-0.5 min-w-0 items-center">
-            <div class="flex items-center gap-0.5">
-              <svg class="w-[11px] h-[11px] text-purple-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
-              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.output') }}</span>
+          <div
+            v-for="tool in projectToolRows(project)"
+            :key="`${project.name}-${tool.tool}`"
+            class="grid grid-cols-[36px_0.68fr_0.92fr_0.92fr_1fr_1fr] items-center border-t border-white/80 px-2 py-1 text-[9.5px] dark:border-white/6"
+          >
+            <div class="flex items-center justify-center">
+              <LobeIcon
+                v-if="getToolIcon(tool.tool)"
+                :slug="getToolIcon(tool.tool) ?? 'claudecode'"
+                :size="12"
+                @error="() => {}"
+              />
+              <span v-else class="h-2 w-2 shrink-0 rounded-full bg-gray-400"></span>
             </div>
-            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ formatTokens(project.totalOutputTokens) }}</span>
-          </div>
-
-          <!-- 总Token -->
-          <div class="flex flex-col gap-0.5 min-w-0 items-center">
-            <div class="flex items-center gap-0.5">
-              <svg class="w-[11px] h-[11px] text-orange-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
-              <span class="text-gray-400">{{ t(store.settings.locale, 'common.totalTokens') }}</span>
-            </div>
-            <span class="text-gray-700 dark:text-gray-300 font-medium">{{ formatTokens(project.totalInputTokens + project.totalOutputTokens + project.totalCacheCreateTokens + project.totalCacheReadTokens) }}</span>
-          </div>
-
-          <!-- 总成本 -->
-          <div class="flex flex-col gap-0.5 min-w-0 items-center">
-            <div class="flex items-center gap-0.5">
-              <svg class="w-[11px] h-[11px] text-[#00E5FF] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.cost') }}</span>
-            </div>
-            <span class="text-[#00E5FF] font-medium">{{ formatCost(project.totalCost) }}</span>
+            <span class="text-center font-medium leading-none text-gray-700 dark:text-gray-300">{{ tool.requestCount }}</span>
+            <span class="text-center font-medium leading-none text-gray-700 dark:text-gray-300">{{ formatTokens(tool.totalInputTokens) }}</span>
+            <span class="text-center font-medium leading-none text-gray-700 dark:text-gray-300">{{ formatTokens(tool.totalOutputTokens) }}</span>
+            <span class="text-center font-medium leading-none text-gray-700 dark:text-gray-300">{{ formatTokens(tool.totalInputTokens + tool.totalOutputTokens + tool.totalCacheCreateTokens + tool.totalCacheReadTokens) }}</span>
+            <span class="text-center font-medium leading-none text-cyan-600 dark:text-cyan-300">{{ formatCost(tool.totalCost) }}</span>
           </div>
         </div>
       </div>

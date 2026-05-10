@@ -15,6 +15,7 @@ const emit = defineEmits<{
 }>()
 
 const store = useMonitorStore()
+const uuidLikePattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 // 格式化时间
 const formatTime = (epoch: number) => {
@@ -52,6 +53,18 @@ const formatCost = (cost: number | undefined) => {
   return formatCostUtil(cost, store.settings.currency, 4)
 }
 
+const displaySessionTitle = computed(() => {
+  const session = props.session
+  if (!session) return t(store.settings.locale, 'sessions.untitled')
+
+  const sessionName = session.sessionName?.trim()
+  if (session.topic?.trim()) return session.topic
+  if (sessionName && !uuidLikePattern.test(sessionName)) return sessionName
+  if (session.lastPrompt?.trim()) return session.lastPrompt
+  if (session.projectName?.trim()) return session.projectName
+  return t(store.settings.locale, 'sessions.untitled')
+})
+
 // 计算输入输出比例
 const inputOutputRatio = computed(() => {
   if (!props.session) return { input: 50, output: 50 }
@@ -86,7 +99,7 @@ const inputOutputRatio = computed(() => {
             </div>
             <!-- 话题标题 -->
             <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100 truncate">
-              {{ session.topic || session.sessionName || session.sessionId.split('::').pop() }}
+              {{ displaySessionTitle }}
             </h3>
             <p class="text-[10px] text-gray-400 truncate">
               {{ session.models.join(', ') }}

@@ -4,7 +4,7 @@ use crate::models::{
     compute_percent, risk_level, AppSettings, ModelRateStats, ModelTtftStats, OverallRateStats,
     StatusCodeCount, ToolFilter, TtftStats, UsageSnapshot, WindowRateSummary, WindowUsage,
 };
-use crate::proxy::{ProxyServer, SessionStats};
+use crate::proxy::{ProjectToolStats, ProxyServer, SessionStats};
 use crate::unified_usage::{CoverageOrigin, MergedCoverage, MergedRequestFact};
 use chrono::{Datelike, Local, NaiveDate, TimeZone};
 use std::collections::HashMap;
@@ -2210,7 +2210,7 @@ pub async fn get_project_stats(
 
     // 1. 从 JSONL 文件获取所有会话元信息
     // 使用缓存版本避免频繁扫描文件系统
-    let tool_filter = settings.client_tools.build_filter();
+    let tool_filter = ToolFilter::All;
     let all_meta = db.get_all_sessions(&tool_filter)?;
     let all_requests = db.get_all_request_records(&tool_filter)?;
     let mut cost_by_session: HashMap<String, f64> = HashMap::new();
@@ -2224,48 +2224,99 @@ pub async fn get_project_stats(
     // 2. 按项目名称聚合
     let mut project_map: std::collections::HashMap<String, crate::proxy::ProjectStats> =
         std::collections::HashMap::new();
+    let mut tool_sessions_by_project: HashMap<
+        String,
+        HashMap<String, std::collections::HashSet<String>>,
+    > = HashMap::new();
 
     for meta in all_meta {
         let project_name = meta
             .project_name
             .clone()
             .unwrap_or_else(|| "未命名项目".to_string());
+        let project_path = meta.cwd.clone();
+        let aggregate_key = project_path
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| project_name.clone());
 
         let cost = cost_by_session
             .get(&meta.session_id)
             .copied()
             .unwrap_or(0.0);
 
-        let entry = project_map
-            .entry(project_name)
-            .or_insert(crate::proxy::ProjectStats {
-                name: String::new(),
-                session_count: 0,
-                total_input_tokens: 0,
-                total_output_tokens: 0,
-                total_cache_create_tokens: 0,
-                total_cache_read_tokens: 0,
-                total_cost: 0.0,
-                last_active: 0,
-            });
+        let entry =
+            project_map
+                .entry(aggregate_key.clone())
+                .or_insert(crate::proxy::ProjectStats {
+                    name: project_name.clone(),
+                    project_path: project_path.clone(),
+                    ..Default::default()
+                });
 
-        entry.name = meta
-            .project_name
-            .clone()
-            .unwrap_or_else(|| "未命名项目".to_string());
+        if entry.project_path.is_none() {
+            entry.project_path = project_path.clone();
+        }
+
         entry.session_count += 1;
         entry.total_input_tokens += meta.total_input_tokens;
         entry.total_output_tokens += meta.total_output_tokens;
         entry.total_cache_create_tokens += meta.total_cache_create_tokens;
         entry.total_cache_read_tokens += meta.total_cache_read_tokens;
         entry.total_cost += cost;
+        entry.request_count += meta.message_count;
         if meta.end_time > entry.last_active {
             entry.last_active = meta.end_time;
         }
+
+        let tool_stats = entry
+            .tool_breakdown
+            .iter_mut()
+            .find(|stats| stats.tool == meta.tool);
+        let tool_stats = match tool_stats {
+            Some(stats) => stats,
+            None => {
+                entry.tool_breakdown.push(ProjectToolStats {
+                    tool: meta.tool.clone(),
+                    ..Default::default()
+                });
+                entry.tool_breakdown.last_mut().unwrap()
+            }
+        };
+        tool_stats.total_input_tokens += meta.total_input_tokens;
+        tool_stats.total_output_tokens += meta.total_output_tokens;
+        tool_stats.total_cache_create_tokens += meta.total_cache_create_tokens;
+        tool_stats.total_cache_read_tokens += meta.total_cache_read_tokens;
+        tool_stats.total_cost += cost;
+        tool_stats.request_count += meta.message_count;
+        if meta.end_time > tool_stats.last_active {
+            tool_stats.last_active = meta.end_time;
+        }
+
+        tool_sessions_by_project
+            .entry(aggregate_key)
+            .or_default()
+            .entry(meta.tool)
+            .or_default()
+            .insert(meta.session_id);
     }
 
     // 4. 按最后活跃时间倒序排序
-    let mut projects: Vec<_> = project_map.into_values().collect();
+    let mut projects: Vec<_> = project_map.into_iter().collect();
+    for (aggregate_key, project) in &mut projects {
+        if let Some(tool_sessions) = tool_sessions_by_project.get(aggregate_key) {
+            for tool_stats in &mut project.tool_breakdown {
+                tool_stats.session_count = tool_sessions
+                    .get(&tool_stats.tool)
+                    .map(|sessions| sessions.len() as u64)
+                    .unwrap_or(0);
+            }
+        }
+        project
+            .tool_breakdown
+            .sort_by_key(|tool| std::cmp::Reverse(tool.last_active));
+    }
+    let mut projects: Vec<_> = projects.into_iter().map(|(_, project)| project).collect();
     projects.sort_by_key(|b| std::cmp::Reverse(b.last_active));
 
     Ok(projects)

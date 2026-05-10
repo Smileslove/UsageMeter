@@ -289,6 +289,42 @@ pub struct SessionStats {
 pub struct ProjectStats {
     /// 项目名称
     pub name: String,
+    /// 项目路径（如果可识别）
+    #[serde(default)]
+    pub project_path: Option<String>,
+    /// 请求数量
+    #[serde(default)]
+    pub request_count: u64,
+    /// 会话数量
+    pub session_count: u64,
+    /// 总输入 Token
+    pub total_input_tokens: u64,
+    /// 总输出 Token
+    pub total_output_tokens: u64,
+    /// 总缓存创建 Token
+    #[serde(default)]
+    pub total_cache_create_tokens: u64,
+    /// 总缓存读取 Token
+    #[serde(default)]
+    pub total_cache_read_tokens: u64,
+    /// 总费用
+    pub total_cost: f64,
+    /// 最后活跃时间（Unix 时间戳）
+    pub last_active: i64,
+    /// 按客户端工具拆分的项目统计
+    #[serde(default)]
+    pub tool_breakdown: Vec<ProjectToolStats>,
+}
+
+/// 项目内按客户端工具拆分的统计信息
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectToolStats {
+    /// 客户端工具标识，如 claude_code / codex
+    pub tool: String,
+    /// 请求数量
+    #[serde(default)]
+    pub request_count: u64,
     /// 会话数量
     pub session_count: u64,
     /// 总输入 Token

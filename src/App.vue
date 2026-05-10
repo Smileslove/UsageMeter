@@ -142,7 +142,7 @@ onUnmounted(() => {
         <div class="flex items-center gap-1 shrink-0 drag-region-none" style="-webkit-app-region: no-drag; app-region: no-drag">
           <SourceSelector />
           <ToolSelector />
-          <button @click="store.refreshUsage()" class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-200/60 dark:hover:text-gray-200 dark:hover:bg-neutral-800/80 transition-all select-none" :title="t(store.settings.locale, 'common.refresh')">
+          <button @click="store.refreshUsageAndSessionViews()" class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-200/60 dark:hover:text-gray-200 dark:hover:bg-neutral-800/80 transition-all select-none" :title="t(store.settings.locale, 'common.refresh')">
             <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': store.loading }" />
           </button>
 

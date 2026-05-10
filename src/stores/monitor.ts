@@ -88,6 +88,7 @@ export const useMonitorStore = defineStore('monitor', {
     proxyLoading: false,
     error: '' as string,
     lastUpdatedEpoch: null as number | null,
+    sessionViewsRevision: 0,
     refreshTimer: null as ReturnType<typeof setInterval> | null,
     alerts: [] as AlertEvent[],
     trendHistory: {} as Record<string, number[]>,
@@ -275,6 +276,10 @@ export const useMonitorStore = defineStore('monitor', {
         }
         this.loading = false
       }
+    },
+    async refreshUsageAndSessionViews() {
+      await this.refreshUsage()
+      this.sessionViewsRevision += 1
     },
     async fetchStatisticsSummary(query: StatisticsQuery) {
       const requestSeq = ++this.statisticsRequestSeq
@@ -539,7 +544,40 @@ export const useMonitorStore = defineStore('monitor', {
         this.sessionsLoading = true
       }
       try {
-        const newSessions = await invoke<SessionStats[]>('get_sessions', { limit, offset, settings: this.settings })
+        const newSessions = await invoke<SessionStats[]>('get_sessions', {
+          limit,
+          offset,
+          settings: this.settings
+        })
+        if (append) {
+          this.sessions = [...this.sessions, ...newSessions]
+        } else {
+          this.sessions = newSessions
+        }
+        return newSessions.length
+      } catch (e) {
+        console.error('Failed to fetch sessions:', e)
+        if (!append) {
+          this.sessions = []
+        }
+        return 0
+      } finally {
+        this.sessionsLoading = false
+      }
+    },
+    async fetchSessionsForTool(toolFilter: string | null, limit: number = 50, offset: number = 0, append: boolean = false) {
+      if (offset === 0) {
+        this.sessionsLoading = true
+      }
+      try {
+        const settings = {
+          ...this.settings,
+          clientTools: {
+            ...this.settings.clientTools,
+            activeToolFilter: toolFilter
+          }
+        }
+        const newSessions = await invoke<SessionStats[]>('get_sessions', { limit, offset, settings })
         if (append) {
           this.sessions = [...this.sessions, ...newSessions]
         } else {
@@ -580,6 +618,24 @@ export const useMonitorStore = defineStore('monitor', {
       this.projectStatsLoading = true
       try {
         this.projectStats = await invoke<ProjectStats[]>('get_project_stats', { settings: this.settings })
+      } catch (e) {
+        console.error('Failed to fetch project stats:', e)
+        this.projectStats = []
+      } finally {
+        this.projectStatsLoading = false
+      }
+    },
+    async fetchProjectStatsForTool(toolFilter: string | null) {
+      this.projectStatsLoading = true
+      try {
+        const settings = {
+          ...this.settings,
+          clientTools: {
+            ...this.settings.clientTools,
+            activeToolFilter: toolFilter
+          }
+        }
+        this.projectStats = await invoke<ProjectStats[]>('get_project_stats', { settings })
       } catch (e) {
         console.error('Failed to fetch project stats:', e)
         this.projectStats = []

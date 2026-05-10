@@ -706,10 +706,7 @@ fn parse_codex_session_file(session: &SessionFile) -> ParsedSessionData {
                             continue;
                         }
                         if session_name_found.is_none() && !is_subagent_file {
-                            session_name_found = payload
-                                .get("id")
-                                .and_then(|value| value.as_str())
-                                .map(|value| value.to_string());
+                            session_name_found = extract_codex_session_name(payload);
                         }
                         if cwd_found.is_none() {
                             cwd_found = payload
@@ -887,6 +884,40 @@ fn parse_codex_session_file(session: &SessionFile) -> ParsedSessionData {
     }
 
     ParsedSessionData { meta, requests }
+}
+
+fn extract_codex_session_name(payload: &serde_json::Value) -> Option<String> {
+    for key in ["title", "name", "summary", "slug"] {
+        let value = payload
+            .get(key)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(value) = value {
+            return Some(value.to_string());
+        }
+    }
+
+    let id_value = payload
+        .get("id")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    if looks_like_uuid(id_value) {
+        return None;
+    }
+    Some(id_value.to_string())
+}
+
+fn looks_like_uuid(value: &str) -> bool {
+    let segments: Vec<&str> = value.split('-').collect();
+    if segments.len() != 5 {
+        return false;
+    }
+    let expected = [8, 4, 4, 4, 12];
+    segments.iter().zip(expected.iter()).all(|(segment, len)| {
+        segment.len() == *len && segment.chars().all(|ch| ch.is_ascii_hexdigit())
+    })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1657,6 +1688,7 @@ mod tests {
                     "type": "session_meta",
                     "payload": {
                         "id": "session-1",
+                        "title": "Login bug triage",
                         "cwd": "/Users/test/work/project-alpha"
                     }
                 })
@@ -1742,6 +1774,10 @@ mod tests {
         let parsed = parse_session_file(&session);
         assert_eq!(parsed.meta.tool, TOOL_CODEX);
         assert_eq!(parsed.meta.project_name, Some("project-alpha".to_string()));
+        assert_eq!(
+            parsed.meta.session_name,
+            Some("Login bug triage".to_string())
+        );
         assert_eq!(parsed.meta.topic, Some("Fix the login bug".to_string()));
         assert_eq!(parsed.meta.models, vec!["gpt-5.4".to_string()]);
         assert_eq!(parsed.meta.message_count, 2);
@@ -1760,6 +1796,15 @@ mod tests {
         assert_eq!(parsed.meta.total_input_tokens, 110);
         assert_eq!(parsed.meta.total_cache_read_tokens, 50);
         assert_eq!(parsed.meta.total_output_tokens, 55);
+    }
+
+    #[test]
+    fn test_extract_codex_session_name_ignores_uuid_id() {
+        let payload = serde_json::json!({
+            "id": "019e1048-37a3-72b2-983f-37bb2abd16f6"
+        });
+
+        assert_eq!(extract_codex_session_name(&payload), None);
     }
 
     #[test]

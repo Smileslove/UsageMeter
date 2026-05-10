@@ -1,6 +1,6 @@
 use super::types::{CoverageOrigin, MergeMode, MergedCoverage, MergedRequestFact};
 use crate::models::{AppSettings, SourceFilter, ToolFilter, UsageQueryFilter};
-use crate::proxy::{ProjectStats, ProxyDatabase, SessionStats, UsageRecord};
+use crate::proxy::{ProjectStats, ProjectToolStats, ProxyDatabase, SessionStats, UsageRecord};
 use crate::session::{LocalRequestRecord, SessionMeta};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -141,6 +141,13 @@ fn build_coverage(facts: &[MergedRequestFact]) -> MergedCoverage {
     coverage
 }
 
+#[derive(Default)]
+struct ProjectAggregate {
+    stats: ProjectStats,
+    sessions: HashSet<String>,
+    tool_sessions: HashMap<String, HashSet<String>>,
+}
+
 fn build_local_request_index(
     local_records: &[LocalRequestRecord],
 ) -> HashMap<String, LocalRequestRecord> {
@@ -241,7 +248,13 @@ pub async fn get_merged_request_facts(
     if matches!(merge_mode, MergeMode::ProxyOnly) {
         let facts: Vec<MergedRequestFact> = proxy_records
             .iter()
-            .map(MergedRequestFact::from_proxy)
+            .map(|record| {
+                let meta = record
+                    .session_id
+                    .as_ref()
+                    .and_then(|session_id| session_meta_by_id.get(session_id));
+                MergedRequestFact::from_proxy(record, meta)
+            })
             .collect();
         let coverage = build_coverage(&facts);
         return Ok((facts, coverage));
@@ -269,7 +282,13 @@ pub async fn get_merged_request_facts(
                     fallback_cost,
                 ));
             }
-            (Some(proxy), None) => merged.push(MergedRequestFact::from_proxy(proxy)),
+            (Some(proxy), None) => {
+                let meta = proxy
+                    .session_id
+                    .as_ref()
+                    .and_then(|session_id| session_meta_by_id.get(session_id));
+                merged.push(MergedRequestFact::from_proxy(proxy, meta));
+            }
             (None, Some(local)) => {
                 if all_proxy_index.contains_key(&key) {
                     continue;
@@ -454,45 +473,91 @@ pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<Proj
         true
     };
     let (facts, _) = get_merged_request_facts(settings, None, None, include_errors).await?;
-    let mut map: HashMap<String, (ProjectStats, HashSet<String>)> = HashMap::new();
+    let mut map: HashMap<String, ProjectAggregate> = HashMap::new();
 
     for fact in facts {
         let project_name = fact
             .project_name
             .clone()
             .unwrap_or_else(|| "未命名项目".to_string());
-        let entry = map.entry(project_name.clone()).or_insert_with(|| {
-            (
-                ProjectStats {
+        let project_path = fact.project_path.clone();
+        let aggregate_key = project_path
+            .clone()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| project_name.clone());
+        let entry = map
+            .entry(aggregate_key)
+            .or_insert_with(|| ProjectAggregate {
+                stats: ProjectStats {
                     name: project_name.clone(),
-                    session_count: 0,
-                    total_input_tokens: 0,
-                    total_output_tokens: 0,
-                    total_cache_create_tokens: 0,
-                    total_cache_read_tokens: 0,
-                    total_cost: 0.0,
-                    last_active: 0,
+                    project_path: project_path.clone(),
+                    ..Default::default()
                 },
-                HashSet::new(),
-            )
-        });
+                ..Default::default()
+            });
 
-        entry.0.total_input_tokens += fact.input_tokens;
-        entry.0.total_output_tokens += fact.output_tokens;
-        entry.0.total_cache_create_tokens += fact.cache_create_tokens;
-        entry.0.total_cache_read_tokens += fact.cache_read_tokens;
-        entry.0.total_cost += fact.estimated_cost;
-        entry.0.last_active = entry.0.last_active.max(fact.timestamp_sec);
-        if !fact.session_id.trim().is_empty() {
-            entry.1.insert(fact.session_id.clone());
+        if entry.stats.project_path.is_none() {
+            entry.stats.project_path = project_path.clone();
         }
+
+        entry.stats.total_input_tokens += fact.input_tokens;
+        entry.stats.total_output_tokens += fact.output_tokens;
+        entry.stats.total_cache_create_tokens += fact.cache_create_tokens;
+        entry.stats.total_cache_read_tokens += fact.cache_read_tokens;
+        entry.stats.total_cost += fact.estimated_cost;
+        entry.stats.request_count += 1;
+        entry.stats.last_active = entry.stats.last_active.max(fact.timestamp_sec);
+        if !fact.session_id.trim().is_empty() {
+            entry.sessions.insert(fact.session_id.clone());
+            entry
+                .tool_sessions
+                .entry(fact.tool.clone())
+                .or_default()
+                .insert(fact.session_id.clone());
+        } else {
+            entry.tool_sessions.entry(fact.tool.clone()).or_default();
+        }
+
+        let tool_stats = entry
+            .stats
+            .tool_breakdown
+            .iter_mut()
+            .find(|stats| stats.tool == fact.tool);
+        let tool_stats = match tool_stats {
+            Some(stats) => stats,
+            None => {
+                entry.stats.tool_breakdown.push(ProjectToolStats {
+                    tool: fact.tool.clone(),
+                    ..Default::default()
+                });
+                entry.stats.tool_breakdown.last_mut().unwrap()
+            }
+        };
+        tool_stats.total_input_tokens += fact.input_tokens;
+        tool_stats.total_output_tokens += fact.output_tokens;
+        tool_stats.total_cache_create_tokens += fact.cache_create_tokens;
+        tool_stats.total_cache_read_tokens += fact.cache_read_tokens;
+        tool_stats.total_cost += fact.estimated_cost;
+        tool_stats.request_count += 1;
+        tool_stats.last_active = tool_stats.last_active.max(fact.timestamp_sec);
     }
 
     let mut projects: Vec<ProjectStats> = map
-        .into_iter()
-        .map(|(_, (mut stats, sessions))| {
-            stats.session_count = sessions.len() as u64;
-            stats
+        .into_values()
+        .map(|mut aggregate| {
+            aggregate.stats.session_count = aggregate.sessions.len() as u64;
+            for tool_stats in &mut aggregate.stats.tool_breakdown {
+                tool_stats.session_count = aggregate
+                    .tool_sessions
+                    .get(&tool_stats.tool)
+                    .map(|sessions| sessions.len() as u64)
+                    .unwrap_or(0);
+            }
+            aggregate
+                .stats
+                .tool_breakdown
+                .sort_by_key(|tool| std::cmp::Reverse(tool.last_active));
+            aggregate.stats
         })
         .collect();
     projects.sort_by_key(|project| std::cmp::Reverse(project.last_active));

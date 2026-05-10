@@ -295,6 +295,21 @@ export interface SessionStats {
 // 项目统计（聚合多个会话）
 export interface ProjectStats {
   name: string
+  projectPath?: string | null
+  requestCount: number
+  sessionCount: number
+  totalInputTokens: number
+  totalOutputTokens: number
+  totalCacheCreateTokens: number
+  totalCacheReadTokens: number
+  totalCost: number
+  lastActive: number
+  toolBreakdown: ProjectToolStats[]
+}
+
+export interface ProjectToolStats {
+  tool: string
+  requestCount: number
   sessionCount: number
   totalInputTokens: number
   totalOutputTokens: number

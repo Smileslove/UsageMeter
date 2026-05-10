@@ -282,13 +282,19 @@ const messages: Record<AppLocale, TranslationNode> = {
       input: '输入',
       output: '输出',
       cost: '费用',
+      tool: '工具',
+      totalRow: '总计',
       startTime: '开始时间',
       endTime: '结束时间',
       lastPrompt: '最后提示',
       lastActive: '最后',
       cwd: '工作目录',
       error: '错误',
-      jsonlSource: '数据来自本地文件，启用代理可获取速率统计'
+      jsonlSource: '数据来自本地文件，启用代理可获取速率统计',
+      untitled: '未命名会话',
+      copied: '已复制',
+      timeMinutesAgo: '{count}分钟前',
+      timeHoursAgo: '{count}小时前'
     },
     statistics: {
       activity: '月活跃度',
@@ -712,13 +718,19 @@ const messages: Record<AppLocale, TranslationNode> = {
       input: '輸入',
       output: '輸出',
       cost: '費用',
+      tool: '工具',
+      totalRow: '總計',
       startTime: '開始時間',
       endTime: '結束時間',
       lastPrompt: '最後提示',
       lastActive: '最後',
       cwd: '工作目錄',
       error: '錯誤',
-      jsonlSource: '資料來自本地檔案，啟用代理可獲取速率統計'
+      jsonlSource: '資料來自本地檔案，啟用代理可獲取速率統計',
+      untitled: '未命名會話',
+      copied: '已複製',
+      timeMinutesAgo: '{count}分鐘前',
+      timeHoursAgo: '{count}小時前'
     },
     statistics: {
       activity: '月活躍度',
@@ -1142,13 +1154,19 @@ const messages: Record<AppLocale, TranslationNode> = {
       input: 'In',
       output: 'Out',
       cost: 'Cost',
+      tool: 'Tool',
+      totalRow: 'SUM',
       startTime: 'Start Time',
       endTime: 'End Time',
       lastPrompt: 'Last Prompt',
       lastActive: 'Last',
       cwd: 'Working Dir',
       error: 'Error',
-      jsonlSource: 'Data from local files. Enable proxy for rate stats.'
+      jsonlSource: 'Data from local files. Enable proxy for rate stats.',
+      untitled: 'Untitled Session',
+      copied: 'Copied',
+      timeMinutesAgo: '{count} minutes ago',
+      timeHoursAgo: '{count} hours ago'
     },
     statistics: {
       activity: 'Month Activity',
