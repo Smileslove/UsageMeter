@@ -17,7 +17,7 @@ const activeFilter = computed(() => store.settings.clientTools.activeToolFilter)
 const profiles = computed(() => store.settings.clientTools.profiles)
 const visibleProfiles = computed(() => profiles.value.filter(profile => {
   if (store.settings.dataSource === 'proxy') {
-    return profile.enabled
+    return true
   }
   return LOCAL_SUPPORTED_TOOLS.has(profile.tool)
 }))
