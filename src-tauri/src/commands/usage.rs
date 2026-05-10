@@ -511,9 +511,6 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
         return Ok(empty_usage_snapshot(settings, "local-files", String::new()));
     }
 
-    let tool_filter = settings.client_tools.build_filter();
-    let codex_only = matches!(&tool_filter, ToolFilter::Tool(tool) if tool.trim() == "codex");
-
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -722,17 +719,8 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
         };
 
         let token_percent = compute_percent(token_used, quota.token_limit);
-        let request_used = if codex_only { 0 } else { request_used };
-        let request_limit = if codex_only {
-            None
-        } else {
-            quota.request_limit
-        };
-        let request_percent = if codex_only {
-            None
-        } else {
-            compute_percent(request_used, request_limit)
-        };
+        let request_limit = quota.request_limit;
+        let request_percent = compute_percent(request_used, request_limit);
 
         windows.push(WindowUsage {
             window: quota.window.clone(),
@@ -2031,11 +2019,6 @@ pub async fn get_sessions(
     // 获取价格配置
     let pricings = effective_model_pricings(&settings);
     let match_mode = settings.model_pricing.match_mode.clone();
-    let codex_only = matches!(
-        settings.client_tools.build_filter(),
-        ToolFilter::Tool(tool) if tool.trim() == "codex"
-    );
-
     if settings.data_source == "proxy" {
         let usage_filter = build_usage_query_filter(&settings);
         if !is_usage_filter_all(&usage_filter) {
@@ -2130,7 +2113,7 @@ pub async fn get_sessions(
                     success_requests: proxy.success_requests,
                     error_requests: proxy.error_requests,
                     // 其他
-                    total_requests: if codex_only { 0 } else { meta.message_count },
+                    total_requests: meta.message_count,
                     first_request_time: meta.start_time,
                     last_request_time: meta.end_time,
                     models: meta.models,
@@ -2148,7 +2131,7 @@ pub async fn get_sessions(
                 SessionStats {
                     session_id: meta.session_id,
                     tool: meta.tool,
-                    total_requests: if codex_only { 0 } else { meta.message_count },
+                    total_requests: meta.message_count,
                     total_input_tokens: meta.total_input_tokens,
                     total_output_tokens: meta.total_output_tokens,
                     total_cache_create_tokens: meta.total_cache_create_tokens,
@@ -2189,11 +2172,6 @@ pub async fn get_session_detail(
     // 获取价格配置
     let pricings = effective_model_pricings(&settings);
     let match_mode = settings.model_pricing.match_mode.clone();
-    let codex_only = matches!(
-        settings.client_tools.build_filter(),
-        ToolFilter::Tool(tool) if tool.trim() == "codex"
-    );
-
     if settings.data_source == "proxy" {
         let usage_filter = build_usage_query_filter(&settings);
         if !is_usage_filter_all(&usage_filter) {
@@ -2266,7 +2244,7 @@ pub async fn get_session_detail(
             success_requests: proxy.success_requests,
             error_requests: proxy.error_requests,
             // 其他
-            total_requests: if codex_only { 0 } else { meta.message_count },
+            total_requests: meta.message_count,
             first_request_time: meta.start_time,
             last_request_time: meta.end_time,
             models: meta.models,
@@ -2283,7 +2261,7 @@ pub async fn get_session_detail(
         SessionStats {
             session_id: meta.session_id,
             tool: meta.tool,
-            total_requests: if codex_only { 0 } else { meta.message_count },
+            total_requests: meta.message_count,
             total_input_tokens: meta.total_input_tokens,
             total_output_tokens: meta.total_output_tokens,
             total_cache_create_tokens: meta.total_cache_create_tokens,

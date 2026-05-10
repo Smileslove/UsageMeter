@@ -863,7 +863,7 @@ fn parse_codex_session_file(session: &SessionFile) -> ParsedSessionData {
     meta.models = models_set.into_iter().collect();
     meta.start_time = earliest_timestamp.unwrap_or(session.last_modified);
     meta.end_time = latest_timestamp.unwrap_or(session.last_modified);
-    meta.message_count = 0;
+    meta.message_count = requests.len() as u64;
     meta.message_ids = requests
         .iter()
         .map(|request| request.message_id.clone())
@@ -1730,7 +1730,7 @@ mod tests {
         assert_eq!(parsed.meta.project_name, Some("project-alpha".to_string()));
         assert_eq!(parsed.meta.topic, Some("Fix the login bug".to_string()));
         assert_eq!(parsed.meta.models, vec!["gpt-5.4".to_string()]);
-        assert_eq!(parsed.meta.message_count, 0);
+        assert_eq!(parsed.meta.message_count, 2);
         assert_eq!(parsed.requests.len(), 2);
 
         assert_eq!(parsed.requests[0].input_tokens, 60);
