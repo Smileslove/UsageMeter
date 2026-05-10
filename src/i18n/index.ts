@@ -97,7 +97,8 @@ const messages: Record<AppLocale, TranslationNode> = {
     },
     backendNote: {
       simulatedData: '当前使用模拟数据；请确认本地会话文件可用。',
-      noRealData: '未获取到真实数据，请确认 Claude Code 已产生会话。'
+      noRealData: '未获取到真实数据，请确认 Claude Code 已产生会话。',
+      partialProxyCoverage: '当前统计已用本地记录补全，但状态码与性能指标仅覆盖代理已采集区间。'
     },
     backendError: {
       invokeFailed: '调用失败',
@@ -526,7 +527,8 @@ const messages: Record<AppLocale, TranslationNode> = {
     },
     backendNote: {
       simulatedData: '目前使用模擬資料；請確認本地會話檔案可用。',
-      noRealData: '未獲取到真實資料，請確認 Claude Code 已產生會話。'
+      noRealData: '未獲取到真實資料，請確認 Claude Code 已產生會話。',
+      partialProxyCoverage: '目前統計已用本地記錄補全，但狀態碼與效能指標僅覆蓋代理已採集區間。'
     },
     backendError: {
       invokeFailed: '調用失敗',
@@ -955,7 +957,8 @@ const messages: Record<AppLocale, TranslationNode> = {
     },
     backendNote: {
       simulatedData: 'Using simulated data. Please ensure local session files are available.',
-      noRealData: 'No real data available. Please confirm Claude Code has generated sessions.'
+      noRealData: 'No real data available. Please confirm Claude Code has generated sessions.',
+      partialProxyCoverage: 'Usage totals were backfilled from local records, but status and performance only cover proxy-captured ranges.'
     },
     backendError: {
       invokeFailed: 'Invocation failed',
@@ -1355,7 +1358,8 @@ export function alertMessage(locale: string | undefined, level: 'warning' | 'cri
 
 const NOTE_KEY_MAP: Record<string, string> = {
   NOTE_SIMULATED_DATA: 'backendNote.simulatedData',
-  NOTE_NO_REAL_DATA: 'backendNote.noRealData'
+  NOTE_NO_REAL_DATA: 'backendNote.noRealData',
+  NOTE_PARTIAL_PROXY_COVERAGE: 'backendNote.partialProxyCoverage'
 }
 
 const ERROR_KEY_MAP: Record<string, string> = {

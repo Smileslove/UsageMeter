@@ -2,10 +2,10 @@
 
 use crate::models::{
     compute_percent, risk_level, AppSettings, ModelRateStats, ModelTtftStats, OverallRateStats,
-    SourceFilter, StatusCodeCount, ToolFilter, TtftStats, UsageQueryFilter, UsageSnapshot,
-    WindowRateSummary, WindowUsage,
+    StatusCodeCount, ToolFilter, TtftStats, UsageSnapshot, WindowRateSummary, WindowUsage,
 };
-use crate::proxy::{ProxyServer, SessionStats, UsageRecord};
+use crate::proxy::{ProxyServer, SessionStats};
+use crate::unified_usage::{CoverageOrigin, MergedCoverage, MergedRequestFact};
 use chrono::{Datelike, Local, NaiveDate, TimeZone};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,17 +22,6 @@ impl Default for ProxyState {
             server: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
-}
-
-fn build_usage_query_filter(settings: &AppSettings) -> UsageQueryFilter {
-    UsageQueryFilter {
-        source: settings.source_aware.build_filter(),
-        tool: settings.client_tools.build_filter(),
-    }
-}
-
-fn is_usage_filter_all(filter: &UsageQueryFilter) -> bool {
-    matches!(filter.source, SourceFilter::All) && matches!(filter.tool, ToolFilter::All)
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -208,15 +197,17 @@ pub struct DayActivity {
     pub error_requests: Option<u64>,
 }
 
+const MERGED_SOURCE: &str = "proxy-merged";
+
 /// 从数据源获取用量快照
 #[tauri::command]
 pub async fn get_usage_snapshot(
     settings: AppSettings,
-    proxy_state: tauri::State<'_, ProxyState>,
+    _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<UsageSnapshot, String> {
     // 检查是否使用代理模式
     if settings.data_source == "proxy" {
-        return get_proxy_usage_snapshot(&settings, &proxy_state).await;
+        return get_proxy_usage_snapshot(&settings).await;
     }
 
     tauri::async_runtime::spawn_blocking(move || match snapshot_from_local_jsonl(&settings) {
@@ -232,168 +223,609 @@ pub async fn get_usage_snapshot(
 }
 
 /// 从代理收集器获取用量快照
-async fn get_proxy_usage_snapshot(
-    settings: &AppSettings,
-    proxy_state: &ProxyState,
-) -> Result<UsageSnapshot, String> {
-    let server_guard = proxy_state.server.read().await;
+async fn get_proxy_usage_snapshot(settings: &AppSettings) -> Result<UsageSnapshot, String> {
+    build_merged_usage_snapshot(settings).await
+}
 
-    if let Some(server) = server_guard.as_ref() {
-        // 从代理服务器获取用量收集器
-        let collector = server.get_collector();
-        // 读取设置：是否包含错误请求
-        let include_errors = settings.proxy.include_error_requests;
-        // 构建来源过滤器
-        let usage_filter = build_usage_query_filter(settings);
-        let window_stats = collector
-            .get_all_window_stats_with_source(include_errors, &usage_filter)
-            .await;
-        let pricings = effective_model_pricings(settings);
-        let match_mode = &settings.model_pricing.match_mode;
-        let mut window_costs = HashMap::new();
-        for quota in settings.quotas.iter().filter(|quota| quota.enabled) {
-            let model_distribution = collector
-                .get_model_distribution_with_source(&quota.window, include_errors, &usage_filter)
-                .await;
-            let cost =
-                estimate_cost_from_model_distribution(&model_distribution, &pricings, match_mode);
-            window_costs.insert(quota.window.clone(), cost);
+fn merged_stat_capability_from_facts(
+    facts: &[MergedRequestFact],
+    coverage: &MergedCoverage,
+) -> StatisticsCapability {
+    let has_status_codes = !coverage.has_partial_status_coverage
+        && facts.iter().any(|fact| fact.status_code.is_some());
+    let has_performance = !coverage.has_partial_performance_coverage
+        && facts
+            .iter()
+            .any(|fact| fact.output_tokens_per_second.is_some() || fact.ttft_ms.is_some());
+
+    StatisticsCapability {
+        has_basic_usage: true,
+        has_performance,
+        has_status_codes,
+    }
+}
+
+fn add_fact_to_stat_acc(acc: &mut StatAccumulator, fact: &MergedRequestFact) {
+    acc.add_tokens(
+        fact.input_tokens,
+        fact.output_tokens,
+        fact.cache_create_tokens,
+        fact.cache_read_tokens,
+        1,
+        fact.estimated_cost,
+    );
+
+    if let Some(status_code) = fact.status_code {
+        if (200..300).contains(&status_code) {
+            acc.success_requests += 1;
+        } else if (400..500).contains(&status_code) {
+            acc.client_error_requests += 1;
+        } else if status_code >= 500 {
+            acc.server_error_requests += 1;
         }
-        drop(server_guard); // 提前释放锁
+        *acc.status_code_counts.entry(status_code).or_insert(0) += 1;
+    }
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+    if let Some(rate) = fact.output_tokens_per_second {
+        if rate > 0.0 {
+            acc.rate_sum += rate;
+            acc.rate_count += 1;
+        }
+    }
+    if let Some(ttft) = fact.ttft_ms {
+        if ttft > 0 {
+            acc.ttft_sum += ttft as f64;
+            acc.ttft_count += 1;
+        }
+    }
+}
 
-        let windows: Vec<WindowUsage> = settings
-            .quotas
-            .iter()
-            .filter(|quota| quota.enabled)
-            .map(|quota| {
-                let stats = window_stats.get(&quota.window);
-                let token_used = stats.map(|s| s.token_used).unwrap_or(0);
-                let input_tokens = stats.map(|s| s.input_tokens).unwrap_or(0);
-                let output_tokens = stats.map(|s| s.output_tokens).unwrap_or(0);
-                let cache_create_tokens = stats.map(|s| s.cache_create_tokens).unwrap_or(0);
-                let cache_read_tokens = stats.map(|s| s.cache_read_tokens).unwrap_or(0);
-                let request_used = stats.map(|s| s.request_used).unwrap_or(0);
-                let success_requests = stats.map(|s| s.success_requests).unwrap_or(0);
-                let client_error_requests = stats.map(|s| s.client_error_requests).unwrap_or(0);
-                let server_error_requests = stats.map(|s| s.server_error_requests).unwrap_or(0);
+fn build_merged_statistics(
+    facts: Vec<MergedRequestFact>,
+    coverage: &MergedCoverage,
+    query: &StatisticsQuery,
+) -> StatisticsSummary {
+    let (start_epoch, end_epoch) = normalize_range(query);
+    let mut total = StatAccumulator::default();
+    let mut trend_map: HashMap<i64, StatAccumulator> = HashMap::new();
+    let mut model_map: HashMap<String, StatAccumulator> = HashMap::new();
+    let mut model_trend_map: HashMap<String, HashMap<i64, StatAccumulator>> = HashMap::new();
 
-                let token_percent = compute_percent(token_used, quota.token_limit);
-                let request_percent = compute_percent(request_used, quota.request_limit);
+    for fact in &facts {
+        let model_name = if fact.model.is_empty() {
+            "unknown".to_string()
+        } else {
+            fact.model.clone()
+        };
+        let bucket = bucket_start(fact.timestamp_sec, &query.bucket);
+        add_fact_to_stat_acc(&mut total, fact);
+        add_fact_to_stat_acc(trend_map.entry(bucket).or_default(), fact);
+        add_fact_to_stat_acc(model_map.entry(model_name.clone()).or_default(), fact);
+        add_fact_to_stat_acc(
+            model_trend_map
+                .entry(model_name)
+                .or_default()
+                .entry(bucket)
+                .or_default(),
+            fact,
+        );
+    }
 
-                WindowUsage {
-                    window: quota.window.clone(),
-                    token_used,
-                    input_tokens,
-                    output_tokens,
-                    cache_create_tokens,
-                    cache_read_tokens,
-                    request_used,
-                    token_limit: quota.token_limit,
-                    request_limit: quota.request_limit,
-                    token_percent,
-                    request_percent,
-                    risk_level: risk_level(
-                        token_percent,
-                        request_percent,
-                        settings.warning_threshold,
-                        settings.critical_threshold,
-                    ),
-                    cost: window_costs.get(&quota.window).copied().unwrap_or(0.0),
-                    success_requests,
-                    client_error_requests,
-                    server_error_requests,
-                }
-            })
-            .collect();
+    let mut trend = trend_from_map(&trend_map, start_epoch, end_epoch, &query.bucket);
 
-        // 计算总体风险等级
-        let overall_risk_level = windows
-            .iter()
-            .map(|w| &w.risk_level)
-            .max_by_key(|level| match level.as_str() {
-                "critical" => 2,
-                "warning" => 1,
-                _ => 0,
-            })
-            .unwrap_or(&"safe".to_string())
-            .clone();
+    let mut models: Vec<StatisticsModelBreakdown> = model_map
+        .into_iter()
+        .map(|(model_name, acc)| {
+            let mut status_codes: Vec<StatusCodeCount> = acc
+                .status_code_counts
+                .iter()
+                .map(|(status_code, count)| StatusCodeCount {
+                    status_code: *status_code,
+                    count: *count,
+                })
+                .collect();
+            status_codes.sort_by(|a, b| a.status_code.cmp(&b.status_code));
 
-        // 计算汇总（含状态码统计）
-        let total_success_requests: u64 = windows.iter().map(|w| w.success_requests).sum();
-        let total_client_error_requests: u64 =
-            windows.iter().map(|w| w.client_error_requests).sum();
-        let total_server_error_requests: u64 =
-            windows.iter().map(|w| w.server_error_requests).sum();
+            let has_status = !status_codes.is_empty();
+            let has_perf = acc.rate_count > 0 || acc.ttft_count > 0;
 
-        // 从收集器获取模型分布
-        let model_distribution_raw = collector
-            .get_model_distribution_with_source(
-                &settings.summary_window,
-                include_errors,
-                &usage_filter,
-            )
-            .await;
-
-        // 计算总 token 用于百分比
-        let total_model_tokens: i64 = model_distribution_raw.iter().map(|m| m.total_tokens).sum();
-
-        // 转换为前端 ModelUsage 格式
-        let model_distribution: Vec<crate::models::ModelUsage> = model_distribution_raw
-            .into_iter()
-            .map(|m| {
-                let percent = if total_model_tokens > 0 {
-                    (m.total_tokens as f64 / total_model_tokens as f64) * 100.0
+            StatisticsModelBreakdown {
+                model_name: model_name.clone(),
+                request_count: acc.request_count,
+                total_tokens: acc.total_tokens,
+                input_tokens: acc.input_tokens,
+                output_tokens: acc.output_tokens,
+                cache_create_tokens: acc.cache_create_tokens,
+                cache_read_tokens: acc.cache_read_tokens,
+                cost: acc.cost,
+                percent: if total.total_tokens > 0 {
+                    (acc.total_tokens as f64 / total.total_tokens as f64) * 100.0
                 } else {
                     0.0
-                };
-                // 解析状态码 JSON
-                let status_codes: Vec<crate::models::StatusCodeCount> =
-                    serde_json::from_str(&m.status_codes_json).unwrap_or_default();
+                },
+                avg_tokens_per_second: has_perf
+                    .then_some(acc.rate_sum / acc.rate_count.max(1) as f64),
+                avg_ttft_ms: (acc.ttft_count > 0).then_some(acc.ttft_sum / acc.ttft_count as f64),
+                error_requests: has_status
+                    .then_some(acc.client_error_requests + acc.server_error_requests),
+                success_requests: has_status.then_some(acc.success_requests),
+                client_error_requests: has_status.then_some(acc.client_error_requests),
+                server_error_requests: has_status.then_some(acc.server_error_requests),
+                status_codes,
+                trend: model_trend_map
+                    .get(&model_name)
+                    .map(|trend_map| {
+                        trend_from_map(trend_map, start_epoch, end_epoch, &query.bucket)
+                    })
+                    .unwrap_or_else(|| make_empty_trend(start_epoch, end_epoch, &query.bucket)),
+            }
+        })
+        .collect();
+    models.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
 
-                crate::models::ModelUsage {
-                    model_name: m.model,
-                    token_used: m.total_tokens as u64,
-                    input_tokens: m.input_tokens as u64,
-                    output_tokens: m.output_tokens as u64,
-                    cache_create_tokens: m.cache_create_tokens as u64,
-                    cache_read_tokens: m.cache_read_tokens as u64,
-                    request_count: m.request_count as u64,
-                    percent,
-                    status_codes,
-                }
-            })
-            .collect();
+    let capability = merged_stat_capability_from_facts(&facts, coverage);
+    if !capability.has_performance {
+        for point in &mut trend {
+            point.avg_tokens_per_second = None;
+        }
+        for model in &mut models {
+            model.avg_tokens_per_second = None;
+            model.avg_ttft_ms = None;
+            for point in &mut model.trend {
+                point.avg_tokens_per_second = None;
+            }
+        }
+    }
+    if !capability.has_status_codes {
+        for model in &mut models {
+            model.error_requests = None;
+            model.success_requests = None;
+            model.client_error_requests = None;
+            model.server_error_requests = None;
+            model.status_codes.clear();
+        }
+    }
+    let performance = if capability.has_performance {
+        let fastest_model = models
+            .iter()
+            .filter_map(|m| m.avg_tokens_per_second.map(|v| (m.model_name.clone(), v)))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|m| m.0);
+        let slowest_model = models
+            .iter()
+            .filter_map(|m| m.avg_ttft_ms.map(|v| (m.model_name.clone(), v)))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|m| m.0);
 
-        let summary = build_usage_summary_from_window(
-            &windows,
-            &settings.summary_window,
-            overall_risk_level,
-            total_success_requests,
-            total_client_error_requests,
-            total_server_error_requests,
-        );
-
-        Ok(UsageSnapshot {
-            generated_at_epoch: now,
-            windows,
-            source: "proxy".to_string(),
-            note: None,
-            summary,
-            model_distribution,
+        Some(StatisticsPerformance {
+            request_count: total.rate_count.max(total.ttft_count),
+            avg_tokens_per_second: if total.rate_count > 0 {
+                total.rate_sum / total.rate_count as f64
+            } else {
+                0.0
+            },
+            avg_ttft_ms: if total.ttft_count > 0 {
+                total.ttft_sum / total.ttft_count as f64
+            } else {
+                0.0
+            },
+            slowest_model,
+            fastest_model,
         })
     } else {
-        // 代理未运行，返回空数据并附带警告
-        Ok(empty_usage_snapshot(
-            settings,
-            "proxy",
-            "代理未运行 - 请先启动代理服务器".to_string(),
-        ))
+        None
+    };
+
+    let status = if capability.has_status_codes {
+        let status_total =
+            total.success_requests + total.client_error_requests + total.server_error_requests;
+        Some(StatisticsStatusBreakdown {
+            success_requests: total.success_requests,
+            client_error_requests: total.client_error_requests,
+            server_error_requests: total.server_error_requests,
+            success_rate: if status_total > 0 {
+                (total.success_requests as f64 / status_total as f64) * 100.0
+            } else {
+                0.0
+            },
+        })
+    } else {
+        None
+    };
+
+    let totals = totals_from_acc(&total, models.len() as u64, capability.has_status_codes);
+    let insights = build_insights(
+        &totals,
+        &trend,
+        &models,
+        &query.metric,
+        performance.as_ref(),
+    );
+
+    StatisticsSummary {
+        generated_at_epoch: chrono::Utc::now().timestamp(),
+        source: MERGED_SOURCE.to_string(),
+        capability,
+        range: StatisticsRange {
+            start_epoch,
+            end_epoch,
+            timezone: query.timezone.clone(),
+            bucket: bucket_name(&query.bucket),
+        },
+        totals,
+        trend,
+        models,
+        performance,
+        status,
+        insights,
     }
+}
+
+fn collect_day_activity_from_facts(
+    facts: Vec<MergedRequestFact>,
+    day_map: &mut HashMap<String, (StatAccumulator, std::collections::HashSet<String>)>,
+    partial_status_days: &mut std::collections::HashSet<String>,
+) {
+    for fact in facts {
+        let date = Local
+            .timestamp_opt(fact.timestamp_sec, 0)
+            .single()
+            .unwrap_or_else(Local::now)
+            .format("%Y-%m-%d")
+            .to_string();
+        if matches!(fact.coverage_origin, CoverageOrigin::LocalOnly) {
+            partial_status_days.insert(date.clone());
+        }
+        let entry = day_map.entry(date).or_default();
+        add_fact_to_stat_acc(&mut entry.0, &fact);
+        if !fact.model.is_empty() {
+            entry.1.insert(fact.model);
+        }
+    }
+}
+
+fn empty_window_rate_summary(window: String) -> WindowRateSummary {
+    WindowRateSummary {
+        window,
+        overall: OverallRateStats {
+            request_count: 0,
+            total_output_tokens: 0,
+            total_duration_ms: 0,
+            avg_tokens_per_second: 0.0,
+        },
+        by_model: Vec::new(),
+        ttft: TtftStats::default(),
+        ttft_by_model: Vec::new(),
+    }
+}
+
+fn build_window_rate_summary_from_facts(
+    window: String,
+    facts: Vec<MergedRequestFact>,
+    coverage: &MergedCoverage,
+) -> WindowRateSummary {
+    if coverage.has_partial_performance_coverage {
+        return empty_window_rate_summary(window);
+    }
+
+    #[derive(Default)]
+    struct PerfAccumulator {
+        request_count: u64,
+        total_output_tokens: u64,
+        total_duration_ms: u64,
+        rate_sum: f64,
+        rate_count: u64,
+        min_rate: Option<f64>,
+        max_rate: Option<f64>,
+        ttft_sum: f64,
+        ttft_count: u64,
+        min_ttft_ms: Option<u64>,
+        max_ttft_ms: Option<u64>,
+    }
+
+    impl PerfAccumulator {
+        fn add(&mut self, fact: &MergedRequestFact) {
+            if let (Some(duration_ms), Some(rate)) =
+                (fact.duration_ms, fact.output_tokens_per_second)
+            {
+                if duration_ms > 0 && rate > 0.0 {
+                    self.request_count += 1;
+                    self.total_output_tokens += fact.output_tokens;
+                    self.total_duration_ms += duration_ms;
+                    self.rate_sum += rate;
+                    self.rate_count += 1;
+                    self.min_rate = Some(self.min_rate.map_or(rate, |current| current.min(rate)));
+                    self.max_rate = Some(self.max_rate.map_or(rate, |current| current.max(rate)));
+                }
+            }
+
+            if let Some(ttft_ms) = fact.ttft_ms {
+                if ttft_ms > 0 {
+                    self.ttft_sum += ttft_ms as f64;
+                    self.ttft_count += 1;
+                    self.min_ttft_ms = Some(
+                        self.min_ttft_ms
+                            .map_or(ttft_ms, |current| current.min(ttft_ms)),
+                    );
+                    self.max_ttft_ms = Some(
+                        self.max_ttft_ms
+                            .map_or(ttft_ms, |current| current.max(ttft_ms)),
+                    );
+                }
+            }
+        }
+    }
+
+    let mut overall = PerfAccumulator::default();
+    let mut by_model: HashMap<String, PerfAccumulator> = HashMap::new();
+
+    for fact in &facts {
+        overall.add(fact);
+        if !fact.model.trim().is_empty() {
+            by_model.entry(fact.model.clone()).or_default().add(fact);
+        }
+    }
+
+    if overall.request_count == 0 {
+        return empty_window_rate_summary(window);
+    }
+
+    let mut by_model_stats: Vec<ModelRateStats> = by_model
+        .into_iter()
+        .filter_map(|(model_name, acc)| {
+            (acc.request_count > 0).then_some(ModelRateStats {
+                model_name,
+                request_count: acc.request_count,
+                total_output_tokens: acc.total_output_tokens,
+                total_duration_ms: acc.total_duration_ms,
+                avg_tokens_per_second: if acc.rate_count > 0 {
+                    acc.rate_sum / acc.rate_count as f64
+                } else {
+                    0.0
+                },
+                min_tokens_per_second: acc.min_rate.unwrap_or(0.0),
+                max_tokens_per_second: acc.max_rate.unwrap_or(0.0),
+            })
+        })
+        .collect();
+    by_model_stats.sort_by(|a, b| {
+        b.avg_tokens_per_second
+            .partial_cmp(&a.avg_tokens_per_second)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut ttft_by_model: Vec<ModelTtftStats> = facts
+        .iter()
+        .fold(
+            HashMap::<String, PerfAccumulator>::new(),
+            |mut acc, fact| {
+                if !fact.model.trim().is_empty() {
+                    acc.entry(fact.model.clone()).or_default().add(fact);
+                }
+                acc
+            },
+        )
+        .into_iter()
+        .filter_map(|(model_name, acc)| {
+            (acc.ttft_count > 0).then_some(ModelTtftStats {
+                model_name,
+                request_count: acc.ttft_count,
+                avg_ttft_ms: acc.ttft_sum / acc.ttft_count as f64,
+                min_ttft_ms: acc.min_ttft_ms.unwrap_or(0),
+                max_ttft_ms: acc.max_ttft_ms.unwrap_or(0),
+            })
+        })
+        .collect();
+    ttft_by_model.sort_by(|a, b| {
+        a.avg_ttft_ms
+            .partial_cmp(&b.avg_ttft_ms)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    WindowRateSummary {
+        window,
+        overall: OverallRateStats {
+            request_count: overall.request_count,
+            total_output_tokens: overall.total_output_tokens,
+            total_duration_ms: overall.total_duration_ms,
+            avg_tokens_per_second: if overall.rate_count > 0 {
+                overall.rate_sum / overall.rate_count as f64
+            } else {
+                0.0
+            },
+        },
+        by_model: by_model_stats,
+        ttft: TtftStats {
+            request_count: overall.ttft_count,
+            avg_ttft_ms: if overall.ttft_count > 0 {
+                overall.ttft_sum / overall.ttft_count as f64
+            } else {
+                0.0
+            },
+            min_ttft_ms: overall.min_ttft_ms.unwrap_or(0),
+            max_ttft_ms: overall.max_ttft_ms.unwrap_or(0),
+        },
+        ttft_by_model,
+    }
+}
+
+async fn build_merged_usage_snapshot(settings: &AppSettings) -> Result<UsageSnapshot, String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let include_errors = settings.proxy.include_error_requests;
+
+    let mut windows = Vec::new();
+    let mut has_partial_snapshot_coverage = false;
+    for quota in settings.quotas.iter().filter(|quota| quota.enabled) {
+        let cutoff_ms = crate::proxy::UsageCollector::calculate_window_cutoff_public(&quota.window);
+        let (facts, capability) = crate::unified_usage::get_merged_request_facts(
+            settings,
+            Some(cutoff_ms / 1000),
+            Some(now as i64 + 1),
+            include_errors,
+        )
+        .await?;
+        has_partial_snapshot_coverage |=
+            capability.has_partial_status_coverage || capability.has_partial_performance_coverage;
+
+        let mut model_stats: HashMap<String, ModelTokenTotals> = HashMap::new();
+        let mut token_used = 0_u64;
+        let mut input_tokens = 0_u64;
+        let mut output_tokens = 0_u64;
+        let mut cache_create_tokens = 0_u64;
+        let mut cache_read_tokens = 0_u64;
+        let request_used = facts.len() as u64;
+        let mut success_requests = 0_u64;
+        let mut client_error_requests = 0_u64;
+        let mut server_error_requests = 0_u64;
+
+        for fact in &facts {
+            token_used += fact.total_tokens;
+            input_tokens += fact.input_tokens;
+            output_tokens += fact.output_tokens;
+            cache_create_tokens += fact.cache_create_tokens;
+            cache_read_tokens += fact.cache_read_tokens;
+
+            if let Some(status_code) = fact.status_code {
+                if (200..300).contains(&status_code) {
+                    success_requests += 1;
+                } else if (400..500).contains(&status_code) {
+                    client_error_requests += 1;
+                } else if status_code >= 500 {
+                    server_error_requests += 1;
+                }
+            }
+
+            if !fact.model.is_empty() {
+                let entry = model_stats.entry(fact.model.clone()).or_default();
+                entry.input_tokens += fact.input_tokens;
+                entry.output_tokens += fact.output_tokens;
+                entry.cache_create_tokens += fact.cache_create_tokens;
+                entry.cache_read_tokens += fact.cache_read_tokens;
+                entry.request_count += 1;
+            }
+        }
+
+        let token_percent = compute_percent(token_used, quota.token_limit);
+        let request_percent = compute_percent(request_used, quota.request_limit);
+        let cost: f64 = facts.iter().map(|fact| fact.estimated_cost).sum();
+
+        windows.push(WindowUsage {
+            window: quota.window.clone(),
+            token_used,
+            input_tokens,
+            output_tokens,
+            cache_create_tokens,
+            cache_read_tokens,
+            request_used,
+            token_limit: quota.token_limit,
+            request_limit: quota.request_limit,
+            token_percent,
+            request_percent,
+            risk_level: risk_level(
+                token_percent,
+                request_percent,
+                settings.warning_threshold,
+                settings.critical_threshold,
+            ),
+            cost,
+            success_requests: if capability.has_partial_status_coverage {
+                0
+            } else {
+                success_requests
+            },
+            client_error_requests: if capability.has_partial_status_coverage {
+                0
+            } else {
+                client_error_requests
+            },
+            server_error_requests: if capability.has_partial_status_coverage {
+                0
+            } else {
+                server_error_requests
+            },
+        });
+    }
+
+    let overall_risk_level = windows
+        .iter()
+        .map(|w| &w.risk_level)
+        .max_by_key(|level| match level.as_str() {
+            "critical" => 2,
+            "warning" => 1,
+            _ => 0,
+        })
+        .unwrap_or(&"safe".to_string())
+        .clone();
+
+    let summary_cutoff_ms =
+        crate::proxy::UsageCollector::calculate_window_cutoff_public(&settings.summary_window);
+    let (summary_facts, summary_coverage) = crate::unified_usage::get_merged_request_facts(
+        settings,
+        Some(summary_cutoff_ms / 1000),
+        Some(now as i64 + 1),
+        include_errors,
+    )
+    .await?;
+
+    let mut summary_model_stats: HashMap<String, ModelTokenTotals> = HashMap::new();
+    let mut summary_success_requests = 0_u64;
+    let mut summary_client_error_requests = 0_u64;
+    let mut summary_server_error_requests = 0_u64;
+    for fact in &summary_facts {
+        if !fact.model.is_empty() {
+            let entry = summary_model_stats.entry(fact.model.clone()).or_default();
+            entry.input_tokens += fact.input_tokens;
+            entry.output_tokens += fact.output_tokens;
+            entry.cache_create_tokens += fact.cache_create_tokens;
+            entry.cache_read_tokens += fact.cache_read_tokens;
+            entry.request_count += 1;
+        }
+        if let Some(status_code) = fact.status_code {
+            if (200..300).contains(&status_code) {
+                summary_success_requests += 1;
+            } else if (400..500).contains(&status_code) {
+                summary_client_error_requests += 1;
+            } else if status_code >= 500 {
+                summary_server_error_requests += 1;
+            }
+        }
+    }
+
+    let summary = build_usage_summary_from_window(
+        &windows,
+        &settings.summary_window,
+        overall_risk_level,
+        if summary_coverage.has_partial_status_coverage {
+            0
+        } else {
+            summary_success_requests
+        },
+        if summary_coverage.has_partial_status_coverage {
+            0
+        } else {
+            summary_client_error_requests
+        },
+        if summary_coverage.has_partial_status_coverage {
+            0
+        } else {
+            summary_server_error_requests
+        },
+    );
+
+    Ok(UsageSnapshot {
+        generated_at_epoch: now,
+        windows,
+        source: MERGED_SOURCE.to_string(),
+        note: (has_partial_snapshot_coverage
+            || summary_coverage.has_partial_status_coverage
+            || summary_coverage.has_partial_performance_coverage)
+            .then_some("NOTE_PARTIAL_PROXY_COVERAGE".to_string()),
+        summary,
+        model_distribution: build_model_distribution_from_window_stats(Some(&summary_model_stats)),
+    })
 }
 
 fn empty_usage_snapshot(settings: &AppSettings, source: &str, note: String) -> UsageSnapshot {
@@ -450,27 +882,6 @@ fn empty_usage_snapshot(settings: &AppSettings, source: &str, note: String) -> U
     }
 }
 
-fn estimate_cost_from_model_distribution(
-    models: &[crate::proxy::ModelDistribution],
-    pricings: &[crate::models::ModelPricingConfig],
-    match_mode: &str,
-) -> f64 {
-    models
-        .iter()
-        .map(|model| {
-            crate::models::estimate_session_cost(
-                model.input_tokens.max(0) as u64,
-                model.output_tokens.max(0) as u64,
-                model.cache_create_tokens.max(0) as u64,
-                model.cache_read_tokens.max(0) as u64,
-                &model.model,
-                pricings,
-                match_mode,
-            )
-        })
-        .sum()
-}
-
 fn estimate_cost_for_local_request(
     record: &crate::session::LocalRequestRecord,
     pricings: &[crate::models::ModelPricingConfig],
@@ -487,12 +898,26 @@ fn estimate_cost_for_local_request(
     )
 }
 
-fn local_request_records(settings: &AppSettings) -> Vec<crate::session::LocalRequestRecord> {
+fn local_request_records(
+    settings: &AppSettings,
+) -> Result<Vec<crate::session::LocalRequestRecord>, String> {
     let tool_filter = settings.client_tools.build_filter();
-    crate::session::get_all_local_request_records_cached()
-        .into_iter()
-        .filter(|record| crate::session::matches_request_tool_filter(record, &tool_filter))
-        .collect()
+    let db = crate::local_usage::ensure_local_usage_synced()?;
+    db.get_all_request_records(&tool_filter)
+}
+
+fn local_request_records_by_session(
+    db: &crate::local_usage::LocalUsageDatabase,
+    session_id: &str,
+) -> Result<Vec<crate::session::LocalRequestRecord>, String> {
+    db.get_request_records_by_session(session_id)
+}
+
+fn local_session_meta_by_id(
+    db: &crate::local_usage::LocalUsageDatabase,
+    session_id: &str,
+) -> Result<Option<crate::session::SessionMeta>, String> {
+    db.get_session_by_id(session_id)
 }
 
 fn effective_model_pricings(settings: &AppSettings) -> Vec<crate::models::ModelPricingConfig> {
@@ -516,7 +941,7 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
         .unwrap_or_default()
         .as_secs();
 
-    let requests = local_request_records(settings);
+    let requests = local_request_records(settings)?;
     if requests.is_empty() {
         return Err("ERR_LOCAL_JSONL_NOT_FOUND".to_string());
     }
@@ -967,42 +1392,6 @@ impl StatAccumulator {
         self.total_tokens += input + output + cache_create + cache_read;
         self.cost += cost;
     }
-
-    fn add_record(&mut self, record: &UsageRecord, cost: f64) {
-        self.add_tokens(
-            record.input_tokens,
-            record.output_tokens,
-            record.cache_create_tokens,
-            record.cache_read_tokens,
-            1,
-            cost,
-        );
-
-        if (200..300).contains(&record.status_code) {
-            self.success_requests += 1;
-        } else if (400..500).contains(&record.status_code) {
-            self.client_error_requests += 1;
-        } else if record.status_code >= 500 {
-            self.server_error_requests += 1;
-        }
-        *self
-            .status_code_counts
-            .entry(record.status_code)
-            .or_insert(0) += 1;
-
-        if let Some(rate) = record.output_tokens_per_second {
-            if rate > 0.0 {
-                self.rate_sum += rate;
-                self.rate_count += 1;
-            }
-        }
-        if let Some(ttft) = record.ttft_ms {
-            if ttft > 0 {
-                self.ttft_sum += ttft as f64;
-                self.ttft_count += 1;
-            }
-        }
-    }
 }
 
 fn normalize_range(query: &StatisticsQuery) -> (i64, i64) {
@@ -1178,167 +1567,10 @@ fn build_insights(
     insights
 }
 
-fn build_proxy_statistics(
-    records: Vec<UsageRecord>,
+fn build_jsonl_statistics(
     query: &StatisticsQuery,
-    _settings: &AppSettings,
-) -> StatisticsSummary {
-    let (start_epoch, end_epoch) = normalize_range(query);
-    let mut total = StatAccumulator::default();
-    let mut trend_map: HashMap<i64, StatAccumulator> = HashMap::new();
-    let mut model_map: HashMap<String, StatAccumulator> = HashMap::new();
-    let mut model_trend_map: HashMap<String, HashMap<i64, StatAccumulator>> = HashMap::new();
-
-    for record in &records {
-        let cost = record.estimated_cost;
-        let model_name = if record.model.is_empty() {
-            "unknown".to_string()
-        } else {
-            record.model.clone()
-        };
-        let bucket = bucket_start(record.timestamp / 1000, &query.bucket);
-        total.add_record(record, cost);
-        trend_map
-            .entry(bucket)
-            .or_default()
-            .add_record(record, cost);
-        model_map
-            .entry(model_name.clone())
-            .or_default()
-            .add_record(record, cost);
-        model_trend_map
-            .entry(model_name)
-            .or_default()
-            .entry(bucket)
-            .or_default()
-            .add_record(record, cost);
-    }
-
-    let trend = trend_from_map(&trend_map, start_epoch, end_epoch, &query.bucket);
-
-    let mut models: Vec<StatisticsModelBreakdown> = model_map
-        .into_iter()
-        .map(|(model_name, acc)| {
-            let mut status_codes: Vec<StatusCodeCount> = acc
-                .status_code_counts
-                .iter()
-                .map(|(status_code, count)| StatusCodeCount {
-                    status_code: *status_code,
-                    count: *count,
-                })
-                .collect();
-            status_codes.sort_by(|a, b| a.status_code.cmp(&b.status_code));
-
-            StatisticsModelBreakdown {
-                model_name: model_name.clone(),
-                request_count: acc.request_count,
-                total_tokens: acc.total_tokens,
-                input_tokens: acc.input_tokens,
-                output_tokens: acc.output_tokens,
-                cache_create_tokens: acc.cache_create_tokens,
-                cache_read_tokens: acc.cache_read_tokens,
-                cost: acc.cost,
-                percent: if total.total_tokens > 0 {
-                    (acc.total_tokens as f64 / total.total_tokens as f64) * 100.0
-                } else {
-                    0.0
-                },
-                avg_tokens_per_second: (acc.rate_count > 0)
-                    .then_some(acc.rate_sum / acc.rate_count as f64),
-                avg_ttft_ms: (acc.ttft_count > 0).then_some(acc.ttft_sum / acc.ttft_count as f64),
-                error_requests: Some(acc.client_error_requests + acc.server_error_requests),
-                success_requests: Some(acc.success_requests),
-                client_error_requests: Some(acc.client_error_requests),
-                server_error_requests: Some(acc.server_error_requests),
-                status_codes,
-                trend: model_trend_map
-                    .get(&model_name)
-                    .map(|trend_map| {
-                        trend_from_map(trend_map, start_epoch, end_epoch, &query.bucket)
-                    })
-                    .unwrap_or_else(|| make_empty_trend(start_epoch, end_epoch, &query.bucket)),
-            }
-        })
-        .collect();
-    models.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
-
-    let performance = if total.rate_count > 0 || total.ttft_count > 0 {
-        let fastest_model = models
-            .iter()
-            .filter_map(|m| m.avg_tokens_per_second.map(|v| (m.model_name.clone(), v)))
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|m| m.0);
-        let slowest_model = models
-            .iter()
-            .filter_map(|m| m.avg_ttft_ms.map(|v| (m.model_name.clone(), v)))
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|m| m.0);
-
-        Some(StatisticsPerformance {
-            request_count: total.rate_count.max(total.ttft_count),
-            avg_tokens_per_second: if total.rate_count > 0 {
-                total.rate_sum / total.rate_count as f64
-            } else {
-                0.0
-            },
-            avg_ttft_ms: if total.ttft_count > 0 {
-                total.ttft_sum / total.ttft_count as f64
-            } else {
-                0.0
-            },
-            slowest_model,
-            fastest_model,
-        })
-    } else {
-        None
-    };
-
-    let status_total =
-        total.success_requests + total.client_error_requests + total.server_error_requests;
-    let status = Some(StatisticsStatusBreakdown {
-        success_requests: total.success_requests,
-        client_error_requests: total.client_error_requests,
-        server_error_requests: total.server_error_requests,
-        success_rate: if status_total > 0 {
-            (total.success_requests as f64 / status_total as f64) * 100.0
-        } else {
-            0.0
-        },
-    });
-
-    let totals = totals_from_acc(&total, models.len() as u64, true);
-    let insights = build_insights(
-        &totals,
-        &trend,
-        &models,
-        &query.metric,
-        performance.as_ref(),
-    );
-
-    StatisticsSummary {
-        generated_at_epoch: chrono::Utc::now().timestamp(),
-        source: "proxy".to_string(),
-        capability: StatisticsCapability {
-            has_basic_usage: true,
-            has_performance: performance.is_some(),
-            has_status_codes: true,
-        },
-        range: StatisticsRange {
-            start_epoch,
-            end_epoch,
-            timezone: query.timezone.clone(),
-            bucket: bucket_name(&query.bucket),
-        },
-        totals,
-        trend,
-        models,
-        performance,
-        status,
-        insights,
-    }
-}
-
-fn build_jsonl_statistics(query: &StatisticsQuery, settings: &AppSettings) -> StatisticsSummary {
+    settings: &AppSettings,
+) -> Result<StatisticsSummary, String> {
     let (start_epoch, end_epoch) = normalize_range(query);
     let pricings = effective_model_pricings(settings);
     let match_mode = settings.model_pricing.match_mode.clone();
@@ -1347,7 +1579,7 @@ fn build_jsonl_statistics(query: &StatisticsQuery, settings: &AppSettings) -> St
     let mut model_map: HashMap<String, StatAccumulator> = HashMap::new();
     let mut model_trend_map: HashMap<String, HashMap<i64, StatAccumulator>> = HashMap::new();
 
-    for record in local_request_records(settings) {
+    for record in local_request_records(settings)? {
         let event_epoch = record.timestamp;
         if event_epoch < start_epoch || event_epoch >= end_epoch {
             continue;
@@ -1434,7 +1666,7 @@ fn build_jsonl_statistics(query: &StatisticsQuery, settings: &AppSettings) -> St
     let totals = totals_from_acc(&total, models.len() as u64, false);
     let insights = build_insights(&totals, &trend, &models, &query.metric, None);
 
-    StatisticsSummary {
+    Ok(StatisticsSummary {
         generated_at_epoch: chrono::Utc::now().timestamp(),
         source: "local-files".to_string(),
         capability: StatisticsCapability {
@@ -1454,7 +1686,7 @@ fn build_jsonl_statistics(query: &StatisticsQuery, settings: &AppSettings) -> St
         performance: None,
         status: None,
         insights,
-    }
+    })
 }
 
 #[tauri::command]
@@ -1465,23 +1697,18 @@ pub async fn get_statistics_summary(
 ) -> Result<StatisticsSummary, String> {
     let (start_epoch, end_epoch) = normalize_range(&query);
     if settings.data_source == "proxy" {
-        if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
-            db.backfill_unlocked_costs().await?;
-            // 构建来源过滤器
-            let usage_filter = build_usage_query_filter(&settings);
-            let records = db
-                .get_records_between_with_source(
-                    start_epoch * 1000,
-                    end_epoch * 1000,
-                    true,
-                    &usage_filter,
-                )
-                .await?;
-            return Ok(build_proxy_statistics(records, &query, &settings));
-        }
+        let include_errors = settings.proxy.include_error_requests;
+        let (facts, coverage) = crate::unified_usage::get_merged_request_facts(
+            &settings,
+            Some(start_epoch),
+            Some(end_epoch),
+            include_errors,
+        )
+        .await?;
+        return Ok(build_merged_statistics(facts, &coverage, &query));
     }
 
-    Ok(build_jsonl_statistics(&query, &settings))
+    build_jsonl_statistics(&query, &settings)
 }
 
 fn month_day_count(year: i32, month: u8) -> u32 {
@@ -1491,42 +1718,6 @@ fn month_day_count(year: i32, month: u8) -> u32 {
         }
     }
     30
-}
-
-async fn collect_proxy_records_by_day(
-    db: &crate::proxy::ProxyDatabase,
-    day_map: &mut HashMap<String, (StatAccumulator, std::collections::HashSet<String>)>,
-    start_epoch: i64,
-    end_epoch: i64,
-    include_errors: bool,
-    usage_filter: &UsageQueryFilter,
-) -> Result<(), String> {
-    db.backfill_unlocked_costs().await?;
-    let records = db
-        .get_records_between_with_source(
-            start_epoch * 1000,
-            end_epoch * 1000,
-            include_errors,
-            usage_filter,
-        )
-        .await?;
-
-    for record in records {
-        let date = Local
-            .timestamp_opt(record.timestamp / 1000, 0)
-            .single()
-            .unwrap_or_else(Local::now)
-            .format("%Y-%m-%d")
-            .to_string();
-        let cost = record.estimated_cost;
-        let entry = day_map.entry(date).or_default();
-        entry.0.add_record(&record, cost);
-        if !record.model.is_empty() {
-            entry.1.insert(record.model);
-        }
-    }
-
-    Ok(())
 }
 
 #[tauri::command]
@@ -1542,6 +1733,7 @@ pub async fn get_month_activity(
     let match_mode = settings.model_pricing.match_mode.clone();
     let mut day_map: HashMap<String, (StatAccumulator, std::collections::HashSet<String>)> =
         HashMap::new();
+    let mut partial_status_days = std::collections::HashSet::new();
 
     let month_start = Local
         .with_ymd_and_hms(year, month as u32, 1, 0, 0, 0)
@@ -1560,110 +1752,17 @@ pub async fn get_month_activity(
         .timestamp();
 
     if settings.data_source == "proxy" {
-        if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
-            let usage_filter = build_usage_query_filter(&settings);
-            if !is_usage_filter_all(&usage_filter) {
-                collect_proxy_records_by_day(
-                    &db,
-                    &mut day_map,
-                    month_start,
-                    month_end,
-                    settings.proxy.include_error_requests,
-                    &usage_filter,
-                )
-                .await?;
-            } else {
-                let month_start_date = NaiveDate::from_ymd_opt(year, month as u32, 1)
-                    .unwrap_or_else(|| Local::now().date_naive());
-                let next_month_date = if month == 12 {
-                    NaiveDate::from_ymd_opt(year + 1, 1, 1)
-                } else {
-                    NaiveDate::from_ymd_opt(year, month as u32 + 1, 1)
-                }
-                .unwrap_or_else(|| Local::now().date_naive());
-                let today_date = Local::now().date_naive();
-                let summary_end_date = next_month_date.min(today_date);
-
-                if summary_end_date > month_start_date {
-                    let summary_start_key = month_start_date.format("%Y-%m-%d").to_string();
-                    let summary_end_key = summary_end_date.format("%Y-%m-%d").to_string();
-                    db.ensure_daily_summaries(&summary_start_key, &summary_end_key)
-                        .await?;
-                    for summary in db
-                        .get_daily_activity_summaries(&summary_start_key, &summary_end_key)
-                        .await?
-                    {
-                        let mut acc = StatAccumulator::default();
-                        if settings.proxy.include_error_requests {
-                            acc.request_count = summary.request_count;
-                            acc.total_tokens = summary.total_tokens;
-                            acc.input_tokens = summary.input_tokens;
-                            acc.output_tokens = summary.output_tokens;
-                            acc.cache_create_tokens = summary.cache_create_tokens;
-                            acc.cache_read_tokens = summary.cache_read_tokens;
-                            acc.cost = summary.cost;
-                        } else {
-                            acc.request_count = summary.success_requests;
-                            acc.total_tokens = summary.success_total_tokens;
-                            acc.input_tokens = summary.success_input_tokens;
-                            acc.output_tokens = summary.success_output_tokens;
-                            acc.cache_create_tokens = summary.success_cache_create_tokens;
-                            acc.cache_read_tokens = summary.success_cache_read_tokens;
-                            acc.cost = summary.success_cost;
-                        }
-                        acc.success_requests = summary.success_requests;
-                        acc.client_error_requests = summary.client_error_requests;
-                        acc.server_error_requests = summary.server_error_requests;
-                        let models = (0..summary.model_count)
-                            .map(|idx| format!("__cached_model_{idx}"))
-                            .collect();
-                        day_map.insert(summary.date, (acc, models));
-                    }
-                } else {
-                    db.backfill_unlocked_costs().await?;
-                }
-
-                let live_start = month_start_date.max(today_date);
-                if live_start < next_month_date {
-                    let live_start_epoch = Local
-                        .with_ymd_and_hms(
-                            live_start.year(),
-                            live_start.month(),
-                            live_start.day(),
-                            0,
-                            0,
-                            0,
-                        )
-                        .single()
-                        .unwrap_or_else(Local::now)
-                        .timestamp();
-                    let live_end_epoch = month_end;
-                    let records = db
-                        .get_records_between(
-                            live_start_epoch * 1000,
-                            live_end_epoch * 1000,
-                            settings.proxy.include_error_requests,
-                        )
-                        .await?;
-                    for record in records {
-                        let date = Local
-                            .timestamp_opt(record.timestamp / 1000, 0)
-                            .single()
-                            .unwrap_or_else(Local::now)
-                            .format("%Y-%m-%d")
-                            .to_string();
-                        let cost = record.estimated_cost;
-                        let entry = day_map.entry(date).or_default();
-                        entry.0.add_record(&record, cost);
-                        if !record.model.is_empty() {
-                            entry.1.insert(record.model);
-                        }
-                    }
-                }
-            }
-        }
+        let include_errors = settings.proxy.include_error_requests;
+        let (facts, _coverage) = crate::unified_usage::get_merged_request_facts(
+            &settings,
+            Some(month_start),
+            Some(month_end),
+            include_errors,
+        )
+        .await?;
+        collect_day_activity_from_facts(facts, &mut day_map, &mut partial_status_days);
     } else {
-        for record in local_request_records(&settings) {
+        for record in local_request_records(&settings)? {
             let event_epoch = record.timestamp;
             if event_epoch < month_start || event_epoch >= month_end {
                 continue;
@@ -1698,6 +1797,8 @@ pub async fn get_month_activity(
         let key = date.format("%Y-%m-%d").to_string();
         let (acc, models) = day_map.remove(&key).unwrap_or_default();
         let error_requests = acc.client_error_requests + acc.server_error_requests;
+        let status_available =
+            settings.data_source == "proxy" && !partial_status_days.contains(&key);
         days.push(DayActivity {
             date: key,
             request_count: acc.request_count,
@@ -1708,8 +1809,8 @@ pub async fn get_month_activity(
             cache_read_tokens: acc.cache_read_tokens,
             cost: acc.cost,
             model_count: models.len() as u64,
-            success_requests: (settings.data_source == "proxy").then_some(acc.success_requests),
-            error_requests: (settings.data_source == "proxy").then_some(error_requests),
+            success_requests: status_available.then_some(acc.success_requests),
+            error_requests: status_available.then_some(error_requests),
         });
     }
 
@@ -1733,6 +1834,7 @@ pub async fn get_year_activity(
     let match_mode = settings.model_pricing.match_mode.clone();
     let mut day_map: HashMap<String, (StatAccumulator, std::collections::HashSet<String>)> =
         HashMap::new();
+    let mut partial_status_days = std::collections::HashSet::new();
 
     let year_start = Local
         .with_ymd_and_hms(year, 1, 1, 0, 0, 0)
@@ -1746,105 +1848,17 @@ pub async fn get_year_activity(
         .timestamp();
 
     if settings.data_source == "proxy" {
-        if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
-            let usage_filter = build_usage_query_filter(&settings);
-            if !is_usage_filter_all(&usage_filter) {
-                collect_proxy_records_by_day(
-                    &db,
-                    &mut day_map,
-                    year_start,
-                    year_end,
-                    settings.proxy.include_error_requests,
-                    &usage_filter,
-                )
-                .await?;
-            } else {
-                let year_start_date = NaiveDate::from_ymd_opt(year, 1, 1)
-                    .unwrap_or_else(|| Local::now().date_naive());
-                let next_year_date = NaiveDate::from_ymd_opt(year + 1, 1, 1)
-                    .unwrap_or_else(|| Local::now().date_naive());
-                let today_date = Local::now().date_naive();
-                let summary_end_date = next_year_date.min(today_date);
-
-                if summary_end_date > year_start_date {
-                    let summary_start_key = year_start_date.format("%Y-%m-%d").to_string();
-                    let summary_end_key = summary_end_date.format("%Y-%m-%d").to_string();
-                    db.ensure_daily_summaries(&summary_start_key, &summary_end_key)
-                        .await?;
-                    for summary in db
-                        .get_daily_activity_summaries(&summary_start_key, &summary_end_key)
-                        .await?
-                    {
-                        let mut acc = StatAccumulator::default();
-                        if settings.proxy.include_error_requests {
-                            acc.request_count = summary.request_count;
-                            acc.total_tokens = summary.total_tokens;
-                            acc.input_tokens = summary.input_tokens;
-                            acc.output_tokens = summary.output_tokens;
-                            acc.cache_create_tokens = summary.cache_create_tokens;
-                            acc.cache_read_tokens = summary.cache_read_tokens;
-                            acc.cost = summary.cost;
-                        } else {
-                            acc.request_count = summary.success_requests;
-                            acc.total_tokens = summary.success_total_tokens;
-                            acc.input_tokens = summary.success_input_tokens;
-                            acc.output_tokens = summary.success_output_tokens;
-                            acc.cache_create_tokens = summary.success_cache_create_tokens;
-                            acc.cache_read_tokens = summary.success_cache_read_tokens;
-                            acc.cost = summary.success_cost;
-                        }
-                        acc.success_requests = summary.success_requests;
-                        acc.client_error_requests = summary.client_error_requests;
-                        acc.server_error_requests = summary.server_error_requests;
-                        let models = (0..summary.model_count)
-                            .map(|idx| format!("__cached_model_{idx}"))
-                            .collect();
-                        day_map.insert(summary.date, (acc, models));
-                    }
-                } else {
-                    db.backfill_unlocked_costs().await?;
-                }
-
-                let live_start = year_start_date.max(today_date);
-                if live_start < next_year_date {
-                    let live_start_epoch = Local
-                        .with_ymd_and_hms(
-                            live_start.year(),
-                            live_start.month(),
-                            live_start.day(),
-                            0,
-                            0,
-                            0,
-                        )
-                        .single()
-                        .unwrap_or_else(Local::now)
-                        .timestamp();
-                    let records = db
-                        .get_records_between(
-                            live_start_epoch * 1000,
-                            year_end * 1000,
-                            settings.proxy.include_error_requests,
-                        )
-                        .await?;
-                    for record in records {
-                        let date = Local
-                            .timestamp_opt(record.timestamp / 1000, 0)
-                            .single()
-                            .unwrap_or_else(Local::now)
-                            .format("%Y-%m-%d")
-                            .to_string();
-                        let cost = record.estimated_cost;
-                        let entry = day_map.entry(date).or_default();
-                        entry.0.add_record(&record, cost);
-                        if !record.model.is_empty() {
-                            entry.1.insert(record.model);
-                        }
-                    }
-                }
-            }
-        }
+        let include_errors = settings.proxy.include_error_requests;
+        let (facts, _coverage) = crate::unified_usage::get_merged_request_facts(
+            &settings,
+            Some(year_start),
+            Some(year_end),
+            include_errors,
+        )
+        .await?;
+        collect_day_activity_from_facts(facts, &mut day_map, &mut partial_status_days);
     } else {
-        for record in local_request_records(&settings) {
+        for record in local_request_records(&settings)? {
             let event_epoch = record.timestamp;
             if event_epoch < year_start || event_epoch >= year_end {
                 continue;
@@ -1893,6 +1907,8 @@ pub async fn get_year_activity(
         let key = date.format("%Y-%m-%d").to_string();
         let (acc, models) = day_map.remove(&key).unwrap_or_default();
         let error_requests = acc.client_error_requests + acc.server_error_requests;
+        let status_available =
+            settings.data_source == "proxy" && !partial_status_days.contains(&key);
         days.push(DayActivity {
             date: key,
             request_count: acc.request_count,
@@ -1903,8 +1919,8 @@ pub async fn get_year_activity(
             cache_read_tokens: acc.cache_read_tokens,
             cost: acc.cost,
             model_count: models.len() as u64,
-            success_requests: (settings.data_source == "proxy").then_some(acc.success_requests),
-            error_requests: (settings.data_source == "proxy").then_some(error_requests),
+            success_requests: status_available.then_some(acc.success_requests),
+            error_requests: status_available.then_some(error_requests),
         });
         let Some(next_date) = date.succ_opt() else {
             break;
@@ -1925,84 +1941,26 @@ pub async fn get_year_activity(
 #[tauri::command]
 pub async fn get_window_rate_summary(
     window: String,
-    proxy_state: tauri::State<'_, ProxyState>,
+    _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<WindowRateSummary, String> {
-    let server_guard = proxy_state.server.read().await;
-
-    if let Some(server) = server_guard.as_ref() {
-        let collector = server.get_collector();
-        let db_summary = collector.get_window_rate_summary(&window).await;
-
-        // 获取 TTFT 统计
-        let cutoff_ms = crate::proxy::UsageCollector::calculate_window_cutoff_public(&window);
-        let ttft_stats = collector.get_ttft_stats(cutoff_ms).await;
-        let ttft_by_model = collector.get_model_ttft_stats(cutoff_ms).await;
-
-        drop(server_guard); // 提前释放锁
-
-        // 转换数据库类型为模型类型
-        let overall = OverallRateStats {
-            request_count: db_summary.overall.request_count as u64,
-            total_output_tokens: db_summary.overall.total_output_tokens as u64,
-            total_duration_ms: db_summary.overall.total_duration_ms as u64,
-            avg_tokens_per_second: db_summary.overall.avg_output_tokens_per_second,
-        };
-
-        let by_model: Vec<ModelRateStats> = db_summary
-            .by_model
-            .into_iter()
-            .map(|m| ModelRateStats {
-                model_name: m.model,
-                request_count: m.request_count as u64,
-                total_output_tokens: m.total_output_tokens as u64,
-                total_duration_ms: m.total_duration_ms as u64,
-                avg_tokens_per_second: m.avg_tokens_per_second,
-                min_tokens_per_second: m.min_tokens_per_second,
-                max_tokens_per_second: m.max_tokens_per_second,
-            })
-            .collect();
-
-        // 转换 TTFT 统计
-        let ttft = TtftStats {
-            request_count: ttft_stats.request_count as u64,
-            avg_ttft_ms: ttft_stats.avg_ttft_ms,
-            min_ttft_ms: ttft_stats.min_ttft_ms as u64,
-            max_ttft_ms: ttft_stats.max_ttft_ms as u64,
-        };
-
-        let ttft_by_model: Vec<ModelTtftStats> = ttft_by_model
-            .into_iter()
-            .map(|m| ModelTtftStats {
-                model_name: m.model,
-                request_count: m.request_count as u64,
-                avg_ttft_ms: m.avg_ttft_ms,
-                min_ttft_ms: m.min_ttft_ms as u64,
-                max_ttft_ms: m.max_ttft_ms as u64,
-            })
-            .collect();
-
-        Ok(WindowRateSummary {
-            window: db_summary.window,
-            overall,
-            by_model,
-            ttft,
-            ttft_by_model,
-        })
-    } else {
-        // 代理未运行，返回空统计
-        Ok(WindowRateSummary {
-            window,
-            overall: OverallRateStats {
-                request_count: 0,
-                total_output_tokens: 0,
-                total_duration_ms: 0,
-                avg_tokens_per_second: 0.0,
-            },
-            by_model: Vec::new(),
-            ttft: TtftStats::default(),
-            ttft_by_model: Vec::new(),
-        })
+    let settings = crate::commands::load_settings()?;
+    if settings.data_source != "proxy" {
+        return Ok(empty_window_rate_summary(window));
     }
+
+    let cutoff_ms = crate::proxy::UsageCollector::calculate_window_cutoff_public(&window);
+    let include_errors = settings.proxy.include_error_requests;
+    let (facts, coverage) = crate::unified_usage::get_merged_request_facts(
+        &settings,
+        Some(cutoff_ms / 1000),
+        None,
+        include_errors,
+    )
+    .await?;
+
+    Ok(build_window_rate_summary_from_facts(
+        window, facts, &coverage,
+    ))
 }
 
 /// 获取会话列表（按最后修改时间倒序，支持分页）
@@ -2016,49 +1974,19 @@ pub async fn get_sessions(
     settings: AppSettings,
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<Vec<SessionStats>, String> {
+    if settings.data_source == "proxy" {
+        return crate::unified_usage::get_merged_sessions(&settings, limit, offset).await;
+    }
+
     // 获取价格配置
     let pricings = effective_model_pricings(&settings);
     let match_mode = settings.model_pricing.match_mode.clone();
-    if settings.data_source == "proxy" {
-        let usage_filter = build_usage_query_filter(&settings);
-        if !is_usage_filter_all(&usage_filter) {
-            if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
-                let mut sessions = db
-                    .get_sessions_with_source(limit, offset, &usage_filter)
-                    .await?;
-                for session in sessions.iter_mut() {
-                    if let Some(meta) = crate::session::get_session_meta_by_id(&session.session_id)
-                    {
-                        session.cwd = meta.cwd;
-                        session.project_name = meta.project_name;
-                        session.topic = meta.topic;
-                        session.last_prompt = meta.last_prompt;
-                        session.session_name = meta.session_name;
-                    } else {
-                        // 无 JSONL 元数据的代理会话，使用首条请求时间和模型作为展示名
-                        let first = if session.first_request_time > 0 {
-                            chrono::DateTime::from_timestamp_millis(session.first_request_time)
-                                .map(|d| d.format("%m/%d %H:%M").to_string())
-                        } else {
-                            None
-                        };
-                        session.session_name =
-                            Some(first.unwrap_or_else(|| "Proxy Session".to_string()));
-                    }
-                }
-                return Ok(sessions);
-            }
-            return Ok(Vec::new());
-        }
-    }
 
     // 1. 从 JSONL 文件获取会话列表（主数据源）
     // 使用缓存版本避免频繁扫描文件系统
     let tool_filter = settings.client_tools.build_filter();
-    let all_meta: Vec<_> = crate::session::get_all_session_meta_cached()
-        .into_iter()
-        .filter(|meta| crate::session::matches_tool_filter(meta, &tool_filter))
-        .collect();
+    let db = crate::local_usage::ensure_local_usage_synced()?;
+    let all_meta = db.get_all_sessions(&tool_filter)?;
 
     // 2. 应用分页
     let meta_list: Vec<_> = all_meta
@@ -2089,7 +2017,7 @@ pub async fn get_sessions(
         .into_iter()
         .map(|meta| {
             let session_requests =
-                crate::session::get_local_request_records_by_session_cached(&meta.session_id);
+                local_request_records_by_session(db.as_ref(), &meta.session_id).unwrap_or_default();
             let jsonl_cost: f64 = session_requests
                 .iter()
                 .map(|record| estimate_cost_for_local_request(record, &pricings, &match_mode))
@@ -2169,46 +2097,27 @@ pub async fn get_session_detail(
     settings: AppSettings,
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<Option<SessionStats>, String> {
+    if settings.data_source == "proxy" {
+        return crate::unified_usage::get_merged_session_detail(&settings, &session_id).await;
+    }
+
     // 获取价格配置
     let pricings = effective_model_pricings(&settings);
     let match_mode = settings.model_pricing.match_mode.clone();
-    if settings.data_source == "proxy" {
-        let usage_filter = build_usage_query_filter(&settings);
-        if !is_usage_filter_all(&usage_filter) {
-            if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
-                let Some(mut stats) = db
-                    .get_session_detail_with_source(&session_id, &usage_filter)
-                    .await?
-                else {
-                    return Ok(None);
-                };
-
-                if let Some(meta) = crate::session::get_session_meta_by_id(&session_id) {
-                    stats.cwd = meta.cwd;
-                    stats.project_name = meta.project_name;
-                    stats.topic = meta.topic;
-                    stats.last_prompt = meta.last_prompt;
-                    stats.session_name = meta.session_name;
-                }
-
-                return Ok(Some(stats));
-            }
-            return Ok(None);
-        }
-    }
 
     // 1. 从 JSONL 获取会话元信息
-    let meta = match crate::session::get_session_meta_by_id(&session_id) {
+    let db = crate::local_usage::ensure_local_usage_synced()?;
+    let meta = match local_session_meta_by_id(db.as_ref(), &session_id)? {
         Some(m) => m,
         None => return Ok(None),
     };
 
     // 2. 计算基于 JSONL 的费用
-    let jsonl_cost: f64 =
-        crate::session::get_local_request_records_by_session_cached(&meta.session_id)
-            .iter()
-            .map(|record| estimate_cost_for_local_request(record, &pricings, &match_mode))
-            .sum();
+    let session_requests = local_request_records_by_session(db.as_ref(), &meta.session_id)?;
+    let jsonl_cost: f64 = session_requests
+        .iter()
+        .map(|record| estimate_cost_for_local_request(record, &pricings, &match_mode))
+        .sum();
 
     // 3. 仅在代理模式下从 session_stats 表获取性能指标
     let proxy_stats: Option<SessionStats> = if settings.data_source == "proxy" {
@@ -2295,33 +2204,42 @@ pub async fn get_project_stats(
     settings: AppSettings,
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<Vec<crate::proxy::ProjectStats>, String> {
+    if settings.data_source == "proxy" {
+        return crate::unified_usage::get_merged_project_stats(&settings).await;
+    }
+
     // 获取价格配置
     let pricings = effective_model_pricings(&settings);
     let match_mode = settings.model_pricing.match_mode.clone();
+    let db = crate::local_usage::ensure_local_usage_synced()?;
 
     // 1. 从 JSONL 文件获取所有会话元信息
     // 使用缓存版本避免频繁扫描文件系统
-    let all_meta = crate::session::get_all_session_meta_cached();
+    let tool_filter = settings.client_tools.build_filter();
+    let all_meta = db.get_all_sessions(&tool_filter)?;
+    let all_requests = db.get_all_request_records(&tool_filter)?;
+    let mut cost_by_session: HashMap<String, f64> = HashMap::new();
+    for record in &all_requests {
+        let cost = estimate_cost_for_local_request(record, &pricings, &match_mode);
+        *cost_by_session
+            .entry(record.session_id.clone())
+            .or_insert(0.0) += cost;
+    }
 
     // 2. 按项目名称聚合
     let mut project_map: std::collections::HashMap<String, crate::proxy::ProjectStats> =
         std::collections::HashMap::new();
 
-    let tool_filter = settings.client_tools.build_filter();
     for meta in all_meta {
-        if !crate::session::matches_tool_filter(&meta, &tool_filter) {
-            continue;
-        }
         let project_name = meta
             .project_name
             .clone()
             .unwrap_or_else(|| "未命名项目".to_string());
 
-        let cost: f64 =
-            crate::session::get_local_request_records_by_session_cached(&meta.session_id)
-                .iter()
-                .map(|record| estimate_cost_for_local_request(record, &pricings, &match_mode))
-                .sum();
+        let cost = cost_by_session
+            .get(&meta.session_id)
+            .copied()
+            .unwrap_or(0.0);
 
         let entry = project_map
             .entry(project_name)
