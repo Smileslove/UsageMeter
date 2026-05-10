@@ -233,10 +233,9 @@ fn merged_stat_capability_from_facts(
 ) -> StatisticsCapability {
     let has_status_codes = !coverage.has_partial_status_coverage
         && facts.iter().any(|fact| fact.status_code.is_some());
-    let has_performance = !coverage.has_partial_performance_coverage
-        && facts
-            .iter()
-            .any(|fact| fact.output_tokens_per_second.is_some() || fact.ttft_ms.is_some());
+    let has_performance = facts
+        .iter()
+        .any(|fact| fact.output_tokens_per_second.is_some() || fact.ttft_ms.is_some());
 
     StatisticsCapability {
         has_basic_usage: true,
@@ -502,12 +501,8 @@ fn empty_window_rate_summary(window: String) -> WindowRateSummary {
 fn build_window_rate_summary_from_facts(
     window: String,
     facts: Vec<MergedRequestFact>,
-    coverage: &MergedCoverage,
+    _coverage: &MergedCoverage,
 ) -> WindowRateSummary {
-    if coverage.has_partial_performance_coverage {
-        return empty_window_rate_summary(window);
-    }
-
     #[derive(Default)]
     struct PerfAccumulator {
         request_count: u64,

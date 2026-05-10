@@ -336,7 +336,6 @@ pub async fn get_merged_sessions(
         let mut success_requests = 0_u64;
         let mut error_requests = 0_u64;
         let mut has_partial_status_coverage = false;
-        let mut has_partial_performance_coverage = false;
 
         for fact in &session_facts {
             if !fact.model.trim().is_empty() {
@@ -352,7 +351,6 @@ pub async fn get_merged_sessions(
 
             if matches!(fact.coverage_origin, CoverageOrigin::LocalOnly) {
                 has_partial_status_coverage = true;
-                has_partial_performance_coverage = true;
             }
 
             if let Some(duration_ms) = fact.duration_ms {
@@ -393,14 +391,8 @@ pub async fn get_merged_sessions(
             total_output_tokens,
             total_cache_create_tokens,
             total_cache_read_tokens,
-            total_duration_ms: if has_partial_performance_coverage {
-                0
-            } else {
-                total_duration_ms
-            },
-            avg_output_tokens_per_second: if has_partial_performance_coverage {
-                0.0
-            } else if rate_count > 0 {
+            total_duration_ms,
+            avg_output_tokens_per_second: if rate_count > 0 {
                 rate_sum / rate_count as f64
             } else {
                 0.0
@@ -412,9 +404,7 @@ pub async fn get_merged_sessions(
             },
             last_request_time,
             models: models.into_iter().collect(),
-            avg_ttft_ms: if has_partial_performance_coverage {
-                0.0
-            } else if ttft_count > 0 {
+            avg_ttft_ms: if ttft_count > 0 {
                 ttft_sum / ttft_count as f64
             } else {
                 0.0
