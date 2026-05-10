@@ -13,13 +13,21 @@ const props = defineProps<{
   totals: StatisticsTotals | null
 }>()
 
-type DetailMetric = 'requests' | 'tokens' | 'cache'
+// 详细模式状态 - 统一控制所有卡片
+const isDetailMode = ref(false)  // 详细模式（千位分隔符）
+const showUsdCost = ref(false)   // 费用显示美元
 
-const detailMode = ref<Record<DetailMetric, boolean>>({
-  requests: false,
-  tokens: false,
-  cache: false
-})
+// 统一切换所有状态：详细模式 + 费用币种
+function toggleAllModes() {
+  isDetailMode.value = !isDetailMode.value
+  showUsdCost.value = !showUsdCost.value
+}
+
+function toggleAllModesByKey(event: KeyboardEvent) {
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  event.preventDefault()
+  toggleAllModes()
+}
 
 function value(key: 'requests' | 'tokens' | 'input' | 'output' | 'cost' | 'cacheCreate' | 'cacheRead'): string {
   const totals = props.totals
@@ -39,28 +47,9 @@ function countValue(value: number | null | undefined): string {
   return formatRequestCount(value ?? 0)
 }
 
-function splitCost(key: 'input' | 'output'): string {
-  const totals = props.totals
-  if (!totals || totals.cost <= 0) return formatCost(0, store.settings.currency)
-  const total = totals.inputTokens + totals.outputTokens
-  if (total <= 0) return formatCost(0, store.settings.currency)
-  const tokens = key === 'input' ? totals.inputTokens : totals.outputTokens
-  return formatCost(totals.cost * (tokens / total), store.settings.currency)
-}
-
 function cacheValue(value: number | null | undefined): string {
   if (!value || value <= 0) return '0'
   return formatTokenValue(value)
-}
-
-function toggleDetail(metric: DetailMetric) {
-  detailMode.value[metric] = !detailMode.value[metric]
-}
-
-function toggleDetailByKey(event: KeyboardEvent, metric: DetailMetric) {
-  if (event.key !== 'Enter' && event.key !== ' ') return
-  event.preventDefault()
-  toggleDetail(metric)
 }
 
 function detailedNumber(value: number | null | undefined): string {
@@ -69,7 +58,7 @@ function detailedNumber(value: number | null | undefined): string {
 
 function requestDisplay(key: 'total' | 'success' | 'error'): string {
   const totals = props.totals
-  if (detailMode.value.requests) {
+  if (isDetailMode.value) {
     if (key === 'total') return detailedNumber(totals?.requestCount)
     if (key === 'success') return detailedNumber(totals?.successRequests)
     return detailedNumber(totals?.errorRequests)
@@ -81,7 +70,7 @@ function requestDisplay(key: 'total' | 'success' | 'error'): string {
 
 function tokenDisplay(key: 'total' | 'input' | 'output'): string {
   const totals = props.totals
-  if (detailMode.value.tokens) {
+  if (isDetailMode.value) {
     if (key === 'total') return detailedNumber(totals?.totalTokens)
     if (key === 'input') return detailedNumber((totals?.inputTokens ?? 0) + (totals?.cacheReadTokens ?? 0))
     return detailedNumber(totals?.outputTokens)
@@ -93,7 +82,7 @@ function tokenDisplay(key: 'total' | 'input' | 'output'): string {
 
 function cacheDisplay(key: 'total' | 'create' | 'read'): string {
   const totals = props.totals
-  if (detailMode.value.cache) {
+  if (isDetailMode.value) {
     if (key === 'total') return detailedNumber((totals?.cacheCreateTokens ?? 0) + (totals?.cacheReadTokens ?? 0))
     if (key === 'create') return detailedNumber(totals?.cacheCreateTokens)
     return detailedNumber(totals?.cacheReadTokens)
@@ -101,6 +90,35 @@ function cacheDisplay(key: 'total' | 'create' | 'read'): string {
   if (key === 'total') return cacheValue((totals?.cacheCreateTokens ?? 0) + (totals?.cacheReadTokens ?? 0))
   if (key === 'create') return value('cacheCreate')
   return value('cacheRead')
+}
+
+// 费用显示 - 根据状态选择币种
+function costDisplay(): string {
+  const totals = props.totals
+  const cost = totals?.cost ?? 0
+  if (showUsdCost.value) {
+    return `$${cost.toFixed(4)}`
+  }
+  return formatCost(cost, store.settings.currency)
+}
+
+// 按输入/输出比例拆分费用
+function splitCost(key: 'input' | 'output'): string {
+  const totals = props.totals
+  if (!totals || totals.cost <= 0) {
+    return showUsdCost.value ? '$0.0000' : formatCost(0, store.settings.currency)
+  }
+  const total = totals.inputTokens + totals.outputTokens
+  if (total <= 0) {
+    return showUsdCost.value ? '$0.0000' : formatCost(0, store.settings.currency)
+  }
+  const tokens = key === 'input' ? totals.inputTokens : totals.outputTokens
+  const splitValue = totals.cost * (tokens / total)
+
+  if (showUsdCost.value) {
+    return `$${splitValue.toFixed(4)}`
+  }
+  return formatCost(splitValue, store.settings.currency)
 }
 
 function metricValueSizeClass(text: string): string {
@@ -133,9 +151,9 @@ function detailPairSizeClass(first: string, second: string): string {
       class="metric-card metric-card-toggle metric-card-emerald group !bg-white border-emerald-200/90 dark:!bg-[#1C1C1E] dark:border-emerald-500/15"
       role="button"
       tabindex="0"
-      :aria-pressed="detailMode.requests"
-      @click="toggleDetail('requests')"
-      @keydown="toggleDetailByKey($event, 'requests')"
+      :aria-pressed="isDetailMode"
+      @click="toggleAllModes()"
+      @keydown="toggleAllModesByKey($event)"
     >
       <div class="flex h-full items-stretch">
         <div class="metric-rail text-emerald-600 dark:text-emerald-300">
@@ -170,9 +188,9 @@ function detailPairSizeClass(first: string, second: string): string {
       class="metric-card metric-card-toggle metric-card-sky group !bg-white border-sky-200/90 dark:!bg-[#1C1C1E] dark:border-sky-500/15"
       role="button"
       tabindex="0"
-      :aria-pressed="detailMode.tokens"
-      @click="toggleDetail('tokens')"
-      @keydown="toggleDetailByKey($event, 'tokens')"
+      :aria-pressed="isDetailMode"
+      @click="toggleAllModes()"
+      @keydown="toggleAllModesByKey($event)"
     >
       <div class="flex h-full items-stretch">
         <div class="metric-rail text-sky-600 dark:text-sky-300">
@@ -203,7 +221,14 @@ function detailPairSizeClass(first: string, second: string): string {
     </div>
 
     <!-- 消耗金额 -->
-    <div class="metric-card metric-card-amber group !bg-white border-amber-200/90 dark:!bg-[#1C1C1E] dark:border-amber-500/15">
+    <div
+      class="metric-card metric-card-toggle metric-card-amber group !bg-white border-amber-200/90 dark:!bg-[#1C1C1E] dark:border-amber-500/15"
+      role="button"
+      tabindex="0"
+      :aria-pressed="showUsdCost"
+      @click="toggleAllModes()"
+      @keydown="toggleAllModesByKey($event)"
+    >
       <div class="flex h-full items-stretch">
         <div class="metric-rail text-amber-600 dark:text-amber-300">
           <div class="metric-rail-icon text-amber-500 dark:text-amber-300">
@@ -214,7 +239,7 @@ function detailPairSizeClass(first: string, second: string): string {
         <div class="metric-body">
           <div class="metric-total">
             <p class="metric-label">{{ t(locale, 'statistics.cost') }}</p>
-            <p :class="['metric-value metric-value-cost dark:!text-gray-50', metricValueSizeClass(value('cost'))]">{{ value('cost') }}</p>
+            <p :class="['metric-value metric-value-cost dark:!text-gray-50', metricValueSizeClass(costDisplay())]">{{ costDisplay() }}</p>
           </div>
           <div class="metric-details">
             <div class="metric-detail-row text-amber-600 dark:text-amber-300">
@@ -237,9 +262,9 @@ function detailPairSizeClass(first: string, second: string): string {
       class="metric-card metric-card-toggle metric-card-violet group !bg-white border-violet-200/90 dark:!bg-[#1C1C1E] dark:border-violet-500/15"
       role="button"
       tabindex="0"
-      :aria-pressed="detailMode.cache"
-      @click="toggleDetail('cache')"
-      @keydown="toggleDetailByKey($event, 'cache')"
+      :aria-pressed="isDetailMode"
+      @click="toggleAllModes()"
+      @keydown="toggleAllModesByKey($event)"
     >
       <div class="flex h-full items-stretch">
         <div class="metric-rail text-violet-600 dark:text-violet-300">

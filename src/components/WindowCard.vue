@@ -9,7 +9,6 @@ import { AlertTriangle, AlertCircle, ShieldCheck } from 'lucide-vue-next'
 
 interface Props {
   window: WindowUsage
-  displayMode: 'auto' | 'exact'
 }
 
 defineProps<Props>()

@@ -65,23 +65,20 @@ const formatRate = (rate: number): string => {
   return rate.toFixed(2)
 }
 
-// 详细模式状态
-type DetailMetric = 'requests' | 'tokens' | 'cache'
+// 详细模式状态 - 统一控制所有卡片
+const isDetailMode = ref(false)  // 详细模式（千位分隔符）
+const showUsdCost = ref(false)   // 费用显示美元
 
-const detailMode = ref<Record<DetailMetric, boolean>>({
-  requests: false,
-  tokens: false,
-  cache: false
-})
-
-function toggleDetail(metric: DetailMetric) {
-  detailMode.value[metric] = !detailMode.value[metric]
+// 统一切换所有状态：详细模式 + 费用币种
+function toggleAllModes() {
+  isDetailMode.value = !isDetailMode.value
+  showUsdCost.value = !showUsdCost.value
 }
 
-function toggleDetailByKey(event: KeyboardEvent, metric: DetailMetric) {
+function toggleAllModesByKey(event: KeyboardEvent) {
   if (event.key !== 'Enter' && event.key !== ' ') return
   event.preventDefault()
-  toggleDetail(metric)
+  toggleAllModes()
 }
 
 // 详细数字格式化（使用千位分隔符显示精确数字）
@@ -93,7 +90,7 @@ function detailedNumber(value: number | null | undefined): string {
 function requestDisplay(): string {
   const data = summaryWindowData.value
   if (!data) return '0'
-  if (detailMode.value.requests) {
+  if (isDetailMode.value) {
     return detailedNumber(data.requestUsed)
   }
   return formatRequestCount(data.requestUsed)
@@ -103,7 +100,7 @@ function requestDisplay(): string {
 function tokenDisplay(key: 'total' | 'input' | 'output'): string {
   const data = summaryWindowData.value
   if (!data) return key === 'total' ? '0' : '0'
-  if (detailMode.value.tokens) {
+  if (isDetailMode.value) {
     if (key === 'total') return detailedNumber(data.tokenUsed)
     if (key === 'input') return detailedNumber(totalInputTokens.value)
     return detailedNumber(data.outputTokens)
@@ -120,7 +117,7 @@ function cacheDisplay(key: 'total' | 'create' | 'read'): string {
   if (!data) return '0'
   const create = data.cacheCreateTokens ?? 0
   const read = data.cacheReadTokens ?? 0
-  if (detailMode.value.cache) {
+  if (isDetailMode.value) {
     if (key === 'total') return detailedNumber(create + read)
     if (key === 'create') return detailedNumber(create)
     return detailedNumber(read)
@@ -130,23 +127,32 @@ function cacheDisplay(key: 'total' | 'create' | 'read'): string {
   return formatTokenValue(read)
 }
 
-// 费用显示
+// 费用显示 - 根据状态选择币种
 const costDisplay = computed(() => {
-  return formatCost(summaryWindowData.value?.cost ?? 0, store.settings.currency)
+  const cost = summaryWindowData.value?.cost ?? 0
+  if (showUsdCost.value) {
+    return `$${cost.toFixed(4)}`
+  }
+  return formatCost(cost, store.settings.currency)
 })
 
 // 按输入/输出比例拆分费用
 function splitCost(key: 'input' | 'output'): string {
   const data = summaryWindowData.value
   if (!data || !data.cost || data.cost <= 0) {
-    return formatCost(0, store.settings.currency)
+    return showUsdCost.value ? '$0.0000' : formatCost(0, store.settings.currency)
   }
   const total = data.inputTokens + data.outputTokens
   if (total <= 0) {
-    return formatCost(0, store.settings.currency)
+    return showUsdCost.value ? '$0.0000' : formatCost(0, store.settings.currency)
   }
   const tokens = key === 'input' ? data.inputTokens : data.outputTokens
-  return formatCost(data.cost * (tokens / total), store.settings.currency)
+  const splitValue = data.cost * (tokens / total)
+
+  if (showUsdCost.value) {
+    return `$${splitValue.toFixed(4)}`
+  }
+  return formatCost(splitValue, store.settings.currency)
 }
 
 // 根据文本长度动态调整数值大小
@@ -212,9 +218,9 @@ onMounted(() => {
         class="metric-card metric-card-toggle metric-card-emerald group !bg-white border-emerald-200/90 dark:!bg-[#1C1C1E] dark:border-emerald-500/15"
         role="button"
         tabindex="0"
-        :aria-pressed="detailMode.requests"
-        @click="toggleDetail('requests')"
-        @keydown="toggleDetailByKey($event, 'requests')"
+        :aria-pressed="isDetailMode"
+        @click="toggleAllModes()"
+        @keydown="toggleAllModesByKey($event)"
       >
         <div class="flex h-full items-stretch">
           <div class="metric-rail text-emerald-600 dark:text-emerald-300">
@@ -250,9 +256,9 @@ onMounted(() => {
         class="metric-card metric-card-toggle metric-card-sky group !bg-white border-sky-200/90 dark:!bg-[#1C1C1E] dark:border-sky-500/15"
         role="button"
         tabindex="0"
-        :aria-pressed="detailMode.tokens"
-        @click="toggleDetail('tokens')"
-        @keydown="toggleDetailByKey($event, 'tokens')"
+        :aria-pressed="isDetailMode"
+        @click="toggleAllModes()"
+        @keydown="toggleAllModesByKey($event)"
       >
         <div class="flex h-full items-stretch">
           <div class="metric-rail text-sky-600 dark:text-sky-300">
@@ -283,7 +289,14 @@ onMounted(() => {
       </div>
 
       <!-- 消耗金额 -->
-      <div class="metric-card metric-card-amber group !bg-white border-amber-200/90 dark:!bg-[#1C1C1E] dark:border-amber-500/15">
+      <div
+        class="metric-card metric-card-toggle metric-card-amber group !bg-white border-amber-200/90 dark:!bg-[#1C1C1E] dark:border-amber-500/15"
+        role="button"
+        tabindex="0"
+        :aria-pressed="showUsdCost"
+        @click="toggleAllModes()"
+        @keydown="toggleAllModesByKey($event)"
+      >
         <div class="flex h-full items-stretch">
           <div class="metric-rail text-amber-600 dark:text-amber-300">
             <div class="metric-rail-icon text-amber-500 dark:text-amber-300">
@@ -317,9 +330,9 @@ onMounted(() => {
         class="metric-card metric-card-toggle metric-card-violet group !bg-white border-violet-200/90 dark:!bg-[#1C1C1E] dark:border-violet-500/15"
         role="button"
         tabindex="0"
-        :aria-pressed="detailMode.cache"
-        @click="toggleDetail('cache')"
-        @keydown="toggleDetailByKey($event, 'cache')"
+        :aria-pressed="isDetailMode"
+        @click="toggleAllModes()"
+        @keydown="toggleAllModesByKey($event)"
       >
         <div class="flex h-full items-stretch">
           <div class="metric-rail text-violet-600 dark:text-violet-300">
