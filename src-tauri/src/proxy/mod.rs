@@ -18,8 +18,6 @@ pub use codex_config::{
 };
 pub use collector::UsageCollector;
 pub use config_manager::ClaudeConfigManager;
-pub use database::{
-    ModelDistribution, PreviewPricingApplyResult, PricingMatchFilter, ProxyDatabase,
-};
+pub use database::{PreviewPricingApplyResult, PricingMatchFilter, ProxyDatabase};
 pub use server::ProxyServer;
 pub use types::*;
