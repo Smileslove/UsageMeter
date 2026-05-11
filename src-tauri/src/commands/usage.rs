@@ -949,7 +949,6 @@ fn metric_value_for_percent(acc: &BreakdownAccumulator, metric: BreakdownPercent
 
 fn overview_items_from_map(
     map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)>,
-    limit: usize,
 ) -> Vec<OverviewBreakdownItem> {
     let (percent_metric, denominator) = metric_for_percent(&map);
     let mut items: Vec<OverviewBreakdownItem> = map
@@ -991,7 +990,6 @@ fn overview_items_from_map(
             .then_with(|| b.total_tokens.cmp(&a.total_tokens))
             .then_with(|| b.request_count.cmp(&a.request_count))
     });
-    items.truncate(limit);
     items
 }
 
@@ -1153,9 +1151,9 @@ pub async fn get_overview_breakdown(
     Ok(OverviewBreakdown {
         window,
         generated_at_epoch: now,
-        source_ranking: overview_items_from_map(source_map, 4),
-        tool_ranking: overview_items_from_map(tool_map, 4),
-        model_ranking: overview_items_from_map(model_map, 5),
+        source_ranking: overview_items_from_map(source_map),
+        tool_ranking: overview_items_from_map(tool_map),
+        model_ranking: overview_items_from_map(model_map),
         capability,
     })
 }

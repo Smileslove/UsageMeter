@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { Activity, Boxes, CircleDollarSign, HelpCircle, Layers3, LayoutGrid } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
@@ -10,13 +10,39 @@ import type { OverviewBreakdownItem } from '../../types'
 
 const store = useMonitorStore()
 
+type BreakdownSortMetric = 'cost' | 'requests' | 'tokens'
+type RankMetaTone = 'requests' | 'tokens' | 'cost' | 'rate' | 'error' | 'muted'
+type RankMetaItem = {
+  label: string
+  value: string
+  tone: RankMetaTone
+}
+
 const breakdown = computed(() => store.overviewBreakdown)
 const locale = computed(() => store.settings.locale)
 const hasCost = computed(() => breakdown.value?.capability.hasCost ?? false)
+const selectedSortMetric = ref<BreakdownSortMetric>('cost')
 
-const sourceItems = computed(() => breakdown.value?.sourceRanking ?? [])
-const toolItems = computed(() => breakdown.value?.toolRanking ?? [])
-const modelItems = computed(() => breakdown.value?.modelRanking ?? [])
+const sortOptions = computed<Array<{ value: BreakdownSortMetric; label: string }>>(() => {
+  const options: Array<{ value: BreakdownSortMetric; label: string }> = []
+  if (hasCost.value) {
+    options.push({ value: 'cost', label: t(locale.value, 'overview.sortCost') })
+  }
+  options.push(
+    { value: 'requests', label: t(locale.value, 'overview.sortRequests') },
+    { value: 'tokens', label: t(locale.value, 'overview.sortTokens') }
+  )
+  return options
+})
+
+const effectiveSortMetric = computed<BreakdownSortMetric>(() => {
+  if (selectedSortMetric.value === 'cost' && !hasCost.value) return 'tokens'
+  return selectedSortMetric.value
+})
+
+const sourceItems = computed(() => sortItems(breakdown.value?.sourceRanking ?? []))
+const toolItems = computed(() => sortItems(breakdown.value?.toolRanking ?? []))
+const modelItems = computed(() => sortItems(breakdown.value?.modelRanking ?? []))
 
 const showSourceSection = computed(() => store.isProxyMode && sourceItems.value.length > 0)
 const showSourceHint = computed(() => !store.isProxyMode)
@@ -45,9 +71,28 @@ onMounted(() => {
 })
 
 function primaryValue(item: OverviewBreakdownItem): string {
-  if (hasCost.value) return formatCost(item.cost, store.settings.currency)
-  if (item.totalTokens > 0) return formatTokenValue(item.totalTokens)
-  return formatRequestCount(item.requestCount)
+  if (effectiveSortMetric.value === 'cost') return formatCost(item.cost, store.settings.currency)
+  if (effectiveSortMetric.value === 'requests') return formatRequestCount(item.requestCount)
+  return formatTokenValue(item.totalTokens)
+}
+
+function metricValue(item: OverviewBreakdownItem, metric: BreakdownSortMetric): number {
+  if (metric === 'cost') return item.cost
+  if (metric === 'requests') return item.requestCount
+  return item.totalTokens
+}
+
+function sortItems(items: OverviewBreakdownItem[]): OverviewBreakdownItem[] {
+  const metric = effectiveSortMetric.value
+  return [...items].sort((a, b) => {
+    const primary = metricValue(b, metric) - metricValue(a, metric)
+    if (primary !== 0) return primary
+
+    return b.cost - a.cost
+      || b.totalTokens - a.totalTokens
+      || b.requestCount - a.requestCount
+      || displayLabel(a).localeCompare(displayLabel(b))
+  })
 }
 
 function displayLabel(item: OverviewBreakdownItem): string {
@@ -60,25 +105,61 @@ function toolIcon(item: OverviewBreakdownItem): string | null {
   return item.icon || TOOL_LOBE_ICONS[item.id] || null
 }
 
-function secondaryValue(item: OverviewBreakdownItem): string {
-  return `${formatRequestCount(item.requestCount)} ${t(locale.value, 'overview.requestsShort')}`
-}
-
-function tokenValue(item: OverviewBreakdownItem): string {
-  return `${formatTokenValue(item.totalTokens)} ${t(locale.value, 'overview.tokensShort')}`
-}
-
-function statusValue(item: OverviewBreakdownItem): string {
-  const errors = item.errorRequests ?? 0
-  if (errors > 0) return `${formatRequestCount(errors)} ${t(locale.value, 'overview.errorsShort')}`
-  if (item.avgTokensPerSecond && item.avgTokensPerSecond > 0) {
-    return `${item.avgTokensPerSecond.toFixed(1)} t/s`
+function requestMeta(item: OverviewBreakdownItem): RankMetaItem {
+  return {
+    label: t(locale.value, 'overview.requestsShort'),
+    value: formatRequestCount(item.requestCount),
+    tone: 'requests'
   }
-  return ''
 }
 
-function barWidth(item: OverviewBreakdownItem): string {
-  return `${Math.max(3, Math.min(100, item.percent || 0))}%`
+function tokenMeta(item: OverviewBreakdownItem): RankMetaItem {
+  return {
+    label: t(locale.value, 'overview.tokensShort'),
+    value: formatTokenValue(item.totalTokens),
+    tone: 'tokens'
+  }
+}
+
+function costMeta(item: OverviewBreakdownItem): RankMetaItem {
+  return {
+    label: t(locale.value, 'overview.sortCost'),
+    value: hasCost.value ? formatCost(item.cost, store.settings.currency) : '-',
+    tone: hasCost.value ? 'cost' : 'muted'
+  }
+}
+
+function statusMeta(item: OverviewBreakdownItem): RankMetaItem {
+  const errors = item.errorRequests ?? 0
+  if (errors > 0) {
+    return {
+      label: t(locale.value, 'overview.errorsShort'),
+      value: formatRequestCount(errors),
+      tone: 'error'
+    }
+  }
+  if (item.avgTokensPerSecond && item.avgTokensPerSecond > 0) {
+    return {
+      label: t(locale.value, 'overview.avgRateShort'),
+      value: `${item.avgTokensPerSecond.toFixed(1)} t/s`,
+      tone: 'rate'
+    }
+  }
+  return {
+    label: t(locale.value, 'overview.avgRateShort'),
+    value: '-',
+    tone: 'muted'
+  }
+}
+
+function metaItems(item: OverviewBreakdownItem): RankMetaItem[] {
+  const items: RankMetaItem[] = [
+    requestMeta(item),
+    tokenMeta(item),
+    costMeta(item),
+    statusMeta(item)
+  ]
+  return items.filter((meta) => meta.tone !== effectiveSortMetric.value)
 }
 
 function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdownItem[] {
@@ -95,9 +176,17 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
           {{ t(locale, 'overview.attribution') }}
         </h3>
       </div>
-      <span class="text-[10px] text-gray-400 dark:text-gray-500">
-        {{ hasCost ? t(locale, 'overview.costPrimary') : t(locale, 'overview.tokenPrimary') }}
-      </span>
+      <div class="sort-control" :aria-label="t(locale, 'overview.sortBy')">
+        <button
+          v-for="option in sortOptions"
+          :key="option.value"
+          type="button"
+          :class="{ active: effectiveSortMetric === option.value }"
+          @click="selectedSortMetric = option.value"
+        >
+          {{ option.label }}
+        </button>
+      </div>
     </div>
 
     <div v-if="store.overviewBreakdownLoading && !breakdown" class="overview-empty">
@@ -132,10 +221,15 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
               <span class="rank-value">{{ primaryValue(item) }}</span>
             </div>
             <div class="rank-meta">
-              <div class="rank-bar"><span :style="{ width: barWidth(item), backgroundColor: item.color || '#38BDF8' }"></span></div>
-              <span>{{ secondaryValue(item) }}</span>
-              <span>{{ tokenValue(item) }}</span>
-              <span v-if="statusValue(item)">{{ statusValue(item) }}</span>
+              <span
+                v-for="meta in metaItems(item)"
+                :key="`${item.id}-${meta.tone}`"
+                class="rank-meta-pill"
+                :class="`rank-meta-pill-${meta.tone}`"
+              >
+                <span class="rank-meta-label">{{ meta.label }}</span>
+                <span class="rank-meta-value">{{ meta.value }}</span>
+              </span>
             </div>
           </div>
         </div>
@@ -169,10 +263,15 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
               <span class="rank-value">{{ primaryValue(item) }}</span>
             </div>
             <div class="rank-meta">
-              <div class="rank-bar"><span :style="{ width: barWidth(item) }"></span></div>
-              <span>{{ secondaryValue(item) }}</span>
-              <span>{{ tokenValue(item) }}</span>
-              <span v-if="statusValue(item)">{{ statusValue(item) }}</span>
+              <span
+                v-for="meta in metaItems(item)"
+                :key="`${item.id}-${meta.tone}`"
+                class="rank-meta-pill"
+                :class="`rank-meta-pill-${meta.tone}`"
+              >
+                <span class="rank-meta-label">{{ meta.label }}</span>
+                <span class="rank-meta-value">{{ meta.value }}</span>
+              </span>
             </div>
           </div>
         </div>
@@ -198,10 +297,15 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
               <span class="rank-value">{{ primaryValue(item) }}</span>
             </div>
             <div class="rank-meta">
-              <div class="rank-bar"><span :style="{ width: barWidth(item) }"></span></div>
-              <span>{{ secondaryValue(item) }}</span>
-              <span>{{ tokenValue(item) }}</span>
-              <span v-if="statusValue(item)">{{ statusValue(item) }}</span>
+              <span
+                v-for="meta in metaItems(item)"
+                :key="`${item.id}-${meta.tone}`"
+                class="rank-meta-pill"
+                :class="`rank-meta-pill-${meta.tone}`"
+              >
+                <span class="rank-meta-label">{{ meta.label }}</span>
+                <span class="rank-meta-value">{{ meta.value }}</span>
+              </span>
             </div>
           </div>
         </div>
@@ -225,6 +329,35 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   text-align: center;
   font-size: 12px;
   color: rgb(156 163 175);
+}
+
+.sort-control {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.15rem;
+  border: 1px solid rgb(243 244 246);
+  border-radius: 999px;
+  background: rgb(255 255 255);
+  padding: 0.12rem;
+}
+
+.sort-control button {
+  min-width: 2.1rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  padding: 0.16rem 0.42rem;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  color: rgb(156 163 175);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.sort-control button.active {
+  background: rgb(17 24 39);
+  color: rgb(255 255 255);
 }
 
 .rank-card {
@@ -303,30 +436,64 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
 
 .rank-meta {
   margin-top: 0.18rem;
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   min-width: 0;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0;
   overflow: hidden;
-  font-size: 10px;
-  color: rgb(156 163 175);
+}
+
+.rank-meta-pill {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 0.18rem;
+  overflow: hidden;
+  border-left: 1px solid rgb(243 244 246);
+  padding: 0 0.38rem;
+  text-align: left;
+}
+
+.rank-meta-pill:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+
+.rank-meta-pill:last-child {
+  padding-right: 0;
+}
+
+.rank-meta-label,
+.rank-meta-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.rank-bar {
-  height: 0.25rem;
-  width: 2.6rem;
-  flex-shrink: 0;
-  overflow: hidden;
-  border-radius: 999px;
-  background: rgb(243 244 246);
+.rank-meta-label {
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1;
+  color: rgb(156 163 175);
 }
 
-.rank-bar span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: rgb(16 185 129);
+.rank-meta-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  color: rgb(75 85 99);
+}
+
+.rank-meta-pill-error .rank-meta-label,
+.rank-meta-pill-error .rank-meta-value {
+  color: rgb(194 65 12);
+}
+
+.rank-meta-pill-muted .rank-meta-value {
+  color: rgb(209 213 219);
 }
 
 .rank-hint {
@@ -359,8 +526,35 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   background: rgb(38 38 38);
 }
 
-:global(html.dark) .rank-bar {
-  background: rgb(64 64 64);
+:global(html.dark) .rank-meta-pill {
+  border-color: rgb(38 38 38);
+}
+
+:global(html.dark) .rank-meta-label {
+  color: rgb(115 115 115);
+}
+
+:global(html.dark) .rank-meta-value {
+  color: rgb(212 212 212);
+}
+
+:global(html.dark) .rank-meta-pill-error .rank-meta-label,
+:global(html.dark) .rank-meta-pill-error .rank-meta-value {
+  color: rgb(253 186 116);
+}
+
+:global(html.dark) .rank-meta-pill-muted .rank-meta-value {
+  color: rgb(82 82 82);
+}
+
+:global(html.dark) .sort-control {
+  border-color: rgb(38 38 38);
+  background: rgb(28 28 30);
+}
+
+:global(html.dark) .sort-control button.active {
+  background: rgb(243 244 246);
+  color: rgb(17 24 39);
 }
 
 </style>
