@@ -176,12 +176,16 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
           {{ t(locale, 'overview.attribution') }}
         </h3>
       </div>
-      <div class="sort-control" :aria-label="t(locale, 'overview.sortBy')">
+      <div class="sort-control dark:!border-white/10 dark:!bg-white/[0.06]" :aria-label="t(locale, 'overview.sortBy')">
         <button
           v-for="option in sortOptions"
           :key="option.value"
           type="button"
-          :class="{ active: effectiveSortMetric === option.value }"
+          :class="[
+            effectiveSortMetric === option.value
+              ? 'active dark:!bg-gray-100 dark:!text-gray-950'
+              : 'dark:!text-gray-400 dark:hover:!text-gray-200'
+          ]"
           @click="selectedSortMetric = option.value"
         >
           {{ option.label }}
@@ -189,16 +193,16 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
       </div>
     </div>
 
-    <div v-if="store.overviewBreakdownLoading && !breakdown" class="overview-empty">
+    <div v-if="store.overviewBreakdownLoading && !breakdown" class="overview-empty dark:!border-white/10 dark:!bg-[#15161A] dark:!text-gray-500">
       {{ t(locale, 'common.syncing') }}
     </div>
 
-    <div v-else-if="!hasAnyItems" class="overview-empty">
+    <div v-else-if="!hasAnyItems" class="overview-empty dark:!border-white/10 dark:!bg-[#15161A] dark:!text-gray-500">
       {{ t(locale, 'overview.noBreakdown') }}
     </div>
 
     <template v-else>
-      <section v-if="showSourceSection" class="rank-card">
+      <section v-if="showSourceSection" class="rank-card dark:!border-white/10 dark:!bg-[#15161A]">
         <div class="rank-card-header">
           <div class="flex items-center gap-1.5">
             <Layers3 class="h-3.5 w-3.5 text-sky-500 dark:text-sky-300" />
@@ -235,12 +239,12 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
         </div>
       </section>
 
-      <section v-else-if="showSourceHint" class="rank-card rank-hint">
+      <section v-else-if="showSourceHint" class="rank-card rank-hint dark:!border-white/10 dark:!bg-[#15161A]">
         <HelpCircle class="h-3.5 w-3.5 text-gray-400" />
         <span>{{ t(locale, 'overview.proxySourceHint') }}</span>
       </section>
 
-      <section v-if="toolItems.length > 1 || store.settings.clientTools.activeToolFilter" class="rank-card">
+      <section v-if="toolItems.length > 1 || store.settings.clientTools.activeToolFilter" class="rank-card dark:!border-white/10 dark:!bg-[#15161A]">
         <div class="rank-card-header">
           <div class="flex items-center gap-1.5">
             <LayoutGrid class="h-3.5 w-3.5 text-emerald-500 dark:text-emerald-300" />
@@ -277,7 +281,7 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
         </div>
       </section>
 
-      <section v-if="modelItems.length > 0" class="rank-card">
+      <section v-if="modelItems.length > 0" class="rank-card dark:!border-white/10 dark:!bg-[#15161A]">
         <div class="rank-card-header">
           <div class="flex items-center gap-1.5">
             <CircleDollarSign class="h-3.5 w-3.5 text-amber-500 dark:text-amber-300" />

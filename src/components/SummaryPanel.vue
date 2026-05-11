@@ -193,13 +193,18 @@ onMounted(() => {
 </script>
 
 <template>
-  <div v-if="summaryWindowData" class="summary-panel">
+  <div v-if="summaryWindowData" class="summary-panel dark:!border-white/10 dark:!bg-[#0F1013]">
     <!-- 时间范围选择器 -->
-    <div class="summary-window-tabs">
+    <div class="summary-window-tabs dark:!bg-white/[0.04]">
       <button
         v-for="window in WINDOW_ORDER"
         :key="window"
-        :class="['summary-window-tab', { active: store.settings.summaryWindow === window }]"
+        :class="[
+          'summary-window-tab dark:hover:!bg-white/[0.06] dark:hover:!text-gray-200',
+          store.settings.summaryWindow === window
+            ? 'active dark:!bg-white/[0.1] dark:!text-teal-300'
+            : 'dark:!text-gray-400'
+        ]"
         @click="selectWindow(window)"
       >
         {{ getWindowLabel(window) }}

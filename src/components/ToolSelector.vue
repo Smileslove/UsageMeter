@@ -83,15 +83,15 @@ onUnmounted(() => {
       @click="toggleDropdown"
       :title="currentLabel"
       :class="[
-        'p-1.5 rounded-lg transition-all flex items-center gap-0.5',
+        'p-1.5 rounded-full transition-all flex items-center gap-0.5',
         isFiltered
-          ? 'bg-blue-50 dark:bg-blue-500/15 ring-2 ring-blue-400/50 dark:ring-blue-400/40'
-          : 'text-gray-400 hover:text-gray-700 hover:bg-gray-200/60 dark:hover:text-gray-200 dark:hover:bg-neutral-800/80'
+          ? 'bg-blue-50/90 text-blue-600 shadow-[0_1px_8px_rgba(37,99,235,0.12)] ring-1 ring-blue-300/45 dark:bg-blue-500/15 dark:text-blue-300 dark:ring-blue-400/30'
+          : 'text-slate-400 hover:bg-white/70 hover:text-slate-700 hover:shadow-[0_1px_6px_rgba(15,23,42,0.08)] dark:text-white/36 dark:hover:bg-white/10 dark:hover:text-gray-200 dark:hover:shadow-none'
       ]"
     >
       <LayoutGrid
         v-if="!isFiltered"
-        class="w-4 h-4 text-gray-400"
+        class="w-4 h-4"
       />
       <LobeIcon
         v-else-if="currentIcon && !iconFailed"

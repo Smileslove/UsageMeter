@@ -125,15 +125,18 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <main class="w-full h-full overflow-hidden bg-[#F4F6F4] flex flex-col text-gray-800 antialiased dark:bg-[#09090B] dark:text-gray-200 shadow-xl rounded-[14px] border border-gray-200/80 dark:border-neutral-800/80">
+  <main class="relative flex h-full w-full flex-col overflow-hidden rounded-[23px] border border-white/68 bg-[#E7EBEF]/82 text-gray-800 shadow-[0_18px_52px_rgba(15,23,42,0.15)] backdrop-blur-2xl antialiased ring-1 ring-black/[0.035] dark:border-white/12 dark:bg-[#111216]/84 dark:text-gray-200 dark:shadow-[0_22px_64px_rgba(0,0,0,0.42)] dark:ring-white/[0.04]">
+    <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_0%,rgba(255,255,255,0.88),transparent_32%),radial-gradient(circle_at_86%_12%,rgba(203,213,225,0.42),transparent_32%),linear-gradient(180deg,rgba(248,250,252,0.36),rgba(226,232,240,0.26)_42%,rgba(203,213,225,0.36))] dark:bg-[radial-gradient(circle_at_20%_0%,rgba(255,255,255,0.12),transparent_32%),radial-gradient(circle_at_86%_12%,rgba(59,130,246,0.13),transparent_32%),linear-gradient(180deg,rgba(35,35,40,0.48),rgba(17,18,21,0.24)_42%,rgba(8,8,10,0.4))]"></div>
+    <div class="pointer-events-none absolute inset-x-5 top-0 h-px bg-white/90 dark:bg-white/18"></div>
+    <div class="pointer-events-none absolute inset-x-4 top-[78px] h-px bg-white/46 dark:bg-white/8"></div>
     <!-- Header -->
-    <header class="pt-3 pb-1.5 px-4 shrink-0 flex flex-col gap-2 drag-region bg-transparent">
+    <header class="relative shrink-0 flex flex-col gap-2 px-5 pt-3.5 pb-0.5 drag-region bg-transparent">
       <div class="flex items-center justify-between relative px-1">
         <!-- 标题（左侧） -->
-        <div class="font-extrabold text-[1.05rem] text-gray-800 dark:text-gray-100 tracking-tight flex items-center gap-2">
+        <div class="font-bold text-[1.05rem] text-slate-800 dark:text-gray-100 tracking-tight flex items-center gap-2">
           <div class="relative flex items-center justify-center w-2.5 h-2.5">
-            <div class="w-1.5 h-1.5 rounded-full bg-green-500 z-10 animate-pulse"></div>
-            <div class="absolute inset-0 rounded-full border-2 border-green-500/30 animate-pulse shadow-[0_0_8px_rgba(34,197,94,0.4)]"></div>
+            <div class="w-1.5 h-1.5 rounded-full bg-emerald-500 z-10"></div>
+            <div class="absolute inset-0 rounded-full bg-emerald-400/20 shadow-[0_0_14px_rgba(16,185,129,0.48)]"></div>
           </div>
           UsageMeter
         </div>
@@ -142,11 +145,11 @@ onUnmounted(() => {
         <div class="flex items-center gap-1 shrink-0 drag-region-none" style="-webkit-app-region: no-drag; app-region: no-drag">
           <SourceSelector />
           <ToolSelector />
-          <button @click="store.refreshUsageAndSessionViews()" class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-200/60 dark:hover:text-gray-200 dark:hover:bg-neutral-800/80 transition-all select-none" :title="t(store.settings.locale, 'common.refresh')">
+          <button @click="store.refreshUsageAndSessionViews()" class="p-1.5 rounded-full text-slate-400 transition-all select-none hover:bg-white/70 hover:text-slate-700 hover:shadow-[0_1px_6px_rgba(15,23,42,0.08)] dark:text-white/36 dark:hover:bg-white/10 dark:hover:text-gray-200 dark:hover:shadow-none" :title="t(store.settings.locale, 'common.refresh')">
             <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': store.loading }" />
           </button>
 
-          <button @click="toggleTheme" class="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-200/60 dark:hover:text-gray-200 dark:hover:bg-neutral-800/80 transition-all select-none cursor-pointer" :title="t(store.settings.locale, 'common.toggleTheme')">
+          <button @click="toggleTheme" class="p-1.5 rounded-full text-slate-400 transition-all select-none cursor-pointer hover:bg-white/70 hover:text-slate-700 hover:shadow-[0_1px_6px_rgba(15,23,42,0.08)] dark:text-white/36 dark:hover:bg-white/10 dark:hover:text-gray-200 dark:hover:shadow-none" :title="t(store.settings.locale, 'common.toggleTheme')">
             <Sun v-if="store.settings.theme === 'light'" class="w-3.5 h-3.5 text-amber-500" />
             <Moon v-else-if="store.settings.theme === 'dark'" class="w-3.5 h-3.5 text-indigo-400" />
             <Monitor v-else class="w-3.5 h-3.5" />
@@ -155,12 +158,12 @@ onUnmounted(() => {
       </div>
 
       <!-- Segmented Control -->
-      <nav class="flex p-1 bg-gray-200/60 dark:bg-neutral-800/80 rounded-lg">
+      <nav class="flex rounded-[18px] border border-white/68 bg-white/44 p-0.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.56),0_5px_14px_rgba(15,23,42,0.04)] backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.06] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
         <button
           v-for="item in navItems"
           :key="item.id"
           @click="currentView = item.id"
-          :class="['flex-1 flex justify-center items-center py-1 rounded-md text-xs font-medium transition-all', currentView === item.id ? 'bg-white text-gray-900 shadow-sm dark:bg-[#1C1C1E] dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300']"
+          :class="['flex-1 flex justify-center items-center py-1 rounded-[15px] text-xs font-semibold transition-all', currentView === item.id ? 'bg-white/92 text-slate-900 shadow-[0_2px_7px_rgba(15,23,42,0.08)] dark:bg-white/14 dark:text-gray-100 dark:shadow-none' : 'text-slate-500 hover:text-slate-700 dark:text-gray-400 dark:hover:text-gray-200']"
         >
           {{ t(store.settings.locale, item.key) }}
         </button>
@@ -168,12 +171,14 @@ onUnmounted(() => {
     </header>
 
     <!-- View Content -->
-    <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-4 pt-1.5 relative no-scrollbar">
+    <div class="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-5 pt-1 no-scrollbar">
       <Overview v-if="currentView === 'overview'" />
       <Statistics v-else-if="currentView === 'statistics'" />
       <Sessions v-else-if="currentView === 'sessions'" />
       <Settings v-else-if="currentView === 'settings'" />
     </div>
+    <div class="pointer-events-none absolute inset-x-0 top-[78px] z-10 h-2 bg-gradient-to-b from-[#E7EBEF]/72 to-transparent dark:from-[#111216]/72"></div>
+    <div class="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-9 bg-gradient-to-t from-[#E7EBEF]/92 to-transparent dark:from-[#111216]/92"></div>
   </main>
 </template>
 
