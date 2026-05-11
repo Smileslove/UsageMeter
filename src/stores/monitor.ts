@@ -1,15 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AlertEvent, AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageSnapshot, WindowQuota, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult } from '../types'
-
-const defaultQuotas: WindowQuota[] = [
-  { window: '5h', enabled: true, tokenLimit: 500000, requestLimit: 500 },
-  { window: '24h', enabled: true, tokenLimit: 1000000, requestLimit: 1000 },
-  { window: 'today', enabled: true, tokenLimit: 1000000, requestLimit: 1000 },
-  { window: '7d', enabled: true, tokenLimit: 5000000, requestLimit: 5000 },
-  { window: '30d', enabled: true, tokenLimit: 20000000, requestLimit: 20000 },
-  { window: 'current_month', enabled: true, tokenLimit: 30000000, requestLimit: 30000 }
-]
+import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult } from '../types'
 
 const defaultModelPricing: ModelPricingSettings = {
   matchMode: 'fuzzy',
@@ -56,10 +47,6 @@ const defaultSettings: AppSettings = {
   locale: 'zh-CN',
   timezone: 'Asia/Shanghai',
   refreshIntervalSeconds: 30,
-  warningThreshold: 70,
-  criticalThreshold: 90,
-  billingType: 'both',
-  quotas: defaultQuotas,
   summaryWindow: '24h',
   dataSource: 'local',
   proxy: {
@@ -90,11 +77,6 @@ export const useMonitorStore = defineStore('monitor', {
     lastUpdatedEpoch: null as number | null,
     sessionViewsRevision: 0,
     refreshTimer: null as ReturnType<typeof setInterval> | null,
-    alerts: [] as AlertEvent[],
-    trendHistory: {} as Record<string, number[]>,
-    lastAlertLevel: 'safe' as 'safe' | 'warning' | 'critical',
-    lastAlertEpoch: 0,
-    alertCooldownSeconds: 300,
     // 会话相关状态
     sessions: [] as SessionStats[],
     sessionsLoading: false,
@@ -113,6 +95,11 @@ export const useMonitorStore = defineStore('monitor', {
     statisticsRequestSeq: 0,
     monthActivityRequestSeq: 0,
     yearActivityRequestSeq: 0,
+    // 概览归因排行
+    overviewBreakdown: null as OverviewBreakdown | null,
+    overviewBreakdownLoading: false,
+    overviewBreakdownError: '' as string,
+    overviewBreakdownRequestSeq: 0,
     // 订阅查询
     subscriptionQuota: null as SubscriptionQueryResult | null,
     subscriptionLoading: false,
@@ -258,12 +245,12 @@ export const useMonitorStore = defineStore('monitor', {
         this.snapshot = data
 
         this.lastUpdatedEpoch = this.snapshot.generatedAtEpoch
-        this.updateTrendHistory(this.snapshot)
-        this.evaluateAlerts(this.snapshot)
-
         // 如果是代理模式，刷新速率数据
         if (this.settings.dataSource === 'proxy' && this.settings.summaryWindow) {
           await this.fetchRateSummary(this.settings.summaryWindow)
+        }
+        if (this.settings.summaryWindow) {
+          await this.fetchOverviewBreakdown(this.settings.summaryWindow)
         }
       } catch (e) {
         this.error = String(e)
@@ -350,15 +337,28 @@ export const useMonitorStore = defineStore('monitor', {
         }
       }
     },
-    calculatePercent(used: number, limit: number | null): number | null {
-      if (limit === null || limit === 0) return null
-      return (used / limit) * 100
-    },
-    calculateRiskLevel(tokenPercent: number | null, requestPercent: number | null): 'safe' | 'warning' | 'critical' {
-      const max = Math.max(tokenPercent ?? 0, requestPercent ?? 0)
-      if (max >= this.settings.criticalThreshold) return 'critical'
-      if (max >= this.settings.warningThreshold) return 'warning'
-      return 'safe'
+    async fetchOverviewBreakdown(window: string) {
+      const requestSeq = ++this.overviewBreakdownRequestSeq
+      this.overviewBreakdownLoading = true
+      try {
+        this.overviewBreakdownError = ''
+        const breakdown = await invokeWithTimeout<OverviewBreakdown>('get_overview_breakdown', {
+          window,
+          settings: this.settings
+        }, 60000)
+        if (requestSeq === this.overviewBreakdownRequestSeq) {
+          this.overviewBreakdown = breakdown
+        }
+      } catch (e) {
+        if (requestSeq === this.overviewBreakdownRequestSeq) {
+          this.overviewBreakdownError = String(e)
+          this.overviewBreakdown = null
+        }
+      } finally {
+        if (requestSeq === this.overviewBreakdownRequestSeq) {
+          this.overviewBreakdownLoading = false
+        }
+      }
     },
     // 代理相关操作
     /**
@@ -451,37 +451,6 @@ export const useMonitorStore = defineStore('monitor', {
       if (this.refreshTimer) {
         clearInterval(this.refreshTimer)
         this.refreshTimer = null
-      }
-    },
-    evaluateAlerts(snapshot: UsageSnapshot) {
-      const maxLevel = snapshot.windows.reduce<'safe' | 'warning' | 'critical'>((acc, current) => {
-        if (current.riskLevel === 'critical') return 'critical'
-        if (current.riskLevel === 'warning' && acc === 'safe') return 'warning'
-        return acc
-      }, 'safe')
-
-      const now = Math.floor(Date.now() / 1000)
-      const cooldownPassed = now - this.lastAlertEpoch >= this.alertCooldownSeconds
-
-      if (maxLevel !== 'safe' && (maxLevel !== this.lastAlertLevel || cooldownPassed)) {
-        const source = snapshot.source === 'local-files' || snapshot.source === 'no-data' || snapshot.source === 'simulated' || snapshot.source === 'proxy' ? snapshot.source : 'unknown'
-        this.alerts.unshift({
-          level: maxLevel,
-          source,
-          createdAtEpoch: now
-        })
-        this.alerts = this.alerts.slice(0, 20)
-        this.lastAlertEpoch = now
-      }
-
-      this.lastAlertLevel = maxLevel
-    },
-    updateTrendHistory(snapshot: UsageSnapshot) {
-      for (const window of snapshot.windows) {
-        const current = this.trendHistory[window.window] ?? []
-        const percent = Math.max(window.tokenPercent ?? 0, window.requestPercent ?? 0)
-        const next = [...current, Math.max(0, Math.min(100, percent))].slice(-24)
-        this.trendHistory[window.window] = next
       }
     },
     // 速率统计操作（仅代理模式）

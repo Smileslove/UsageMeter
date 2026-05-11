@@ -20,4 +20,5 @@ pub use collector::UsageCollector;
 pub use config_manager::ClaudeConfigManager;
 pub use database::{PreviewPricingApplyResult, PricingMatchFilter, ProxyDatabase};
 pub use server::ProxyServer;
+pub use source_detector::compute_source_id;
 pub use types::*;

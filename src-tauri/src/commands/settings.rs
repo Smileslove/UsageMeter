@@ -1,6 +1,6 @@
 //! 设置相关 Tauri 命令
 
-use crate::models::{AppSettings, CurrencySettings, WindowQuota};
+use crate::models::{AppSettings, CurrencySettings};
 use std::fs;
 
 /// 加载应用设置
@@ -14,9 +14,6 @@ pub fn load_settings() -> Result<AppSettings, String> {
     let raw = fs::read_to_string(path).map_err(|e| format!("ERR_READ_SETTINGS: {e}"))?;
     let mut settings: AppSettings =
         serde_json::from_str(&raw).map_err(|e| format!("ERR_PARSE_SETTINGS: {e}"))?;
-
-    // 确保所有窗口配额存在（迁移旧配置）
-    migrate_quotas(&mut settings);
 
     // 确保代理配置有效（迁移旧配置）
     migrate_proxy_config(&mut settings);
@@ -44,21 +41,6 @@ pub fn save_settings(settings: AppSettings) -> Result<(), String> {
     let content = serde_json::to_string_pretty(&settings)
         .map_err(|e| format!("ERR_SERIALIZE_SETTINGS: {e}"))?;
     fs::write(path, content).map_err(|e| format!("ERR_WRITE_SETTINGS: {e}"))
-}
-
-/// 确保所有窗口配额存在，添加缺失的默认值
-fn migrate_quotas(settings: &mut AppSettings) {
-    use std::collections::HashSet;
-
-    let defaults = crate::models::default_quotas();
-    let existing_windows: HashSet<_> = settings.quotas.iter().map(|q| q.window.as_str()).collect();
-
-    let missing: Vec<WindowQuota> = defaults
-        .into_iter()
-        .filter(|d| !existing_windows.contains(d.window.as_str()))
-        .collect();
-
-    settings.quotas.extend(missing);
 }
 
 /// 确保代理配置有效，修复端口问题

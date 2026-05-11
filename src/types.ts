@@ -1,7 +1,5 @@
 export type AppLocale = 'zh-CN' | 'zh-TW' | 'en-US'
 
-export type BillingType = 'token' | 'request' | 'both'
-
 export type WindowName = '5h' | '24h' | 'today' | '7d' | '30d' | 'current_month'
 
 export const WINDOW_ORDER: WindowName[] = ['5h', '24h', 'today', '7d', '30d', 'current_month']
@@ -15,13 +13,6 @@ export interface ProxyConfig {
   port: number
   autoStart: boolean
   includeErrorRequests: boolean  // 在请求数统计中是否包含错误请求（4xx/5xx）
-}
-
-export interface WindowQuota {
-  window: WindowName
-  enabled: boolean
-  tokenLimit: number | null
-  requestLimit: number | null
 }
 
 // 模型价格配置
@@ -54,10 +45,6 @@ export interface AppSettings {
   locale: AppLocale
   timezone: string
   refreshIntervalSeconds: number
-  warningThreshold: number
-  criticalThreshold: number
-  billingType: BillingType
-  quotas: WindowQuota[]
   summaryWindow: WindowName  // 概览面板汇总展示区显示的窗口
   dataSource: DataSource     // 数据统计方式：local 或 proxy
   proxy: ProxyConfig         // 代理配置
@@ -128,11 +115,6 @@ export interface WindowUsage {
   cacheCreateTokens: number
   cacheReadTokens: number
   requestUsed: number
-  tokenLimit: number | null
-  requestLimit: number | null
-  tokenPercent: number | null
-  requestPercent: number | null
-  riskLevel: 'safe' | 'warning' | 'critical'
   /** 该窗口的费用（美元） */
   cost: number
   successRequests: number
@@ -165,7 +147,6 @@ export interface UsageSummary {
   totalCacheCreateTokens: number
   totalCacheReadTokens: number
   totalCost: number
-  overallRiskLevel: 'safe' | 'warning' | 'critical'
   totalSuccessRequests: number
   totalClientErrorRequests: number
   totalServerErrorRequests: number
@@ -180,10 +161,42 @@ export interface UsageSnapshot {
   modelDistribution: ModelUsage[]
 }
 
-export interface AlertEvent {
-  level: 'safe' | 'warning' | 'critical'
-  source: 'local-files' | 'no-data' | 'simulated' | 'proxy' | 'unknown'
-  createdAtEpoch: number
+export interface OverviewBreakdownCapability {
+  hasSource: boolean
+  hasTool: boolean
+  hasCost: boolean
+  hasStatus: boolean
+  hasPerformance: boolean
+}
+
+export interface OverviewBreakdownItem {
+  id: string
+  label: string
+  kind: 'source' | 'tool' | 'model'
+  color?: string | null
+  icon?: string | null
+  requestCount: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cacheCreateTokens: number
+  cacheReadTokens: number
+  cost: number
+  percent: number
+  successRequests?: number | null
+  errorRequests?: number | null
+  avgTokensPerSecond?: number | null
+  avgTtftMs?: number | null
+  lastSeenMs?: number | null
+}
+
+export interface OverviewBreakdown {
+  window: string
+  generatedAtEpoch: number
+  sourceRanking: OverviewBreakdownItem[]
+  toolRanking: OverviewBreakdownItem[]
+  modelRanking: OverviewBreakdownItem[]
+  capability: OverviewBreakdownCapability
 }
 
 // 代理相关类型

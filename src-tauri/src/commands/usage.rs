@@ -1,10 +1,10 @@
 //! 用量相关 Tauri 命令
 
 use crate::models::{
-    compute_percent, risk_level, AppSettings, ModelRateStats, ModelTtftStats, OverallRateStats,
-    StatusCodeCount, ToolFilter, TtftStats, UsageSnapshot, WindowRateSummary, WindowUsage,
+    AppSettings, ModelRateStats, ModelTtftStats, OverallRateStats, StatusCodeCount, ToolFilter,
+    TtftStats, UsageSnapshot, WindowRateSummary, WindowUsage,
 };
-use crate::proxy::{ProjectToolStats, ProxyServer, SessionStats};
+use crate::proxy::{compute_source_id, ProjectToolStats, ProxyServer, SessionStats};
 use crate::unified_usage::{CoverageOrigin, MergedCoverage, MergedRequestFact};
 use chrono::{Datelike, Local, NaiveDate, TimeZone};
 use std::collections::HashMap;
@@ -162,6 +162,50 @@ pub struct StatisticsSummary {
     pub insights: Vec<StatisticsInsight>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OverviewBreakdownCapability {
+    pub has_source: bool,
+    pub has_tool: bool,
+    pub has_cost: bool,
+    pub has_status: bool,
+    pub has_performance: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OverviewBreakdownItem {
+    pub id: String,
+    pub label: String,
+    pub kind: String,
+    pub color: Option<String>,
+    pub icon: Option<String>,
+    pub request_count: u64,
+    pub total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_create_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cost: f64,
+    pub percent: f64,
+    pub success_requests: Option<u64>,
+    pub error_requests: Option<u64>,
+    pub avg_tokens_per_second: Option<f64>,
+    pub avg_ttft_ms: Option<f64>,
+    pub last_seen_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverviewBreakdown {
+    pub window: String,
+    pub generated_at_epoch: i64,
+    pub source_ranking: Vec<OverviewBreakdownItem>,
+    pub tool_ranking: Vec<OverviewBreakdownItem>,
+    pub model_ranking: Vec<OverviewBreakdownItem>,
+    pub capability: OverviewBreakdownCapability,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MonthActivity {
@@ -198,6 +242,7 @@ pub struct DayActivity {
 }
 
 const MERGED_SOURCE: &str = "proxy-merged";
+const USAGE_WINDOWS: &[&str] = &["5h", "24h", "today", "7d", "30d", "current_month"];
 
 /// 从数据源获取用量快照
 #[tauri::command]
@@ -653,8 +698,8 @@ async fn build_merged_usage_snapshot(settings: &AppSettings) -> Result<UsageSnap
 
     let mut windows = Vec::new();
     let mut has_partial_snapshot_coverage = false;
-    for quota in settings.quotas.iter().filter(|quota| quota.enabled) {
-        let cutoff_ms = crate::proxy::UsageCollector::calculate_window_cutoff_public(&quota.window);
+    for window_name in USAGE_WINDOWS {
+        let cutoff_ms = crate::proxy::UsageCollector::calculate_window_cutoff_public(window_name);
         let (facts, capability) = crate::unified_usage::get_merged_request_facts(
             settings,
             Some(cutoff_ms / 1000),
@@ -703,28 +748,16 @@ async fn build_merged_usage_snapshot(settings: &AppSettings) -> Result<UsageSnap
             }
         }
 
-        let token_percent = compute_percent(token_used, quota.token_limit);
-        let request_percent = compute_percent(request_used, quota.request_limit);
         let cost: f64 = facts.iter().map(|fact| fact.estimated_cost).sum();
 
         windows.push(WindowUsage {
-            window: quota.window.clone(),
+            window: (*window_name).to_string(),
             token_used,
             input_tokens,
             output_tokens,
             cache_create_tokens,
             cache_read_tokens,
             request_used,
-            token_limit: quota.token_limit,
-            request_limit: quota.request_limit,
-            token_percent,
-            request_percent,
-            risk_level: risk_level(
-                token_percent,
-                request_percent,
-                settings.warning_threshold,
-                settings.critical_threshold,
-            ),
             cost,
             success_requests: if capability.has_partial_status_coverage {
                 0
@@ -743,17 +776,6 @@ async fn build_merged_usage_snapshot(settings: &AppSettings) -> Result<UsageSnap
             },
         });
     }
-
-    let overall_risk_level = windows
-        .iter()
-        .map(|w| &w.risk_level)
-        .max_by_key(|level| match level.as_str() {
-            "critical" => 2,
-            "warning" => 1,
-            _ => 0,
-        })
-        .unwrap_or(&"safe".to_string())
-        .clone();
 
     let summary_cutoff_ms =
         crate::proxy::UsageCollector::calculate_window_cutoff_public(&settings.summary_window);
@@ -792,7 +814,6 @@ async fn build_merged_usage_snapshot(settings: &AppSettings) -> Result<UsageSnap
     let summary = build_usage_summary_from_window(
         &windows,
         &settings.summary_window,
-        overall_risk_level,
         if summary_coverage.has_partial_status_coverage {
             0
         } else {
@@ -823,29 +844,338 @@ async fn build_merged_usage_snapshot(settings: &AppSettings) -> Result<UsageSnap
     })
 }
 
-fn empty_usage_snapshot(settings: &AppSettings, source: &str, note: String) -> UsageSnapshot {
+#[derive(Default)]
+struct BreakdownAccumulator {
+    request_count: u64,
+    total_tokens: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_create_tokens: u64,
+    cache_read_tokens: u64,
+    cost: f64,
+    success_requests: u64,
+    client_error_requests: u64,
+    server_error_requests: u64,
+    has_status: bool,
+    rate_sum: f64,
+    rate_count: u64,
+    ttft_sum: f64,
+    ttft_count: u64,
+    last_seen_ms: i64,
+}
+
+impl BreakdownAccumulator {
+    fn add(&mut self, fact: &MergedRequestFact) {
+        self.request_count += 1;
+        self.total_tokens += fact.total_tokens;
+        self.input_tokens += fact.input_tokens;
+        self.output_tokens += fact.output_tokens;
+        self.cache_create_tokens += fact.cache_create_tokens;
+        self.cache_read_tokens += fact.cache_read_tokens;
+        self.cost += fact.estimated_cost;
+        self.last_seen_ms = self.last_seen_ms.max(fact.timestamp_ms);
+
+        if let Some(status_code) = fact.status_code {
+            self.has_status = true;
+            if (200..300).contains(&status_code) {
+                self.success_requests += 1;
+            } else if (400..500).contains(&status_code) {
+                self.client_error_requests += 1;
+            } else if status_code >= 500 {
+                self.server_error_requests += 1;
+            }
+        }
+
+        if let Some(rate) = fact.output_tokens_per_second {
+            if rate > 0.0 {
+                self.rate_sum += rate;
+                self.rate_count += 1;
+            }
+        }
+
+        if let Some(ttft_ms) = fact.ttft_ms {
+            if ttft_ms > 0 {
+                self.ttft_sum += ttft_ms as f64;
+                self.ttft_count += 1;
+            }
+        }
+    }
+}
+
+struct BreakdownMeta {
+    id: String,
+    label: String,
+    kind: String,
+    color: Option<String>,
+    icon: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum BreakdownPercentMetric {
+    Cost,
+    Tokens,
+    Requests,
+}
+
+fn metric_for_percent(
+    items: &HashMap<String, (BreakdownMeta, BreakdownAccumulator)>,
+) -> (BreakdownPercentMetric, f64) {
+    let cost_total: f64 = items.values().map(|(_, acc)| acc.cost).sum();
+    if cost_total > 0.0 {
+        return (BreakdownPercentMetric::Cost, cost_total);
+    }
+
+    let token_total: u64 = items.values().map(|(_, acc)| acc.total_tokens).sum();
+    if token_total > 0 {
+        return (BreakdownPercentMetric::Tokens, token_total as f64);
+    }
+
+    (
+        BreakdownPercentMetric::Requests,
+        items
+            .values()
+            .map(|(_, acc)| acc.request_count)
+            .sum::<u64>() as f64,
+    )
+}
+
+fn metric_value_for_percent(acc: &BreakdownAccumulator, metric: BreakdownPercentMetric) -> f64 {
+    match metric {
+        BreakdownPercentMetric::Cost => acc.cost,
+        BreakdownPercentMetric::Tokens => acc.total_tokens as f64,
+        BreakdownPercentMetric::Requests => acc.request_count as f64,
+    }
+}
+
+fn overview_items_from_map(
+    map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)>,
+    limit: usize,
+) -> Vec<OverviewBreakdownItem> {
+    let (percent_metric, denominator) = metric_for_percent(&map);
+    let mut items: Vec<OverviewBreakdownItem> = map
+        .into_values()
+        .map(|(meta, acc)| {
+            let error_requests = acc.client_error_requests + acc.server_error_requests;
+            OverviewBreakdownItem {
+                id: meta.id,
+                label: meta.label,
+                kind: meta.kind,
+                color: meta.color,
+                icon: meta.icon,
+                request_count: acc.request_count,
+                total_tokens: acc.total_tokens,
+                input_tokens: acc.input_tokens,
+                output_tokens: acc.output_tokens,
+                cache_create_tokens: acc.cache_create_tokens,
+                cache_read_tokens: acc.cache_read_tokens,
+                cost: acc.cost,
+                percent: if denominator > 0.0 {
+                    (metric_value_for_percent(&acc, percent_metric) / denominator) * 100.0
+                } else {
+                    0.0
+                },
+                success_requests: acc.has_status.then_some(acc.success_requests),
+                error_requests: acc.has_status.then_some(error_requests),
+                avg_tokens_per_second: (acc.rate_count > 0)
+                    .then_some(acc.rate_sum / acc.rate_count as f64),
+                avg_ttft_ms: (acc.ttft_count > 0).then_some(acc.ttft_sum / acc.ttft_count as f64),
+                last_seen_ms: (acc.last_seen_ms > 0).then_some(acc.last_seen_ms),
+            }
+        })
+        .collect();
+
+    items.sort_by(|a, b| {
+        b.cost
+            .partial_cmp(&a.cost)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| b.total_tokens.cmp(&a.total_tokens))
+            .then_with(|| b.request_count.cmp(&a.request_count))
+    });
+    items.truncate(limit);
+    items
+}
+
+fn source_label_from_url(base_url: Option<&str>) -> String {
+    match base_url {
+        Some(url) if !url.trim().is_empty() => url
+            .split("://")
+            .nth(1)
+            .unwrap_or(url)
+            .split('/')
+            .next()
+            .unwrap_or(url)
+            .to_string(),
+        _ => "__official_api__".to_string(),
+    }
+}
+
+fn source_meta_for_fact(settings: &AppSettings, fact: &MergedRequestFact) -> BreakdownMeta {
+    let matched = settings.source_aware.sources.iter().find(|source| {
+        let base_url_matches = source.base_url == fact.request_base_url;
+        let key_matches = fact
+            .api_key_prefix
+            .as_ref()
+            .map(|prefix| source.api_key_prefixes.contains(prefix))
+            .unwrap_or(false);
+        base_url_matches && key_matches
+    });
+
+    if let Some(source) = matched {
+        return BreakdownMeta {
+            id: source.id.clone(),
+            label: source
+                .display_name
+                .clone()
+                .unwrap_or_else(|| source_label_from_url(source.base_url.as_deref())),
+            kind: "source".to_string(),
+            color: Some(source.color.clone()),
+            icon: source.icon.clone(),
+        };
+    }
+
+    if let Some(prefix) = fact
+        .api_key_prefix
+        .as_ref()
+        .filter(|prefix| !prefix.trim().is_empty())
+    {
+        let source_id = compute_source_id(prefix, fact.request_base_url.as_deref());
+        return BreakdownMeta {
+            id: source_id,
+            label: source_label_from_url(fact.request_base_url.as_deref()),
+            kind: "source".to_string(),
+            color: Some("#9CA3AF".to_string()),
+            icon: None,
+        };
+    }
+
+    BreakdownMeta {
+        id: "__unknown__".to_string(),
+        label: "__unknown__".to_string(),
+        kind: "source".to_string(),
+        color: Some("#9CA3AF".to_string()),
+        icon: None,
+    }
+}
+
+fn tool_meta_for_fact(settings: &AppSettings, fact: &MergedRequestFact) -> BreakdownMeta {
+    let profile = settings
+        .client_tools
+        .profiles
+        .iter()
+        .find(|profile| profile.tool == fact.tool);
+    BreakdownMeta {
+        id: fact.tool.clone(),
+        label: profile
+            .and_then(|profile| profile.display_name.clone())
+            .unwrap_or_else(|| {
+                if fact.tool.trim().is_empty() {
+                    "__unknown__".to_string()
+                } else {
+                    fact.tool.clone()
+                }
+            }),
+        kind: "tool".to_string(),
+        color: None,
+        icon: profile.and_then(|profile| profile.icon.clone()),
+    }
+}
+
+fn model_meta_for_fact(fact: &MergedRequestFact) -> BreakdownMeta {
+    let label = if fact.model.trim().is_empty() {
+        "__unknown__".to_string()
+    } else {
+        fact.model.clone()
+    };
+    BreakdownMeta {
+        id: label.clone(),
+        label,
+        kind: "model".to_string(),
+        color: None,
+        icon: None,
+    }
+}
+
+fn add_breakdown_fact(
+    map: &mut HashMap<String, (BreakdownMeta, BreakdownAccumulator)>,
+    meta: BreakdownMeta,
+    fact: &MergedRequestFact,
+) {
+    let entry = map
+        .entry(meta.id.clone())
+        .or_insert_with(|| (meta, BreakdownAccumulator::default()));
+    entry.1.add(fact);
+}
+
+#[tauri::command]
+pub async fn get_overview_breakdown(
+    window: String,
+    settings: AppSettings,
+) -> Result<OverviewBreakdown, String> {
+    let now = chrono::Utc::now().timestamp();
+    let include_errors = if settings.data_source == "proxy" {
+        settings.proxy.include_error_requests
+    } else {
+        true
+    };
+    let cutoff_ms = crate::proxy::UsageCollector::calculate_window_cutoff_public(&window);
+    let (facts, coverage) = crate::unified_usage::get_merged_request_facts(
+        &settings,
+        Some(cutoff_ms / 1000),
+        Some(now + 1),
+        include_errors,
+    )
+    .await?;
+
+    let mut source_map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)> = HashMap::new();
+    let mut tool_map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)> = HashMap::new();
+    let mut model_map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)> = HashMap::new();
+
+    for fact in &facts {
+        if settings.data_source == "proxy" {
+            add_breakdown_fact(&mut source_map, source_meta_for_fact(&settings, fact), fact);
+        }
+        add_breakdown_fact(&mut tool_map, tool_meta_for_fact(&settings, fact), fact);
+        add_breakdown_fact(&mut model_map, model_meta_for_fact(fact), fact);
+    }
+
+    let capability = OverviewBreakdownCapability {
+        has_source: settings.data_source == "proxy" && !source_map.is_empty(),
+        has_tool: !tool_map.is_empty(),
+        has_cost: facts.iter().any(|fact| fact.estimated_cost > 0.0),
+        has_status: !coverage.has_partial_status_coverage
+            && facts.iter().any(|fact| fact.status_code.is_some()),
+        has_performance: !coverage.has_partial_performance_coverage
+            && facts
+                .iter()
+                .any(|fact| fact.output_tokens_per_second.is_some() || fact.ttft_ms.is_some()),
+    };
+
+    Ok(OverviewBreakdown {
+        window,
+        generated_at_epoch: now,
+        source_ranking: overview_items_from_map(source_map, 4),
+        tool_ranking: overview_items_from_map(tool_map, 4),
+        model_ranking: overview_items_from_map(model_map, 5),
+        capability,
+    })
+}
+
+fn empty_usage_snapshot(_settings: &AppSettings, source: &str, note: String) -> UsageSnapshot {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
-    let windows: Vec<WindowUsage> = settings
-        .quotas
+    let windows: Vec<WindowUsage> = USAGE_WINDOWS
         .iter()
-        .filter(|quota| quota.enabled)
-        .map(|quota| WindowUsage {
-            window: quota.window.clone(),
+        .map(|window| WindowUsage {
+            window: (*window).to_string(),
             token_used: 0,
             input_tokens: 0,
             output_tokens: 0,
             cache_create_tokens: 0,
             cache_read_tokens: 0,
             request_used: 0,
-            token_limit: quota.token_limit,
-            request_limit: quota.request_limit,
-            token_percent: compute_percent(0, quota.token_limit),
-            request_percent: compute_percent(0, quota.request_limit),
-            risk_level: "safe".to_string(),
             cost: 0.0,
             success_requests: 0,
             client_error_requests: 0,
@@ -861,7 +1191,6 @@ fn empty_usage_snapshot(settings: &AppSettings, source: &str, note: String) -> U
         total_cache_create_tokens: 0,
         total_cache_read_tokens: 0,
         total_cost: 0.0,
-        overall_risk_level: "safe".to_string(),
         total_success_requests: 0,
         total_client_error_requests: 0,
         total_server_error_requests: 0,
@@ -1074,11 +1403,7 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
     }
 
     let mut windows = Vec::new();
-    for quota in &settings.quotas {
-        if !quota.enabled {
-            continue;
-        }
-
+    for window_name in USAGE_WINDOWS {
         let (
             token_used,
             input_tokens,
@@ -1086,7 +1411,7 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             cache_create_tokens,
             cache_read_tokens,
             request_used,
-        ) = match quota.window.as_str() {
+        ) = match *window_name {
             "5h" => (
                 total_5h_tokens,
                 total_5h_input_tokens,
@@ -1138,30 +1463,16 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
             _ => (0, 0, 0, 0, 0, 0),
         };
 
-        let token_percent = compute_percent(token_used, quota.token_limit);
-        let request_limit = quota.request_limit;
-        let request_percent = compute_percent(request_used, request_limit);
-
         windows.push(WindowUsage {
-            window: quota.window.clone(),
+            window: (*window_name).to_string(),
             token_used,
             input_tokens,
             output_tokens,
             cache_create_tokens,
             cache_read_tokens,
             request_used,
-            token_limit: quota.token_limit,
-            request_limit,
-            token_percent,
-            request_percent,
-            risk_level: risk_level(
-                token_percent,
-                request_percent,
-                settings.warning_threshold,
-                settings.critical_threshold,
-            ),
             cost: estimate_cost_from_window_model_stats(
-                window_model_stats.get(&quota.window),
+                window_model_stats.get(*window_name),
                 &pricings,
                 match_mode,
             ),
@@ -1171,30 +1482,11 @@ fn snapshot_from_local_jsonl(settings: &AppSettings) -> Result<UsageSnapshot, St
         });
     }
 
-    // 计算总体风险等级
-    let overall_risk_level = windows
-        .iter()
-        .map(|w| &w.risk_level)
-        .max_by_key(|level| match level.as_str() {
-            "critical" => 2,
-            "warning" => 1,
-            _ => 0,
-        })
-        .unwrap_or(&"safe".to_string())
-        .clone();
-
     let model_distribution = build_model_distribution_from_window_stats(
         window_model_stats.get(&settings.summary_window),
     );
 
-    let summary = build_usage_summary_from_window(
-        &windows,
-        &settings.summary_window,
-        overall_risk_level,
-        0,
-        0,
-        0,
-    );
+    let summary = build_usage_summary_from_window(&windows, &settings.summary_window, 0, 0, 0);
 
     Ok(UsageSnapshot {
         generated_at_epoch: now,
@@ -1309,7 +1601,6 @@ fn build_model_distribution_from_window_stats(
 fn build_usage_summary_from_window(
     windows: &[WindowUsage],
     summary_window: &str,
-    overall_risk_level: String,
     total_success_requests: u64,
     total_client_error_requests: u64,
     total_server_error_requests: u64,
@@ -1324,7 +1615,6 @@ fn build_usage_summary_from_window(
         total_cache_create_tokens: selected_window.map(|w| w.cache_create_tokens).unwrap_or(0),
         total_cache_read_tokens: selected_window.map(|w| w.cache_read_tokens).unwrap_or(0),
         total_cost: selected_window.map(|w| w.cost).unwrap_or(0.0),
-        overall_risk_level,
         total_success_requests,
         total_client_error_requests,
         total_server_error_requests,
@@ -2345,11 +2635,6 @@ mod tests {
                 cache_create_tokens: 5,
                 cache_read_tokens: 5,
                 request_used: 3,
-                token_limit: None,
-                request_limit: None,
-                token_percent: None,
-                request_percent: None,
-                risk_level: "safe".to_string(),
                 cost: 1.25,
                 success_requests: 0,
                 client_error_requests: 0,
@@ -2363,11 +2648,6 @@ mod tests {
                 cache_create_tokens: 100,
                 cache_read_tokens: 100,
                 request_used: 60,
-                token_limit: None,
-                request_limit: None,
-                token_percent: None,
-                request_percent: None,
-                risk_level: "warning".to_string(),
                 cost: 9.75,
                 success_requests: 0,
                 client_error_requests: 0,
@@ -2375,8 +2655,7 @@ mod tests {
             },
         ];
 
-        let summary =
-            build_usage_summary_from_window(&windows, "5h", "warning".to_string(), 0, 0, 0);
+        let summary = build_usage_summary_from_window(&windows, "5h", 0, 0, 0);
 
         assert_eq!(summary.total_tokens, 120);
         assert_eq!(summary.total_requests, 3);
@@ -2385,7 +2664,6 @@ mod tests {
         assert_eq!(summary.total_cache_create_tokens, 5);
         assert_eq!(summary.total_cache_read_tokens, 5);
         assert_eq!(summary.total_cost, 1.25);
-        assert_eq!(summary.overall_risk_level, "warning");
     }
 
     #[test]

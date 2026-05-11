@@ -29,6 +29,8 @@ pub struct MergedRequestFact {
     pub session_id: String,
     pub project_name: Option<String>,
     pub project_path: Option<String>,
+    pub api_key_prefix: Option<String>,
+    pub request_base_url: Option<String>,
     pub tool: String,
     pub timestamp_sec: i64,
     pub timestamp_ms: i64,
@@ -55,6 +57,8 @@ impl MergedRequestFact {
             session_id: record.session_id.clone(),
             project_name,
             project_path,
+            api_key_prefix: None,
+            request_base_url: None,
             tool: record.tool.clone(),
             timestamp_sec: record.timestamp,
             timestamp_ms: record.timestamp.saturating_mul(1000),
@@ -81,6 +85,8 @@ impl MergedRequestFact {
             session_id: record.session_id.clone().unwrap_or_default(),
             project_name,
             project_path,
+            api_key_prefix: record.api_key_prefix.clone(),
+            request_base_url: record.request_base_url.clone(),
             tool: record.client_tool.clone(),
             timestamp_sec: record.timestamp / 1000,
             timestamp_ms: record.timestamp,
@@ -116,6 +122,8 @@ impl MergedRequestFact {
             },
             project_name,
             project_path,
+            api_key_prefix: proxy.api_key_prefix.clone(),
+            request_base_url: proxy.request_base_url.clone(),
             tool: if !local.tool.trim().is_empty() {
                 local.tool.clone()
             } else {

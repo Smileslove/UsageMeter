@@ -37,7 +37,6 @@ const messages: Record<AppLocale, TranslationNode> = {
       outputTokens: '输出',
       totalTokens: '总计',
       cost: '费用',
-      unlimited: '无限制',
       avgRate: '速率',
       underDevelopment: '功能开发中',
       noMore: '没有更多了',
@@ -55,16 +54,9 @@ const messages: Record<AppLocale, TranslationNode> = {
     },
     metrics: {
       summary: '5h Token {tokens} | Requests {requests}',
-      tokenRemaining: 'Token 剩余',
-      requestRemaining: 'Requests 剩余',
-      currentRisk: '当前风险',
       windowSuffix: '窗口',
-      tokenUsageRate: 'Token 使用率',
-      requestUsageRate: 'Requests 使用率',
       shortTrend: '短期趋势',
       samples: '{count} 个样本',
-      tokenLimit: 'Token 限额',
-      requestLimit: '请求限额',
       modelDistribution: '模型分布',
       statusCodeDistribution: '状态码分布',
       successRate: '成功率',
@@ -85,15 +77,6 @@ const messages: Record<AppLocale, TranslationNode> = {
       maxTtft: '最大',
       modelTtftRanking: '模型响应速度排行',
       percent: '占比'
-    },
-    alerts: {
-      title: '告警',
-      empty: '当前暂无告警，状态稳定。',
-      levelPrefix: {
-        warning: '警告',
-        critical: '严重'
-      },
-      fromSource: '当前窗口已达到阈值（{source}）'
     },
     backendNote: {
       simulatedData: '当前使用模拟数据；请确认本地会话文件可用。',
@@ -117,24 +100,11 @@ const messages: Record<AppLocale, TranslationNode> = {
       timezone: '时区',
       timezonePlaceholder: 'UTC',
       refreshInterval: '刷新间隔（秒）',
-      warningThreshold: 'Warning 阈值（%）',
-      criticalThreshold: 'Critical 阈值（%）',
-      quotaTitle: '窗口配额',
-      manageQuotas: '管理窗口配额',
-      manageQuotasDesc: '配置各时间窗口的用量限额',
-      dataManagement: '数据与配额',
+      dataManagement: '数据与计费',
       general: '通用设置',
-      thresholds: '阈值设置',
       zhCN: '简体中文',
       zhTW: '繁體中文',
       enUS: 'English',
-      billingType: '计费类型',
-      billingTypeToken: 'Token 计费',
-      billingTypeRequest: '请求次数计费',
-      billingTypeBoth: '两者同时',
-      windowEnabled: '启用',
-      tokenLimitPlaceholder: 'Token 限额',
-      requestLimitPlaceholder: '请求限额',
       window5h: '5小时',
       window24h: '24小时',
       windowToday: '当天',
@@ -142,8 +112,6 @@ const messages: Record<AppLocale, TranslationNode> = {
       window30d: '30天',
       windowCurrentMonth: '本月',
       window1m: '1个月',
-      unlimited: '无限制',
-      setLimit: '设置限额',
       summaryWindow: '汇总展示窗口',
       dataSource: '数据统计方式',
       dataSourceLocal: '本地文件',
@@ -390,7 +358,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       month12: '12月'
     },
     tools: {
-      all: '全部工具'
+      all: '全部工具',
+      ranking: '工具排行'
     },
     sources: {
       title: 'API 来源',
@@ -418,7 +387,22 @@ const messages: Record<AppLocale, TranslationNode> = {
       keyPrefixTruncated: '完整前缀: {prefix}',
       changeIcon: '更换图标',
       removeIcon: '移除图标',
-      searchIcon: '搜索图标...'
+      searchIcon: '搜索图标...',
+      ranking: '来源排行'
+    },
+    overview: {
+      attribution: '用量归因',
+      modelRanking: '模型排行',
+      noBreakdown: '当前窗口暂无可归因数据',
+      proxySourceHint: '启用本地代理后可查看 API 来源排行',
+      costPrimary: '按费用排序',
+      tokenPrimary: '按 Token 排序',
+      requestsShort: '请求',
+      tokensShort: 'Token',
+      errorsShort: '错误',
+      avgRateShort: '速率',
+      filterActive: '已筛选',
+      clearFilter: '清除筛选'
     },
     subscription: {
       codex: 'Codex',
@@ -473,7 +457,6 @@ const messages: Record<AppLocale, TranslationNode> = {
       outputTokens: '輸出',
       totalTokens: '總計',
       cost: '費用',
-      unlimited: '無限制',
       avgRate: '速率',
       underDevelopment: '功能開發中',
       noMore: '沒有更多了',
@@ -491,16 +474,9 @@ const messages: Record<AppLocale, TranslationNode> = {
     },
     metrics: {
       summary: '5h Token {tokens} | Requests {requests}',
-      tokenRemaining: 'Token 剩餘',
-      requestRemaining: 'Requests 剩餘',
-      currentRisk: '目前風險',
       windowSuffix: '視窗',
-      tokenUsageRate: 'Token 使用率',
-      requestUsageRate: 'Requests 使用率',
       shortTrend: '短期趨勢',
       samples: '{count} 個樣本',
-      tokenLimit: 'Token 限額',
-      requestLimit: '請求限額',
       modelDistribution: '模型分佈',
       statusCodeDistribution: '狀態碼分佈',
       successRate: '成功率',
@@ -521,15 +497,6 @@ const messages: Record<AppLocale, TranslationNode> = {
       maxTtft: '最大',
       modelTtftRanking: '模型響應速度排行',
       percent: '占比'
-    },
-    alerts: {
-      title: '警告',
-      empty: '目前暫無警告，狀態穩定。',
-      levelPrefix: {
-        warning: '警告',
-        critical: '嚴重'
-      },
-      fromSource: '目前視窗已達到閾值（{source}）'
     },
     backendNote: {
       simulatedData: '目前使用模擬資料；請確認本地會話檔案可用。',
@@ -553,24 +520,11 @@ const messages: Record<AppLocale, TranslationNode> = {
       timezone: '時區',
       timezonePlaceholder: 'UTC',
       refreshInterval: '重新整理間隔（秒）',
-      warningThreshold: 'Warning 閾值（%）',
-      criticalThreshold: 'Critical 閾值（%）',
-      quotaTitle: '視窗配額',
-      manageQuotas: '管理視窗配額',
-      manageQuotasDesc: '配置各時間視窗的用量限額',
-      dataManagement: '資料與配額',
+      dataManagement: '資料與計費',
       general: '一般設定',
-      thresholds: '閾值設定',
       zhCN: '简体中文',
       zhTW: '繁體中文',
       enUS: 'English',
-      billingType: '計費類型',
-      billingTypeToken: 'Token 計費',
-      billingTypeRequest: '請求次數計費',
-      billingTypeBoth: '兩者同時',
-      windowEnabled: '啟用',
-      tokenLimitPlaceholder: 'Token 限額',
-      requestLimitPlaceholder: '請求限額',
       window5h: '5小時',
       window24h: '24小時',
       windowToday: '當天',
@@ -578,8 +532,6 @@ const messages: Record<AppLocale, TranslationNode> = {
       window30d: '30天',
       windowCurrentMonth: '本月',
       window1m: '1個月',
-      unlimited: '無限制',
-      setLimit: '設定限額',
       summaryWindow: '彙總展示視窗',
       dataSource: '資料統計方式',
       dataSourceLocal: '本地檔案',
@@ -826,7 +778,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       month12: '12月'
     },
     tools: {
-      all: '全部工具'
+      all: '全部工具',
+      ranking: '工具排行'
     },
     sources: {
       title: 'API 來源',
@@ -854,7 +807,22 @@ const messages: Record<AppLocale, TranslationNode> = {
       keyPrefixTruncated: '完整前綴: {prefix}',
       changeIcon: '更換圖標',
       removeIcon: '移除圖標',
-      searchIcon: '搜尋圖標...'
+      searchIcon: '搜尋圖標...',
+      ranking: '來源排行'
+    },
+    overview: {
+      attribution: '用量歸因',
+      modelRanking: '模型排行',
+      noBreakdown: '目前視窗暫無可歸因資料',
+      proxySourceHint: '啟用本地代理後可查看 API 來源排行',
+      costPrimary: '按費用排序',
+      tokenPrimary: '按 Token 排序',
+      requestsShort: '請求',
+      tokensShort: 'Token',
+      errorsShort: '錯誤',
+      avgRateShort: '速率',
+      filterActive: '已篩選',
+      clearFilter: '清除篩選'
     },
     subscription: {
       codex: 'Codex',
@@ -909,7 +877,6 @@ const messages: Record<AppLocale, TranslationNode> = {
       outputTokens: 'Output',
       totalTokens: 'Total',
       cost: 'Cost',
-      unlimited: 'Unlimited',
       avgRate: 'Rate',
       underDevelopment: 'Under Development',
       noMore: 'No more sessions',
@@ -927,16 +894,9 @@ const messages: Record<AppLocale, TranslationNode> = {
     },
     metrics: {
       summary: '5h Token {tokens} | Requests {requests}',
-      tokenRemaining: 'Token Remaining',
-      requestRemaining: 'Request Remaining',
-      currentRisk: 'Current Risk',
       windowSuffix: 'Window',
-      tokenUsageRate: 'Token Usage',
-      requestUsageRate: 'Requests Usage',
       shortTrend: 'Short-term Trend',
       samples: '{count} samples',
-      tokenLimit: 'Token Limit',
-      requestLimit: 'Request Limit',
       modelDistribution: 'Model Distribution',
       statusCodeDistribution: 'Status Code Distribution',
       successRate: 'Success Rate',
@@ -957,15 +917,6 @@ const messages: Record<AppLocale, TranslationNode> = {
       maxTtft: 'Max',
       modelTtftRanking: 'Model Response Speed',
       percent: 'Share'
-    },
-    alerts: {
-      title: 'Alerts',
-      empty: 'No active alerts. Everything looks stable.',
-      levelPrefix: {
-        warning: 'Warning',
-        critical: 'Critical'
-      },
-      fromSource: 'Current window reached threshold ({source})'
     },
     backendNote: {
       simulatedData: 'Using simulated data. Please ensure local session files are available.',
@@ -989,24 +940,11 @@ const messages: Record<AppLocale, TranslationNode> = {
       timezone: 'Timezone',
       timezonePlaceholder: 'UTC',
       refreshInterval: 'Refresh Interval (sec)',
-      warningThreshold: 'Warning Threshold (%)',
-      criticalThreshold: 'Critical Threshold (%)',
-      quotaTitle: 'Window Quotas',
-      manageQuotas: 'Manage Window Quotas',
-      manageQuotasDesc: 'Configure usage limits for each time window',
-      dataManagement: 'Data & Quotas',
+      dataManagement: 'Data & Pricing',
       general: 'General',
-      thresholds: 'Thresholds',
       zhCN: '简体中文',
       zhTW: '繁體中文',
       enUS: 'English',
-      billingType: 'Billing Type',
-      billingTypeToken: 'Token Billing',
-      billingTypeRequest: 'Request Billing',
-      billingTypeBoth: 'Both',
-      windowEnabled: 'Enabled',
-      tokenLimitPlaceholder: 'Token Limit',
-      requestLimitPlaceholder: 'Request Limit',
       window5h: '5 Hours',
       window24h: '24 Hours',
       windowToday: 'Today',
@@ -1014,8 +952,6 @@ const messages: Record<AppLocale, TranslationNode> = {
       window30d: '30 Days',
       windowCurrentMonth: 'Current Month',
       window1m: '1 Month',
-      unlimited: 'Unlimited',
-      setLimit: 'Set Limit',
       summaryWindow: 'Summary Display Window',
       dataSource: 'Data Collection Method',
       dataSourceLocal: 'Local Files',
@@ -1262,7 +1198,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       month12: 'Dec'
     },
     tools: {
-      all: 'All Tools'
+      all: 'All Tools',
+      ranking: 'Tool Ranking'
     },
     sources: {
       title: 'API Sources',
@@ -1290,7 +1227,22 @@ const messages: Record<AppLocale, TranslationNode> = {
       keyPrefixTruncated: 'Full prefix: {prefix}',
       changeIcon: 'Change icon',
       removeIcon: 'Remove icon',
-      searchIcon: 'Search icons...'
+      searchIcon: 'Search icons...',
+      ranking: 'Source Ranking'
+    },
+    overview: {
+      attribution: 'Usage Attribution',
+      modelRanking: 'Model Ranking',
+      noBreakdown: 'No attributable data in this window',
+      proxySourceHint: 'Enable Local Proxy to view API source ranking',
+      costPrimary: 'Sorted by cost',
+      tokenPrimary: 'Sorted by tokens',
+      requestsShort: 'Req',
+      tokensShort: 'Token',
+      errorsShort: 'Err',
+      avgRateShort: 'Rate',
+      filterActive: 'Filtered',
+      clearFilter: 'Clear filter'
     },
     subscription: {
       codex: 'Codex',
@@ -1362,17 +1314,6 @@ export function sourceLabel(locale: string | undefined, source: string | undefin
   return t(locale, key)
 }
 
-export function riskLabel(locale: string | undefined, risk: 'safe' | 'warning' | 'critical'): string {
-  if (risk === 'critical') return t(locale, 'common.critical')
-  if (risk === 'warning') return t(locale, 'common.warning')
-  return t(locale, 'common.safe')
-}
-
-export function alertMessage(locale: string | undefined, level: 'warning' | 'critical', source: string): string {
-  const prefix = t(locale, `alerts.levelPrefix.${level}`)
-  const body = t(locale, 'alerts.fromSource', { source: sourceLabel(locale, source) })
-  return `${prefix}: ${body}`
-}
 
 const NOTE_KEY_MAP: Record<string, string> = {
   NOTE_SIMULATED_DATA: 'backendNote.simulatedData',

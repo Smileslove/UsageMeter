@@ -3,10 +3,9 @@ import { ref, watch, computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
-import { type BillingType, type DataSource, type ThemeMode, type ToolTakeoverStatus } from '../types'
+import { type DataSource, type ThemeMode, type ToolTakeoverStatus } from '../types'
 import ModelPricingSettings from '../components/ModelPricingSettings.vue'
 import ApiSourceList from '../components/ApiSourceList.vue'
-import WindowQuotaSettings from '../components/WindowQuotaSettings.vue'
 import CurrencySettings from '../components/CurrencySettings.vue'
 import LobeIcon from '../components/LobeIcon.vue'
 import { TOOL_LOBE_ICONS } from '../iconConfig'
@@ -14,7 +13,7 @@ import { TOOL_LOBE_ICONS } from '../iconConfig'
 const store = useMonitorStore()
 
 // 子页面状态
-const subView = ref<'main' | 'model-pricing' | 'api-sources' | 'window-quotas' | 'currency'>('main')
+const subView = ref<'main' | 'model-pricing' | 'api-sources' | 'currency'>('main')
 
 // 监听 subView 变化，触发子组件刷新
 const modelPricingKey = ref(0)
@@ -40,11 +39,6 @@ const openApiSources = () => {
   subView.value = 'api-sources'
 }
 
-// 进入窗口配额管理
-const openWindowQuotas = () => {
-  subView.value = 'window-quotas'
-}
-
 // 进入货币设置
 const openCurrency = () => {
   subView.value = 'currency'
@@ -53,11 +47,8 @@ const openCurrency = () => {
 // 本地状态用于双向绑定
 const localLocale = ref(store.settings.locale)
 const localRefreshInterval = ref(store.settings.refreshIntervalSeconds)
-const localBillingType = ref<BillingType>(store.settings.billingType)
 const localDataSource = ref<DataSource>(store.settings.dataSource)
 const localTheme = ref<ThemeMode>(store.settings.theme || 'system')
-const localWarningThreshold = ref(store.settings.warningThreshold)
-const localCriticalThreshold = ref(store.settings.criticalThreshold)
 const localIncludeErrorRequests = ref(store.settings.proxy.includeErrorRequests ?? true)
 const takeoverStatuses = ref<ToolTakeoverStatus[]>([])
 const takeoverLoading = ref<Record<string, boolean>>({})
@@ -66,9 +57,6 @@ let resolveOfficialApiWarning: ((accepted: boolean) => void) | null = null
 
 // 开机自启动状态（从配置初始化，页面加载后同步系统状态）
 const autoStartEnabled = ref(store.settings.autoStart)
-
-// 本地配额状态
-const localQuotas = ref(JSON.parse(JSON.stringify(store.settings.quotas)))
 
 // 监听 store 变化同步到本地
 watch(() => store.settings.locale, (val) => {
@@ -79,10 +67,6 @@ watch(() => store.settings.refreshIntervalSeconds, (val) => {
   localRefreshInterval.value = val
 })
 
-watch(() => store.settings.billingType, (val) => {
-  localBillingType.value = val
-})
-
 watch(() => store.settings.dataSource, (val) => {
   localDataSource.value = val
 })
@@ -91,21 +75,9 @@ watch(() => store.settings.theme, (val) => {
   localTheme.value = val || 'system'
 })
 
-watch(() => store.settings.warningThreshold, (val) => {
-  localWarningThreshold.value = val
-})
-
-watch(() => store.settings.criticalThreshold, (val) => {
-  localCriticalThreshold.value = val
-})
-
 watch(() => store.settings.proxy.includeErrorRequests, (val) => {
   localIncludeErrorRequests.value = val ?? true
 })
-
-watch(() => store.settings.quotas, (val) => {
-  localQuotas.value = JSON.parse(JSON.stringify(val))
-}, { deep: true })
 
 // 更新本地状态并保存
 const handleLocaleChange = async () => {
@@ -120,11 +92,6 @@ const handleRefreshIntervalChange = async () => {
   await store.saveSettings()
 }
 
-const handleBillingTypeChange = async () => {
-  store.settings.billingType = localBillingType.value
-  await store.saveSettings()
-}
-
 const handleDataSourceChange = async () => {
   store.settings.dataSource = localDataSource.value
   await store.saveSettings()
@@ -132,28 +99,6 @@ const handleDataSourceChange = async () => {
 
 const handleThemeChange = async () => {
   store.settings.theme = localTheme.value
-  await store.saveSettings()
-}
-
-const handleWarningThresholdChange = async () => {
-  let value = Math.max(0, Math.min(100, Number(localWarningThreshold.value) || 70))
-  // 确保警告阈值 < 危险阈值
-  if (value >= store.settings.criticalThreshold) {
-    value = store.settings.criticalThreshold - 1
-  }
-  localWarningThreshold.value = value
-  store.settings.warningThreshold = value
-  await store.saveSettings()
-}
-
-const handleCriticalThresholdChange = async () => {
-  let value = Math.max(0, Math.min(100, Number(localCriticalThreshold.value) || 90))
-  // 确保危险阈值 > 警告阈值
-  if (value <= store.settings.warningThreshold) {
-    value = store.settings.warningThreshold + 1
-  }
-  localCriticalThreshold.value = value
-  store.settings.criticalThreshold = value
   await store.saveSettings()
 }
 
@@ -317,12 +262,6 @@ const formatUptime = (seconds: number): string => {
       :onBack="goBack"
     />
 
-    <!-- 窗口配额管理子页面 -->
-    <WindowQuotaSettings
-      v-show="subView === 'window-quotas'"
-      @back="goBack"
-    />
-
     <!-- 货币设置子页面 -->
     <CurrencySettings
       v-show="subView === 'currency'"
@@ -382,36 +321,6 @@ const formatUptime = (seconds: number): string => {
                   autoStartEnabled ? 'right-[2px]' : 'left-[2px]'
                 ]"
               ></div>
-            </div>
-          </div>
-          <div class="p-3 px-4 flex items-center justify-between text-[13px]">
-            <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.warningThreshold') }}</span>
-            <div class="flex items-center gap-1">
-              <input
-                type="number"
-                v-model.number="localWarningThreshold"
-                @blur="handleWarningThresholdChange"
-                @keyup.enter="handleWarningThresholdChange"
-                min="0"
-                max="99"
-                class="w-12 bg-transparent text-gray-500 dark:text-gray-400 text-sm font-mono outline-none text-right p-0"
-              />
-              <span class="text-xs text-gray-400">%</span>
-            </div>
-          </div>
-          <div class="p-3 px-4 flex items-center justify-between text-[13px]">
-            <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.criticalThreshold') }}</span>
-            <div class="flex items-center gap-1">
-              <input
-                type="number"
-                v-model.number="localCriticalThreshold"
-                @blur="handleCriticalThresholdChange"
-                @keyup.enter="handleCriticalThresholdChange"
-                min="1"
-                max="100"
-                class="w-12 bg-transparent text-gray-500 dark:text-gray-400 text-sm font-mono outline-none text-right p-0"
-              />
-              <span class="text-xs text-gray-400">%</span>
             </div>
           </div>
         </div>
@@ -668,44 +577,6 @@ const formatUptime = (seconds: number): string => {
             </div>
           </div>
 
-          <!-- 计费类型 -->
-          <div class="p-3 px-4">
-            <div class="flex items-center justify-between">
-              <span class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.billingType') }}</span>
-              <div class="flex gap-1.5">
-                <button
-                  v-for="type in ['token', 'request', 'both'] as BillingType[]"
-                  :key="type"
-                  @click="localBillingType = type; handleBillingTypeChange()"
-                  :class="[
-                    'py-1 px-2.5 rounded-md text-[11px] font-medium transition-all',
-                    localBillingType === type
-                      ? 'bg-blue-500 text-white'
-                      : 'bg-gray-100 dark:bg-neutral-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-neutral-700'
-                  ]"
-                >
-                  {{ t(store.settings.locale, `settings.billingType${type.charAt(0).toUpperCase() + type.slice(1)}`) }}
-                </button>
-              </div>
-            </div>
-          </div>
-  
-          <!-- 窗口配额入口 -->
-          <div
-            @click="openWindowQuotas"
-            class="p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors"
-          >
-            <div class="flex items-center justify-between">
-              <div>
-                <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.manageQuotas') }}</div>
-                <div class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.manageQuotasDesc') }}</div>
-              </div>
-              <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-              </svg>
-            </div>
-          </div>
-  
         </div>
       </div>
   

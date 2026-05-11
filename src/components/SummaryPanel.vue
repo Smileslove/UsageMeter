@@ -30,12 +30,6 @@ const getWindowLabel = (window: string): string => {
 // 切换时间窗口
 async function selectWindow(window: WindowName) {
   try {
-    // 自动启用选中窗口的配额
-    const quota = store.settings.quotas.find(q => q.window === window)
-    if (quota && !quota.enabled) {
-      quota.enabled = true
-    }
-
     store.settings.summaryWindow = window
     await store.saveSettings()
 
@@ -43,6 +37,7 @@ async function selectWindow(window: WindowName) {
     if (store.isProxyMode) {
       store.fetchRateSummary(window)
     }
+    store.fetchOverviewBreakdown(window)
   } catch (e) {
     console.error('Failed to save settings:', e)
   }

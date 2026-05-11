@@ -1,29 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useMonitorStore } from '../stores/monitor'
 import SummaryPanel from '../components/SummaryPanel.vue'
-import WindowCard from '../components/WindowCard.vue'
-import { WINDOW_ORDER, type WindowName } from '../types'
-
-const store = useMonitorStore()
-
-// 获取启用的窗口数据（按照固定顺序排列）
-const enabledWindows = computed(() => {
-  const enabled = store.settings.quotas
-    .filter(q => q.enabled)
-    .map(q => store.windows.find(w => w.window === q.window))
-    .filter((w): w is NonNullable<typeof w> => w !== undefined)
-
-  // 按照固定顺序排序
-  return enabled.sort((a, b) => {
-    const indexA = WINDOW_ORDER.indexOf(a.window as WindowName)
-    const indexB = WINDOW_ORDER.indexOf(b.window as WindowName)
-    return indexA - indexB
-  })
-})
-
-// 动态计算网格列数：所有模式都使用双列布局（因为现在使用嵌套圆环，空间足够）
-const gridCols = computed(() => 'grid-cols-2')
+import OverviewBreakdown from '../components/overview/OverviewBreakdown.vue'
 </script>
 
 <template>
@@ -31,9 +8,7 @@ const gridCols = computed(() => 'grid-cols-2')
     <!-- 顶部汇总面板 -->
     <SummaryPanel />
 
-    <!-- 时间窗口卡片列表 -->
-    <div :class="gridCols" class="grid gap-2">
-      <WindowCard v-for="window in enabledWindows" :key="window.window" :window="window" />
-    </div>
+    <!-- 当前窗口归因排行 -->
+    <OverviewBreakdown />
   </div>
 </template>

@@ -100,11 +100,6 @@ pub struct WindowUsage {
     pub cache_create_tokens: u64,
     pub cache_read_tokens: u64,
     pub request_used: u64,
-    pub token_limit: Option<u64>,
-    pub request_limit: Option<u64>,
-    pub token_percent: Option<f64>,
-    pub request_percent: Option<f64>,
-    pub risk_level: String,
     /// 该窗口的费用（美元）
     #[serde(default)]
     pub cost: f64,
@@ -141,7 +136,6 @@ pub struct UsageSummary {
     pub total_cache_create_tokens: u64,
     pub total_cache_read_tokens: u64,
     pub total_cost: f64,
-    pub overall_risk_level: String,
     #[serde(default)]
     pub total_success_requests: u64,
     #[serde(default)]
@@ -159,32 +153,4 @@ pub struct UsageSnapshot {
     pub note: Option<String>,
     pub summary: UsageSummary,
     pub model_distribution: Vec<ModelUsage>,
-}
-
-/// 安全计算百分比
-pub fn compute_percent(used: u64, limit: Option<u64>) -> Option<f64> {
-    match limit {
-        Some(0) => None,
-        Some(value) => Some((used as f64 / value as f64) * 100.0),
-        None => None,
-    }
-}
-
-/// 根据百分比确定风险等级
-pub fn risk_level(
-    token_percent: Option<f64>,
-    request_percent: Option<f64>,
-    warning: u8,
-    critical: u8,
-) -> String {
-    let max_percent = token_percent
-        .unwrap_or(0.0)
-        .max(request_percent.unwrap_or(0.0));
-    if max_percent >= critical as f64 {
-        "critical".to_string()
-    } else if max_percent >= warning as f64 {
-        "warning".to_string()
-    } else {
-        "safe".to_string()
-    }
 }
