@@ -183,7 +183,7 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
           type="button"
           :class="[
             effectiveSortMetric === option.value
-              ? 'active dark:!bg-gray-100 dark:!text-gray-950'
+              ? 'active dark:!bg-white/[0.14] dark:!text-gray-100'
               : 'dark:!text-gray-400 dark:hover:!text-gray-200'
           ]"
           @click="selectedSortMetric = option.value"
@@ -203,7 +203,7 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
 
     <template v-else>
       <section v-if="showSourceSection" class="rank-card dark:!border-white/10 dark:!bg-[#15161A]">
-        <div class="rank-card-header">
+        <div class="rank-card-header dark:!text-gray-200">
           <div class="flex items-center gap-1.5">
             <Layers3 class="h-3.5 w-3.5 text-sky-500 dark:text-sky-300" />
             <span>{{ t(locale, 'sources.ranking') }}</span>
@@ -213,26 +213,26 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
         <div
           v-for="item in sectionLimit(sourceItems)"
           :key="item.id"
-          class="rank-row"
+          class="rank-row dark:!border-white/10"
         >
-          <div class="rank-icon">
+          <div class="rank-icon dark:!bg-white/[0.08] dark:!text-gray-400">
             <LobeIcon v-if="item.icon" :slug="item.icon" :size="16" @error="() => {}" />
             <span v-else class="h-2.5 w-2.5 rounded-full" :style="{ backgroundColor: item.color || '#9CA3AF' }"></span>
           </div>
           <div class="rank-main">
             <div class="rank-line">
-              <span class="rank-label">{{ displayLabel(item) }}</span>
-              <span class="rank-value">{{ primaryValue(item) }}</span>
+              <span class="rank-label dark:!text-gray-200">{{ displayLabel(item) }}</span>
+              <span class="rank-value dark:!text-gray-100">{{ primaryValue(item) }}</span>
             </div>
             <div class="rank-meta">
               <span
                 v-for="meta in metaItems(item)"
                 :key="`${item.id}-${meta.tone}`"
-                class="rank-meta-pill"
+                class="rank-meta-pill dark:!border-white/35"
                 :class="`rank-meta-pill-${meta.tone}`"
               >
-                <span class="rank-meta-label">{{ meta.label }}</span>
-                <span class="rank-meta-value">{{ meta.value }}</span>
+                <span class="rank-meta-label dark:!text-gray-400">{{ meta.label }}</span>
+                <span class="rank-meta-value dark:!text-gray-300">{{ meta.value }}</span>
               </span>
             </div>
           </div>
@@ -245,7 +245,7 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
       </section>
 
       <section v-if="toolItems.length > 1 || store.settings.clientTools.activeToolFilter" class="rank-card dark:!border-white/10 dark:!bg-[#15161A]">
-        <div class="rank-card-header">
+        <div class="rank-card-header dark:!text-gray-200">
           <div class="flex items-center gap-1.5">
             <LayoutGrid class="h-3.5 w-3.5 text-emerald-500 dark:text-emerald-300" />
             <span>{{ t(locale, 'tools.ranking') }}</span>
@@ -255,26 +255,26 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
         <div
           v-for="item in sectionLimit(toolItems)"
           :key="item.id"
-          class="rank-row"
+          class="rank-row dark:!border-white/10"
         >
-          <div class="rank-icon">
+          <div class="rank-icon dark:!bg-white/[0.08] dark:!text-gray-400">
             <LobeIcon v-if="toolIcon(item)" :slug="toolIcon(item)!" :size="16" @error="() => {}" />
             <Boxes v-else class="h-3.5 w-3.5 text-gray-400" />
           </div>
           <div class="rank-main">
             <div class="rank-line">
-              <span class="rank-label">{{ displayLabel(item) }}</span>
-              <span class="rank-value">{{ primaryValue(item) }}</span>
+              <span class="rank-label dark:!text-gray-200">{{ displayLabel(item) }}</span>
+              <span class="rank-value dark:!text-gray-100">{{ primaryValue(item) }}</span>
             </div>
             <div class="rank-meta">
               <span
                 v-for="meta in metaItems(item)"
                 :key="`${item.id}-${meta.tone}`"
-                class="rank-meta-pill"
+                class="rank-meta-pill dark:!border-white/35"
                 :class="`rank-meta-pill-${meta.tone}`"
               >
-                <span class="rank-meta-label">{{ meta.label }}</span>
-                <span class="rank-meta-value">{{ meta.value }}</span>
+                <span class="rank-meta-label dark:!text-gray-400">{{ meta.label }}</span>
+                <span class="rank-meta-value dark:!text-gray-300">{{ meta.value }}</span>
               </span>
             </div>
           </div>
@@ -282,7 +282,7 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
       </section>
 
       <section v-if="modelItems.length > 0" class="rank-card dark:!border-white/10 dark:!bg-[#15161A]">
-        <div class="rank-card-header">
+        <div class="rank-card-header dark:!text-gray-200">
           <div class="flex items-center gap-1.5">
             <CircleDollarSign class="h-3.5 w-3.5 text-amber-500 dark:text-amber-300" />
             <span>{{ t(locale, 'overview.modelRanking') }}</span>
@@ -292,23 +292,23 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
         <div
           v-for="item in sectionLimit(modelItems, 5)"
           :key="item.id"
-          class="rank-row static"
+          class="rank-row static dark:!border-white/10"
         >
-          <div class="rank-index">{{ modelItems.indexOf(item) + 1 }}</div>
+          <div class="rank-index dark:!bg-white/[0.08] dark:!text-gray-400">{{ modelItems.indexOf(item) + 1 }}</div>
           <div class="rank-main">
             <div class="rank-line">
-              <span class="rank-label">{{ displayLabel(item) }}</span>
-              <span class="rank-value">{{ primaryValue(item) }}</span>
+              <span class="rank-label dark:!text-gray-200">{{ displayLabel(item) }}</span>
+              <span class="rank-value dark:!text-gray-100">{{ primaryValue(item) }}</span>
             </div>
             <div class="rank-meta">
               <span
                 v-for="meta in metaItems(item)"
                 :key="`${item.id}-${meta.tone}`"
-                class="rank-meta-pill"
+                class="rank-meta-pill dark:!border-white/35"
                 :class="`rank-meta-pill-${meta.tone}`"
               >
-                <span class="rank-meta-label">{{ meta.label }}</span>
-                <span class="rank-meta-value">{{ meta.value }}</span>
+                <span class="rank-meta-label dark:!text-gray-400">{{ meta.label }}</span>
+                <span class="rank-meta-value dark:!text-gray-300">{{ meta.value }}</span>
               </span>
             </div>
           </div>
