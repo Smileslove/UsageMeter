@@ -3,12 +3,13 @@ import { ref, watch, computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
-import { type DataSource, type ThemeMode, type ToolTakeoverStatus } from '../types'
+import { type DataSource, type ThemeMode, type ToolTakeoverStatus, type SyncStatus } from '../types'
 import ModelPricingSettings from '../components/ModelPricingSettings.vue'
 import ApiSourceList from '../components/ApiSourceList.vue'
 import CurrencySettings from '../components/CurrencySettings.vue'
 import LobeIcon from '../components/LobeIcon.vue'
 import { TOOL_LOBE_ICONS } from '../iconConfig'
+import { Eye, EyeOff } from 'lucide-vue-next'
 
 const store = useMonitorStore()
 
@@ -50,6 +51,28 @@ const localRefreshInterval = ref(store.settings.refreshIntervalSeconds)
 const localDataSource = ref<DataSource>(store.settings.dataSource)
 const localTheme = ref<ThemeMode>(store.settings.theme || 'system')
 const localIncludeErrorRequests = ref(store.settings.proxy.includeErrorRequests ?? true)
+const localSyncEnabled = ref(store.settings.sync?.enabled ?? false)
+const localSyncUrl = ref(store.settings.sync?.url ?? '')
+const localSyncUsername = ref(store.settings.sync?.username ?? '')
+const localSyncDeviceId = ref(store.settings.sync?.deviceId ?? '')
+const webdavPassword = ref(store.settings.sync?.password ?? '')
+const syncPassword = ref(store.settings.sync?.syncPassword ?? '')
+const rotatePasswordExpanded = ref(false)
+const rotateCurrentSyncPassword = ref('')
+const rotateNewSyncPassword = ref('')
+const rotateConfirmSyncPassword = ref('')
+const rotatePasswordBusy = ref(false)
+const rotatePasswordError = ref('')
+const passwordFieldsFocused = ref(false)
+const showWebdavPassword = ref(false)
+const showSyncPassword = ref(false)
+const showRotateCurrentPassword = ref(false)
+const showRotateNewPassword = ref(false)
+const showRotateConfirmPassword = ref(false)
+const syncBusy = ref(false)
+const syncStatus = ref<SyncStatus | null>(null)
+const syncMessage = ref('')
+const syncDeviceIdError = ref('')
 const takeoverStatuses = ref<ToolTakeoverStatus[]>([])
 const takeoverLoading = ref<Record<string, boolean>>({})
 const showOfficialApiWarning = ref(false)
@@ -79,6 +102,17 @@ watch(() => store.settings.proxy.includeErrorRequests, (val) => {
   localIncludeErrorRequests.value = val ?? true
 })
 
+watch(() => store.settings.sync, (val) => {
+  localSyncEnabled.value = val?.enabled ?? false
+  localSyncUrl.value = val?.url ?? ''
+  localSyncUsername.value = val?.username ?? ''
+  localSyncDeviceId.value = val?.deviceId ?? ''
+  if (!passwordFieldsFocused.value) {
+    webdavPassword.value = val?.password ?? ''
+    syncPassword.value = val?.syncPassword ?? ''
+  }
+}, { deep: true })
+
 // 更新本地状态并保存
 const handleLocaleChange = async () => {
   store.settings.locale = localLocale.value
@@ -105,6 +139,214 @@ const handleThemeChange = async () => {
 const handleIncludeErrorRequestsChange = async () => {
   store.settings.proxy.includeErrorRequests = localIncludeErrorRequests.value
   await store.saveSettings()
+}
+
+const DEVICE_ID_MAX_LENGTH = 48
+
+const normalizeDeviceId = (value: string) => {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, DEVICE_ID_MAX_LENGTH)
+}
+
+const validateDeviceId = (value: string) => {
+  if (!value) {
+    return t(store.settings.locale, 'settings.syncDeviceIdRequired')
+  }
+  if (value.length < 3) {
+    return t(store.settings.locale, 'settings.syncDeviceIdTooShort')
+  }
+  if (value.length > DEVICE_ID_MAX_LENGTH) {
+    return t(store.settings.locale, 'settings.syncDeviceIdTooLong')
+  }
+  if (!/^[a-z0-9._-]+$/.test(value)) {
+    return t(store.settings.locale, 'settings.syncDeviceIdInvalid')
+  }
+  if (!/[a-z0-9]/.test(value)) {
+    return t(store.settings.locale, 'settings.syncDeviceIdInvalid')
+  }
+  return ''
+}
+
+const applyDeviceIdInput = () => {
+  const normalized = normalizeDeviceId(localSyncDeviceId.value)
+  localSyncDeviceId.value = normalized
+  syncDeviceIdError.value = validateDeviceId(normalized)
+}
+
+const saveSyncSettings = async () => {
+  applyDeviceIdInput()
+  if (syncDeviceIdError.value) {
+    return false
+  }
+  store.settings.sync = {
+    enabled: localSyncEnabled.value,
+    provider: 'webdav',
+    url: localSyncUrl.value.trim(),
+    username: localSyncUsername.value.trim(),
+    password: webdavPassword.value,
+    syncPassword: syncPassword.value,
+    deviceId: localSyncDeviceId.value,
+    intervalMinutes: store.settings.sync?.intervalMinutes || 15,
+    syncOnStartup: store.settings.sync?.syncOnStartup || false,
+    syncOnQuit: store.settings.sync?.syncOnQuit || false,
+    includeSessionText: false
+  }
+  await store.saveSettings()
+  return true
+}
+
+const resetRotatePasswordForm = () => {
+  rotatePasswordExpanded.value = false
+  rotateCurrentSyncPassword.value = ''
+  rotateNewSyncPassword.value = ''
+  rotateConfirmSyncPassword.value = ''
+  rotatePasswordError.value = ''
+  showRotateCurrentPassword.value = false
+  showRotateNewPassword.value = false
+  showRotateConfirmPassword.value = false
+}
+
+const syncCredentials = () => ({
+  password: webdavPassword.value || store.settings.sync?.password || '',
+  syncPassword: syncPassword.value || store.settings.sync?.syncPassword || ''
+})
+
+const syncErrorMessage = (error: unknown) => {
+  const message = String(error)
+  if (message.startsWith('ERR_SYNC_DEVICE_ID_CONFLICT')) {
+    return t(store.settings.locale, 'settings.syncDeviceIdConflict')
+  }
+  if (message.startsWith('ERR_SYNC_DEVICE_ID_REQUIRED')) {
+    return t(store.settings.locale, 'settings.syncDeviceIdRequired')
+  }
+  if (message.startsWith('ERR_SYNC_DEVICE_ID_TOO_SHORT')) {
+    return t(store.settings.locale, 'settings.syncDeviceIdTooShort')
+  }
+  if (message.startsWith('ERR_SYNC_DEVICE_ID_TOO_LONG')) {
+    return t(store.settings.locale, 'settings.syncDeviceIdTooLong')
+  }
+  if (message.startsWith('ERR_SYNC_DEVICE_ID_INVALID')) {
+    return t(store.settings.locale, 'settings.syncDeviceIdInvalid')
+  }
+  if (message.startsWith('ERR_WEBDAV_URL_REQUIRED')) {
+    return t(store.settings.locale, 'settings.syncUrlRequired')
+  }
+  if (message.startsWith('ERR_WEBDAV_USERNAME_REQUIRED')) {
+    return t(store.settings.locale, 'settings.syncUsernameRequired')
+  }
+  if (message.startsWith('ERR_WEBDAV_PASSWORD_REQUIRED')) {
+    return t(store.settings.locale, 'settings.syncWebdavPasswordRequired')
+  }
+  if (message.startsWith('ERR_SYNC_PASSWORD_TOO_SHORT')) {
+    return t(store.settings.locale, 'settings.syncPasswordTooShort')
+  }
+  if (message.startsWith('ERR_SYNC_PASSWORD_ROTATION_REQUIRES_SYNC')) {
+    return t(store.settings.locale, 'settings.syncPasswordRotationRequiresSync')
+  }
+  if (message.startsWith('ERR_SYNC_DECRYPT_FAILED')) {
+    return t(store.settings.locale, 'settings.syncPasswordIncorrect')
+  }
+  if (message.startsWith('ERR_SYNC_KEYRING_MISSING')) {
+    return t(store.settings.locale, 'settings.syncPasswordRotationRequiresSync')
+  }
+  if (message.startsWith('ERR_SYNC_LEGACY_PACKAGE_UNSUPPORTED')) {
+    return t(store.settings.locale, 'settings.syncLegacyPackageUnsupported')
+  }
+  return message
+}
+
+const loadSyncStatus = async () => {
+  try {
+    syncStatus.value = await invoke<SyncStatus>('get_sync_status', { settings: store.settings })
+  } catch {
+    syncStatus.value = null
+  }
+}
+
+const testWebdav = async () => {
+  if (!(await saveSyncSettings())) {
+    syncMessage.value = syncDeviceIdError.value
+    return
+  }
+  syncBusy.value = true
+  syncMessage.value = ''
+  try {
+    await invoke('test_webdav_connection', { settings: store.settings, credentials: syncCredentials() })
+    syncMessage.value = t(store.settings.locale, 'settings.syncTestSuccess')
+    await loadSyncStatus()
+  } catch (e) {
+    syncMessage.value = syncErrorMessage(e)
+  } finally {
+    syncBusy.value = false
+  }
+}
+
+const runWebdavSync = async () => {
+  if (!(await saveSyncSettings())) {
+    syncMessage.value = syncDeviceIdError.value
+    return
+  }
+  syncBusy.value = true
+  syncMessage.value = ''
+  try {
+    syncStatus.value = await invoke<SyncStatus>('sync_now', { settings: store.settings, credentials: syncCredentials() })
+    syncMessage.value = t(store.settings.locale, 'settings.syncSuccess')
+    await store.refreshUsage()
+  } catch (e) {
+    syncMessage.value = syncErrorMessage(e)
+  } finally {
+    syncBusy.value = false
+  }
+}
+
+const rotateSyncPassword = async () => {
+  if (!(await saveSyncSettings())) {
+    syncMessage.value = syncDeviceIdError.value
+    return
+  }
+  rotatePasswordError.value = ''
+  if (rotateCurrentSyncPassword.value.length < 8) {
+    rotatePasswordError.value = t(store.settings.locale, 'settings.syncPasswordTooShort')
+    return
+  }
+  if (rotateNewSyncPassword.value.length < 8) {
+    rotatePasswordError.value = t(store.settings.locale, 'settings.syncPasswordTooShort')
+    return
+  }
+  if (rotateNewSyncPassword.value !== rotateConfirmSyncPassword.value) {
+    rotatePasswordError.value = t(store.settings.locale, 'settings.syncPasswordConfirmMismatch')
+    return
+  }
+
+  rotatePasswordBusy.value = true
+  syncMessage.value = ''
+  try {
+    await invoke('rotate_sync_password', {
+      settings: store.settings,
+      credentials: {
+        password: webdavPassword.value,
+        syncPassword: ''
+      },
+      payload: {
+        currentSyncPassword: rotateCurrentSyncPassword.value,
+        newSyncPassword: rotateNewSyncPassword.value
+      }
+    })
+    syncPassword.value = rotateNewSyncPassword.value
+    store.settings.sync.syncPassword = rotateNewSyncPassword.value
+    await store.saveSettings()
+    syncMessage.value = t(store.settings.locale, 'settings.syncPasswordRotationSuccess')
+    resetRotatePasswordForm()
+  } catch (e) {
+    rotatePasswordError.value = syncErrorMessage(e)
+  } finally {
+    rotatePasswordBusy.value = false
+  }
 }
 
 // 代理控制
@@ -210,6 +452,7 @@ const toggleAutoStart = async () => {
 // 初始化：从系统获取实际的 autostart 状态，与配置同步
 onMounted(async () => {
   await loadTakeoverStatuses()
+  await loadSyncStatus()
   try {
     const systemState = await invoke<boolean>('is_autostart_enabled')
     autoStartEnabled.value = systemState
@@ -574,6 +817,270 @@ const formatUptime = (seconds: number): string => {
               <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
               </svg>
+            </div>
+          </div>
+
+          <!-- WebDAV 同步 -->
+          <div class="p-3 px-4">
+            <div class="mb-3 flex items-center justify-between gap-3">
+              <div class="min-w-0">
+                <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.syncWebdav') }}</div>
+                <div class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.syncWebdavDesc') }}</div>
+              </div>
+              <div
+                :class="[
+                  'w-10 h-6 rounded-full relative cursor-pointer flex items-center shrink-0 transition-colors',
+                  localSyncEnabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-neutral-600'
+                ]"
+                @click="localSyncEnabled = !localSyncEnabled; saveSyncSettings()"
+              >
+                <div
+                  :class="[
+                    'w-[20px] h-[20px] bg-white rounded-full absolute shadow shadow-black/10 transition-all',
+                    localSyncEnabled ? 'right-[2px]' : 'left-[2px]'
+                  ]"
+                ></div>
+              </div>
+            </div>
+            <div v-if="localSyncEnabled" class="space-y-2 rounded-xl border border-gray-100 bg-gray-50/70 p-2.5 dark:border-neutral-800 dark:bg-neutral-900/60">
+              <div class="space-y-1">
+                <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">
+                  {{ t(store.settings.locale, 'settings.syncUrl') }}
+                </div>
+                <input
+                  v-model="localSyncUrl"
+                  @blur="saveSyncSettings"
+                  :placeholder="t(store.settings.locale, 'settings.syncUrl')"
+                  class="w-full rounded-lg border border-white/70 bg-white px-3 py-2 text-xs text-gray-700 outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-200"
+                />
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                <div class="space-y-1">
+                  <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">
+                    {{ t(store.settings.locale, 'settings.syncUsername') }}
+                  </div>
+                  <input
+                    v-model="localSyncUsername"
+                    @blur="saveSyncSettings"
+                    :placeholder="t(store.settings.locale, 'settings.syncUsername')"
+                    class="w-full rounded-lg border border-white/70 bg-white px-3 py-2 text-xs text-gray-700 outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-200"
+                  />
+                </div>
+                <div class="space-y-1">
+                  <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">
+                    {{ t(store.settings.locale, 'settings.syncDeviceId') }}
+                  </div>
+                  <input
+                    v-model="localSyncDeviceId"
+                    @input="applyDeviceIdInput"
+                    @blur="saveSyncSettings"
+                    :placeholder="t(store.settings.locale, 'settings.syncDeviceId')"
+                    :class="[
+                      'w-full rounded-lg border px-3 py-2 text-xs text-gray-700 outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:bg-neutral-950 dark:text-gray-200',
+                      syncDeviceIdError
+                        ? 'border-red-200 bg-red-50/60 dark:border-red-900 dark:bg-red-950/20'
+                      : 'border-white/70 bg-white dark:border-neutral-700'
+                    ]"
+                  />
+                  <div class="text-[10px] leading-relaxed text-gray-400 dark:text-gray-500">
+                    {{ t(store.settings.locale, 'settings.syncDeviceIdDesc') }}
+                  </div>
+                </div>
+              </div>
+              <div v-if="syncDeviceIdError" class="text-[10px] leading-relaxed text-red-500 dark:text-red-400">
+                {{ syncDeviceIdError }}
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                <div class="space-y-1">
+                  <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">
+                    {{ t(store.settings.locale, 'settings.syncWebdavPassword') }}
+                  </div>
+                  <div class="relative min-w-0">
+                    <input
+                      v-model="webdavPassword"
+                      @focus="passwordFieldsFocused = true"
+                      @blur="passwordFieldsFocused = false; saveSyncSettings()"
+                      :type="showWebdavPassword ? 'text' : 'password'"
+                      :placeholder="t(store.settings.locale, 'settings.syncWebdavPassword')"
+                      class="w-full rounded-lg border border-white/70 bg-white py-2 pl-3 pr-9 text-xs text-gray-700 outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-200"
+                    />
+                    <button
+                      type="button"
+                      class="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-neutral-800 dark:hover:text-gray-300"
+                      :aria-label="t(store.settings.locale, showWebdavPassword ? 'settings.hidePassword' : 'settings.showPassword')"
+                      @mousedown.prevent
+                      @click="showWebdavPassword = !showWebdavPassword"
+                    >
+                      <EyeOff v-if="showWebdavPassword" class="h-3.5 w-3.5" :stroke-width="2.2" />
+                      <Eye v-else class="h-3.5 w-3.5" :stroke-width="2.2" />
+                    </button>
+                  </div>
+                </div>
+                <div class="space-y-1">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">
+                      {{ t(store.settings.locale, 'settings.syncEncryptPassword') }}
+                    </div>
+                    <button
+                      type="button"
+                      class="shrink-0 text-[10px] font-medium text-blue-500 transition-colors hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300"
+                      @click="rotatePasswordExpanded = !rotatePasswordExpanded; rotatePasswordError = ''"
+                    >
+                      {{ t(store.settings.locale, 'settings.syncPasswordChange') }}
+                    </button>
+                  </div>
+                  <div class="relative min-w-0">
+                    <input
+                      v-model="syncPassword"
+                      @focus="passwordFieldsFocused = true"
+                      @blur="passwordFieldsFocused = false; saveSyncSettings()"
+                      :type="showSyncPassword ? 'text' : 'password'"
+                      :placeholder="t(store.settings.locale, 'settings.syncEncryptPassword')"
+                      class="w-full rounded-lg border border-white/70 bg-white py-2 pl-3 pr-9 text-xs text-gray-700 outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-200"
+                    />
+                    <button
+                      type="button"
+                      class="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-neutral-800 dark:hover:text-gray-300"
+                      :aria-label="t(store.settings.locale, showSyncPassword ? 'settings.hidePassword' : 'settings.showPassword')"
+                      @mousedown.prevent
+                      @click="showSyncPassword = !showSyncPassword"
+                    >
+                      <EyeOff v-if="showSyncPassword" class="h-3.5 w-3.5" :stroke-width="2.2" />
+                      <Eye v-else class="h-3.5 w-3.5" :stroke-width="2.2" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div
+                v-if="rotatePasswordExpanded"
+                class="space-y-2 rounded-lg border border-blue-100 bg-white/85 p-2.5 dark:border-blue-500/20 dark:bg-neutral-950/80"
+              >
+                <div class="text-[10px] text-gray-400 dark:text-gray-500">
+                  {{ t(store.settings.locale, 'settings.syncPasswordChangeDesc') }}
+                </div>
+                <div class="grid grid-cols-3 gap-2">
+                  <div class="space-y-1">
+                    <div class="text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                      {{ t(store.settings.locale, 'settings.syncPasswordCurrent') }}
+                    </div>
+                    <div class="relative min-w-0">
+                      <input
+                        v-model="rotateCurrentSyncPassword"
+                        :type="showRotateCurrentPassword ? 'text' : 'password'"
+                        class="w-full rounded-lg border border-white/70 bg-white py-2 pl-3 pr-9 text-xs text-gray-700 outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-200"
+                      />
+                      <button
+                        type="button"
+                        class="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-neutral-800 dark:hover:text-gray-300"
+                        :aria-label="t(store.settings.locale, showRotateCurrentPassword ? 'settings.hidePassword' : 'settings.showPassword')"
+                        @mousedown.prevent
+                        @click="showRotateCurrentPassword = !showRotateCurrentPassword"
+                      >
+                        <EyeOff v-if="showRotateCurrentPassword" class="h-3.5 w-3.5" :stroke-width="2.2" />
+                        <Eye v-else class="h-3.5 w-3.5" :stroke-width="2.2" />
+                      </button>
+                    </div>
+                  </div>
+                  <div class="space-y-1">
+                    <div class="text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                      {{ t(store.settings.locale, 'settings.syncPasswordNew') }}
+                    </div>
+                    <div class="relative min-w-0">
+                      <input
+                        v-model="rotateNewSyncPassword"
+                        :type="showRotateNewPassword ? 'text' : 'password'"
+                        class="w-full rounded-lg border border-white/70 bg-white py-2 pl-3 pr-9 text-xs text-gray-700 outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-200"
+                      />
+                      <button
+                        type="button"
+                        class="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-neutral-800 dark:hover:text-gray-300"
+                        :aria-label="t(store.settings.locale, showRotateNewPassword ? 'settings.hidePassword' : 'settings.showPassword')"
+                        @mousedown.prevent
+                        @click="showRotateNewPassword = !showRotateNewPassword"
+                      >
+                        <EyeOff v-if="showRotateNewPassword" class="h-3.5 w-3.5" :stroke-width="2.2" />
+                        <Eye v-else class="h-3.5 w-3.5" :stroke-width="2.2" />
+                      </button>
+                    </div>
+                  </div>
+                  <div class="space-y-1">
+                    <div class="text-[10px] font-medium text-gray-500 dark:text-gray-400">
+                      {{ t(store.settings.locale, 'settings.syncPasswordConfirm') }}
+                    </div>
+                    <div class="relative min-w-0">
+                      <input
+                        v-model="rotateConfirmSyncPassword"
+                        :type="showRotateConfirmPassword ? 'text' : 'password'"
+                        class="w-full rounded-lg border border-white/70 bg-white py-2 pl-3 pr-9 text-xs text-gray-700 outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-200"
+                      />
+                      <button
+                        type="button"
+                        class="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-neutral-800 dark:hover:text-gray-300"
+                        :aria-label="t(store.settings.locale, showRotateConfirmPassword ? 'settings.hidePassword' : 'settings.showPassword')"
+                        @mousedown.prevent
+                        @click="showRotateConfirmPassword = !showRotateConfirmPassword"
+                      >
+                        <EyeOff v-if="showRotateConfirmPassword" class="h-3.5 w-3.5" :stroke-width="2.2" />
+                        <Eye v-else class="h-3.5 w-3.5" :stroke-width="2.2" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div class="flex items-center justify-between gap-2">
+                  <div v-if="rotatePasswordError" class="min-w-0 truncate text-[10px] text-red-500 dark:text-red-400">
+                    {{ rotatePasswordError }}
+                  </div>
+                  <div v-else class="text-[10px] text-gray-400 dark:text-gray-500">
+                    {{ t(store.settings.locale, 'settings.syncPasswordChangeHint') }}
+                  </div>
+                  <div class="flex shrink-0 gap-1.5">
+                    <button
+                      type="button"
+                      class="rounded-lg bg-gray-100 px-2.5 py-1.5 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-200 dark:bg-neutral-800 dark:text-gray-300 dark:hover:bg-neutral-700"
+                      :disabled="rotatePasswordBusy"
+                      @click="resetRotatePasswordForm"
+                    >
+                      {{ t(store.settings.locale, 'common.cancel') }}
+                    </button>
+                    <button
+                      type="button"
+                      class="rounded-lg bg-blue-500 px-2.5 py-1.5 text-[11px] font-medium text-white transition-colors hover:bg-blue-600 disabled:opacity-50"
+                      :disabled="rotatePasswordBusy"
+                      @click="rotateSyncPassword"
+                    >
+                      {{ rotatePasswordBusy ? t(store.settings.locale, 'common.syncing') : t(store.settings.locale, 'common.confirm') }}
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div class="flex items-center justify-between gap-2">
+                <div class="min-w-0 text-[10px] text-gray-400">
+                  <span v-if="syncStatus?.lastSyncAt">
+                    {{ t(store.settings.locale, 'settings.syncLast') }} {{ new Date(syncStatus.lastSyncAt * 1000).toLocaleString() }}
+                  </span>
+                  <span v-else>{{ t(store.settings.locale, 'settings.syncNever') }}</span>
+                  <span v-if="syncStatus"> · {{ syncStatus.uploadedRequests }} / {{ syncStatus.importedRequests }}</span>
+                </div>
+                <div class="flex shrink-0 gap-1.5">
+                  <button
+                    class="rounded-lg bg-gray-100 px-2.5 py-1.5 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-200 disabled:opacity-50 dark:bg-neutral-800 dark:text-gray-300 dark:hover:bg-neutral-700"
+                    :disabled="syncBusy"
+                    @click="testWebdav"
+                  >
+                    {{ t(store.settings.locale, 'settings.syncTest') }}
+                  </button>
+                  <button
+                    class="rounded-lg bg-blue-500 px-2.5 py-1.5 text-[11px] font-medium text-white transition-colors hover:bg-blue-600 disabled:opacity-50"
+                    :disabled="syncBusy"
+                    @click="runWebdavSync"
+                  >
+                    {{ syncBusy ? t(store.settings.locale, 'common.syncing') : t(store.settings.locale, 'settings.syncNow') }}
+                  </button>
+                </div>
+              </div>
+              <div v-if="syncMessage" class="truncate text-[10px] text-gray-400">
+                {{ syncMessage }}
+              </div>
             </div>
           </div>
 

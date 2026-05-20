@@ -17,6 +17,61 @@ struct DirtySessionSync {
     project_key: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncExportSession {
+    pub session_id: String,
+    pub tool: String,
+    pub project_key: Option<String>,
+    pub project_name: Option<String>,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub request_count: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cache_create_tokens: u64,
+    pub total_cache_read_tokens: u64,
+    pub total_tokens: u64,
+    pub model_list: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncExportRequest {
+    pub request_key: String,
+    pub session_id: String,
+    pub tool: String,
+    pub project_key: Option<String>,
+    pub timestamp: i64,
+    pub message_id: Option<String>,
+    pub dedupe_key: String,
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_create_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub total_tokens: u64,
+    pub is_subagent: bool,
+    pub source_kind: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncExportData {
+    pub sessions: Vec<SyncExportSession>,
+    pub requests: Vec<SyncExportRequest>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteSyncDevice {
+    pub device_id: String,
+    pub last_seen_at: Option<i64>,
+    pub last_export_seq: i64,
+    pub sync_status: String,
+    pub updated_at: i64,
+}
+
 pub struct LocalUsageDatabase {
     conn: Arc<Mutex<Connection>>,
 }
@@ -193,6 +248,72 @@ impl LocalUsageDatabase {
                 ON local_sync_cursors(tool);
             CREATE INDEX IF NOT EXISTS idx_local_sync_cursors_file_path
                 ON local_sync_cursors(file_path);
+
+            CREATE TABLE IF NOT EXISTS remote_devices (
+                device_id TEXT PRIMARY KEY,
+                last_seen_at INTEGER,
+                last_export_seq INTEGER NOT NULL DEFAULT 0,
+                sync_status TEXT NOT NULL DEFAULT 'ready',
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS remote_request_facts (
+                request_key TEXT NOT NULL,
+                origin_device_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                tool TEXT NOT NULL,
+                project_key TEXT,
+                timestamp INTEGER NOT NULL,
+                message_id TEXT,
+                dedupe_key TEXT NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                is_subagent INTEGER NOT NULL DEFAULT 0,
+                source_kind TEXT NOT NULL DEFAULT 'remote_sync',
+                imported_at INTEGER NOT NULL,
+                export_seq INTEGER NOT NULL,
+                PRIMARY KEY(origin_device_id, request_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_remote_request_facts_timestamp
+                ON remote_request_facts(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_remote_request_facts_session_id
+                ON remote_request_facts(session_id);
+            CREATE INDEX IF NOT EXISTS idx_remote_request_facts_tool_timestamp
+                ON remote_request_facts(tool, timestamp);
+
+            CREATE TABLE IF NOT EXISTS remote_sessions (
+                origin_device_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                tool TEXT NOT NULL,
+                project_key TEXT,
+                project_name TEXT,
+                start_time INTEGER NOT NULL DEFAULT 0,
+                end_time INTEGER NOT NULL DEFAULT 0,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                total_input_tokens INTEGER NOT NULL DEFAULT 0,
+                total_output_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                model_list_json TEXT NOT NULL DEFAULT '[]',
+                imported_at INTEGER NOT NULL,
+                export_seq INTEGER NOT NULL,
+                PRIMARY KEY(origin_device_id, session_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_remote_sessions_tool
+                ON remote_sessions(tool);
+            CREATE INDEX IF NOT EXISTS idx_remote_sessions_end_time
+                ON remote_sessions(end_time);
+
+            CREATE TABLE IF NOT EXISTS webdav_sync_state (
+                state_key TEXT PRIMARY KEY,
+                state_value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
             "#,
         )
         .map_err(|e| format!("Failed to create local usage tables: {}", e))?;
@@ -216,42 +337,81 @@ impl LocalUsageDatabase {
 
     fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 2 {
+        if schema_version >= 3 {
             return Ok(());
+        }
+
+        if schema_version < 2 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start local usage schema migration: {}", e))?;
+
+            tx.execute_batch(
+                r#"
+                DROP TABLE IF EXISTS local_request_facts;
+                DELETE FROM local_sessions;
+                DELETE FROM local_source_files;
+                DELETE FROM local_sync_cursors;
+                "#,
+            )
+            .map_err(|e| format!("Failed to reset local usage cache during migration: {}", e))?;
+
+            Self::create_cache_tables(&tx)?;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '2', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| {
+                format!(
+                    "Failed to update migrated local usage schema version: {}",
+                    e
+                )
+            })?;
+
+            tx.commit()
+                .map_err(|e| format!("Failed to commit local usage schema migration: {}", e))?;
         }
 
         let tx = conn
             .unchecked_transaction()
-            .map_err(|e| format!("Failed to start local usage schema migration: {}", e))?;
+            .map_err(|e| format!("Failed to start remote device schema migration: {}", e))?;
 
         tx.execute_batch(
             r#"
-            DROP TABLE IF EXISTS local_request_facts;
-            DELETE FROM local_sessions;
-            DELETE FROM local_source_files;
-            DELETE FROM local_sync_cursors;
+            CREATE TABLE IF NOT EXISTS remote_devices_v3 (
+                device_id TEXT PRIMARY KEY,
+                last_seen_at INTEGER,
+                last_export_seq INTEGER NOT NULL DEFAULT 0,
+                sync_status TEXT NOT NULL DEFAULT 'ready',
+                updated_at INTEGER NOT NULL
+            );
+            INSERT INTO remote_devices_v3 (
+                device_id, last_seen_at, last_export_seq, sync_status, updated_at
+            )
+            SELECT device_id, last_seen_at, last_export_seq, sync_status, updated_at
+            FROM remote_devices;
+            DROP TABLE remote_devices;
+            ALTER TABLE remote_devices_v3 RENAME TO remote_devices;
             "#,
         )
-        .map_err(|e| format!("Failed to reset local usage cache during migration: {}", e))?;
+        .map_err(|e| format!("Failed to migrate remote devices schema: {}", e))?;
 
-        Self::create_cache_tables(&tx)?;
         tx.execute(
             "INSERT INTO local_sync_state (state_key, state_value, updated_at)
-             VALUES ('schema_version', '2', ?1)
+             VALUES ('schema_version', '3', ?1)
              ON CONFLICT(state_key) DO UPDATE
              SET state_value = excluded.state_value,
                  updated_at = excluded.updated_at",
             params![chrono::Utc::now().timestamp()],
         )
-        .map_err(|e| {
-            format!(
-                "Failed to update migrated local usage schema version: {}",
-                e
-            )
-        })?;
+        .map_err(|e| format!("Failed to update remote device schema version: {}", e))?;
 
         tx.commit()
-            .map_err(|e| format!("Failed to commit local usage schema migration: {}", e))?;
+            .map_err(|e| format!("Failed to commit remote device schema migration: {}", e))?;
         Ok(())
     }
 
@@ -734,6 +894,485 @@ impl LocalUsageDatabase {
             .optional()
             .map_err(|e| format!("Failed to query local session by id: {}", e))?;
         Ok(session)
+    }
+
+    pub fn get_sync_export_data(&self) -> Result<SyncExportData, String> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut session_stmt = conn
+            .prepare(
+                "SELECT session_id, tool, project_key, project_name, start_time, end_time,
+                        request_count, total_input_tokens, total_output_tokens,
+                        total_cache_create_tokens, total_cache_read_tokens, total_tokens,
+                        model_list_json
+                 FROM local_sessions
+                 ORDER BY end_time ASC",
+            )
+            .map_err(|e| format!("Failed to prepare sync session export: {}", e))?;
+        let session_rows = session_stmt
+            .query_map([], |row| {
+                let model_list_json: String = row.get(12)?;
+                Ok(SyncExportSession {
+                    session_id: row.get(0)?,
+                    tool: row.get(1)?,
+                    project_key: row.get(2)?,
+                    project_name: row.get(3)?,
+                    start_time: row.get(4)?,
+                    end_time: row.get(5)?,
+                    request_count: row.get::<_, i64>(6)? as u64,
+                    total_input_tokens: row.get::<_, i64>(7)? as u64,
+                    total_output_tokens: row.get::<_, i64>(8)? as u64,
+                    total_cache_create_tokens: row.get::<_, i64>(9)? as u64,
+                    total_cache_read_tokens: row.get::<_, i64>(10)? as u64,
+                    total_tokens: row.get::<_, i64>(11)? as u64,
+                    model_list: serde_json::from_str(&model_list_json).unwrap_or_default(),
+                })
+            })
+            .map_err(|e| format!("Failed to query sync session export: {}", e))?;
+
+        let mut sessions = Vec::new();
+        for row in session_rows {
+            sessions.push(row.map_err(|e| format!("Failed to read sync session row: {}", e))?);
+        }
+
+        let mut request_stmt = conn
+            .prepare(
+                "SELECT session_id, tool, project_key, timestamp, message_id, dedupe_key,
+                        model, input_tokens, output_tokens, cache_create_tokens,
+                        cache_read_tokens, total_tokens, is_subagent
+                 FROM local_request_facts
+                 ORDER BY timestamp ASC",
+            )
+            .map_err(|e| format!("Failed to prepare sync request export: {}", e))?;
+        let request_rows = request_stmt
+            .query_map([], |row| {
+                let session_id: String = row.get(0)?;
+                let tool: String = row.get(1)?;
+                let timestamp: i64 = row.get(3)?;
+                let message_id: Option<String> = row.get(4)?;
+                let model: String = row.get(6)?;
+                let input_tokens = row.get::<_, i64>(7)? as u64;
+                let output_tokens = row.get::<_, i64>(8)? as u64;
+                let total_tokens = row.get::<_, i64>(11)? as u64;
+                let request_key = match message_id.as_deref() {
+                    Some(value) if !value.trim().is_empty() => format!("{}:{}", tool, value),
+                    _ => format!(
+                        "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                        tool,
+                        session_id,
+                        timestamp,
+                        model,
+                        input_tokens,
+                        output_tokens,
+                        row.get::<_, i64>(9)? as u64,
+                        row.get::<_, i64>(10)? as u64,
+                        total_tokens
+                    ),
+                };
+
+                Ok(SyncExportRequest {
+                    request_key,
+                    session_id,
+                    tool,
+                    project_key: row.get(2)?,
+                    timestamp,
+                    message_id,
+                    dedupe_key: row.get(5)?,
+                    model,
+                    input_tokens,
+                    output_tokens,
+                    cache_create_tokens: row.get::<_, i64>(9)? as u64,
+                    cache_read_tokens: row.get::<_, i64>(10)? as u64,
+                    total_tokens,
+                    is_subagent: row.get::<_, i64>(12)? != 0,
+                    source_kind: "local_usage".to_string(),
+                })
+            })
+            .map_err(|e| format!("Failed to query sync request export: {}", e))?;
+
+        let mut requests = Vec::new();
+        for row in request_rows {
+            requests.push(row.map_err(|e| format!("Failed to read sync request row: {}", e))?);
+        }
+
+        Ok(SyncExportData { sessions, requests })
+    }
+
+    pub fn import_remote_sync_data(
+        &self,
+        device_id: &str,
+        export_seq: i64,
+        data: &SyncExportData,
+    ) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp();
+        let conn = self.conn.lock().unwrap();
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to start remote sync import: {}", e))?;
+
+        tx.execute(
+            "INSERT INTO remote_devices (
+                device_id, last_seen_at, last_export_seq, sync_status, updated_at
+             ) VALUES (?1, ?2, ?3, 'ready', ?4)
+             ON CONFLICT(device_id) DO UPDATE SET
+                last_seen_at = excluded.last_seen_at,
+                last_export_seq = MAX(remote_devices.last_export_seq, excluded.last_export_seq),
+                sync_status = 'ready',
+                updated_at = excluded.updated_at",
+            params![device_id, now, export_seq, now],
+        )
+        .map_err(|e| format!("Failed to upsert remote device: {}", e))?;
+
+        for session in &data.sessions {
+            let model_list_json = serde_json::to_string(&session.model_list)
+                .map_err(|e| format!("Failed to serialize remote session models: {}", e))?;
+            tx.execute(
+                "INSERT INTO remote_sessions (
+                    origin_device_id, session_id, tool, project_key, project_name, start_time,
+                    end_time, request_count, total_input_tokens, total_output_tokens,
+                    total_cache_create_tokens, total_cache_read_tokens, total_tokens,
+                    model_list_json, imported_at, export_seq
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                 ON CONFLICT(origin_device_id, session_id) DO UPDATE SET
+                    tool = excluded.tool,
+                    project_key = excluded.project_key,
+                    project_name = excluded.project_name,
+                    start_time = excluded.start_time,
+                    end_time = excluded.end_time,
+                    request_count = excluded.request_count,
+                    total_input_tokens = excluded.total_input_tokens,
+                    total_output_tokens = excluded.total_output_tokens,
+                    total_cache_create_tokens = excluded.total_cache_create_tokens,
+                    total_cache_read_tokens = excluded.total_cache_read_tokens,
+                    total_tokens = excluded.total_tokens,
+                    model_list_json = excluded.model_list_json,
+                    imported_at = excluded.imported_at,
+                    export_seq = excluded.export_seq
+                 WHERE excluded.export_seq >= remote_sessions.export_seq",
+                params![
+                    device_id,
+                    session.session_id.as_str(),
+                    session.tool.as_str(),
+                    session.project_key.as_deref(),
+                    session.project_name.as_deref(),
+                    session.start_time,
+                    session.end_time,
+                    session.request_count as i64,
+                    session.total_input_tokens as i64,
+                    session.total_output_tokens as i64,
+                    session.total_cache_create_tokens as i64,
+                    session.total_cache_read_tokens as i64,
+                    session.total_tokens as i64,
+                    model_list_json.as_str(),
+                    now,
+                    export_seq
+                ],
+            )
+            .map_err(|e| format!("Failed to upsert remote session: {}", e))?;
+        }
+
+        for request in &data.requests {
+            tx.execute(
+                "INSERT INTO remote_request_facts (
+                    request_key, origin_device_id, session_id, tool, project_key, timestamp,
+                    message_id, dedupe_key, model, input_tokens, output_tokens,
+                    cache_create_tokens, cache_read_tokens, total_tokens, is_subagent,
+                    source_kind, imported_at, export_seq
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                 ON CONFLICT(origin_device_id, request_key) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    tool = excluded.tool,
+                    project_key = excluded.project_key,
+                    timestamp = excluded.timestamp,
+                    message_id = excluded.message_id,
+                    dedupe_key = excluded.dedupe_key,
+                    model = excluded.model,
+                    input_tokens = excluded.input_tokens,
+                    output_tokens = excluded.output_tokens,
+                    cache_create_tokens = excluded.cache_create_tokens,
+                    cache_read_tokens = excluded.cache_read_tokens,
+                    total_tokens = excluded.total_tokens,
+                    is_subagent = excluded.is_subagent,
+                    source_kind = excluded.source_kind,
+                    imported_at = excluded.imported_at,
+                    export_seq = excluded.export_seq
+                 WHERE excluded.export_seq >= remote_request_facts.export_seq",
+                params![
+                    request.request_key.as_str(),
+                    device_id,
+                    request.session_id.as_str(),
+                    request.tool.as_str(),
+                    request.project_key.as_deref(),
+                    request.timestamp,
+                    request.message_id.as_deref(),
+                    request.dedupe_key.as_str(),
+                    request.model.as_str(),
+                    request.input_tokens as i64,
+                    request.output_tokens as i64,
+                    request.cache_create_tokens as i64,
+                    request.cache_read_tokens as i64,
+                    request.total_tokens as i64,
+                    if request.is_subagent { 1 } else { 0 },
+                    request.source_kind.as_str(),
+                    now,
+                    export_seq
+                ],
+            )
+            .map_err(|e| format!("Failed to upsert remote request fact: {}", e))?;
+        }
+
+        tx.execute(
+            "INSERT INTO webdav_sync_state (state_key, state_value, updated_at)
+             VALUES (?1, '1', ?2)
+             ON CONFLICT(state_key) DO UPDATE SET
+                state_value = excluded.state_value,
+                updated_at = excluded.updated_at",
+            params![format!("imported:{}:{}", device_id, export_seq), now],
+        )
+        .map_err(|e| format!("Failed to mark remote sync package imported: {}", e))?;
+
+        tx.commit()
+            .map_err(|e| format!("Failed to commit remote sync import: {}", e))?;
+        Ok(())
+    }
+
+    pub fn package_imported(&self, device_id: &str, export_seq: i64) -> Result<bool, String> {
+        Ok(self
+            .get_webdav_sync_state(&format!("imported:{}:{}", device_id, export_seq))?
+            .is_some())
+    }
+
+    pub fn get_remote_request_records(
+        &self,
+        tool_filter: &ToolFilter,
+    ) -> Result<Vec<LocalRequestRecord>, String> {
+        let conn = self.conn.lock().unwrap();
+        let (sql, param) = match tool_filter {
+            ToolFilter::All => (
+                "SELECT session_id, tool, timestamp, COALESCE(message_id, ''),
+                        input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
+                        total_tokens, model, is_subagent
+                 FROM remote_request_facts
+                 ORDER BY timestamp ASC"
+                    .to_string(),
+                None,
+            ),
+            ToolFilter::Tool(tool) => (
+                "SELECT session_id, tool, timestamp, COALESCE(message_id, ''),
+                        input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
+                        total_tokens, model, is_subagent
+                 FROM remote_request_facts
+                 WHERE tool = ?1
+                 ORDER BY timestamp ASC"
+                    .to_string(),
+                Some(tool.clone()),
+            ),
+        };
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare get_remote_request_records: {}", e))?;
+        let mapper = |row: &rusqlite::Row<'_>| {
+            Ok(LocalRequestRecord {
+                session_id: row.get(0)?,
+                tool: row.get(1)?,
+                timestamp: row.get(2)?,
+                message_id: row.get(3)?,
+                input_tokens: row.get::<_, i64>(4)? as u64,
+                output_tokens: row.get::<_, i64>(5)? as u64,
+                cache_create_tokens: row.get::<_, i64>(6)? as u64,
+                cache_read_tokens: row.get::<_, i64>(7)? as u64,
+                total_tokens: row.get::<_, i64>(8)? as u64,
+                model: row.get(9)?,
+                is_subagent: row.get::<_, i64>(10)? != 0,
+            })
+        };
+        let rows = match param {
+            Some(tool) => stmt
+                .query_map(params![tool], mapper)
+                .map_err(|e| format!("Failed to query remote records by tool: {}", e))?,
+            None => stmt
+                .query_map([], mapper)
+                .map_err(|e| format!("Failed to query remote records: {}", e))?,
+        };
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| format!("Failed to read remote request row: {}", e))?);
+        }
+        Ok(result)
+    }
+
+    pub fn get_remote_sessions(
+        &self,
+        tool_filter: &ToolFilter,
+    ) -> Result<Vec<SessionMeta>, String> {
+        let conn = self.conn.lock().unwrap();
+        let (sql, param) = match tool_filter {
+            ToolFilter::All => (
+                "SELECT session_id, tool, project_key, project_name, start_time, end_time,
+                        request_count, total_input_tokens, total_output_tokens,
+                        total_cache_create_tokens, total_cache_read_tokens, model_list_json
+                 FROM remote_sessions
+                 ORDER BY end_time DESC"
+                    .to_string(),
+                None,
+            ),
+            ToolFilter::Tool(tool) => (
+                "SELECT session_id, tool, project_key, project_name, start_time, end_time,
+                        request_count, total_input_tokens, total_output_tokens,
+                        total_cache_create_tokens, total_cache_read_tokens, model_list_json
+                 FROM remote_sessions
+                 WHERE tool = ?1
+                 ORDER BY end_time DESC"
+                    .to_string(),
+                Some(tool.clone()),
+            ),
+        };
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare get_remote_sessions: {}", e))?;
+        let mapper = |row: &rusqlite::Row<'_>| {
+            let project_key: Option<String> = row.get(2)?;
+            let model_list_json: String = row.get(11)?;
+            Ok(SessionMeta {
+                session_id: row.get(0)?,
+                tool: row.get(1)?,
+                cwd: project_key.clone(),
+                project_name: row.get(3)?,
+                topic: None,
+                last_prompt: None,
+                session_name: None,
+                file_path: String::new(),
+                file_size: 0,
+                last_modified: row.get(5)?,
+                total_input_tokens: row.get::<_, i64>(7)? as u64,
+                total_output_tokens: row.get::<_, i64>(8)? as u64,
+                total_cache_create_tokens: row.get::<_, i64>(9)? as u64,
+                total_cache_read_tokens: row.get::<_, i64>(10)? as u64,
+                models: serde_json::from_str(&model_list_json).unwrap_or_default(),
+                message_count: row.get::<_, i64>(6)? as u64,
+                start_time: row.get(4)?,
+                end_time: row.get(5)?,
+                source: "remote_sync".to_string(),
+                message_ids: Vec::new(),
+            })
+        };
+        let rows = match param {
+            Some(tool) => stmt
+                .query_map(params![tool], mapper)
+                .map_err(|e| format!("Failed to query remote sessions by tool: {}", e))?,
+            None => stmt
+                .query_map([], mapper)
+                .map_err(|e| format!("Failed to query remote sessions: {}", e))?,
+        };
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| format!("Failed to read remote session row: {}", e))?);
+        }
+        Ok(result)
+    }
+
+    pub fn upsert_webdav_sync_state(&self, key: &str, value: &str) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO webdav_sync_state (state_key, state_value, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(state_key) DO UPDATE SET
+                state_value = excluded.state_value,
+                updated_at = excluded.updated_at",
+            params![key, value, now],
+        )
+        .map_err(|e| format!("Failed to upsert WebDAV sync state: {}", e))?;
+        Ok(())
+    }
+
+    pub fn get_webdav_sync_state(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT state_value FROM webdav_sync_state WHERE state_key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read WebDAV sync state: {}", e))
+    }
+
+    pub fn list_remote_devices(&self) -> Result<Vec<RemoteSyncDevice>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT device_id, last_seen_at, last_export_seq, sync_status, updated_at
+                 FROM remote_devices
+                 ORDER BY last_seen_at DESC",
+            )
+            .map_err(|e| format!("Failed to prepare list_remote_devices: {}", e))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(RemoteSyncDevice {
+                    device_id: row.get(0)?,
+                    last_seen_at: row.get(1)?,
+                    last_export_seq: row.get(2)?,
+                    sync_status: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            })
+            .map_err(|e| format!("Failed to query remote devices: {}", e))?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| format!("Failed to read remote device row: {}", e))?);
+        }
+        Ok(result)
+    }
+
+    pub fn remove_remote_device(&self, device_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to start remote device removal: {}", e))?;
+        tx.execute(
+            "DELETE FROM remote_request_facts WHERE origin_device_id = ?1",
+            params![device_id],
+        )
+        .map_err(|e| format!("Failed to delete remote device requests: {}", e))?;
+        tx.execute(
+            "DELETE FROM remote_sessions WHERE origin_device_id = ?1",
+            params![device_id],
+        )
+        .map_err(|e| format!("Failed to delete remote device sessions: {}", e))?;
+        tx.execute(
+            "DELETE FROM remote_devices WHERE device_id = ?1",
+            params![device_id],
+        )
+        .map_err(|e| format!("Failed to delete remote device: {}", e))?;
+        tx.execute(
+            "DELETE FROM webdav_sync_state WHERE state_key LIKE ?1",
+            params![format!("imported:{}:%", device_id)],
+        )
+        .map_err(|e| format!("Failed to delete remote device import markers: {}", e))?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit remote device removal: {}", e))?;
+        Ok(())
+    }
+
+    pub fn clear_imported_remote_data(&self) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to start imported sync clear: {}", e))?;
+        tx.execute("DELETE FROM remote_request_facts", [])
+            .map_err(|e| format!("Failed to clear remote request facts: {}", e))?;
+        tx.execute("DELETE FROM remote_sessions", [])
+            .map_err(|e| format!("Failed to clear remote sessions: {}", e))?;
+        tx.execute("DELETE FROM remote_devices", [])
+            .map_err(|e| format!("Failed to clear remote devices: {}", e))?;
+        tx.execute(
+            "DELETE FROM webdav_sync_state WHERE state_key LIKE 'imported:%'",
+            [],
+        )
+        .map_err(|e| format!("Failed to clear imported sync state: {}", e))?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit imported sync clear: {}", e))?;
+        Ok(())
     }
 }
 

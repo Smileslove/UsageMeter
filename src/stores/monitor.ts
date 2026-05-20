@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult } from '../types'
+import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SyncSettings } from '../types'
 
 const defaultModelPricing: ModelPricingSettings = {
   matchMode: 'fuzzy',
@@ -18,6 +18,20 @@ const defaultCurrency: CurrencySettings = {
   exchangeRates: { USD: 1.0 },
   trackedCurrencies: ['USD'],
   lastRateUpdate: null
+}
+
+const defaultSync: SyncSettings = {
+  enabled: false,
+  provider: 'webdav',
+  url: '',
+  username: '',
+  password: '',
+  syncPassword: '',
+  deviceId: '',
+  intervalMinutes: 15,
+  syncOnStartup: false,
+  syncOnQuit: false,
+  includeSessionText: false
 }
 
 const defaultClientTools: ClientToolSettings = {
@@ -60,7 +74,8 @@ const defaultSettings: AppSettings = {
   autoStart: false,
   sourceAware: defaultSourceAware,
   clientTools: defaultClientTools,
-  currency: defaultCurrency
+  currency: defaultCurrency,
+  sync: defaultSync
 }
 
 export const useMonitorStore = defineStore('monitor', {
@@ -211,6 +226,24 @@ export const useMonitorStore = defineStore('monitor', {
           if (!this.settings.currency.trackedCurrencies?.length) {
             this.settings.currency.trackedCurrencies = ['USD']
           }
+        }
+        if (!this.settings.sync) {
+          this.settings.sync = defaultSync
+        } else {
+          this.settings.sync.provider = 'webdav'
+          if (this.settings.sync.password === undefined) {
+            this.settings.sync.password = ''
+          }
+          if (this.settings.sync.syncPassword === undefined) {
+            this.settings.sync.syncPassword = ''
+          }
+          if (!this.settings.sync.deviceId) {
+            this.settings.sync.deviceId = defaultSync.deviceId
+          }
+          if (!this.settings.sync.intervalMinutes) {
+            this.settings.sync.intervalMinutes = defaultSync.intervalMinutes
+          }
+          this.settings.sync.includeSessionText = false
         }
       } catch (e) {
         this.error = String(e)

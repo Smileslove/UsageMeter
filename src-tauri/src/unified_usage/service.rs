@@ -21,13 +21,15 @@ fn resolve_merge_mode(settings: &AppSettings) -> MergeMode {
 fn request_key_for_local(record: &LocalRequestRecord) -> String {
     if record.message_id.trim().is_empty() {
         format!(
-            "{}:{}:{}:{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
             record.tool,
             record.session_id,
             record.timestamp,
             record.model,
             record.input_tokens,
             record.output_tokens,
+            record.cache_create_tokens,
+            record.cache_read_tokens,
             record.total_tokens
         )
     } else {
@@ -38,13 +40,15 @@ fn request_key_for_local(record: &LocalRequestRecord) -> String {
 fn request_key_for_proxy(record: &UsageRecord) -> String {
     if record.message_id.trim().is_empty() {
         format!(
-            "{}:{}:{}:{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
             record.client_tool,
             record.session_id.clone().unwrap_or_default(),
             record.timestamp / 1000,
             record.model,
             record.input_tokens,
             record.output_tokens,
+            record.cache_create_tokens,
+            record.cache_read_tokens,
             record.total_tokens
         )
     } else {
@@ -201,12 +205,18 @@ pub async fn get_merged_request_facts(
     let pricing_match_mode = settings.model_pricing.match_mode.clone();
 
     let local_db = crate::local_usage::ensure_local_usage_synced()?;
-    let local_sessions_all = local_db.get_all_sessions(&tool_filter)?;
+    let mut local_sessions_all = local_db.get_all_sessions(&tool_filter)?;
+    local_sessions_all.extend(local_db.get_remote_sessions(&tool_filter)?);
     let local_sessions: Vec<SessionMeta> = local_sessions_all
         .into_iter()
         .filter(|meta| session_meta_matches(meta, &tool_filter))
         .collect();
     let mut local_records = local_db.get_all_request_records(&tool_filter)?;
+    let local_request_keys: HashSet<String> =
+        local_records.iter().map(request_key_for_local).collect();
+    let mut remote_records = local_db.get_remote_request_records(&tool_filter)?;
+    remote_records.retain(|record| !local_request_keys.contains(&request_key_for_local(record)));
+    local_records.extend(remote_records);
     if let Some(start_epoch) = start_epoch {
         local_records.retain(|record| record.timestamp >= start_epoch);
     }
@@ -214,6 +224,8 @@ pub async fn get_merged_request_facts(
         local_records.retain(|record| record.timestamp < end_epoch);
     }
     local_records.retain(|record| local_tool_matches(record, &tool_filter));
+    let mut seen_local_keys = HashSet::new();
+    local_records.retain(|record| seen_local_keys.insert(request_key_for_local(record)));
     let session_meta_by_id = build_local_meta_index(&local_sessions);
     let message_to_session = build_message_to_session_index(&local_records);
 
@@ -319,7 +331,8 @@ pub async fn get_merged_sessions(
     let (facts, _) = get_merged_request_facts(settings, None, None, include_errors).await?;
     let tool_filter = settings.client_tools.build_filter();
     let local_db = crate::local_usage::ensure_local_usage_synced()?;
-    let local_sessions = local_db.get_all_sessions(&tool_filter)?;
+    let mut local_sessions = local_db.get_all_sessions(&tool_filter)?;
+    local_sessions.extend(local_db.get_remote_sessions(&tool_filter)?);
     let meta_by_id: HashMap<String, SessionMeta> = local_sessions
         .into_iter()
         .map(|meta| (meta.session_id.clone(), meta))

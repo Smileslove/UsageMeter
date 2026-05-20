@@ -5040,6 +5040,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "reqwest 0.12.28",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",

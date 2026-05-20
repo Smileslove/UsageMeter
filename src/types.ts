@@ -41,6 +41,29 @@ export interface CurrencySettings {
   lastRateUpdate: number | null    // 最后汇率更新时间
 }
 
+export interface SyncSettings {
+  enabled: boolean
+  provider: 'webdav'
+  url: string
+  username: string
+  password: string
+  syncPassword: string
+  deviceId: string
+  intervalMinutes: number
+  syncOnStartup: boolean
+  syncOnQuit: boolean
+  includeSessionText: boolean
+}
+
+export interface SyncStatus {
+  enabled: boolean
+  lastSyncAt: number | null
+  lastStatus: string
+  lastError?: string | null
+  uploadedRequests: number
+  importedRequests: number
+}
+
 export interface AppSettings {
   locale: AppLocale
   timezone: string
@@ -54,6 +77,7 @@ export interface AppSettings {
   sourceAware: SourceAwareSettings    // 来源识别设置
   clientTools: ClientToolSettings      // 客户端工具识别设置
   currency: CurrencySettings           // 多货币设置
+  sync: SyncSettings                    // WebDAV 多端同步
 }
 
 // API 来源配置

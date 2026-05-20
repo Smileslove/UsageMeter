@@ -27,12 +27,17 @@ pub fn load_settings() -> Result<AppSettings, String> {
     // 确保客户端工具配置完整（迁移旧配置）
     migrate_client_tools(&mut settings);
 
+    // 确保同步配置完整（迁移旧配置）
+    migrate_sync(&mut settings)?;
+
     Ok(settings)
 }
 
 /// 保存应用设置
 #[tauri::command]
 pub fn save_settings(settings: AppSettings) -> Result<(), String> {
+    let mut settings = settings;
+    migrate_sync(&mut settings)?;
     let path = AppSettings::settings_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("ERR_CREATE_SETTINGS_DIR: {e}"))?;
@@ -110,4 +115,22 @@ fn migrate_client_tools(settings: &mut AppSettings) {
     {
         settings.proxy.enabled = true;
     }
+}
+
+fn migrate_sync(settings: &mut AppSettings) -> Result<(), String> {
+    if settings.sync.provider.trim().is_empty() {
+        settings.sync.provider = crate::models::default_sync_provider();
+    }
+    if settings.sync.interval_minutes == 0 {
+        settings.sync.interval_minutes = crate::models::default_sync_interval_minutes();
+    }
+    let normalized_device_id = crate::models::normalize_sync_device_id(&settings.sync.device_id);
+    settings.sync.device_id = if normalized_device_id.is_empty() {
+        crate::models::default_sync_device_id()
+    } else {
+        normalized_device_id
+    };
+    crate::models::validate_sync_device_id(&settings.sync.device_id)?;
+    settings.sync.include_session_text = false;
+    Ok(())
 }

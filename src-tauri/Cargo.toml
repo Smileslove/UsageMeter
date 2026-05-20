@@ -51,6 +51,7 @@ tempfile = "3"  # For testing
 # Cryptography
 sha2 = "0.10"
 base64 = "0.22"
+ring = "0.17"
 thiserror = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]

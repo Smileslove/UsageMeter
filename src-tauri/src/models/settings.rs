@@ -1,6 +1,7 @@
 //! 设置和配置数据模型
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -383,6 +384,152 @@ pub struct AppSettings {
     pub client_tools: ClientToolSettings,
     #[serde(default)]
     pub currency: CurrencySettings,
+    #[serde(default)]
+    pub sync: SyncSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_sync_provider")]
+    pub provider: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    #[serde(default)]
+    pub sync_password: String,
+    #[serde(default = "default_sync_device_id")]
+    pub device_id: String,
+    #[serde(default = "default_sync_interval_minutes")]
+    pub interval_minutes: u64,
+    #[serde(default)]
+    pub sync_on_startup: bool,
+    #[serde(default)]
+    pub sync_on_quit: bool,
+    #[serde(default)]
+    pub include_session_text: bool,
+}
+
+pub fn default_sync_provider() -> String {
+    "webdav".to_string()
+}
+
+pub fn default_sync_interval_minutes() -> u64 {
+    15
+}
+
+pub fn default_sync_device_id() -> String {
+    let os = if cfg!(target_os = "macos") {
+        "mac"
+    } else if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "device"
+    };
+    let host = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_default();
+    let home = dirs::home_dir()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    let mut hasher = Sha256::new();
+    hasher.update(os.as_bytes());
+    hasher.update(host.as_bytes());
+    hasher.update(home.as_bytes());
+    let digest = hasher.finalize();
+    format!("{os}-{}", hex_prefix(&digest, 8))
+}
+
+fn hex_prefix(bytes: &[u8], len: usize) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(len * 2);
+    for byte in bytes.iter().take(len) {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+impl Default for SyncSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: default_sync_provider(),
+            url: String::new(),
+            username: String::new(),
+            password: String::new(),
+            sync_password: String::new(),
+            device_id: default_sync_device_id(),
+            interval_minutes: default_sync_interval_minutes(),
+            sync_on_startup: false,
+            sync_on_quit: false,
+            include_session_text: false,
+        }
+    }
+}
+
+pub const SYNC_DEVICE_ID_MIN_LEN: usize = 3;
+pub const SYNC_DEVICE_ID_MAX_LEN: usize = 48;
+
+pub fn normalize_sync_device_id(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut last_was_dash = false;
+    for ch in value.trim().chars() {
+        let next = if ch.is_ascii_alphanumeric() {
+            Some(ch.to_ascii_lowercase())
+        } else if matches!(ch, '-' | '_' | '.') {
+            Some(ch)
+        } else {
+            Some('-')
+        };
+        if let Some(ch) = next {
+            if ch == '-' {
+                if last_was_dash {
+                    continue;
+                }
+                last_was_dash = true;
+            } else {
+                last_was_dash = false;
+            }
+            normalized.push(ch);
+            if normalized.len() >= SYNC_DEVICE_ID_MAX_LEN {
+                break;
+            }
+        }
+    }
+    normalized.trim_matches('-').to_string()
+}
+
+pub fn validate_sync_device_id(value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err("ERR_SYNC_DEVICE_ID_REQUIRED".to_string());
+    }
+    if value.len() < SYNC_DEVICE_ID_MIN_LEN {
+        return Err("ERR_SYNC_DEVICE_ID_TOO_SHORT".to_string());
+    }
+    if value.len() > SYNC_DEVICE_ID_MAX_LEN {
+        return Err("ERR_SYNC_DEVICE_ID_TOO_LONG".to_string());
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err("ERR_SYNC_DEVICE_ID_INVALID".to_string());
+    }
+    if !value
+        .chars()
+        .any(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+    {
+        return Err("ERR_SYNC_DEVICE_ID_INVALID".to_string());
+    }
+    Ok(())
 }
 
 pub fn default_locale() -> String {
@@ -424,6 +571,7 @@ impl Default for AppSettings {
             source_aware: SourceAwareSettings::default(),
             client_tools: ClientToolSettings::default(),
             currency: CurrencySettings::default(),
+            sync: SyncSettings::default(),
         }
     }
 }

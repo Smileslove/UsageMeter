@@ -8,6 +8,7 @@ mod models;
 mod proxy;
 mod session;
 mod subscription;
+mod sync;
 mod unified_usage;
 mod utils;
 
@@ -329,6 +330,14 @@ pub fn run() {
             commands::get_api_sources,
             // 货币命令
             commands::get_exchange_rates,
+            // WebDAV 同步命令
+            commands::test_webdav_connection,
+            commands::sync_now,
+            commands::rotate_sync_password,
+            commands::get_sync_status,
+            commands::list_sync_devices,
+            commands::remove_sync_device,
+            commands::clear_imported_sync_data,
             // 退出命令
             commands::prepare_exit,
             commands::confirm_exit,
