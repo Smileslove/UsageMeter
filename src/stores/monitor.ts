@@ -30,7 +30,6 @@ const defaultSync: SyncSettings = {
   deviceId: '',
   intervalMinutes: 15,
   syncOnStartup: false,
-  syncOnQuit: false,
   includeSessionText: false
 }
 

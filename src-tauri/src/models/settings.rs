@@ -410,8 +410,6 @@ pub struct SyncSettings {
     #[serde(default)]
     pub sync_on_startup: bool,
     #[serde(default)]
-    pub sync_on_quit: bool,
-    #[serde(default)]
     pub include_session_text: bool,
 }
 
@@ -469,7 +467,6 @@ impl Default for SyncSettings {
             device_id: default_sync_device_id(),
             interval_minutes: default_sync_interval_minutes(),
             sync_on_startup: false,
-            sync_on_quit: false,
             include_session_text: false,
         }
     }

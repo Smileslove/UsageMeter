@@ -57,7 +57,6 @@ const localSyncUsername = ref(store.settings.sync?.username ?? '')
 const localSyncDeviceId = ref(store.settings.sync?.deviceId ?? '')
 const localSyncIntervalMinutes = ref(store.settings.sync?.intervalMinutes ?? 15)
 const localSyncOnStartup = ref(store.settings.sync?.syncOnStartup ?? false)
-const localSyncOnQuit = ref(store.settings.sync?.syncOnQuit ?? false)
 const webdavPassword = ref(store.settings.sync?.password ?? '')
 const syncPassword = ref(store.settings.sync?.syncPassword ?? '')
 const rotatePasswordExpanded = ref(false)
@@ -115,7 +114,6 @@ watch(() => store.settings.sync, (val) => {
   localSyncDeviceId.value = val?.deviceId ?? ''
   localSyncIntervalMinutes.value = val?.intervalMinutes ?? 15
   localSyncOnStartup.value = val?.syncOnStartup ?? false
-  localSyncOnQuit.value = val?.syncOnQuit ?? false
   if (!passwordFieldsFocused.value) {
     webdavPassword.value = val?.password ?? ''
     syncPassword.value = val?.syncPassword ?? ''
@@ -202,7 +200,6 @@ const saveSyncSettings = async () => {
     deviceId: localSyncDeviceId.value,
     intervalMinutes: Math.max(1, Number(localSyncIntervalMinutes.value) || 15),
     syncOnStartup: localSyncOnStartup.value,
-    syncOnQuit: localSyncOnQuit.value,
     includeSessionText: false
   }
   await store.saveSettings()
@@ -980,10 +977,6 @@ const syncStatusLabel = computed(() => {
                   <label class="flex items-center justify-between gap-2 rounded-lg border border-white/70 bg-white px-2.5 py-2 text-[11px] text-gray-600 dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-300">
                     <span>{{ t(store.settings.locale, 'settings.syncOnStartup') }}</span>
                     <input v-model="localSyncOnStartup" type="checkbox" @change="saveSyncSettings" class="h-3.5 w-3.5 rounded border-gray-300 text-blue-500 focus:ring-blue-500" />
-                  </label>
-                  <label class="flex items-center justify-between gap-2 rounded-lg border border-white/70 bg-white px-2.5 py-2 text-[11px] text-gray-600 dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-300">
-                    <span>{{ t(store.settings.locale, 'settings.syncOnQuit') }}</span>
-                    <input v-model="localSyncOnQuit" type="checkbox" @change="saveSyncSettings" class="h-3.5 w-3.5 rounded border-gray-300 text-blue-500 focus:ring-blue-500" />
                   </label>
                 </div>
               </div>

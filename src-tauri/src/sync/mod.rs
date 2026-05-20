@@ -220,22 +220,6 @@ pub async fn sync_now(
     get_status(&settings)
 }
 
-pub async fn sync_on_quit(settings: SyncSettings) -> Result<(), String> {
-    if !settings.enabled || !settings.sync_on_quit {
-        return Ok(());
-    }
-    let _guard = sync_job_lock().lock().await;
-    let credentials = WebDavCredentials {
-        password: settings.password.clone(),
-        sync_password: settings.sync_password.clone(),
-    };
-    if credentials.password.is_empty() || credentials.sync_password.len() < 8 {
-        return Ok(());
-    }
-    let _ = sync_now_inner(settings, credentials).await;
-    Ok(())
-}
-
 pub fn spawn_background_sync_loop() {
     tauri::async_runtime::spawn(async move {
         let mut startup_attempted = false;

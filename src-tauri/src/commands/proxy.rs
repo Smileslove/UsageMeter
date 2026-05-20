@@ -454,8 +454,5 @@ pub async fn prepare_exit(state: State<'_, ProxyState>) -> Result<(), String> {
 /// 确认退出：前端清理完成后调用
 #[tauri::command]
 pub async fn confirm_exit(app: tauri::AppHandle) {
-    if let Ok(settings) = crate::commands::load_settings() {
-        let _ = crate::sync::sync_on_quit(settings.sync).await;
-    }
     app.exit(0);
 }

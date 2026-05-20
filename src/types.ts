@@ -51,7 +51,6 @@ export interface SyncSettings {
   deviceId: string
   intervalMinutes: number
   syncOnStartup: boolean
-  syncOnQuit: boolean
   includeSessionText: boolean
 }
 
