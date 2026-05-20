@@ -37,7 +37,7 @@ impl ProxyConfig {
 }
 
 /// 模型价格配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelPricingConfig {
     /// 模型ID，如 "claude-3-sonnet-20240229" 或 "minimax-m2-5"
@@ -62,7 +62,7 @@ pub struct ModelPricingConfig {
 }
 
 /// 模型价格设置
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelPricingSettings {
     /// 匹配方式：fuzzy 或 exact
@@ -211,7 +211,7 @@ pub fn default_client_tool_profiles() -> Vec<ClientToolProfile> {
 }
 
 /// 一个自动发现的 API 来源（由 Proxy 实际请求行为触发，非手动创建）
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiSource {
     /// 稳定的唯一 ID（由 api_key_prefix + base_url 哈希生成）
@@ -242,7 +242,7 @@ pub struct ApiSource {
 }
 
 /// API 来源感知设置
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceAwareSettings {
     /// 已注册的来源列表
@@ -315,7 +315,7 @@ impl SourceAwareSettings {
 }
 
 /// 多货币设置
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CurrencySettings {
     /// 当前显示币种，如 "USD"、"CNY"

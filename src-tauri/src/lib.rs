@@ -114,6 +114,8 @@ pub fn run() {
                 });
             }
 
+            crate::sync::spawn_background_sync_loop();
+
             // 启动时检测并恢复孤立的代理状态
             // 如果上次应用异常崩溃，可能存在备份文件残留或配置未恢复的情况
             {

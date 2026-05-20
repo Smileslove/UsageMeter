@@ -64,6 +64,14 @@ export interface SyncStatus {
   importedRequests: number
 }
 
+export interface RemoteSyncDevice {
+  deviceId: string
+  lastSeenAt: number | null
+  lastExportSeq: number
+  syncStatus: string
+  updatedAt: number
+}
+
 export interface AppSettings {
   locale: AppLocale
   timezone: string

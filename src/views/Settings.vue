@@ -3,7 +3,7 @@ import { ref, watch, computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
-import { type DataSource, type ThemeMode, type ToolTakeoverStatus, type SyncStatus } from '../types'
+import { type DataSource, type ThemeMode, type ToolTakeoverStatus, type SyncStatus, type RemoteSyncDevice } from '../types'
 import ModelPricingSettings from '../components/ModelPricingSettings.vue'
 import ApiSourceList from '../components/ApiSourceList.vue'
 import CurrencySettings from '../components/CurrencySettings.vue'
@@ -55,6 +55,9 @@ const localSyncEnabled = ref(store.settings.sync?.enabled ?? false)
 const localSyncUrl = ref(store.settings.sync?.url ?? '')
 const localSyncUsername = ref(store.settings.sync?.username ?? '')
 const localSyncDeviceId = ref(store.settings.sync?.deviceId ?? '')
+const localSyncIntervalMinutes = ref(store.settings.sync?.intervalMinutes ?? 15)
+const localSyncOnStartup = ref(store.settings.sync?.syncOnStartup ?? false)
+const localSyncOnQuit = ref(store.settings.sync?.syncOnQuit ?? false)
 const webdavPassword = ref(store.settings.sync?.password ?? '')
 const syncPassword = ref(store.settings.sync?.syncPassword ?? '')
 const rotatePasswordExpanded = ref(false)
@@ -71,8 +74,11 @@ const showRotateNewPassword = ref(false)
 const showRotateConfirmPassword = ref(false)
 const syncBusy = ref(false)
 const syncStatus = ref<SyncStatus | null>(null)
+const syncDevices = ref<RemoteSyncDevice[]>([])
 const syncMessage = ref('')
 const syncDeviceIdError = ref('')
+const syncConfirmMode = ref<'remove-device' | 'clear-imported' | null>(null)
+const syncConfirmDeviceId = ref('')
 const takeoverStatuses = ref<ToolTakeoverStatus[]>([])
 const takeoverLoading = ref<Record<string, boolean>>({})
 const showOfficialApiWarning = ref(false)
@@ -107,6 +113,9 @@ watch(() => store.settings.sync, (val) => {
   localSyncUrl.value = val?.url ?? ''
   localSyncUsername.value = val?.username ?? ''
   localSyncDeviceId.value = val?.deviceId ?? ''
+  localSyncIntervalMinutes.value = val?.intervalMinutes ?? 15
+  localSyncOnStartup.value = val?.syncOnStartup ?? false
+  localSyncOnQuit.value = val?.syncOnQuit ?? false
   if (!passwordFieldsFocused.value) {
     webdavPassword.value = val?.password ?? ''
     syncPassword.value = val?.syncPassword ?? ''
@@ -191,9 +200,9 @@ const saveSyncSettings = async () => {
     password: webdavPassword.value,
     syncPassword: syncPassword.value,
     deviceId: localSyncDeviceId.value,
-    intervalMinutes: store.settings.sync?.intervalMinutes || 15,
-    syncOnStartup: store.settings.sync?.syncOnStartup || false,
-    syncOnQuit: store.settings.sync?.syncOnQuit || false,
+    intervalMinutes: Math.max(1, Number(localSyncIntervalMinutes.value) || 15),
+    syncOnStartup: localSyncOnStartup.value,
+    syncOnQuit: localSyncOnQuit.value,
     includeSessionText: false
   }
   await store.saveSettings()
@@ -268,6 +277,14 @@ const loadSyncStatus = async () => {
   }
 }
 
+const loadSyncDevices = async () => {
+  try {
+    syncDevices.value = await invoke<RemoteSyncDevice[]>('list_sync_devices')
+  } catch {
+    syncDevices.value = []
+  }
+}
+
 const testWebdav = async () => {
   if (!(await saveSyncSettings())) {
     syncMessage.value = syncDeviceIdError.value
@@ -296,11 +313,48 @@ const runWebdavSync = async () => {
   try {
     syncStatus.value = await invoke<SyncStatus>('sync_now', { settings: store.settings, credentials: syncCredentials() })
     syncMessage.value = t(store.settings.locale, 'settings.syncSuccess')
+    await loadSyncDevices()
     await store.refreshUsage()
   } catch (e) {
     syncMessage.value = syncErrorMessage(e)
   } finally {
     syncBusy.value = false
+  }
+}
+
+const removeSyncDevice = async (deviceId: string) => {
+  syncConfirmMode.value = 'remove-device'
+  syncConfirmDeviceId.value = deviceId
+}
+
+const clearImportedSyncData = async () => {
+  syncConfirmMode.value = 'clear-imported'
+}
+
+const closeSyncConfirm = () => {
+  syncConfirmMode.value = null
+  syncConfirmDeviceId.value = ''
+}
+
+const confirmSyncDanger = async () => {
+  syncBusy.value = true
+  syncMessage.value = ''
+  try {
+    if (syncConfirmMode.value === 'remove-device') {
+      await invoke('remove_sync_device', { deviceId: syncConfirmDeviceId.value })
+      syncMessage.value = t(store.settings.locale, 'settings.syncDeviceRemoved')
+    } else if (syncConfirmMode.value === 'clear-imported') {
+      await invoke('clear_imported_sync_data')
+      syncMessage.value = t(store.settings.locale, 'settings.syncImportedCleared')
+    }
+    await loadSyncDevices()
+    await loadSyncStatus()
+    await store.refreshUsage()
+  } catch (e) {
+    syncMessage.value = syncErrorMessage(e)
+  } finally {
+    syncBusy.value = false
+    closeSyncConfirm()
   }
 }
 
@@ -453,6 +507,7 @@ const toggleAutoStart = async () => {
 onMounted(async () => {
   await loadTakeoverStatuses()
   await loadSyncStatus()
+  await loadSyncDevices()
   try {
     const systemState = await invoke<boolean>('is_autostart_enabled')
     autoStartEnabled.value = systemState
@@ -488,6 +543,18 @@ const formatUptime = (seconds: number): string => {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
 }
+
+const syncStatusLabel = computed(() => {
+  switch (syncStatus.value?.lastStatus) {
+    case 'success':
+      return t(store.settings.locale, 'settings.syncStateSuccess')
+    case 'failed':
+      return t(store.settings.locale, 'settings.syncStateFailed')
+    case 'idle':
+    default:
+      return t(store.settings.locale, 'settings.syncStateIdle')
+  }
+})
 </script>
 
 <template>
@@ -893,6 +960,36 @@ const formatUptime = (seconds: number): string => {
               <div class="grid grid-cols-2 gap-2">
                 <div class="space-y-1">
                   <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">
+                    {{ t(store.settings.locale, 'settings.syncInterval') }}
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <input
+                      v-model="localSyncIntervalMinutes"
+                      type="number"
+                      min="1"
+                      max="1440"
+                      @blur="saveSyncSettings"
+                      class="w-full rounded-lg border border-white/70 bg-white px-3 py-2 text-xs text-gray-700 outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-200"
+                    />
+                    <div class="shrink-0 text-[10px] text-gray-400 dark:text-gray-500">
+                      {{ t(store.settings.locale, 'settings.syncIntervalUnit') }}
+                    </div>
+                  </div>
+                </div>
+                <div class="grid grid-cols-1 gap-1.5 pt-5">
+                  <label class="flex items-center justify-between gap-2 rounded-lg border border-white/70 bg-white px-2.5 py-2 text-[11px] text-gray-600 dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-300">
+                    <span>{{ t(store.settings.locale, 'settings.syncOnStartup') }}</span>
+                    <input v-model="localSyncOnStartup" type="checkbox" @change="saveSyncSettings" class="h-3.5 w-3.5 rounded border-gray-300 text-blue-500 focus:ring-blue-500" />
+                  </label>
+                  <label class="flex items-center justify-between gap-2 rounded-lg border border-white/70 bg-white px-2.5 py-2 text-[11px] text-gray-600 dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-300">
+                    <span>{{ t(store.settings.locale, 'settings.syncOnQuit') }}</span>
+                    <input v-model="localSyncOnQuit" type="checkbox" @change="saveSyncSettings" class="h-3.5 w-3.5 rounded border-gray-300 text-blue-500 focus:ring-blue-500" />
+                  </label>
+                </div>
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                <div class="space-y-1">
+                  <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">
                     {{ t(store.settings.locale, 'settings.syncWebdavPassword') }}
                   </div>
                   <div class="relative min-w-0">
@@ -1055,6 +1152,8 @@ const formatUptime = (seconds: number): string => {
               </div>
               <div class="flex items-center justify-between gap-2">
                 <div class="min-w-0 text-[10px] text-gray-400">
+                  <span v-if="syncStatus">{{ syncStatusLabel }}</span>
+                  <span v-if="syncStatus"> · </span>
                   <span v-if="syncStatus?.lastSyncAt">
                     {{ t(store.settings.locale, 'settings.syncLast') }} {{ new Date(syncStatus.lastSyncAt * 1000).toLocaleString() }}
                   </span>
@@ -1080,6 +1179,48 @@ const formatUptime = (seconds: number): string => {
               </div>
               <div v-if="syncMessage" class="truncate text-[10px] text-gray-400">
                 {{ syncMessage }}
+              </div>
+              <div class="space-y-2 rounded-lg border border-white/70 bg-white/80 p-2 dark:border-neutral-800 dark:bg-neutral-950/70">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">
+                    {{ t(store.settings.locale, 'settings.syncRemoteDevices') }}
+                  </div>
+                  <button
+                    type="button"
+                    class="rounded-lg bg-gray-100 px-2 py-1 text-[10px] font-medium text-gray-600 transition-colors hover:bg-gray-200 disabled:opacity-50 dark:bg-neutral-800 dark:text-gray-300 dark:hover:bg-neutral-700"
+                    :disabled="syncBusy"
+                    @click="clearImportedSyncData"
+                  >
+                    {{ t(store.settings.locale, 'settings.syncClearImported') }}
+                  </button>
+                </div>
+                <div v-if="!syncDevices.length" class="text-[10px] text-gray-400 dark:text-gray-500">
+                  {{ t(store.settings.locale, 'settings.syncNoDevices') }}
+                </div>
+                <div v-else class="space-y-1.5">
+                  <div
+                    v-for="device in syncDevices"
+                    :key="device.deviceId"
+                    class="flex items-center justify-between gap-2 rounded-lg border border-gray-100 bg-gray-50/80 px-2.5 py-2 dark:border-neutral-800 dark:bg-neutral-900/70"
+                  >
+                    <div class="min-w-0">
+                      <div class="truncate text-[11px] font-medium text-gray-700 dark:text-gray-200">
+                        {{ device.deviceId }}
+                      </div>
+                      <div class="truncate text-[10px] text-gray-400 dark:text-gray-500">
+                        seq {{ device.lastExportSeq }}<span v-if="device.lastSeenAt"> · {{ new Date(device.lastSeenAt * 1000).toLocaleString() }}</span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      class="shrink-0 rounded-lg bg-gray-100 px-2 py-1 text-[10px] font-medium text-gray-600 transition-colors hover:bg-gray-200 disabled:opacity-50 dark:bg-neutral-800 dark:text-gray-300 dark:hover:bg-neutral-700"
+                      :disabled="syncBusy"
+                      @click="removeSyncDevice(device.deviceId)"
+                    >
+                      {{ t(store.settings.locale, 'settings.syncRemoveDevice') }}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -1131,6 +1272,41 @@ const formatUptime = (seconds: number): string => {
               class="flex-1 border-l border-gray-100 py-2.5 text-xs font-medium text-amber-600 transition-colors hover:bg-amber-50 dark:border-neutral-800 dark:text-amber-400 dark:hover:bg-amber-500/10"
             >
               {{ t(store.settings.locale, 'settings.officialApiRiskContinue') }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="syncConfirmMode"
+        class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+        @click.self="closeSyncConfirm"
+      >
+        <div class="w-[320px] overflow-hidden rounded-2xl border border-white/70 bg-white shadow-xl dark:border-neutral-800 dark:bg-[#1C1C1E]" @click.stop>
+          <div class="p-4">
+            <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              {{ t(store.settings.locale, syncConfirmMode === 'remove-device' ? 'settings.syncConfirmRemoveTitle' : 'settings.syncConfirmClearTitle') }}
+            </h3>
+            <p class="mt-2 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+              {{ t(store.settings.locale, syncConfirmMode === 'remove-device' ? 'settings.syncConfirmRemoveBody' : 'settings.syncConfirmClearBody') }}
+            </p>
+          </div>
+          <div class="flex border-t border-gray-100 dark:border-neutral-800">
+            <button
+              class="flex-1 py-2.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-neutral-800"
+              :disabled="syncBusy"
+              @click="closeSyncConfirm"
+            >
+              {{ t(store.settings.locale, 'common.cancel') }}
+            </button>
+            <button
+              class="flex-1 border-l border-gray-100 py-2.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-neutral-800 dark:text-red-400 dark:hover:bg-red-500/10"
+              :disabled="syncBusy"
+              @click="confirmSyncDanger"
+            >
+              {{ syncBusy ? t(store.settings.locale, 'common.syncing') : t(store.settings.locale, 'common.confirm') }}
             </button>
           </div>
         </div>

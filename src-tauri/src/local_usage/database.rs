@@ -62,6 +62,12 @@ pub struct SyncExportData {
     pub requests: Vec<SyncExportRequest>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SyncOutboxBatch {
+    pub request_events: Vec<SyncExportRequest>,
+    pub session_events: Vec<SyncExportSession>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteSyncDevice {
@@ -119,6 +125,7 @@ impl LocalUsageDatabase {
 
     fn create_tables(conn: &Connection) -> Result<(), String> {
         Self::create_cache_tables(conn)?;
+        Self::create_sync_v2_tables(conn)?;
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS local_sync_state (
@@ -320,6 +327,67 @@ impl LocalUsageDatabase {
         Ok(())
     }
 
+    fn create_sync_v2_tables(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS sync_outbox_request_events (
+                event_id TEXT PRIMARY KEY,
+                origin_device_id TEXT NOT NULL,
+                request_key TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                event_version INTEGER NOT NULL,
+                queued_at INTEGER NOT NULL,
+                batched_seq INTEGER,
+                uploaded_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_sync_outbox_request_events_uploaded_at
+                ON sync_outbox_request_events(uploaded_at, queued_at);
+
+            CREATE TABLE IF NOT EXISTS sync_outbox_session_events (
+                session_event_id TEXT PRIMARY KEY,
+                origin_device_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                session_version INTEGER NOT NULL,
+                queued_at INTEGER NOT NULL,
+                batched_seq INTEGER,
+                uploaded_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_sync_outbox_session_events_uploaded_at
+                ON sync_outbox_session_events(uploaded_at, queued_at);
+
+            CREATE TABLE IF NOT EXISTS sync_device_cursors (
+                device_id TEXT PRIMARY KEY,
+                last_imported_batch_seq INTEGER NOT NULL DEFAULT 0,
+                last_imported_snapshot_seq INTEGER,
+                last_seen_instance_id TEXT,
+                last_seen_at INTEGER NOT NULL,
+                last_status TEXT NOT NULL DEFAULT 'idle',
+                last_error TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS sync_batch_history (
+                batch_seq INTEGER PRIMARY KEY,
+                request_event_count INTEGER NOT NULL,
+                session_event_count INTEGER NOT NULL,
+                exported_at INTEGER NOT NULL,
+                remote_path TEXT NOT NULL,
+                status TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS sync_settings_state (
+                document_key TEXT PRIMARY KEY,
+                local_version INTEGER NOT NULL,
+                remote_version INTEGER,
+                last_pushed_at INTEGER,
+                last_pulled_at INTEGER
+            );
+            "#,
+        )
+        .map_err(|e| format!("Failed to create sync V2 tables: {}", e))?;
+        Ok(())
+    }
+
     fn load_schema_version(conn: &Connection) -> Result<i64, String> {
         let version = conn
             .query_row(
@@ -337,7 +405,7 @@ impl LocalUsageDatabase {
 
     fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 3 {
+        if schema_version >= 4 {
             return Ok(());
         }
 
@@ -376,42 +444,64 @@ impl LocalUsageDatabase {
                 .map_err(|e| format!("Failed to commit local usage schema migration: {}", e))?;
         }
 
-        let tx = conn
-            .unchecked_transaction()
-            .map_err(|e| format!("Failed to start remote device schema migration: {}", e))?;
+        if schema_version < 3 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start remote device schema migration: {}", e))?;
 
-        tx.execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS remote_devices_v3 (
-                device_id TEXT PRIMARY KEY,
-                last_seen_at INTEGER,
-                last_export_seq INTEGER NOT NULL DEFAULT 0,
-                sync_status TEXT NOT NULL DEFAULT 'ready',
-                updated_at INTEGER NOT NULL
-            );
-            INSERT INTO remote_devices_v3 (
-                device_id, last_seen_at, last_export_seq, sync_status, updated_at
+            tx.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS remote_devices_v3 (
+                    device_id TEXT PRIMARY KEY,
+                    last_seen_at INTEGER,
+                    last_export_seq INTEGER NOT NULL DEFAULT 0,
+                    sync_status TEXT NOT NULL DEFAULT 'ready',
+                    updated_at INTEGER NOT NULL
+                );
+                INSERT INTO remote_devices_v3 (
+                    device_id, last_seen_at, last_export_seq, sync_status, updated_at
+                )
+                SELECT device_id, last_seen_at, last_export_seq, sync_status, updated_at
+                FROM remote_devices;
+                DROP TABLE remote_devices;
+                ALTER TABLE remote_devices_v3 RENAME TO remote_devices;
+                "#,
             )
-            SELECT device_id, last_seen_at, last_export_seq, sync_status, updated_at
-            FROM remote_devices;
-            DROP TABLE remote_devices;
-            ALTER TABLE remote_devices_v3 RENAME TO remote_devices;
-            "#,
-        )
-        .map_err(|e| format!("Failed to migrate remote devices schema: {}", e))?;
+            .map_err(|e| format!("Failed to migrate remote devices schema: {}", e))?;
 
-        tx.execute(
-            "INSERT INTO local_sync_state (state_key, state_value, updated_at)
-             VALUES ('schema_version', '3', ?1)
-             ON CONFLICT(state_key) DO UPDATE
-             SET state_value = excluded.state_value,
-                 updated_at = excluded.updated_at",
-            params![chrono::Utc::now().timestamp()],
-        )
-        .map_err(|e| format!("Failed to update remote device schema version: {}", e))?;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '3', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update remote device schema version: {}", e))?;
 
-        tx.commit()
-            .map_err(|e| format!("Failed to commit remote device schema migration: {}", e))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit remote device schema migration: {}", e))?;
+        }
+
+        if schema_version < 4 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start sync V2 schema migration: {}", e))?;
+
+            Self::create_sync_v2_tables(&tx)?;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '4', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update sync V2 schema version: {}", e))?;
+
+            tx.commit()
+                .map_err(|e| format!("Failed to commit sync V2 schema migration: {}", e))?;
+        }
         Ok(())
     }
 
@@ -507,6 +597,13 @@ impl LocalUsageDatabase {
         let removed_session_count = removed_ids.len();
 
         let now = chrono::Utc::now().timestamp();
+        let origin_device_id = self
+            .get_webdav_sync_state("device_id")?
+            .map(|value| crate::models::normalize_sync_device_id(&value))
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| {
+                crate::models::normalize_sync_device_id(&crate::models::default_sync_device_id())
+            });
         let conn = self.conn.lock().unwrap();
         let tx = conn
             .unchecked_transaction()
@@ -616,6 +713,43 @@ impl LocalUsageDatabase {
                 ],
             )
             .map_err(|e| format!("Failed to insert local session row: {}", e))?;
+            let session_export = SyncExportSession {
+                session_id: meta.session_id.clone(),
+                tool: meta.tool.clone(),
+                project_key: Some(project_key.clone()),
+                project_name: meta.project_name.clone(),
+                start_time: meta.start_time,
+                end_time: meta.end_time,
+                request_count: meta.message_count,
+                total_input_tokens: meta.total_input_tokens,
+                total_output_tokens: meta.total_output_tokens,
+                total_cache_create_tokens: meta.total_cache_create_tokens,
+                total_cache_read_tokens: meta.total_cache_read_tokens,
+                total_tokens,
+                model_list: meta.models.clone(),
+            };
+            let session_payload = serde_json::to_string(&session_export)
+                .map_err(|e| format!("Failed to serialize sync session outbox payload: {}", e))?;
+            tx.execute(
+                "INSERT INTO sync_outbox_session_events (
+                    session_event_id, origin_device_id, session_id, payload_json,
+                    session_version, queued_at, batched_seq, uploaded_at
+                 ) VALUES (?1, ?2, ?3, ?4, 1, ?5, NULL, NULL)
+                 ON CONFLICT(session_event_id) DO UPDATE SET
+                    payload_json = excluded.payload_json,
+                    session_version = excluded.session_version,
+                    queued_at = excluded.queued_at,
+                    batched_seq = NULL,
+                    uploaded_at = NULL",
+                params![
+                    format!("{}:{}", origin_device_id, meta.session_id),
+                    origin_device_id.as_str(),
+                    meta.session_id.as_str(),
+                    session_payload.as_str(),
+                    now
+                ],
+            )
+            .map_err(|e| format!("Failed to enqueue sync session outbox payload: {}", e))?;
 
             for (idx, request) in requests.iter().enumerate() {
                 let request_identity = if request.message_id.trim().is_empty() {
@@ -656,6 +790,51 @@ impl LocalUsageDatabase {
                     ],
                 )
                 .map_err(|e| format!("Failed to insert local request fact: {}", e))?;
+
+                let request_export = SyncExportRequest {
+                    request_key: request_id.clone(),
+                    session_id: request.session_id.clone(),
+                    tool: request.tool.clone(),
+                    project_key: Some(project_key.clone()),
+                    timestamp: request.timestamp,
+                    message_id: if request.message_id.trim().is_empty() {
+                        None
+                    } else {
+                        Some(request.message_id.clone())
+                    },
+                    dedupe_key: dedupe_key.clone(),
+                    model: request.model.clone(),
+                    input_tokens: request.input_tokens,
+                    output_tokens: request.output_tokens,
+                    cache_create_tokens: request.cache_create_tokens,
+                    cache_read_tokens: request.cache_read_tokens,
+                    total_tokens: request.total_tokens,
+                    is_subagent: request.is_subagent,
+                    source_kind: "local_usage".to_string(),
+                };
+                let request_payload = serde_json::to_string(&request_export)
+                    .map_err(|e| format!("Failed to serialize sync request outbox payload: {}", e))?;
+                tx.execute(
+                    "INSERT INTO sync_outbox_request_events (
+                        event_id, origin_device_id, request_key, payload_json,
+                        event_version, queued_at, batched_seq, uploaded_at
+                     ) VALUES (?1, ?2, ?3, ?4, 1, ?5, NULL, NULL)
+                     ON CONFLICT(event_id) DO UPDATE SET
+                        payload_json = excluded.payload_json,
+                        request_key = excluded.request_key,
+                        event_version = excluded.event_version,
+                        queued_at = excluded.queued_at,
+                        batched_seq = NULL,
+                        uploaded_at = NULL",
+                    params![
+                        format!("{}:{}", origin_device_id, request_id),
+                        origin_device_id.as_str(),
+                        request_id.as_str(),
+                        request_payload.as_str(),
+                        now
+                    ],
+                )
+                .map_err(|e| format!("Failed to enqueue sync request outbox payload: {}", e))?;
             }
         }
 
@@ -676,6 +855,283 @@ impl LocalUsageDatabase {
 
         tx.commit()
             .map_err(|e| format!("Failed to commit local usage sync: {}", e))?;
+        Ok(())
+    }
+
+    pub fn reserve_sync_outbox_batch(
+        &self,
+        origin_device_id: &str,
+        batch_seq: i64,
+        max_request_events: usize,
+        max_session_events: usize,
+    ) -> Result<SyncOutboxBatch, String> {
+        let now = chrono::Utc::now().timestamp();
+        let conn = self.conn.lock().unwrap();
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to start sync outbox reservation: {}", e))?;
+
+        let mut request_ids = Vec::new();
+        let mut request_events = Vec::new();
+        {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT event_id, payload_json
+                     FROM sync_outbox_request_events
+                     WHERE origin_device_id = ?1 AND uploaded_at IS NULL AND batched_seq IS NULL
+                     ORDER BY queued_at ASC
+                     LIMIT ?2",
+                )
+                .map_err(|e| format!("Failed to prepare sync request outbox query: {}", e))?;
+            let rows = stmt
+                .query_map(params![origin_device_id, max_request_events as i64], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| format!("Failed to query sync request outbox: {}", e))?;
+            for row in rows {
+                let (event_id, payload_json) =
+                    row.map_err(|e| format!("Failed to read sync request outbox row: {}", e))?;
+                let payload: SyncExportRequest = serde_json::from_str(&payload_json)
+                    .map_err(|e| format!("Failed to parse sync request outbox payload: {}", e))?;
+                request_ids.push(event_id);
+                request_events.push(payload);
+            }
+        }
+
+        let mut session_ids = Vec::new();
+        let mut session_events = Vec::new();
+        {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT session_event_id, payload_json
+                     FROM sync_outbox_session_events
+                     WHERE origin_device_id = ?1 AND uploaded_at IS NULL AND batched_seq IS NULL
+                     ORDER BY queued_at ASC
+                     LIMIT ?2",
+                )
+                .map_err(|e| format!("Failed to prepare sync session outbox query: {}", e))?;
+            let rows = stmt
+                .query_map(params![origin_device_id, max_session_events as i64], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| format!("Failed to query sync session outbox: {}", e))?;
+            for row in rows {
+                let (event_id, payload_json) =
+                    row.map_err(|e| format!("Failed to read sync session outbox row: {}", e))?;
+                let payload: SyncExportSession = serde_json::from_str(&payload_json)
+                    .map_err(|e| format!("Failed to parse sync session outbox payload: {}", e))?;
+                session_ids.push(event_id);
+                session_events.push(payload);
+            }
+        }
+
+        for event_id in &request_ids {
+            tx.execute(
+                "UPDATE sync_outbox_request_events
+                 SET batched_seq = ?2
+                 WHERE event_id = ?1",
+                params![event_id, batch_seq],
+            )
+            .map_err(|e| format!("Failed to reserve sync request outbox row: {}", e))?;
+        }
+        for event_id in &session_ids {
+            tx.execute(
+                "UPDATE sync_outbox_session_events
+                 SET batched_seq = ?2
+                 WHERE session_event_id = ?1",
+                params![event_id, batch_seq],
+            )
+            .map_err(|e| format!("Failed to reserve sync session outbox row: {}", e))?;
+        }
+
+        Self::upsert_sync_state(&tx, "last_sync_outbox_reserved_at", &now.to_string(), now)?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit sync outbox reservation: {}", e))?;
+
+        Ok(SyncOutboxBatch {
+            request_events,
+            session_events,
+        })
+    }
+
+    pub fn seed_sync_outbox_from_local(&self, origin_device_id: &str) -> Result<(), String> {
+        if self.get_last_uploaded_batch_seq()? > 0 {
+            return Ok(());
+        }
+
+        let export = self.get_sync_export_data()?;
+        let now = chrono::Utc::now().timestamp();
+        let conn = self.conn.lock().unwrap();
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to start sync outbox seed: {}", e))?;
+
+        for session in export.sessions {
+            let payload = serde_json::to_string(&session)
+                .map_err(|e| format!("Failed to serialize sync session seed payload: {}", e))?;
+            tx.execute(
+                "INSERT INTO sync_outbox_session_events (
+                    session_event_id, origin_device_id, session_id, payload_json,
+                    session_version, queued_at, batched_seq, uploaded_at
+                 ) VALUES (?1, ?2, ?3, ?4, 1, ?5, NULL, NULL)
+                 ON CONFLICT(session_event_id) DO NOTHING",
+                params![
+                    format!("{}:{}", origin_device_id, session.session_id),
+                    origin_device_id,
+                    session.session_id.as_str(),
+                    payload.as_str(),
+                    now
+                ],
+            )
+            .map_err(|e| format!("Failed to seed sync session outbox: {}", e))?;
+        }
+
+        for request in export.requests {
+            let payload = serde_json::to_string(&request)
+                .map_err(|e| format!("Failed to serialize sync request seed payload: {}", e))?;
+            tx.execute(
+                "INSERT INTO sync_outbox_request_events (
+                    event_id, origin_device_id, request_key, payload_json,
+                    event_version, queued_at, batched_seq, uploaded_at
+                 ) VALUES (?1, ?2, ?3, ?4, 1, ?5, NULL, NULL)
+                 ON CONFLICT(event_id) DO NOTHING",
+                params![
+                    format!("{}:{}", origin_device_id, request.request_key),
+                    origin_device_id,
+                    request.request_key.as_str(),
+                    payload.as_str(),
+                    now
+                ],
+            )
+            .map_err(|e| format!("Failed to seed sync request outbox: {}", e))?;
+        }
+
+        tx.commit()
+            .map_err(|e| format!("Failed to commit sync outbox seed: {}", e))?;
+        Ok(())
+    }
+
+    pub fn release_sync_outbox_batch(&self, batch_seq: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to start sync outbox release: {}", e))?;
+        tx.execute(
+            "UPDATE sync_outbox_request_events
+             SET batched_seq = NULL
+             WHERE batched_seq = ?1 AND uploaded_at IS NULL",
+            params![batch_seq],
+        )
+        .map_err(|e| format!("Failed to release sync request outbox rows: {}", e))?;
+        tx.execute(
+            "UPDATE sync_outbox_session_events
+             SET batched_seq = NULL
+             WHERE batched_seq = ?1 AND uploaded_at IS NULL",
+            params![batch_seq],
+        )
+        .map_err(|e| format!("Failed to release sync session outbox rows: {}", e))?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit sync outbox release: {}", e))?;
+        Ok(())
+    }
+
+    pub fn mark_sync_outbox_batch_uploaded(
+        &self,
+        batch_seq: i64,
+        remote_path: &str,
+        request_event_count: usize,
+        session_event_count: usize,
+    ) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp();
+        let conn = self.conn.lock().unwrap();
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to start sync outbox upload mark: {}", e))?;
+        tx.execute(
+            "UPDATE sync_outbox_request_events
+             SET uploaded_at = ?2
+             WHERE batched_seq = ?1 AND uploaded_at IS NULL",
+            params![batch_seq, now],
+        )
+        .map_err(|e| format!("Failed to mark sync request outbox rows uploaded: {}", e))?;
+        tx.execute(
+            "UPDATE sync_outbox_session_events
+             SET uploaded_at = ?2
+             WHERE batched_seq = ?1 AND uploaded_at IS NULL",
+            params![batch_seq, now],
+        )
+        .map_err(|e| format!("Failed to mark sync session outbox rows uploaded: {}", e))?;
+        tx.execute(
+            "INSERT INTO sync_batch_history (
+                batch_seq, request_event_count, session_event_count, exported_at, remote_path, status
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'uploaded')
+             ON CONFLICT(batch_seq) DO UPDATE SET
+                request_event_count = excluded.request_event_count,
+                session_event_count = excluded.session_event_count,
+                exported_at = excluded.exported_at,
+                remote_path = excluded.remote_path,
+                status = excluded.status",
+            params![
+                batch_seq,
+                request_event_count as i64,
+                session_event_count as i64,
+                now,
+                remote_path
+            ],
+        )
+        .map_err(|e| format!("Failed to record sync batch history: {}", e))?;
+        Self::upsert_sync_state(&tx, "last_export_seq", &batch_seq.to_string(), now)?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit sync outbox upload mark: {}", e))?;
+        Ok(())
+    }
+
+    pub fn get_last_uploaded_batch_seq(&self) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COALESCE(MAX(batch_seq), 0) FROM sync_batch_history WHERE status = 'uploaded'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| format!("Failed to read last uploaded batch seq: {}", e))
+    }
+
+    pub fn get_import_cursor(&self, device_id: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT last_imported_batch_seq FROM sync_device_cursors WHERE device_id = ?1",
+            params![device_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map(|value| value.unwrap_or(0))
+        .map_err(|e| format!("Failed to read sync device cursor: {}", e))
+    }
+
+    pub fn upsert_import_cursor(
+        &self,
+        device_id: &str,
+        instance_id: Option<&str>,
+        batch_seq: i64,
+        status: &str,
+        last_error: Option<&str>,
+    ) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sync_device_cursors (
+                device_id, last_imported_batch_seq, last_imported_snapshot_seq,
+                last_seen_instance_id, last_seen_at, last_status, last_error
+             ) VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6)
+             ON CONFLICT(device_id) DO UPDATE SET
+                last_imported_batch_seq = MAX(sync_device_cursors.last_imported_batch_seq, excluded.last_imported_batch_seq),
+                last_seen_instance_id = COALESCE(excluded.last_seen_instance_id, sync_device_cursors.last_seen_instance_id),
+                last_seen_at = excluded.last_seen_at,
+                last_status = excluded.last_status,
+                last_error = excluded.last_error",
+            params![device_id, batch_seq, instance_id, now, status, last_error],
+        )
+        .map_err(|e| format!("Failed to upsert sync device cursor: {}", e))?;
         Ok(())
     }
 
@@ -1345,6 +1801,11 @@ impl LocalUsageDatabase {
         )
         .map_err(|e| format!("Failed to delete remote device: {}", e))?;
         tx.execute(
+            "DELETE FROM sync_device_cursors WHERE device_id = ?1",
+            params![device_id],
+        )
+        .map_err(|e| format!("Failed to delete remote device cursor: {}", e))?;
+        tx.execute(
             "DELETE FROM webdav_sync_state WHERE state_key LIKE ?1",
             params![format!("imported:{}:%", device_id)],
         )
@@ -1365,6 +1826,8 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to clear remote sessions: {}", e))?;
         tx.execute("DELETE FROM remote_devices", [])
             .map_err(|e| format!("Failed to clear remote devices: {}", e))?;
+        tx.execute("DELETE FROM sync_device_cursors", [])
+            .map_err(|e| format!("Failed to clear sync device cursors: {}", e))?;
         tx.execute(
             "DELETE FROM webdav_sync_state WHERE state_key LIKE 'imported:%'",
             [],
