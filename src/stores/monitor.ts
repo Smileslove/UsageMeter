@@ -29,7 +29,7 @@ const defaultSync: SyncSettings = {
   syncPassword: '',
   deviceId: '',
   intervalMinutes: 15,
-  syncOnStartup: false,
+  autoSync: false,
   includeSessionText: false
 }
 
@@ -241,6 +241,9 @@ export const useMonitorStore = defineStore('monitor', {
           }
           if (!this.settings.sync.intervalMinutes) {
             this.settings.sync.intervalMinutes = defaultSync.intervalMinutes
+          }
+          if (this.settings.sync.autoSync === undefined) {
+            this.settings.sync.autoSync = false
           }
           this.settings.sync.includeSessionText = false
         }

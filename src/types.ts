@@ -50,7 +50,7 @@ export interface SyncSettings {
   syncPassword: string
   deviceId: string
   intervalMinutes: number
-  syncOnStartup: boolean
+  autoSync: boolean
   includeSessionText: boolean
 }
 

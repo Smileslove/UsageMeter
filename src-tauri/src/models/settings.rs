@@ -408,7 +408,7 @@ pub struct SyncSettings {
     #[serde(default = "default_sync_interval_minutes")]
     pub interval_minutes: u64,
     #[serde(default)]
-    pub sync_on_startup: bool,
+    pub auto_sync: bool,
     #[serde(default)]
     pub include_session_text: bool,
 }
@@ -466,7 +466,7 @@ impl Default for SyncSettings {
             sync_password: String::new(),
             device_id: default_sync_device_id(),
             interval_minutes: default_sync_interval_minutes(),
-            sync_on_startup: false,
+            auto_sync: false,
             include_session_text: false,
         }
     }

@@ -233,21 +233,23 @@ pub fn spawn_background_sync_loop() {
                 }
             };
 
-            if settings.enabled && !startup_attempted && settings.sync_on_startup {
+            if settings.enabled && settings.auto_sync && !startup_attempted {
                 let _ = run_auto_sync_once(settings.clone(), false).await;
                 startup_attempted = true;
-            } else if settings.enabled {
+            } else if settings.enabled && settings.auto_sync {
                 startup_attempted = true;
+            } else {
+                startup_attempted = false;
             }
 
-            let sleep_seconds = if settings.enabled {
+            let sleep_seconds = if settings.enabled && settings.auto_sync {
                 (settings.interval_minutes.max(1) * 60).max(AUTO_SYNC_MIN_INTERVAL_SECONDS)
             } else {
                 AUTO_SYNC_MIN_INTERVAL_SECONDS
             };
             tokio::time::sleep(Duration::from_secs(sleep_seconds)).await;
 
-            if settings.enabled {
+            if settings.enabled && settings.auto_sync {
                 let _ = run_auto_sync_once(settings, true).await;
             }
         }

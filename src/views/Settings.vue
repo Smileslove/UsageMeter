@@ -56,7 +56,7 @@ const localSyncUrl = ref(store.settings.sync?.url ?? '')
 const localSyncUsername = ref(store.settings.sync?.username ?? '')
 const localSyncDeviceId = ref(store.settings.sync?.deviceId ?? '')
 const localSyncIntervalMinutes = ref(store.settings.sync?.intervalMinutes ?? 15)
-const localSyncOnStartup = ref(store.settings.sync?.syncOnStartup ?? false)
+const localAutoSync = ref(store.settings.sync?.autoSync ?? false)
 const webdavPassword = ref(store.settings.sync?.password ?? '')
 const syncPassword = ref(store.settings.sync?.syncPassword ?? '')
 const rotatePasswordExpanded = ref(false)
@@ -113,7 +113,7 @@ watch(() => store.settings.sync, (val) => {
   localSyncUsername.value = val?.username ?? ''
   localSyncDeviceId.value = val?.deviceId ?? ''
   localSyncIntervalMinutes.value = val?.intervalMinutes ?? 15
-  localSyncOnStartup.value = val?.syncOnStartup ?? false
+  localAutoSync.value = val?.autoSync ?? false
   if (!passwordFieldsFocused.value) {
     webdavPassword.value = val?.password ?? ''
     syncPassword.value = val?.syncPassword ?? ''
@@ -199,7 +199,7 @@ const saveSyncSettings = async () => {
     syncPassword: syncPassword.value,
     deviceId: localSyncDeviceId.value,
     intervalMinutes: Math.max(1, Number(localSyncIntervalMinutes.value) || 15),
-    syncOnStartup: localSyncOnStartup.value,
+    autoSync: localAutoSync.value,
     includeSessionText: false
   }
   await store.saveSettings()
@@ -966,7 +966,13 @@ const syncStatusLabel = computed(() => {
                       min="1"
                       max="1440"
                       @blur="saveSyncSettings"
-                      class="w-full rounded-lg border border-white/70 bg-white px-3 py-2 text-xs text-gray-700 outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-200"
+                      :disabled="!localAutoSync"
+                      :class="[
+                        'w-full rounded-lg border px-3 py-2 text-xs outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-neutral-700 dark:bg-neutral-950',
+                        localAutoSync
+                          ? 'border-white/70 bg-white text-gray-700 dark:text-gray-200'
+                          : 'border-gray-100 bg-gray-50 text-gray-400 dark:border-neutral-800 dark:bg-neutral-900 dark:text-gray-500'
+                      ]"
                     />
                     <div class="shrink-0 text-[10px] text-gray-400 dark:text-gray-500">
                       {{ t(store.settings.locale, 'settings.syncIntervalUnit') }}
@@ -975,8 +981,8 @@ const syncStatusLabel = computed(() => {
                 </div>
                 <div class="grid grid-cols-1 gap-1.5 pt-5">
                   <label class="flex items-center justify-between gap-2 rounded-lg border border-white/70 bg-white px-2.5 py-2 text-[11px] text-gray-600 dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-300">
-                    <span>{{ t(store.settings.locale, 'settings.syncOnStartup') }}</span>
-                    <input v-model="localSyncOnStartup" type="checkbox" @change="saveSyncSettings" class="h-3.5 w-3.5 rounded border-gray-300 text-blue-500 focus:ring-blue-500" />
+                    <span>{{ t(store.settings.locale, 'settings.syncAuto') }}</span>
+                    <input v-model="localAutoSync" type="checkbox" @change="saveSyncSettings" class="h-3.5 w-3.5 rounded border-gray-300 text-blue-500 focus:ring-blue-500" />
                   </label>
                 </div>
               </div>
