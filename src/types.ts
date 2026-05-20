@@ -61,6 +61,8 @@ export interface SyncStatus {
   lastError?: string | null
   uploadedRequests: number
   importedRequests: number
+  localRequestCount: number
+  totalRequestCount: number
 }
 
 export interface RemoteSyncDevice {

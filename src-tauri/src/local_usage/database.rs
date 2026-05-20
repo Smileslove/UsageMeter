@@ -812,8 +812,9 @@ impl LocalUsageDatabase {
                     is_subagent: request.is_subagent,
                     source_kind: "local_usage".to_string(),
                 };
-                let request_payload = serde_json::to_string(&request_export)
-                    .map_err(|e| format!("Failed to serialize sync request outbox payload: {}", e))?;
+                let request_payload = serde_json::to_string(&request_export).map_err(|e| {
+                    format!("Failed to serialize sync request outbox payload: {}", e)
+                })?;
                 tx.execute(
                     "INSERT INTO sync_outbox_request_events (
                         event_id, origin_device_id, request_key, payload_json,
@@ -884,9 +885,10 @@ impl LocalUsageDatabase {
                 )
                 .map_err(|e| format!("Failed to prepare sync request outbox query: {}", e))?;
             let rows = stmt
-                .query_map(params![origin_device_id, max_request_events as i64], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
+                .query_map(
+                    params![origin_device_id, max_request_events as i64],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
                 .map_err(|e| format!("Failed to query sync request outbox: {}", e))?;
             for row in rows {
                 let (event_id, payload_json) =
@@ -911,9 +913,10 @@ impl LocalUsageDatabase {
                 )
                 .map_err(|e| format!("Failed to prepare sync session outbox query: {}", e))?;
             let rows = stmt
-                .query_map(params![origin_device_id, max_session_events as i64], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
+                .query_map(
+                    params![origin_device_id, max_session_events as i64],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
                 .map_err(|e| format!("Failed to query sync session outbox: {}", e))?;
             for row in rows {
                 let (event_id, payload_json) =
@@ -1751,6 +1754,24 @@ impl LocalUsageDatabase {
         )
         .optional()
         .map_err(|e| format!("Failed to read WebDAV sync state: {}", e))
+    }
+
+    pub fn count_local_request_facts(&self) -> Result<u64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM local_request_facts", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map(|count| count.max(0) as u64)
+        .map_err(|e| format!("Failed to count local request facts: {}", e))
+    }
+
+    pub fn count_remote_request_facts(&self) -> Result<u64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM remote_request_facts", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map(|count| count.max(0) as u64)
+        .map_err(|e| format!("Failed to count remote request facts: {}", e))
     }
 
     pub fn list_remote_devices(&self) -> Result<Vec<RemoteSyncDevice>, String> {

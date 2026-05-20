@@ -236,14 +236,15 @@ export const useMonitorStore = defineStore('monitor', {
           if (this.settings.sync.syncPassword === undefined) {
             this.settings.sync.syncPassword = ''
           }
+          const legacySync = this.settings.sync as SyncSettings & { syncOnStartup?: boolean }
+          if (legacySync.autoSync === undefined) {
+            legacySync.autoSync = legacySync.syncOnStartup ?? false
+          }
           if (!this.settings.sync.deviceId) {
             this.settings.sync.deviceId = defaultSync.deviceId
           }
           if (!this.settings.sync.intervalMinutes) {
             this.settings.sync.intervalMinutes = defaultSync.intervalMinutes
-          }
-          if (this.settings.sync.autoSync === undefined) {
-            this.settings.sync.autoSync = false
           }
           this.settings.sync.includeSessionText = false
         }

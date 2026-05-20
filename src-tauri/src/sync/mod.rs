@@ -50,6 +50,8 @@ pub struct SyncStatus {
     pub last_error: Option<String>,
     pub uploaded_requests: u64,
     pub imported_requests: u64,
+    pub local_request_count: u64,
+    pub total_request_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,10 +238,8 @@ pub fn spawn_background_sync_loop() {
             if settings.enabled && settings.auto_sync && !startup_attempted {
                 let _ = run_auto_sync_once(settings.clone(), false).await;
                 startup_attempted = true;
-            } else if settings.enabled && settings.auto_sync {
-                startup_attempted = true;
             } else {
-                startup_attempted = false;
+                startup_attempted = settings.enabled && settings.auto_sync;
             }
 
             let sleep_seconds = if settings.enabled && settings.auto_sync {
@@ -376,10 +376,12 @@ async fn sync_now_inner(
         .get_webdav_sync_state("last_export_seq")?
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(0);
-    let export_seq = local_last_uploaded_seq
-        .max(legacy_last_export_seq)
-        .max(remote_manifest.as_ref().map(|manifest| manifest.latest_batch_seq).unwrap_or(0))
-        + 1;
+    let export_seq = local_last_uploaded_seq.max(legacy_last_export_seq).max(
+        remote_manifest
+            .as_ref()
+            .map(|manifest| manifest.latest_batch_seq)
+            .unwrap_or(0),
+    ) + 1;
 
     let SyncOutboxBatch {
         request_events,
@@ -488,6 +490,8 @@ pub fn get_status(settings: &SyncSettings) -> Result<SyncStatus, String> {
     let last_error = db
         .get_webdav_sync_state("last_error")?
         .filter(|value| !value.trim().is_empty());
+    let local_request_count = db.count_local_request_facts()?;
+    let remote_request_count = db.count_remote_request_facts()?;
     Ok(SyncStatus {
         enabled: settings.enabled,
         last_sync_at: db
@@ -505,6 +509,8 @@ pub fn get_status(settings: &SyncSettings) -> Result<SyncStatus, String> {
             .get_webdav_sync_state("last_imported_requests")?
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(0),
+        local_request_count,
+        total_request_count: local_request_count + remote_request_count,
     })
 }
 
@@ -529,10 +535,7 @@ async fn import_remote_packages(
             match import_result {
                 Ok(request_count) => imported_requests += request_count,
                 Err(err) => {
-                    db.upsert_webdav_sync_state(
-                        &format!("failed:{}:manifest", device_id),
-                        &err,
-                    )?;
+                    db.upsert_webdav_sync_state(&format!("failed:{}:manifest", device_id), &err)?;
                     let _ = db.upsert_import_cursor(
                         &device_id,
                         Some(&manifest.instance_id),
@@ -631,7 +634,9 @@ async fn import_device_batches(
     let mut imported_requests = 0_u64;
     let mut cursor = db.get_import_cursor(&manifest.device_id)?;
     if cursor == 0 && manifest.latest_snapshot_seq > 0 {
-        if let Some(snapshot) = import_device_snapshot(client, manifest, sync_password, keyring_state).await? {
+        if let Some(snapshot) =
+            import_device_snapshot(client, manifest, sync_password, keyring_state).await?
+        {
             imported_requests += snapshot.requests.len() as u64;
             db.import_remote_sync_data(
                 &manifest.device_id,
@@ -715,7 +720,8 @@ async fn import_device_snapshot(
     };
     let encrypted: EncryptedPackage = serde_json::from_slice(&bytes)
         .map_err(|e| format!("Failed to parse encrypted sync snapshot: {}", e))?;
-    let snapshot: SnapshotPackage = decrypt_typed_package(&encrypted, sync_password, keyring_state)?;
+    let snapshot: SnapshotPackage =
+        decrypt_typed_package(&encrypted, sync_password, keyring_state)?;
     if snapshot.device_id != manifest.device_id {
         return Err("ERR_SYNC_DEVICE_ID_CONFLICT".to_string());
     }
@@ -787,7 +793,11 @@ async fn load_manifest(
     device_id: &str,
 ) -> Result<Option<DeviceManifest>, String> {
     let Some(bytes) = client
-        .get_optional(&format!("{}/{}", client.device_path(device_id), MANIFEST_FILE))
+        .get_optional(&format!(
+            "{}/{}",
+            client.device_path(device_id),
+            MANIFEST_FILE
+        ))
         .await?
     else {
         return Ok(None);
@@ -844,14 +854,20 @@ async fn prune_old_sync_artifacts(
     }
 
     let keep_from = (manifest.latest_snapshot_seq - BATCH_RETENTION_AFTER_SNAPSHOT).max(0);
-    let batch_files = client.list_files(&client.batch_dir_path(&manifest.device_id)).await?;
+    let batch_files = client
+        .list_files(&client.batch_dir_path(&manifest.device_id))
+        .await?;
     for file in batch_files {
         let Some(seq) = parse_batch_seq(&file) else {
             continue;
         };
         if seq < keep_from {
             let _ = client
-                .delete(&format!("{}/{}", client.batch_dir_path(&manifest.device_id), file))
+                .delete(&format!(
+                    "{}/{}",
+                    client.batch_dir_path(&manifest.device_id),
+                    file
+                ))
                 .await;
         }
     }
@@ -865,7 +881,11 @@ async fn prune_old_sync_artifacts(
         };
         if seq < manifest.latest_snapshot_seq {
             let _ = client
-                .delete(&format!("{}/{}", client.snapshot_dir_path(&manifest.device_id), file))
+                .delete(&format!(
+                    "{}/{}",
+                    client.snapshot_dir_path(&manifest.device_id),
+                    file
+                ))
                 .await;
         }
     }
@@ -881,7 +901,10 @@ async fn store_manifest(
     let bytes = serde_json::to_vec(manifest)
         .map_err(|e| format!("Failed to serialize sync manifest: {}", e))?;
     client
-        .put(&format!("{}/{}", client.device_path(device_id), MANIFEST_FILE), bytes)
+        .put(
+            &format!("{}/{}", client.device_path(device_id), MANIFEST_FILE),
+            bytes,
+        )
         .await
 }
 
@@ -926,7 +949,8 @@ async fn sync_shared_settings(
             .keyring()
             .ok_or_else(|| "ERR_SYNC_KEYRING_MISSING".to_string())?;
         let dek = unwrap_dek(keyring, &credentials.sync_password)?;
-        let version = current_version.max(remote_document.as_ref().map(|d| d.version).unwrap_or(0)) + 1;
+        let version =
+            current_version.max(remote_document.as_ref().map(|d| d.version).unwrap_or(0)) + 1;
         let document = SharedSettingsDocument {
             schema_version: 1,
             document_type: "shared_settings".to_string(),
@@ -942,9 +966,7 @@ async fn sync_shared_settings(
     Ok(())
 }
 
-fn extract_shared_settings_payload(
-    settings: &crate::models::AppSettings,
-) -> SharedSettingsPayload {
+fn extract_shared_settings_payload(settings: &crate::models::AppSettings) -> SharedSettingsPayload {
     SharedSettingsPayload {
         locale: settings.locale.clone(),
         timezone: settings.timezone.clone(),
@@ -1637,7 +1659,11 @@ impl WebDavClient {
     }
 
     fn batch_path(&self, device_id: &str, batch_seq: i64) -> String {
-        format!("{}/{:012}.json.enc", self.batch_dir_path(device_id), batch_seq)
+        format!(
+            "{}/{:012}.json.enc",
+            self.batch_dir_path(device_id),
+            batch_seq
+        )
     }
 
     fn snapshot_path(&self, device_id: &str, batch_seq: i64) -> String {

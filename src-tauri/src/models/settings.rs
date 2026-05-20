@@ -407,7 +407,7 @@ pub struct SyncSettings {
     pub device_id: String,
     #[serde(default = "default_sync_interval_minutes")]
     pub interval_minutes: u64,
-    #[serde(default)]
+    #[serde(default, alias = "syncOnStartup")]
     pub auto_sync: bool,
     #[serde(default)]
     pub include_session_text: bool,

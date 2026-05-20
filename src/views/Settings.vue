@@ -9,7 +9,7 @@ import ApiSourceList from '../components/ApiSourceList.vue'
 import CurrencySettings from '../components/CurrencySettings.vue'
 import LobeIcon from '../components/LobeIcon.vue'
 import { TOOL_LOBE_ICONS } from '../iconConfig'
-import { Eye, EyeOff } from 'lucide-vue-next'
+import { Eye, EyeOff, RefreshCw, TestTube2 } from 'lucide-vue-next'
 
 const store = useMonitorStore()
 
@@ -541,17 +541,20 @@ const formatUptime = (seconds: number): string => {
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
 }
 
-const syncStatusLabel = computed(() => {
-  switch (syncStatus.value?.lastStatus) {
-    case 'success':
-      return t(store.settings.locale, 'settings.syncStateSuccess')
-    case 'failed':
-      return t(store.settings.locale, 'settings.syncStateFailed')
-    case 'idle':
-    default:
-      return t(store.settings.locale, 'settings.syncStateIdle')
+const syncIntervalPresets = [30, 60]
+const isCustomSyncInterval = computed(() => !syncIntervalPresets.includes(Number(localSyncIntervalMinutes.value)))
+
+const applySyncIntervalPreset = async (minutes: number) => {
+  localSyncIntervalMinutes.value = minutes
+  await saveSyncSettings()
+}
+
+const formatSyncTimestamp = (timestamp: number | null | undefined) => {
+  if (!timestamp) {
+    return t(store.settings.locale, 'settings.syncNever')
   }
-})
+  return new Date(timestamp * 1000).toLocaleString()
+}
 </script>
 
 <template>
@@ -906,150 +909,243 @@ const syncStatusLabel = computed(() => {
                 ></div>
               </div>
             </div>
-            <div v-if="localSyncEnabled" class="space-y-2 rounded-xl border border-gray-100 bg-gray-50/70 p-2.5 dark:border-neutral-800 dark:bg-neutral-900/60">
-              <div class="space-y-1">
-                <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">
-                  {{ t(store.settings.locale, 'settings.syncUrl') }}
-                </div>
-                <input
-                  v-model="localSyncUrl"
-                  @blur="saveSyncSettings"
-                  :placeholder="t(store.settings.locale, 'settings.syncUrl')"
-                  class="w-full rounded-lg border border-white/70 bg-white px-3 py-2 text-xs text-gray-700 outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-200"
-                />
-              </div>
-              <div class="grid grid-cols-2 gap-2">
-                <div class="space-y-1">
-                  <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">
-                    {{ t(store.settings.locale, 'settings.syncUsername') }}
+            <div v-if="localSyncEnabled" class="space-y-2.5 rounded-xl border border-gray-100 bg-gray-50/70 p-2 dark:border-neutral-800 dark:bg-neutral-900/60">
+              <div class="flex items-start justify-between gap-2 rounded-xl bg-white/90 px-3 py-2 dark:bg-neutral-950/80">
+                <div class="min-w-0 flex-1">
+                  <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-gray-400 dark:text-gray-500">
+                    <span>{{ t(store.settings.locale, 'settings.syncLast') }} {{ formatSyncTimestamp(syncStatus?.lastSyncAt) }}</span>
+                    <span>{{ t(store.settings.locale, 'settings.syncLocalCount') }} {{ syncStatus?.localRequestCount ?? 0 }}</span>
+                    <span>{{ t(store.settings.locale, 'settings.syncTotalCount') }} {{ syncStatus?.totalRequestCount ?? 0 }}</span>
                   </div>
-                  <input
-                    v-model="localSyncUsername"
-                    @blur="saveSyncSettings"
-                    :placeholder="t(store.settings.locale, 'settings.syncUsername')"
-                    class="w-full rounded-lg border border-white/70 bg-white px-3 py-2 text-xs text-gray-700 outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-200"
-                  />
-                </div>
-                <div class="space-y-1">
-                  <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">
-                    {{ t(store.settings.locale, 'settings.syncDeviceId') }}
-                  </div>
-                  <input
-                    v-model="localSyncDeviceId"
-                    @input="applyDeviceIdInput"
-                    @blur="saveSyncSettings"
-                    :placeholder="t(store.settings.locale, 'settings.syncDeviceId')"
-                    :class="[
-                      'w-full rounded-lg border px-3 py-2 text-xs text-gray-700 outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:bg-neutral-950 dark:text-gray-200',
-                      syncDeviceIdError
-                        ? 'border-red-200 bg-red-50/60 dark:border-red-900 dark:bg-red-950/20'
-                      : 'border-white/70 bg-white dark:border-neutral-700'
-                    ]"
-                  />
-                  <div class="text-[10px] leading-relaxed text-gray-400 dark:text-gray-500">
-                    {{ t(store.settings.locale, 'settings.syncDeviceIdDesc') }}
+                  <div v-if="syncMessage" class="mt-1 truncate text-[10px] text-gray-500 dark:text-gray-400">
+                    {{ syncMessage }}
                   </div>
                 </div>
+                <div class="flex shrink-0 items-center gap-1.5 self-start">
+                  <button
+                    class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-gray-100 px-2.5 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-200 disabled:opacity-50 dark:bg-neutral-800 dark:text-gray-300 dark:hover:bg-neutral-700"
+                    :disabled="syncBusy"
+                    @click="testWebdav"
+                  >
+                    <TestTube2 class="h-3.5 w-3.5" />
+                    <span>{{ t(store.settings.locale, 'settings.syncTest') }}</span>
+                  </button>
+                  <button
+                    class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-blue-500 px-2.5 text-[11px] font-medium text-white transition-colors hover:bg-blue-600 disabled:opacity-50"
+                    :disabled="syncBusy"
+                    @click="runWebdavSync"
+                  >
+                    <RefreshCw :class="['h-3.5 w-3.5', syncBusy ? 'animate-spin' : '']" />
+                    <span>{{ syncBusy ? t(store.settings.locale, 'common.syncing') : t(store.settings.locale, 'settings.syncNow') }}</span>
+                  </button>
+                </div>
               </div>
-              <div v-if="syncDeviceIdError" class="text-[10px] leading-relaxed text-red-500 dark:text-red-400">
-                {{ syncDeviceIdError }}
-              </div>
-              <div class="grid grid-cols-2 gap-2">
-                <div class="space-y-1">
-                  <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">
-                    {{ t(store.settings.locale, 'settings.syncInterval') }}
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <input
-                      v-model="localSyncIntervalMinutes"
-                      type="number"
-                      min="1"
-                      max="1440"
-                      @blur="saveSyncSettings"
-                      :disabled="!localAutoSync"
+
+              <div class="space-y-1.5">
+                <div class="rounded-xl border border-gray-100 bg-white px-3 py-2 dark:border-neutral-800 dark:bg-neutral-950">
+                  <div class="flex items-center justify-between gap-3">
+                    <div class="min-w-0">
+                      <div class="text-[11px] font-medium text-gray-700 dark:text-gray-200">
+                        {{ t(store.settings.locale, 'settings.syncAuto') }}
+                      </div>
+                      <div class="mt-0.5 text-[10px] text-gray-400 dark:text-gray-500">
+                        {{ t(store.settings.locale, 'settings.syncAutoDesc') }}
+                      </div>
+                    </div>
+                    <div
                       :class="[
-                        'w-full rounded-lg border px-3 py-2 text-xs outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-neutral-700 dark:bg-neutral-950',
-                        localAutoSync
-                          ? 'border-white/70 bg-white text-gray-700 dark:text-gray-200'
-                          : 'border-gray-100 bg-gray-50 text-gray-400 dark:border-neutral-800 dark:bg-neutral-900 dark:text-gray-500'
+                        'w-10 h-6 rounded-full relative cursor-pointer flex items-center shrink-0 transition-colors',
+                        localAutoSync ? 'bg-green-500' : 'bg-gray-300 dark:bg-neutral-600'
                       ]"
-                    />
-                    <div class="shrink-0 text-[10px] text-gray-400 dark:text-gray-500">
-                      {{ t(store.settings.locale, 'settings.syncIntervalUnit') }}
+                      @click="localAutoSync = !localAutoSync; saveSyncSettings()"
+                    >
+                      <div
+                        :class="[
+                          'w-[20px] h-[20px] bg-white rounded-full absolute shadow shadow-black/10 transition-all',
+                          localAutoSync ? 'right-[2px]' : 'left-[2px]'
+                        ]"
+                      ></div>
+                    </div>
+                  </div>
+                  <div v-if="localAutoSync" class="mt-2 border-t border-gray-100 pt-2 dark:border-neutral-800">
+                    <div class="flex items-center gap-3 rounded-lg px-0.5 py-0.5">
+                      <div class="w-[74px] shrink-0 text-[10px] font-medium text-gray-400 dark:text-gray-500">
+                        {{ t(store.settings.locale, 'settings.syncInterval') }}
+                      </div>
+                      <div class="flex min-w-0 flex-1 items-stretch gap-1.5">
+                        <button
+                          v-for="minutes in syncIntervalPresets"
+                          :key="minutes"
+                          type="button"
+                          :class="[
+                            'w-[56px] shrink-0 rounded-md px-1.5 py-1 text-[10px] font-medium transition-colors',
+                            Number(localSyncIntervalMinutes) === minutes
+                              ? 'bg-blue-500 text-white'
+                              : 'bg-gray-50 text-gray-600 hover:bg-gray-100 dark:bg-neutral-900 dark:text-gray-300 dark:hover:bg-neutral-800'
+                          ]"
+                          @click="applySyncIntervalPreset(minutes)"
+                        >
+                          {{ minutes }}{{ t(store.settings.locale, 'settings.syncIntervalUnit') }}
+                        </button>
+                        <div
+                          :class="[
+                            'flex min-w-[108px] flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-1 text-[10px] transition-colors whitespace-nowrap dark:bg-neutral-900',
+                            isCustomSyncInterval
+                              ? 'bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-300'
+                              : 'bg-gray-50 text-gray-500 dark:text-gray-400'
+                          ]"
+                        >
+                          <button
+                            type="button"
+                            class="shrink-0 font-medium"
+                            @click="localSyncIntervalMinutes = Math.max(1, Number(localSyncIntervalMinutes) || 15)"
+                          >
+                            {{ t(store.settings.locale, 'common.custom') }}
+                          </button>
+                          <div class="flex min-w-0 items-center justify-center gap-1 whitespace-nowrap">
+                            <input
+                              v-model="localSyncIntervalMinutes"
+                              type="number"
+                              min="1"
+                              max="1440"
+                              @blur="saveSyncSettings"
+                              :class="[
+                                'w-8 shrink-0 bg-transparent text-right text-[10px] outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none',
+                                isCustomSyncInterval ? 'text-blue-600 dark:text-blue-200' : 'text-gray-700 dark:text-gray-200'
+                              ]"
+                            />
+                            <span class="shrink-0 whitespace-nowrap">{{ t(store.settings.locale, 'settings.syncIntervalUnit') }}</span>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
-                <div class="grid grid-cols-1 gap-1.5 pt-5">
-                  <label class="flex items-center justify-between gap-2 rounded-lg border border-white/70 bg-white px-2.5 py-2 text-[11px] text-gray-600 dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-300">
-                    <span>{{ t(store.settings.locale, 'settings.syncAuto') }}</span>
-                    <input v-model="localAutoSync" type="checkbox" @change="saveSyncSettings" class="h-3.5 w-3.5 rounded border-gray-300 text-blue-500 focus:ring-blue-500" />
-                  </label>
-                </div>
-              </div>
-              <div class="grid grid-cols-2 gap-2">
-                <div class="space-y-1">
-                  <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">
-                    {{ t(store.settings.locale, 'settings.syncWebdavPassword') }}
-                  </div>
-                  <div class="relative min-w-0">
+
+                <div class="space-y-1 rounded-xl border border-gray-100 bg-white p-1 dark:border-neutral-800 dark:bg-neutral-950">
+                  <div class="flex min-h-[30px] items-center gap-2 rounded-lg px-1.5 py-0.5">
+                    <div class="w-[78px] shrink-0 whitespace-nowrap text-[9px] font-medium text-gray-400 dark:text-gray-500">
+                      {{ t(store.settings.locale, 'settings.syncUrl') }}
+                    </div>
                     <input
-                      v-model="webdavPassword"
-                      @focus="passwordFieldsFocused = true"
-                      @blur="passwordFieldsFocused = false; saveSyncSettings()"
-                      :type="showWebdavPassword ? 'text' : 'password'"
-                      :placeholder="t(store.settings.locale, 'settings.syncWebdavPassword')"
-                      class="w-full rounded-lg border border-white/70 bg-white py-2 pl-3 pr-9 text-xs text-gray-700 outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-200"
+                      v-model="localSyncUrl"
+                      @blur="saveSyncSettings"
+                      :placeholder="t(store.settings.locale, 'settings.syncUrl')"
+                      class="min-w-0 flex-1 bg-transparent py-0 text-xs leading-4 text-gray-700 outline-none dark:text-gray-200"
                     />
-                    <button
-                      type="button"
-                      class="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-neutral-800 dark:hover:text-gray-300"
-                      :aria-label="t(store.settings.locale, showWebdavPassword ? 'settings.hidePassword' : 'settings.showPassword')"
-                      @mousedown.prevent
-                      @click="showWebdavPassword = !showWebdavPassword"
-                    >
-                      <EyeOff v-if="showWebdavPassword" class="h-3.5 w-3.5" :stroke-width="2.2" />
-                      <Eye v-else class="h-3.5 w-3.5" :stroke-width="2.2" />
-                    </button>
                   </div>
-                </div>
-                <div class="space-y-1">
-                  <div class="flex items-center justify-between gap-2">
-                    <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">
+
+                  <div class="h-px bg-gray-100 dark:bg-neutral-800"></div>
+
+                  <div class="flex min-h-[30px] items-center gap-2 rounded-lg px-1.5 py-0.5">
+                    <div class="w-[78px] shrink-0 whitespace-nowrap text-[9px] font-medium text-gray-400 dark:text-gray-500">
+                      {{ t(store.settings.locale, 'settings.syncUsername') }}
+                    </div>
+                    <input
+                      v-model="localSyncUsername"
+                      @blur="saveSyncSettings"
+                      :placeholder="t(store.settings.locale, 'settings.syncUsername')"
+                      class="min-w-0 flex-1 bg-transparent py-0 text-xs leading-4 text-gray-700 outline-none dark:text-gray-200"
+                    />
+                  </div>
+
+                  <div class="h-px bg-gray-100 dark:bg-neutral-800"></div>
+
+                  <div
+                    :class="[
+                      'rounded-lg px-1.5 py-0.5',
+                      syncDeviceIdError ? 'bg-red-50/70 dark:bg-red-950/10' : ''
+                    ]"
+                  >
+                    <div class="flex min-h-[30px] items-center gap-2">
+                      <div class="w-[78px] shrink-0 whitespace-nowrap text-[9px] font-medium text-gray-400 dark:text-gray-500">
+                        {{ t(store.settings.locale, 'settings.syncDeviceId') }}
+                      </div>
+                      <input
+                        v-model="localSyncDeviceId"
+                        @input="applyDeviceIdInput"
+                        @blur="saveSyncSettings"
+                        :placeholder="t(store.settings.locale, 'settings.syncDeviceId')"
+                        :class="[
+                          'min-w-0 flex-1 bg-transparent py-0 text-xs leading-4 outline-none',
+                          syncDeviceIdError ? 'text-red-500 dark:text-red-400' : 'text-gray-700 dark:text-gray-200'
+                        ]"
+                      />
+                    </div>
+                    <div v-if="syncDeviceIdError" class="mt-0.5 pl-[88px] text-[10px] leading-relaxed text-red-500 dark:text-red-400">
+                      {{ syncDeviceIdError }}
+                    </div>
+                  </div>
+
+                  <div class="h-px bg-gray-100 dark:bg-neutral-800"></div>
+
+                  <div class="flex min-h-[30px] items-center gap-2 rounded-lg px-1.5 py-0.5">
+                    <div class="w-[78px] shrink-0 whitespace-nowrap text-[9px] font-medium text-gray-400 dark:text-gray-500">
+                      {{ t(store.settings.locale, 'settings.syncWebdavPassword') }}
+                    </div>
+                    <div class="relative min-w-0 flex-1">
+                      <input
+                        v-model="webdavPassword"
+                        @focus="passwordFieldsFocused = true"
+                        @blur="passwordFieldsFocused = false; saveSyncSettings()"
+                        :type="showWebdavPassword ? 'text' : 'password'"
+                        :placeholder="t(store.settings.locale, 'settings.syncWebdavPassword')"
+                        class="w-full bg-transparent py-0 pr-6 text-xs leading-4 text-gray-700 outline-none dark:text-gray-200"
+                      />
+                      <button
+                        type="button"
+                        class="absolute right-0 top-1/2 flex h-4.5 w-4.5 -translate-y-1/2 items-center justify-center rounded text-gray-400 transition-colors hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+                        :aria-label="t(store.settings.locale, showWebdavPassword ? 'settings.hidePassword' : 'settings.showPassword')"
+                        @mousedown.prevent
+                        @click="showWebdavPassword = !showWebdavPassword"
+                      >
+                        <EyeOff v-if="showWebdavPassword" class="h-3.5 w-3.5" :stroke-width="2.2" />
+                        <Eye v-else class="h-3.5 w-3.5" :stroke-width="2.2" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="h-px bg-gray-100 dark:bg-neutral-800"></div>
+
+                  <div class="flex min-h-[30px] items-center gap-2 rounded-lg px-1.5 py-0.5">
+                    <div class="w-[78px] shrink-0 whitespace-nowrap text-[9px] font-medium text-gray-400 dark:text-gray-500">
                       {{ t(store.settings.locale, 'settings.syncEncryptPassword') }}
                     </div>
-                    <button
-                      type="button"
-                      class="shrink-0 text-[10px] font-medium text-blue-500 transition-colors hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300"
-                      @click="rotatePasswordExpanded = !rotatePasswordExpanded; rotatePasswordError = ''"
-                    >
-                      {{ t(store.settings.locale, 'settings.syncPasswordChange') }}
-                    </button>
-                  </div>
-                  <div class="relative min-w-0">
-                    <input
-                      v-model="syncPassword"
-                      @focus="passwordFieldsFocused = true"
-                      @blur="passwordFieldsFocused = false; saveSyncSettings()"
-                      :type="showSyncPassword ? 'text' : 'password'"
-                      :placeholder="t(store.settings.locale, 'settings.syncEncryptPassword')"
-                      class="w-full rounded-lg border border-white/70 bg-white py-2 pl-3 pr-9 text-xs text-gray-700 outline-none shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:border-neutral-700 dark:bg-neutral-950 dark:text-gray-200"
-                    />
-                    <button
-                      type="button"
-                      class="absolute right-1.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-neutral-800 dark:hover:text-gray-300"
-                      :aria-label="t(store.settings.locale, showSyncPassword ? 'settings.hidePassword' : 'settings.showPassword')"
-                      @mousedown.prevent
-                      @click="showSyncPassword = !showSyncPassword"
-                    >
-                      <EyeOff v-if="showSyncPassword" class="h-3.5 w-3.5" :stroke-width="2.2" />
-                      <Eye v-else class="h-3.5 w-3.5" :stroke-width="2.2" />
-                    </button>
+                    <div class="flex min-w-0 flex-1 items-center gap-1.5">
+                      <div class="relative min-w-0 flex-1">
+                        <input
+                          v-model="syncPassword"
+                          @focus="passwordFieldsFocused = true"
+                          @blur="passwordFieldsFocused = false; saveSyncSettings()"
+                          :type="showSyncPassword ? 'text' : 'password'"
+                          :placeholder="t(store.settings.locale, 'settings.syncEncryptPassword')"
+                          class="w-full bg-transparent py-0 pr-6 text-xs leading-4 text-gray-700 outline-none dark:text-gray-200"
+                        />
+                        <button
+                          type="button"
+                          class="absolute right-0 top-1/2 flex h-4.5 w-4.5 -translate-y-1/2 items-center justify-center rounded text-gray-400 transition-colors hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+                          :aria-label="t(store.settings.locale, showSyncPassword ? 'settings.hidePassword' : 'settings.showPassword')"
+                          @mousedown.prevent
+                          @click="showSyncPassword = !showSyncPassword"
+                        >
+                          <EyeOff v-if="showSyncPassword" class="h-3.5 w-3.5" :stroke-width="2.2" />
+                          <Eye v-else class="h-3.5 w-3.5" :stroke-width="2.2" />
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        class="inline-flex h-6 shrink-0 items-center rounded-md bg-blue-50 px-1.5 py-0 text-[10px] font-medium text-blue-500 transition-colors hover:bg-blue-100 dark:bg-blue-500/10 dark:text-blue-400 dark:hover:bg-blue-500/20"
+                        @click="rotatePasswordExpanded = !rotatePasswordExpanded; rotatePasswordError = ''"
+                      >
+                        {{ t(store.settings.locale, 'settings.syncPasswordChange') }}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
               <div
                 v-if="rotatePasswordExpanded"
-                class="space-y-2 rounded-lg border border-blue-100 bg-white/85 p-2.5 dark:border-blue-500/20 dark:bg-neutral-950/80"
+                class="space-y-2 rounded-xl border border-blue-100 bg-white/90 p-2.5 dark:border-blue-500/20 dark:bg-neutral-950/85"
               >
                 <div class="text-[10px] text-gray-400 dark:text-gray-500">
                   {{ t(store.settings.locale, 'settings.syncPasswordChangeDesc') }}
@@ -1149,40 +1245,10 @@ const syncStatusLabel = computed(() => {
                   </div>
                 </div>
               </div>
-              <div class="flex items-center justify-between gap-2">
-                <div class="min-w-0 text-[10px] text-gray-400">
-                  <span v-if="syncStatus">{{ syncStatusLabel }}</span>
-                  <span v-if="syncStatus"> · </span>
-                  <span v-if="syncStatus?.lastSyncAt">
-                    {{ t(store.settings.locale, 'settings.syncLast') }} {{ new Date(syncStatus.lastSyncAt * 1000).toLocaleString() }}
-                  </span>
-                  <span v-else>{{ t(store.settings.locale, 'settings.syncNever') }}</span>
-                  <span v-if="syncStatus"> · {{ syncStatus.uploadedRequests }} / {{ syncStatus.importedRequests }}</span>
-                </div>
-                <div class="flex shrink-0 gap-1.5">
-                  <button
-                    class="rounded-lg bg-gray-100 px-2.5 py-1.5 text-[11px] font-medium text-gray-600 transition-colors hover:bg-gray-200 disabled:opacity-50 dark:bg-neutral-800 dark:text-gray-300 dark:hover:bg-neutral-700"
-                    :disabled="syncBusy"
-                    @click="testWebdav"
-                  >
-                    {{ t(store.settings.locale, 'settings.syncTest') }}
-                  </button>
-                  <button
-                    class="rounded-lg bg-blue-500 px-2.5 py-1.5 text-[11px] font-medium text-white transition-colors hover:bg-blue-600 disabled:opacity-50"
-                    :disabled="syncBusy"
-                    @click="runWebdavSync"
-                  >
-                    {{ syncBusy ? t(store.settings.locale, 'common.syncing') : t(store.settings.locale, 'settings.syncNow') }}
-                  </button>
-                </div>
-              </div>
-              <div v-if="syncMessage" class="truncate text-[10px] text-gray-400">
-                {{ syncMessage }}
-              </div>
-              <div class="space-y-2 rounded-lg border border-white/70 bg-white/80 p-2 dark:border-neutral-800 dark:bg-neutral-950/70">
+              <div class="space-y-2">
                 <div class="flex items-center justify-between gap-2">
-                  <div class="text-[11px] font-medium text-gray-500 dark:text-gray-400">
-                    {{ t(store.settings.locale, 'settings.syncRemoteDevices') }}
+                  <div class="text-[10px] font-semibold uppercase tracking-[0.08em] text-gray-400 dark:text-gray-500">
+                    {{ t(store.settings.locale, 'settings.syncSectionDevices') }}
                   </div>
                   <button
                     type="button"
@@ -1200,14 +1266,14 @@ const syncStatusLabel = computed(() => {
                   <div
                     v-for="device in syncDevices"
                     :key="device.deviceId"
-                    class="flex items-center justify-between gap-2 rounded-lg border border-gray-100 bg-gray-50/80 px-2.5 py-2 dark:border-neutral-800 dark:bg-neutral-900/70"
+                    class="flex items-center justify-between gap-2 rounded-xl border border-gray-100 bg-white px-2.5 py-2.5 dark:border-neutral-800 dark:bg-neutral-950"
                   >
                     <div class="min-w-0">
                       <div class="truncate text-[11px] font-medium text-gray-700 dark:text-gray-200">
                         {{ device.deviceId }}
                       </div>
                       <div class="truncate text-[10px] text-gray-400 dark:text-gray-500">
-                        seq {{ device.lastExportSeq }}<span v-if="device.lastSeenAt"> · {{ new Date(device.lastSeenAt * 1000).toLocaleString() }}</span>
+                        {{ t(store.settings.locale, 'settings.syncRemoteBatch') }} {{ device.lastExportSeq }}<span v-if="device.lastSeenAt"> · {{ formatSyncTimestamp(device.lastSeenAt) }}</span>
                       </div>
                     </div>
                     <button
