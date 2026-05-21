@@ -1083,7 +1083,6 @@ impl LocalUsageDatabase {
             ],
         )
         .map_err(|e| format!("Failed to record sync batch history: {}", e))?;
-        Self::upsert_sync_state(&tx, "last_export_seq", &batch_seq.to_string(), now)?;
         tx.commit()
             .map_err(|e| format!("Failed to commit sync outbox upload mark: {}", e))?;
         Ok(())
@@ -1593,12 +1592,6 @@ impl LocalUsageDatabase {
         tx.commit()
             .map_err(|e| format!("Failed to commit remote sync import: {}", e))?;
         Ok(())
-    }
-
-    pub fn package_imported(&self, device_id: &str, export_seq: i64) -> Result<bool, String> {
-        Ok(self
-            .get_webdav_sync_state(&format!("imported:{}:{}", device_id, export_seq))?
-            .is_some())
     }
 
     pub fn get_remote_request_records(

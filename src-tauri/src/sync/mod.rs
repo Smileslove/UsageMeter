@@ -5,7 +5,8 @@ use crate::local_usage::{
 use crate::models::SyncSettings;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
-use reqwest::{Client, Method, StatusCode, Url};
+use reqwest::header::RETRY_AFTER;
+use reqwest::{Client, Method, RequestBuilder, Response, StatusCode, Url};
 use ring::{aead, pbkdf2, rand};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -31,6 +32,11 @@ const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 const SNAPSHOT_INTERVAL_BATCHES: i64 = 100;
 const BATCH_RETENTION_AFTER_SNAPSHOT: i64 = 20;
 const AUTO_SYNC_MIN_INTERVAL_SECONDS: u64 = 60;
+const HTTP_CONNECT_TIMEOUT_SECONDS: u64 = 10;
+const HTTP_TOTAL_TIMEOUT_SECONDS: u64 = 60;
+const HTTP_MAX_ATTEMPTS: u32 = 3;
+const HTTP_RETRY_BASE_DELAY_MS: u64 = 1_000;
+const HTTP_RETRY_AFTER_CAP_SECONDS: u64 = 30;
 
 static SYNC_JOB_LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
 
@@ -59,19 +65,6 @@ pub struct SyncStatus {
 pub struct RotateSyncPasswordPayload {
     pub current_sync_password: String,
     pub new_sync_password: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SyncPackage {
-    schema_version: u32,
-    app_version: String,
-    device_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    instance_id: Option<String>,
-    export_seq: i64,
-    exported_at: i64,
-    data: SyncExportData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,14 +191,12 @@ pub async fn test_connection(
     let client = WebDavClient::new(settings, webdav_password)?;
     client.check_access().await?;
     client.ensure_base_dirs(&device_id).await?;
-    let keyring_state = load_or_create_keyring(&client, &credentials.sync_password).await?;
+    let _ = load_or_create_keyring(&client, &credentials.sync_password).await?;
     assert_device_id_ownership(
         &client,
         &device_id,
         &instance_id,
         previous_device_id.as_deref(),
-        &credentials.sync_password,
-        &keyring_state,
     )
     .await
 }
@@ -317,8 +308,6 @@ pub async fn rotate_sync_password(
         &device_id,
         &instance_id,
         previous_device_id.as_deref(),
-        &payload.current_sync_password,
-        &keyring_state,
     )
     .await?;
 
@@ -358,8 +347,6 @@ async fn sync_now_inner(
         &device_id,
         &instance_id,
         previous_device_id.as_deref(),
-        &credentials.sync_password,
-        &keyring_state,
     )
     .await?;
     db.seed_sync_outbox_from_local(&device_id)?;
@@ -528,100 +515,31 @@ async fn import_remote_packages(
         if device_id == own_device_id || device_id.trim().is_empty() {
             continue;
         }
-        let manifest = load_manifest(client, &device_id).await?;
-        if let Some(manifest) = manifest {
-            let import_result =
-                import_device_batches(client, &manifest, sync_password, keyring_state).await;
-            match import_result {
-                Ok(request_count) => imported_requests += request_count,
-                Err(err) => {
-                    db.upsert_webdav_sync_state(&format!("failed:{}:manifest", device_id), &err)?;
-                    let _ = db.upsert_import_cursor(
-                        &device_id,
-                        Some(&manifest.instance_id),
-                        db.get_import_cursor(&device_id).unwrap_or(0),
-                        "failed",
-                        Some(&err),
-                    );
-                    eprintln!(
-                        "[UsageMeter] Skipped WebDAV sync device {} via manifest: {}",
-                        device_id, err
-                    );
-                }
-            }
-            continue;
-        }
-
-        let Some(file) = select_latest_package(client, &device_id).await? else {
+        let Some(manifest) = load_manifest(client, &device_id).await? else {
             continue;
         };
         let import_result =
-            import_one_legacy_package(client, &device_id, &file, sync_password, keyring_state)
-                .await;
+            import_device_batches(client, &manifest, sync_password, keyring_state).await;
         match import_result {
             Ok(request_count) => imported_requests += request_count,
             Err(err) => {
-                db.upsert_webdav_sync_state(&format!("failed:{}:{}", device_id, file), &err)?;
+                db.upsert_webdav_sync_state(&format!("failed:{}:manifest", device_id), &err)?;
+                let _ = db.upsert_import_cursor(
+                    &device_id,
+                    Some(&manifest.instance_id),
+                    db.get_import_cursor(&device_id).unwrap_or(0),
+                    "failed",
+                    Some(&err),
+                );
                 eprintln!(
-                    "[UsageMeter] Skipped WebDAV sync package {}/{}: {}",
-                    device_id, file, err
+                    "[UsageMeter] Skipped WebDAV sync device {} via manifest: {}",
+                    device_id, err
                 );
             }
         }
     }
 
     Ok(imported_requests)
-}
-
-async fn select_latest_package(
-    client: &WebDavClient,
-    device_id: &str,
-) -> Result<Option<String>, String> {
-    let files = client.list_files(&client.device_path(device_id)).await?;
-    if files.iter().any(|file| file == "latest.json.enc") {
-        return Ok(Some("latest.json.enc".to_string()));
-    }
-
-    Ok(latest_snapshot_file(files))
-}
-
-fn latest_snapshot_file(files: Vec<String>) -> Option<String> {
-    files
-        .into_iter()
-        .filter_map(|file| parse_snapshot_seq(&file).map(|seq| (seq, file)))
-        .max_by_key(|(seq, _)| *seq)
-        .map(|(_, file)| file)
-}
-
-async fn import_one_legacy_package(
-    client: &WebDavClient,
-    listed_device_id: &str,
-    file: &str,
-    sync_password: &str,
-    keyring_state: &SyncKeyringState,
-) -> Result<u64, String> {
-    let db = ensure_local_usage_synced()?;
-    let bytes = client
-        .get(&format!(
-            "{}/{}",
-            client.device_path(listed_device_id),
-            file
-        ))
-        .await?;
-    let encrypted: EncryptedPackage = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("Failed to parse encrypted sync package: {}", e))?;
-    let package = decrypt_package(&encrypted, sync_password, keyring_state)?;
-    if package.device_id.trim().is_empty() {
-        return Err("ERR_SYNC_DEVICE_ID_EMPTY".to_string());
-    }
-
-    if db.package_imported(&package.device_id, package.export_seq)? {
-        return Ok(0);
-    }
-
-    let request_count = package.data.requests.len() as u64;
-    db.import_remote_sync_data(&package.device_id, package.export_seq, &package.data)?;
-    Ok(request_count)
 }
 
 async fn import_device_batches(
@@ -633,24 +551,32 @@ async fn import_device_batches(
     let db = ensure_local_usage_synced()?;
     let mut imported_requests = 0_u64;
     let mut cursor = db.get_import_cursor(&manifest.device_id)?;
-    if cursor == 0 && manifest.latest_snapshot_seq > 0 {
-        if let Some(snapshot) =
-            import_device_snapshot(client, manifest, sync_password, keyring_state).await?
-        {
-            imported_requests += snapshot.requests.len() as u64;
-            db.import_remote_sync_data(
-                &manifest.device_id,
-                manifest.latest_snapshot_seq,
-                &snapshot,
-            )?;
-            cursor = manifest.latest_snapshot_seq;
-            db.upsert_import_cursor(
-                &manifest.device_id,
-                Some(&manifest.instance_id),
-                cursor,
-                "ready",
-                None,
-            )?;
+    // Fast-forward via snapshot whenever cursor lags behind it, not only on first import:
+    // pruning removes batches older than (snapshot_seq - BATCH_RETENTION_AFTER_SNAPSHOT),
+    // so a stale consumer's missing batches must be recovered through the snapshot.
+    if cursor < manifest.latest_snapshot_seq {
+        match import_device_snapshot(client, manifest, sync_password, keyring_state).await? {
+            Some(snapshot) => {
+                imported_requests += snapshot.requests.len() as u64;
+                db.import_remote_sync_data(
+                    &manifest.device_id,
+                    manifest.latest_snapshot_seq,
+                    &snapshot,
+                )?;
+                cursor = manifest.latest_snapshot_seq;
+                db.upsert_import_cursor(
+                    &manifest.device_id,
+                    Some(&manifest.instance_id),
+                    cursor,
+                    "ready",
+                    None,
+                )?;
+            }
+            None => {
+                if cursor == 0 {
+                    return Ok(imported_requests);
+                }
+            }
         }
     }
 
@@ -667,7 +593,18 @@ async fn import_device_batches(
 
     for batch_seq in (cursor + 1)..=manifest.latest_batch_seq {
         let remote_path = client.batch_path(&manifest.device_id, batch_seq);
-        let bytes = client.get(&remote_path).await?;
+        let bytes = match client.get_optional(&remote_path).await? {
+            Some(bytes) => bytes,
+            None => {
+                if manifest.latest_snapshot_seq > cursor {
+                    return Err("ERR_SYNC_BATCH_PRUNED_RETRY".to_string());
+                }
+                return Err(format!(
+                    "ERR_SYNC_BATCH_MISSING: device {} batch {}",
+                    manifest.device_id, batch_seq
+                ));
+            }
+        };
         let encrypted: EncryptedPackage = serde_json::from_slice(&bytes)
             .map_err(|e| format!("Failed to parse encrypted sync batch: {}", e))?;
         let package: UsageBatchPackage =
@@ -739,42 +676,20 @@ async fn assert_device_id_ownership(
     device_id: &str,
     instance_id: &str,
     previous_device_id: Option<&str>,
-    sync_password: &str,
-    keyring_state: &SyncKeyringState,
 ) -> Result<(), String> {
-    if let Some(manifest) = load_manifest(client, device_id).await? {
-        if manifest.device_id != device_id {
-            return Err("ERR_SYNC_DEVICE_ID_CONFLICT".to_string());
-        }
-        if manifest.instance_id == instance_id {
-            return Ok(());
-        }
-        if previous_device_id == Some(device_id) {
-            return Ok(());
-        }
-        return Err("ERR_SYNC_DEVICE_ID_CONFLICT".to_string());
-    }
-
-    let latest_path = format!("{}/latest.json.enc", client.device_path(device_id));
-    let bytes = match client.get_optional(&latest_path).await? {
-        Some(bytes) => bytes,
-        None => return Ok(()),
+    let Some(manifest) = load_manifest(client, device_id).await? else {
+        return Ok(());
     };
-
-    let encrypted: EncryptedPackage = serde_json::from_slice(&bytes)
-        .map_err(|e| format!("Failed to parse encrypted sync package: {}", e))?;
-    let package = decrypt_package_for_ownership(&encrypted, sync_password, keyring_state)?;
-    let remote_device_id = crate::models::normalize_sync_device_id(&package.device_id);
-    if remote_device_id != device_id {
+    if manifest.device_id != device_id {
         return Err("ERR_SYNC_DEVICE_ID_CONFLICT".to_string());
     }
-
-    match package.instance_id.as_deref() {
-        Some(remote_instance_id) if remote_instance_id == instance_id => Ok(()),
-        Some(_) => Err("ERR_SYNC_DEVICE_ID_CONFLICT".to_string()),
-        None if previous_device_id == Some(device_id) => Ok(()),
-        None => Err("ERR_SYNC_DEVICE_ID_CONFLICT".to_string()),
+    if manifest.instance_id == instance_id {
+        return Ok(());
     }
+    if previous_device_id == Some(device_id) {
+        return Ok(());
+    }
+    Err("ERR_SYNC_DEVICE_ID_CONFLICT".to_string())
 }
 
 fn parse_snapshot_seq(file: &str) -> Option<i64> {
@@ -1130,6 +1045,14 @@ async fn load_or_create_keyring(
     Ok(SyncKeyringState::Missing)
 }
 
+fn make_random_wrap_salt() -> Result<Vec<u8>, String> {
+    let rng = rand::SystemRandom::new();
+    let mut salt = vec![0_u8; WRAP_SALT_LEN];
+    rand::SecureRandom::fill(&rng, &mut salt)
+        .map_err(|_| "ERR_SYNC_WRAP_SALT_GENERATION_FAILED".to_string())?;
+    Ok(salt)
+}
+
 async fn store_keyring(client: &WebDavClient, keyring: &SyncKeyring) -> Result<(), String> {
     client.ensure_meta_dir().await?;
     let bytes = serde_json::to_vec(keyring)
@@ -1139,19 +1062,19 @@ async fn store_keyring(client: &WebDavClient, keyring: &SyncKeyring) -> Result<(
 
 fn wrap_new_keyring(
     sync_password: &str,
-    wrap_salt: &str,
     dek: [u8; KEY_LEN],
     dek_version: u32,
 ) -> Result<SyncKeyring, String> {
+    let salt_bytes = make_random_wrap_salt()?;
     let nonce = make_nonce()?;
-    let wrapping_key = derive_key(sync_password, wrap_salt);
-    let wrapped_dek = encrypt_bytes(&dek, &wrapping_key, wrap_salt.as_bytes(), &nonce)?;
+    let wrapping_key = derive_key(sync_password, &salt_bytes);
+    let wrapped_dek = encrypt_bytes(&dek, &wrapping_key, &salt_bytes, &nonce)?;
     Ok(SyncKeyring {
-        schema_version: 1,
+        schema_version: SYNC_KEYRING_SCHEMA,
         dek_version,
         algorithm: "chacha20-poly1305".to_string(),
         kdf: format!("pbkdf2-hmac-sha256:{}", PBKDF2_ROUNDS),
-        wrap_salt: wrap_salt.to_string(),
+        wrap_salt: BASE64.encode(&salt_bytes),
         nonce: BASE64.encode(nonce),
         wrapped_dek: BASE64.encode(wrapped_dek),
         updated_at: chrono::Utc::now().timestamp(),
@@ -1164,23 +1087,24 @@ fn rewrap_keyring_dek(
     new_sync_password: &str,
 ) -> Result<SyncKeyring, String> {
     let dek = unwrap_dek(&keyring, current_sync_password)?;
-    wrap_new_keyring(
-        new_sync_password,
-        &format!("dek-v{}", keyring.dek_version + 1),
-        dek,
-        keyring.dek_version + 1,
-    )
+    wrap_new_keyring(new_sync_password, dek, keyring.dek_version + 1)
 }
 
 fn unwrap_dek(keyring: &SyncKeyring, sync_password: &str) -> Result<[u8; KEY_LEN], String> {
+    if keyring.schema_version != SYNC_KEYRING_SCHEMA {
+        return Err("ERR_SYNC_KEYRING_SCHEMA_UNSUPPORTED".to_string());
+    }
     let nonce = BASE64
         .decode(&keyring.nonce)
         .map_err(|e| format!("Failed to decode keyring nonce: {}", e))?;
     let cipher = BASE64
         .decode(&keyring.wrapped_dek)
         .map_err(|e| format!("Failed to decode wrapped DEK: {}", e))?;
-    let wrapping_key = derive_key(sync_password, &keyring.wrap_salt);
-    let plaintext = decrypt_bytes(cipher, &wrapping_key, &keyring.wrap_salt, &nonce)?;
+    let salt_bytes = BASE64
+        .decode(&keyring.wrap_salt)
+        .map_err(|e| format!("Failed to decode keyring wrap salt: {}", e))?;
+    let wrapping_key = derive_key(sync_password, &salt_bytes);
+    let plaintext = decrypt_bytes(cipher, &wrapping_key, &salt_bytes, &nonce)?;
     plaintext
         .as_slice()
         .try_into()
@@ -1196,7 +1120,7 @@ async fn ensure_dek(
         SyncKeyringState::Ready(keyring) => unwrap_dek(keyring, sync_password),
         SyncKeyringState::Missing => {
             let dek = make_random_key()?;
-            let keyring = wrap_new_keyring(sync_password, "dek-v1", dek, 1)?;
+            let keyring = wrap_new_keyring(sync_password, dek, 1)?;
             store_keyring(client, &keyring).await?;
             *keyring_state = SyncKeyringState::Ready(keyring);
             Ok(dek)
@@ -1248,54 +1172,6 @@ fn encrypt_snapshot_package(
     })
 }
 
-fn decrypt_package_with_keyring(
-    encrypted: &EncryptedPackage,
-    sync_password: &str,
-    keyring: &SyncKeyring,
-) -> Result<SyncPackage, String> {
-    if encrypted.schema_version != 1 {
-        return Err("ERR_SYNC_SCHEMA_UNSUPPORTED".to_string());
-    }
-    if encrypted.dek_version == 0 {
-        return Err("ERR_SYNC_LEGACY_PACKAGE_UNSUPPORTED".to_string());
-    }
-    let dek = unwrap_dek(keyring, sync_password)?;
-    let nonce = BASE64
-        .decode(&encrypted.nonce)
-        .map_err(|e| format!("Failed to decode sync nonce: {}", e))?;
-    let cipher = BASE64
-        .decode(&encrypted.payload)
-        .map_err(|e| format!("Failed to decode sync payload: {}", e))?;
-    let plaintext = decrypt_bytes(cipher, &dek, &encrypted.device_id, &nonce)?;
-    serde_json::from_slice(&plaintext).map_err(|e| format!("Failed to parse sync package: {}", e))
-}
-
-fn decrypt_package_for_ownership(
-    encrypted: &EncryptedPackage,
-    sync_password: &str,
-    keyring_state: &SyncKeyringState,
-) -> Result<SyncPackage, String> {
-    match keyring_state {
-        SyncKeyringState::Ready(keyring) => {
-            decrypt_package_with_keyring(encrypted, sync_password, keyring)
-        }
-        SyncKeyringState::Missing => Err("ERR_SYNC_KEYRING_MISSING".to_string()),
-    }
-}
-
-fn decrypt_package(
-    encrypted: &EncryptedPackage,
-    sync_password: &str,
-    keyring_state: &SyncKeyringState,
-) -> Result<SyncPackage, String> {
-    match keyring_state {
-        SyncKeyringState::Ready(keyring) => {
-            decrypt_package_with_keyring(encrypted, sync_password, keyring)
-        }
-        SyncKeyringState::Missing => Err("ERR_SYNC_KEYRING_MISSING".to_string()),
-    }
-}
-
 fn decrypt_typed_package<T: DeserializeOwned>(
     encrypted: &EncryptedPackage,
     sync_password: &str,
@@ -1325,13 +1201,13 @@ fn decrypt_typed_package<T: DeserializeOwned>(
         .map_err(|e| format!("Failed to parse typed sync package: {}", e))
 }
 
-fn derive_key(password: &str, salt: &str) -> [u8; KEY_LEN] {
+fn derive_key(password: &str, salt: &[u8]) -> [u8; KEY_LEN] {
     let mut key = [0_u8; KEY_LEN];
     let rounds = NonZeroU32::new(PBKDF2_ROUNDS).expect("PBKDF2_ROUNDS must be non-zero");
     pbkdf2::derive(
         pbkdf2::PBKDF2_HMAC_SHA256,
         rounds,
-        salt.as_bytes(),
+        salt,
         password.as_bytes(),
         &mut key,
     );
@@ -1436,8 +1312,14 @@ impl WebDavClient {
         if !url_is_allowed(root) {
             return Err("ERR_WEBDAV_URL_INVALID".to_string());
         }
+        let client = Client::builder()
+            .connect_timeout(Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECONDS))
+            .timeout(Duration::from_secs(HTTP_TOTAL_TIMEOUT_SECONDS))
+            .user_agent(concat!("UsageMeter/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|e| format!("ERR_WEBDAV_CLIENT_INIT_FAILED: {}", e))?;
         Ok(Self {
-            client: Client::new(),
+            client,
             base_url: format!("{}/{}", root, root_dir),
             root_dir,
             device_dir,
@@ -1447,13 +1329,11 @@ impl WebDavClient {
     }
 
     async fn check_access(&self) -> Result<(), String> {
-        let response = self
+        let builder = self
             .client
             .request(Method::OPTIONS, self.root_url())
-            .basic_auth(&self.username, Some(&self.password))
-            .send()
-            .await
-            .map_err(|e| format!("ERR_WEBDAV_REQUEST_FAILED: {}", e))?;
+            .basic_auth(&self.username, Some(&self.password));
+        let response = self.send_with_retry(builder).await?;
         if response.status().is_success() {
             return Ok(());
         }
@@ -1482,13 +1362,11 @@ impl WebDavClient {
 
     async fn mkcol(&self, path: &str) -> Result<(), String> {
         let method = Method::from_bytes(b"MKCOL").map_err(|e| e.to_string())?;
-        let response = self
+        let builder = self
             .client
             .request(method, self.url(path))
-            .basic_auth(&self.username, Some(&self.password))
-            .send()
-            .await
-            .map_err(|e| format!("ERR_WEBDAV_REQUEST_FAILED: {}", e))?;
+            .basic_auth(&self.username, Some(&self.password));
+        let response = self.send_with_retry(builder).await?;
         if response.status().is_success()
             || response.status() == StatusCode::METHOD_NOT_ALLOWED
             || response.status() == StatusCode::CONFLICT
@@ -1499,14 +1377,12 @@ impl WebDavClient {
     }
 
     async fn put(&self, path: &str, bytes: Vec<u8>) -> Result<(), String> {
-        let response = self
+        let builder = self
             .client
             .put(self.url(path))
             .basic_auth(&self.username, Some(&self.password))
-            .body(bytes)
-            .send()
-            .await
-            .map_err(|e| format!("ERR_WEBDAV_REQUEST_FAILED: {}", e))?;
+            .body(bytes);
+        let response = self.send_with_retry(builder).await?;
         if response.status().is_success() {
             Ok(())
         } else {
@@ -1515,13 +1391,11 @@ impl WebDavClient {
     }
 
     async fn delete(&self, path: &str) -> Result<(), String> {
-        let response = self
+        let builder = self
             .client
             .delete(self.url(path))
-            .basic_auth(&self.username, Some(&self.password))
-            .send()
-            .await
-            .map_err(|e| format!("ERR_WEBDAV_REQUEST_FAILED: {}", e))?;
+            .basic_auth(&self.username, Some(&self.password));
+        let response = self.send_with_retry(builder).await?;
         if response.status().is_success() || response.status() == StatusCode::NOT_FOUND {
             Ok(())
         } else {
@@ -1530,13 +1404,11 @@ impl WebDavClient {
     }
 
     async fn get(&self, path: &str) -> Result<Vec<u8>, String> {
-        let response = self
+        let builder = self
             .client
             .get(self.url(path))
-            .basic_auth(&self.username, Some(&self.password))
-            .send()
-            .await
-            .map_err(|e| format!("ERR_WEBDAV_REQUEST_FAILED: {}", e))?;
+            .basic_auth(&self.username, Some(&self.password));
+        let response = self.send_with_retry(builder).await?;
         let status = response.status();
         if !status.is_success() {
             return Err(format!("ERR_WEBDAV_GET_FAILED: {}", status));
@@ -1549,13 +1421,11 @@ impl WebDavClient {
     }
 
     async fn get_optional(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
-        let response = self
+        let builder = self
             .client
             .get(self.url(path))
-            .basic_auth(&self.username, Some(&self.password))
-            .send()
-            .await
-            .map_err(|e| format!("ERR_WEBDAV_REQUEST_FAILED: {}", e))?;
+            .basic_auth(&self.username, Some(&self.password));
+        let response = self.send_with_retry(builder).await?;
         let status = response.status();
         if status == StatusCode::NOT_FOUND {
             return Ok(None);
@@ -1590,17 +1460,15 @@ impl WebDavClient {
 
     async fn propfind(&self, path: &str) -> Result<Vec<WebDavEntry>, String> {
         let method = Method::from_bytes(b"PROPFIND").map_err(|e| e.to_string())?;
-        let response = self
+        let builder = self
             .client
             .request(method, self.url(path))
             .basic_auth(&self.username, Some(&self.password))
             .header("Depth", "1")
             .body(
                 r#"<?xml version="1.0" encoding="utf-8"?><propfind xmlns="DAV:"><prop><resourcetype/></prop></propfind>"#,
-            )
-            .send()
-            .await
-            .map_err(|e| format!("ERR_WEBDAV_REQUEST_FAILED: {}", e))?;
+            );
+        let response = self.send_with_retry(builder).await?;
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(Vec::new());
         }
@@ -1680,17 +1548,15 @@ impl WebDavClient {
 
     async fn propfind_absolute(&self, url: &str) -> Result<Vec<String>, String> {
         let method = Method::from_bytes(b"PROPFIND").map_err(|e| e.to_string())?;
-        let response = self
+        let builder = self
             .client
             .request(method, url.to_string())
             .basic_auth(&self.username, Some(&self.password))
             .header("Depth", "0")
             .body(
                 r#"<?xml version="1.0" encoding="utf-8"?><propfind xmlns="DAV:"><prop><resourcetype/></prop></propfind>"#,
-            )
-            .send()
-            .await
-            .map_err(|e| format!("ERR_WEBDAV_REQUEST_FAILED: {}", e))?;
+            );
+        let response = self.send_with_retry(builder).await?;
         if !response.status().is_success() && response.status().as_u16() != 207 {
             return Err(format!("ERR_WEBDAV_PROPFIND_FAILED: {}", response.status()));
         }
@@ -1703,11 +1569,91 @@ impl WebDavClient {
             .filter_map(|href| leaf_name(&href))
             .collect())
     }
+
+    async fn send_with_retry(&self, builder: RequestBuilder) -> Result<Response, String> {
+        let mut attempt: u32 = 0;
+        loop {
+            attempt += 1;
+            let request = builder
+                .try_clone()
+                .ok_or_else(|| "ERR_WEBDAV_REQUEST_BUILD_FAILED".to_string())?;
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    if should_retry_status(status) && attempt < HTTP_MAX_ATTEMPTS {
+                        let delay = retry_delay_for_response(&response, attempt);
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Ok(response);
+                }
+                Err(err) => {
+                    if is_transient_send_error(&err) && attempt < HTTP_MAX_ATTEMPTS {
+                        let delay = retry_delay_for_attempt(attempt);
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Err(format!("ERR_WEBDAV_REQUEST_FAILED: {}", err));
+                }
+            }
+        }
+    }
 }
 
 struct WebDavEntry {
     name: String,
     is_collection: bool,
+}
+
+fn should_retry_status(status: StatusCode) -> bool {
+    if status.is_server_error() {
+        return true;
+    }
+    matches!(
+        status,
+        StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+    )
+}
+
+fn is_transient_send_error(err: &reqwest::Error) -> bool {
+    err.is_timeout() || err.is_connect() || err.is_request()
+}
+
+fn retry_delay_for_attempt(attempt: u32) -> Duration {
+    let exp = attempt.saturating_sub(1).min(4);
+    let base_ms = HTTP_RETRY_BASE_DELAY_MS.saturating_mul(4u64.pow(exp));
+    let jittered = apply_jitter(base_ms);
+    Duration::from_millis(jittered)
+}
+
+fn retry_delay_for_response(response: &Response, attempt: u32) -> Duration {
+    if response.status() == StatusCode::TOO_MANY_REQUESTS {
+        if let Some(value) = response.headers().get(RETRY_AFTER) {
+            if let Ok(text) = value.to_str() {
+                if let Ok(secs) = text.trim().parse::<u64>() {
+                    let capped = secs.min(HTTP_RETRY_AFTER_CAP_SECONDS);
+                    return Duration::from_secs(capped.max(1));
+                }
+            }
+        }
+    }
+    retry_delay_for_attempt(attempt)
+}
+
+fn apply_jitter(base_ms: u64) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let mut hasher = DefaultHasher::new();
+    nanos.hash(&mut hasher);
+    let entropy = hasher.finish();
+    let spread = (base_ms / 5).max(1);
+    let offset = entropy % (spread * 2 + 1);
+    base_ms.saturating_add(offset).saturating_sub(spread)
 }
 
 struct PropfindEntry {
