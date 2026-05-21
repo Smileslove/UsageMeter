@@ -10,6 +10,7 @@ use reqwest::{Client, Method, RequestBuilder, Response, StatusCode, Url};
 use ring::{aead, pbkdf2, rand};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -34,6 +35,7 @@ const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 const SNAPSHOT_INTERVAL_BATCHES: i64 = 100;
 const BATCH_RETENTION_AFTER_SNAPSHOT: i64 = 20;
 const AUTO_SYNC_MIN_INTERVAL_SECONDS: u64 = 60;
+const MAX_BATCHES_PER_SYNC: usize = 20;
 const HTTP_CONNECT_TIMEOUT_SECONDS: u64 = 10;
 const HTTP_TOTAL_TIMEOUT_SECONDS: u64 = 60;
 const HTTP_MAX_ATTEMPTS: u32 = 3;
@@ -121,6 +123,33 @@ struct SharedSettingsPayload {
     currency: crate::models::CurrencySettings,
 }
 
+/// 所有参与字段级合并的设置字段名，顺序与 field_value() 一致
+const SHARED_SETTING_FIELDS: &[&str] = &[
+    "locale",
+    "timezone",
+    "summary_window",
+    "theme",
+    "model_pricing",
+    "source_aware",
+    "currency",
+];
+
+impl SharedSettingsPayload {
+    /// 将指定字段序列化为可比较的字符串，用于判断是否发生变化
+    fn field_value(&self, field: &str) -> String {
+        match field {
+            "locale" => self.locale.clone(),
+            "timezone" => self.timezone.clone(),
+            "summary_window" => self.summary_window.clone(),
+            "theme" => self.theme.clone(),
+            "model_pricing" => serde_json::to_string(&self.model_pricing).unwrap_or_default(),
+            "source_aware" => serde_json::to_string(&self.source_aware).unwrap_or_default(),
+            "currency" => serde_json::to_string(&self.currency).unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SharedSettingsDocument {
@@ -130,6 +159,9 @@ struct SharedSettingsDocument {
     updated_by_device_id: String,
     version: i64,
     payload: SharedSettingsPayload,
+    /// 各字段最后修改时间（unix timestamp），向后兼容：老文档缺失时视为 0
+    #[serde(default)]
+    field_timestamps: HashMap<String, i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,8 +283,7 @@ pub fn spawn_background_sync_loop() {
 
             // 扣除本次迭代（含启动同步）已消耗的时间，避免间隔漂移
             let elapsed = iteration_start.elapsed();
-            let adjusted_sleep =
-                Duration::from_secs(sleep_seconds).saturating_sub(elapsed);
+            let adjusted_sleep = Duration::from_secs(sleep_seconds).saturating_sub(elapsed);
             tokio::time::sleep(adjusted_sleep).await;
 
             if auto_sync_active {
@@ -378,48 +409,66 @@ async fn sync_now_inner(
         .get_webdav_sync_state("last_export_seq")?
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(0);
-    let export_seq = local_last_uploaded_seq.max(legacy_last_export_seq).max(
+
+    // 初始 export_seq：取本地已上传、远端 manifest、legacy 三者最大值 +1
+    let mut next_export_seq = local_last_uploaded_seq.max(legacy_last_export_seq).max(
         remote_manifest
             .as_ref()
             .map(|manifest| manifest.latest_batch_seq)
             .unwrap_or(0),
     ) + 1;
 
-    let SyncOutboxBatch {
-        request_events,
-        session_events,
-    } = db.reserve_sync_outbox_batch(&device_id, export_seq, 1000, 250)?;
-    let exported_request_count = request_events.len() as u64;
     let exported_at = chrono::Utc::now().timestamp();
     let mut effective_latest_batch_seq = local_last_uploaded_seq.max(legacy_last_export_seq);
+    let mut total_exported_request_count: u64 = 0;
 
-    if !request_events.is_empty() || !session_events.is_empty() {
+    // 循环上传，直到 outbox 清空或达到单次同步批次上限
+    for _ in 0..MAX_BATCHES_PER_SYNC {
+        let SyncOutboxBatch {
+            request_events,
+            session_events,
+        } = db.reserve_sync_outbox_batch(&device_id, next_export_seq, 1000, 250)?;
+
+        if request_events.is_empty() && session_events.is_empty() {
+            break;
+        }
+
+        let batch_exported_at = chrono::Utc::now().timestamp();
+        let batch_request_count = request_events.len();
+        let batch_session_count = session_events.len();
         let package = UsageBatchPackage {
             schema_version: BATCH_SCHEMA_VERSION,
             package_type: "usage_batch".to_string(),
             device_id: device_id.clone(),
             instance_id: instance_id.clone(),
-            batch_seq: export_seq,
-            prev_batch_seq: export_seq - 1,
-            exported_at,
+            batch_seq: next_export_seq,
+            prev_batch_seq: next_export_seq - 1,
+            exported_at: batch_exported_at,
             request_events,
             session_events,
         };
         let encrypted = encrypt_batch_package(&package, &dek, dek_version)?;
         let encrypted_bytes = serde_json::to_vec(&encrypted)
             .map_err(|e| format!("Failed to serialize encrypted sync batch: {}", e))?;
-        let remote_path = client.batch_path(&device_id, export_seq);
+        let remote_path = client.batch_path(&device_id, next_export_seq);
         if let Err(err) = client.put(&remote_path, encrypted_bytes).await {
-            let _ = db.release_sync_outbox_batch(export_seq);
+            let _ = db.release_sync_outbox_batch(next_export_seq);
             return Err(err);
         }
-        db.mark_sync_outbox_batch_uploaded(
-            export_seq,
+        if let Err(err) = db.mark_sync_outbox_batch_uploaded(
+            next_export_seq,
             &remote_path,
-            exported_request_count as usize,
-            package.session_events.len(),
-        )?;
-        effective_latest_batch_seq = export_seq;
+            batch_request_count,
+            batch_session_count,
+        ) {
+            // mark 失败：batch 文件已在服务端，但本地状态未更新；
+            // 释放 batched_seq 锁，下次 sync 会重新上传（服务端做幂等 upsert）
+            let _ = db.release_sync_outbox_batch(next_export_seq);
+            return Err(err);
+        }
+        total_exported_request_count += batch_request_count as u64;
+        effective_latest_batch_seq = next_export_seq;
+        next_export_seq += 1;
     }
 
     if effective_latest_batch_seq > 0
@@ -481,9 +530,11 @@ async fn sync_now_inner(
     db.upsert_webdav_sync_state("last_error", "")?;
     db.upsert_webdav_sync_state(
         "last_uploaded_requests",
-        &exported_request_count.to_string(),
+        &total_exported_request_count.to_string(),
     )?;
     db.upsert_webdav_sync_state("last_imported_requests", &imported_requests.to_string())?;
+    // 清理已上传的 outbox 行，防止表无限增长
+    let _ = db.prune_uploaded_outbox();
     Ok(())
 }
 
@@ -860,25 +911,98 @@ async fn sync_shared_settings(
 ) -> Result<(), String> {
     let mut app_settings = crate::commands::load_settings()?;
     let db = ensure_local_usage_synced()?;
+    let now = chrono::Utc::now().timestamp();
+
     let local_version = db
         .get_webdav_sync_state("shared_settings_version")?
-        .and_then(|value| value.parse::<i64>().ok())
+        .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(0);
 
+    // 加载本地各字段的时间戳（首次为空，默认 0）
+    let mut local_field_timestamps: HashMap<String, i64> = SHARED_SETTING_FIELDS
+        .iter()
+        .map(|&field| {
+            let ts = db
+                .get_webdav_sync_state(&format!("shared_field_ts:{}", field))
+                .ok()
+                .flatten()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(0);
+            (field.to_string(), ts)
+        })
+        .collect();
+
     let remote_document = load_shared_settings_document(client, credentials).await?;
+
+    // --- 拉取阶段：逐字段比较时间戳，取较新的值 ---
     if let Some(document) = remote_document.as_ref() {
         if document.version > local_version {
-            apply_shared_settings_payload(&mut app_settings, &document.payload);
-            crate::commands::save_settings(app_settings.clone())?;
+            let mut changed = false;
+            // 判断是否是升级前的老文档（没有 field_timestamps）
+            let is_legacy_doc = document.field_timestamps.is_empty();
+            for &field in SHARED_SETTING_FIELDS {
+                let local_ts = local_field_timestamps.get(field).copied().unwrap_or(0);
+                let remote_ts = if is_legacy_doc {
+                    // 老文档没有字段级时间戳：
+                    // - 本地未曾修改该字段（local_ts == 0）→ 使用文档整体时间戳，正常拉取
+                    // - 本地已有修改（local_ts > 0）→ 置为 0，不覆盖本地更改
+                    if local_ts == 0 {
+                        document.updated_at
+                    } else {
+                        0
+                    }
+                } else {
+                    // 新格式文档：取字段时间戳，缺失视为 0（该字段未曾被修改过）
+                    document.field_timestamps.get(field).copied().unwrap_or(0)
+                };
+                if remote_ts > local_ts {
+                    apply_shared_settings_field(&mut app_settings, field, &document.payload);
+                    local_field_timestamps.insert(field.to_string(), remote_ts);
+                    changed = true;
+                }
+            }
+            if changed {
+                crate::commands::save_settings(app_settings.clone())?;
+                // 持久化本地字段时间戳
+                for (field, ts) in &local_field_timestamps {
+                    db.upsert_webdav_sync_state(
+                        &format!("shared_field_ts:{}", field),
+                        &ts.to_string(),
+                    )?;
+                }
+            }
             db.upsert_webdav_sync_state("shared_settings_version", &document.version.to_string())?;
         }
     }
 
+    // --- 推送阶段：检测本地相对于远端的变化，更新对应字段时间戳 ---
     let current_version = db
         .get_webdav_sync_state("shared_settings_version")?
-        .and_then(|value| value.parse::<i64>().ok())
+        .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(0);
     let local_payload = extract_shared_settings_payload(&app_settings);
+
+    // 对比远端 payload，为本地有主动改动的字段打上当前时间戳。
+    // 拉取阶段已把远端更新的字段同步到 app_settings，
+    // 若此时某字段仍与远端不同，说明本地值更新，需要标记为 now 以便推送。
+    match remote_document.as_ref() {
+        Some(document) => {
+            for &field in SHARED_SETTING_FIELDS {
+                if local_payload.field_value(field) != document.payload.field_value(field) {
+                    // 本地值与远端不同（且经过拉取阶段仍未被覆盖）：标记为本地最新
+                    local_field_timestamps.insert(field.to_string(), now);
+                }
+            }
+        }
+        None => {
+            // 远端没有文档：所有字段都视为本地最新
+            for &field in SHARED_SETTING_FIELDS {
+                local_field_timestamps.insert(field.to_string(), now);
+            }
+        }
+    }
+
+    // 判断是否需要推送
     let should_push = match remote_document.as_ref() {
         Some(document) => {
             current_version > document.version
@@ -887,6 +1011,7 @@ async fn sync_shared_settings(
         }
         None => true,
     };
+
     if should_push {
         let keyring_state = load_or_create_keyring(client, &credentials.sync_password).await?;
         let keyring = keyring_state
@@ -898,16 +1023,39 @@ async fn sync_shared_settings(
         let document = SharedSettingsDocument {
             schema_version: 1,
             document_type: "shared_settings".to_string(),
-            updated_at: chrono::Utc::now().timestamp(),
+            updated_at: now,
             updated_by_device_id: device_id.to_string(),
             version,
             payload: local_payload,
+            field_timestamps: local_field_timestamps.clone(),
         };
         store_shared_settings_document(client, &document, &dek, keyring.dek_version).await?;
+        // 持久化本地字段时间戳
+        for (field, ts) in &local_field_timestamps {
+            db.upsert_webdav_sync_state(&format!("shared_field_ts:{}", field), &ts.to_string())?;
+        }
         db.upsert_webdav_sync_state("shared_settings_version", &version.to_string())?;
     }
 
     Ok(())
+}
+
+/// 将远端文档中单个字段的值应用到本地设置
+fn apply_shared_settings_field(
+    settings: &mut crate::models::AppSettings,
+    field: &str,
+    payload: &SharedSettingsPayload,
+) {
+    match field {
+        "locale" => settings.locale = payload.locale.clone(),
+        "timezone" => settings.timezone = payload.timezone.clone(),
+        "summary_window" => settings.summary_window = payload.summary_window.clone(),
+        "theme" => settings.theme = payload.theme.clone(),
+        "model_pricing" => settings.model_pricing = payload.model_pricing.clone(),
+        "source_aware" => settings.source_aware = payload.source_aware.clone(),
+        "currency" => settings.currency = payload.currency.clone(),
+        _ => {}
+    }
 }
 
 fn extract_shared_settings_payload(settings: &crate::models::AppSettings) -> SharedSettingsPayload {
@@ -920,19 +1068,6 @@ fn extract_shared_settings_payload(settings: &crate::models::AppSettings) -> Sha
         source_aware: settings.source_aware.clone(),
         currency: settings.currency.clone(),
     }
-}
-
-fn apply_shared_settings_payload(
-    settings: &mut crate::models::AppSettings,
-    payload: &SharedSettingsPayload,
-) {
-    settings.locale = payload.locale.clone();
-    settings.timezone = payload.timezone.clone();
-    settings.summary_window = payload.summary_window.clone();
-    settings.theme = payload.theme.clone();
-    settings.model_pricing = payload.model_pricing.clone();
-    settings.source_aware = payload.source_aware.clone();
-    settings.currency = payload.currency.clone();
 }
 
 fn shared_settings_payload_matches(

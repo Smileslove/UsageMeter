@@ -737,10 +737,26 @@ impl LocalUsageDatabase {
                  ) VALUES (?1, ?2, ?3, ?4, 1, ?5, NULL, NULL)
                  ON CONFLICT(session_event_id) DO UPDATE SET
                     payload_json = excluded.payload_json,
-                    session_version = excluded.session_version,
-                    queued_at = excluded.queued_at,
-                    batched_seq = NULL,
-                    uploaded_at = NULL",
+                    session_version = CASE
+                        WHEN sync_outbox_session_events.payload_json != excluded.payload_json
+                        THEN sync_outbox_session_events.session_version + 1
+                        ELSE sync_outbox_session_events.session_version
+                    END,
+                    queued_at = CASE
+                        WHEN sync_outbox_session_events.payload_json != excluded.payload_json
+                        THEN excluded.queued_at
+                        ELSE sync_outbox_session_events.queued_at
+                    END,
+                    batched_seq = CASE
+                        WHEN sync_outbox_session_events.payload_json != excluded.payload_json
+                        THEN NULL
+                        ELSE sync_outbox_session_events.batched_seq
+                    END,
+                    uploaded_at = CASE
+                        WHEN sync_outbox_session_events.payload_json != excluded.payload_json
+                        THEN NULL
+                        ELSE sync_outbox_session_events.uploaded_at
+                    END",
                 params![
                     format!("{}:{}", origin_device_id, meta.session_id),
                     origin_device_id.as_str(),
@@ -1085,6 +1101,43 @@ impl LocalUsageDatabase {
         .map_err(|e| format!("Failed to record sync batch history: {}", e))?;
         tx.commit()
             .map_err(|e| format!("Failed to commit sync outbox upload mark: {}", e))?;
+        Ok(())
+    }
+
+    /// 删除所有已成功上传的 outbox 事件行，防止表无限增长。
+    /// 同时清理 sync_batch_history 中超出保留窗口的历史记录。
+    /// 每次 sync 成功后调用。
+    pub fn prune_uploaded_outbox(&self) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to start prune outbox transaction: {}", e))?;
+        tx.execute(
+            "DELETE FROM sync_outbox_request_events WHERE uploaded_at IS NOT NULL",
+            [],
+        )
+        .map_err(|e| format!("Failed to prune uploaded request outbox: {}", e))?;
+        tx.execute(
+            "DELETE FROM sync_outbox_session_events WHERE uploaded_at IS NOT NULL",
+            [],
+        )
+        .map_err(|e| format!("Failed to prune uploaded session outbox: {}", e))?;
+        // 保留最新 200 条 batch 历史记录，其余删除
+        tx.execute(
+            "DELETE FROM sync_batch_history
+             WHERE batch_seq < (
+                 SELECT COALESCE(MIN(batch_seq), 0)
+                 FROM (
+                     SELECT batch_seq FROM sync_batch_history
+                     ORDER BY batch_seq DESC
+                     LIMIT 200
+                 )
+             )",
+            [],
+        )
+        .map_err(|e| format!("Failed to prune sync batch history: {}", e))?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit prune outbox transaction: {}", e))?;
         Ok(())
     }
 
@@ -1849,6 +1902,9 @@ impl LocalUsageDatabase {
         .map_err(|e| format!("Failed to clear imported sync state: {}", e))?;
         tx.commit()
             .map_err(|e| format!("Failed to commit imported sync clear: {}", e))?;
+        // 大批量删除后收缩数据库文件
+        conn.execute_batch("VACUUM")
+            .map_err(|e| format!("Failed to vacuum after imported sync clear: {}", e))?;
         Ok(())
     }
 }
