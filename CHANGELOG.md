@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.0] - 2026-05-22
+
+### Added
+
+- **WebDAV Multi-device Sync**: End-to-end encrypted cross-device sync via WebDAV — PBKDF2 + AES-256-GCM encryption, batch/snapshot protocol, auto-sync with configurable interval, multi-device management (list, remove, clear imported data), and sync password rotation
+- **Codex Local Log Statistics**: Native parsing of Codex rollout log files; Claude Code and Codex local statistics are now tracked in parallel without any external CLI dependency
+- **Unified Usage Layer**: New merged statistics layer that aggregates local-file and proxy records into a single consistent view, with accurate attribution and deduplication across both sources
+- **Overview Breakdown Panel**: New attribution ranking widget on the Overview panel — ranks usage by API source, client tool, and model across the selected time window; supports sorting by cost, requests, or tokens
+- **Tool Filter**: Added client-tool filter selector (Claude Code / Codex) on the Overview and Statistics panels; proxy mode additionally shows the API source filter
+
+### Changed
+
+- **Removed ccusage Dependency**: Local-file mode no longer relies on the external ccusage CLI — UsageMeter now scans and parses Claude Code and Codex session JSONL files directly with an incremental in-memory cache
+- **Local Usage Cache & Warm-up**: Added local-file data preheating and incremental caching to reduce repeated filesystem I/O and speed up initial loads
+- **Overview Refactor**: Removed the legacy window-quota display from the overview, replaced by the new usage attribution ranking panel
+- **Dark Mode & Tray Styling**: Optimized tray popup appearance and dark mode colour palette across overview attribution and card components
+
+### Fixed
+
+- **Source Filter Visibility**: Fixed source selector not showing in proxy mode; source filter now correctly reloads statistics on change
+- **Codex Request Count**: Fixed Codex request count calculation in local-file source
+- **Unified Stats Coverage**: Fixed performance stats being suppressed in local-proxy hybrid mode — proxy-collected metrics are now surfaced correctly when both sources are active
+
+---
+
+### 新增
+
+- **WebDAV 多端同步**：通过 WebDAV 实现端到端加密跨设备同步 — PBKDF2 + AES-256-GCM 加密、批次/快照协议、可配置间隔的自动同步、多设备管理（列表、移除设备、清理导入数据）以及同步密码轮换
+- **Codex 本地日志统计**：原生解析 Codex rollout 日志文件；Claude Code 和 Codex 本地统计并行追踪，不再依赖任何外部 CLI 工具
+- **统一用量聚合层**：新增合并统计层，将本地文件与代理记录聚合为统一视图，跨来源精准归因与去重
+- **概览用量归因面板**：概览页新增归因排行组件，按所选时间窗口展示 API 来源、客户端工具、模型三维用量排行；支持按费用、请求数或 Token 排序
+- **工具筛选器**：概览和统计面板新增客户端工具筛选（Claude Code / Codex）；代理模式额外展示 API 来源筛选器
+
+### 变更
+
+- **移除 ccusage 依赖**：本地文件模式不再依赖外部 ccusage CLI——UsageMeter 现在直接扫描并解析 Claude Code 和 Codex 会话 JSONL 文件，配合增量内存缓存
+- **本地用量缓存与预热**：新增本地文件数据预热与增量缓存机制，减少重复文件系统 I/O，加快初始加载速度
+- **概览面板重构**：移除旧版窗口配额展示区块，替换为全新用量归因排行面板
+- **深色模式与托盘样式**：优化托盘弹窗外观和深色模式配色，覆盖概览归因和卡片等组件
+
+### 修复
+
+- **来源筛选显示**：修复代理模式下来源选择器不显示的问题；筛选器变更时现可正确刷新统计数据
+- **Codex 请求计数**：修复本地文件来源下的 Codex 请求计数统计错误
+- **统一统计覆盖范围**：修复本地文件+代理混合模式下性能统计被屏蔽的问题——代理采集的性能指标在两源同时活跃时现可正确返回
+
+---
+
 ## [0.4.0] - 2026-05-04
 
 ### Added
@@ -309,6 +357,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.5.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.5.0
 [0.4.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.4.0
 [0.3.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.3.0
 [0.2.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.2.2

@@ -28,22 +28,25 @@
 
 ### ✅ Implemented
 
-- 📊 **Real-time Usage Monitoring** - Track Claude Code token usage and request counts in real-time
-- 🎯 **Multi-window Statistics** - Support for 5h, 24h, 7d, and monthly usage statistics
-- 🌐 **Proxy Mode** - Optional local proxy for more accurate real-time tracking
-- 🌍 **i18n Support** - Available in English and Chinese
+- 📊 **Real-time Usage Monitoring** - Track Claude Code and Codex token usage and request counts in real-time
+- 🎯 **Multi-window Statistics** - Support for 5h, 24h, Today, 7d, and monthly usage statistics
+- 🌐 **Proxy Mode** - Optional local proxy for accurate real-time tracking with generation rate, TTFT, and status code metrics
+- 🌍 **i18n Support** - Available in English and Simplified/Traditional Chinese
 - ⚙️ **Flexible Quota Settings** - Configure independent limits and warning thresholds for different time windows
-- 💵 **Cost Estimation** - Sync open-source model pricing data, add custom prices, and estimate usage cost by model
+- 💵 **Cost Estimation** - Sync open-source model pricing data, add custom prices, and estimate usage cost by model; batch-apply prices to historical records
 - 📈 **Statistics Dashboard** - Analyze requests, tokens, cost, model breakdowns, trends, status codes, and activity heatmaps
 - 💬 **Session & Project Analytics** - Browse recent sessions, project-level summaries, token usage, cost, and proxy-only performance metrics
+- 🔀 **Multi-tool & Multi-source Filtering** - Filter usage by client tool (Claude Code / Codex) and by API source/provider
+- 🏆 **Usage Attribution Breakdown** - Overview panel ranks usage by source, tool, and model for the selected time window
+- 💱 **Multi-currency Support** - Auto-synced exchange rates with cost display in any currency
+- ☁️ **WebDAV Multi-device Sync** - End-to-end encrypted (AES-256-GCM) sync across devices via WebDAV, with auto-sync, device management, and password rotation
 - 🚀 **Auto Start & Native Tray UX** - Launch on login, follow system theme, and run as a lightweight menu bar app
 
 ### 🚧 Planned
 
-- 🛠️ **Multi-tool Support** - Extend support to other AI coding assistants (Cursor, Copilot, etc.)
+- 🛠️ **More Tool Support** - Extend support to other AI coding assistants (Cursor, Copilot, etc.)
 - 🪟 **Windows Support** - Full compatibility with Windows 10/11
-- ☁️ **WebDAV Sync** - Sync settings and data across devices, aggregate multi-device usage
-- 📋 **Claude Pro Support** - Support usage query and monitoring for Claude Pro subscriptions with usage query APIs
+- 📋 **Claude Pro Support** - Support usage query and monitoring for Claude Pro subscriptions
 
 ---
 
@@ -64,7 +67,7 @@ Download the latest release from the [Releases](https://github.com/smileslove/Us
 ### Requirements
 
 - macOS 11.0 (Big Sur) or later
-- [Claude Code](https://claude.ai/code) installed
+- [Claude Code](https://claude.ai/code) or [Codex CLI](https://github.com/openai/codex) installed
 
 ## Usage
 
@@ -77,16 +80,16 @@ Download the latest release from the [Releases](https://github.com/smileslove/Us
 
 UsageMeter supports two data collection strategies:
 
-| Mode            | Description                                                                 | Feature Differences                                                                                                           |
-| --------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| **Local Files** | Default mode. Parses local session files directly for historical usage data | Supports quota windows, token/request statistics, model distribution, cost estimation, sessions, and project summaries        |
-| **Local Proxy** | Collects request data through a local Anthropic-compatible proxy            | Adds real-time performance data such as generation rate, TTFT, status codes, request duration, and proxy-side request records |
+| Mode            | Description                                                                                    | Feature Differences                                                                                                           |
+| --------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| **Local Files** | Default mode. Scans and parses Claude Code / Codex session JSONL files directly (no external CLI required) | Supports quota windows, token/request statistics, model distribution, cost estimation, sessions, project summaries, and tool filtering |
+| **Local Proxy** | Collects request data through a local Anthropic-compatible proxy                               | Adds real-time performance data such as generation rate, TTFT, status codes, request duration, API-source filtering, and proxy-side request records |
 
 > **Note**:
 >
-> - Local-file mode remains the default and is enough for most historical token, request, session, project, and cost statistics.
-> - Proxy mode enriches the same views with runtime metrics that are not available in JSONL files, such as generation rate, TTFT, response time, and status code distribution.
-> - Cost estimation uses synced open-source model pricing plus user-defined custom prices. Custom prices take priority.
+> - Local-file mode is the default and covers most historical token, request, session, project, and cost statistics for both Claude Code and Codex — no additional CLI tools are required.
+> - Proxy mode enriches the same views with runtime metrics unavailable in JSONL files, such as generation rate, TTFT, response time, and status code distribution.
+> - Cost estimation uses synced open-source model pricing plus user-defined custom prices. Custom prices take priority. You can also batch-apply prices to historical proxy records.
 
 ### Proxy Provider Configs
 
@@ -150,6 +153,7 @@ UsageMeter/
 ├── src/                    # Vue frontend
 │   ├── assets/             # Static assets
 │   ├── components/         # Reusable UI components
+│   │   ├── overview/       # Overview breakdown & attribution widgets
 │   │   └── statistics/     # Statistics dashboard widgets
 │   ├── views/              # Panel views (Overview, Statistics, Sessions, Settings)
 │   ├── stores/             # Pinia state management
@@ -160,7 +164,11 @@ UsageMeter/
 │       ├── commands/       # Tauri commands
 │       ├── models/         # Data models
 │       ├── proxy/          # Proxy server implementation
-│       ├── session/        # Local JSONL session metadata scanner
+│       ├── session/        # Local JSONL session metadata scanner (Claude Code & Codex)
+│       ├── local_usage/    # Local-file usage database & WebDAV sync export
+│       ├── unified_usage/  # Merged local + proxy statistics layer
+│       ├── subscription/   # ChatGPT / Claude subscription quota queries
+│       ├── sync/           # WebDAV multi-device encrypted sync engine
 │       └── utils/          # Utilities
 ├── scripts/                # Build scripts
 └── assets/                 # Documentation assets
@@ -261,6 +269,10 @@ Application configuration is stored in JSON format at `~/.usagemeter/settings.js
 - Proxy port, auto-start behavior, and whether error requests are counted
 - Theme settings and login auto-start
 - Model pricing match mode, last sync time, and custom pricing overrides
+- Currency settings and synced exchange rates
+- WebDAV sync configuration (URL, credentials, device ID, interval, encryption password)
+
+The local-file usage database is stored at `~/.usagemeter/local_usage.db` (separate from the proxy database), and sync-related provider handles are kept in `~/.usagemeter/proxy_source_handles.json`.
 
 ## Tech Stack
 
