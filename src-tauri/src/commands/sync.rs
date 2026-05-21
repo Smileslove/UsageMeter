@@ -54,6 +54,18 @@ pub fn clear_imported_sync_data() -> Result<(), String> {
     db.clear_imported_remote_data()
 }
 
+/// 获取当前设备在同步状态 DB 中存储的 device_id（首次同步后自动生成的值）。
+/// 用于在前端 device_id 输入框为空时，将后端实际使用的 ID 同步回 UI。
+#[tauri::command]
+pub fn get_active_sync_device_id() -> Result<Option<String>, String> {
+    let db = crate::local_usage::ensure_local_usage_synced()?;
+    let device_id = db
+        .get_webdav_sync_state("device_id")?
+        .map(|v| crate::models::normalize_sync_device_id(&v))
+        .filter(|v| !v.is_empty());
+    Ok(device_id)
+}
+
 fn resolve_credentials(
     settings: &AppSettings,
     mut credentials: WebDavCredentials,

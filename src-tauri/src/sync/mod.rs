@@ -25,6 +25,8 @@ const SHARED_DIR: &str = "shared";
 const SHARED_SETTINGS_DIR: &str = "shared/settings";
 const SHARED_SETTINGS_FILE: &str = "shared/settings/profile.json.enc";
 const KEY_LEN: usize = 32;
+const WRAP_SALT_LEN: usize = 32;
+const SYNC_KEYRING_SCHEMA: u32 = 1;
 const NONCE_LEN: usize = 12;
 const PBKDF2_ROUNDS: u32 = 120_000;
 const BATCH_SCHEMA_VERSION: u32 = 2;
@@ -216,7 +218,9 @@ pub async fn sync_now(
 pub fn spawn_background_sync_loop() {
     tauri::async_runtime::spawn(async move {
         let mut startup_attempted = false;
+        let mut prev_auto_sync_active = false;
         loop {
+            let iteration_start = tokio::time::Instant::now();
             let settings = match crate::commands::load_settings() {
                 Ok(app_settings) => app_settings.sync,
                 Err(err) => {
@@ -226,21 +230,32 @@ pub fn spawn_background_sync_loop() {
                 }
             };
 
-            if settings.enabled && settings.auto_sync && !startup_attempted {
+            let auto_sync_active = settings.enabled && settings.auto_sync;
+
+            // 检测 auto_sync 从关闭到开启的跳变，重置启动标志以触发即时同步
+            if auto_sync_active && !prev_auto_sync_active {
+                startup_attempted = false;
+            }
+            prev_auto_sync_active = auto_sync_active;
+
+            if auto_sync_active && !startup_attempted {
                 let _ = run_auto_sync_once(settings.clone(), false).await;
                 startup_attempted = true;
-            } else {
-                startup_attempted = settings.enabled && settings.auto_sync;
             }
 
-            let sleep_seconds = if settings.enabled && settings.auto_sync {
+            let sleep_seconds = if auto_sync_active {
                 (settings.interval_minutes.max(1) * 60).max(AUTO_SYNC_MIN_INTERVAL_SECONDS)
             } else {
                 AUTO_SYNC_MIN_INTERVAL_SECONDS
             };
-            tokio::time::sleep(Duration::from_secs(sleep_seconds)).await;
 
-            if settings.enabled && settings.auto_sync {
+            // 扣除本次迭代（含启动同步）已消耗的时间，避免间隔漂移
+            let elapsed = iteration_start.elapsed();
+            let adjusted_sleep =
+                Duration::from_secs(sleep_seconds).saturating_sub(elapsed);
+            tokio::time::sleep(adjusted_sleep).await;
+
+            if auto_sync_active {
                 let _ = run_auto_sync_once(settings, true).await;
             }
         }
@@ -522,6 +537,20 @@ async fn import_remote_packages(
             import_device_batches(client, &manifest, sync_password, keyring_state).await;
         match import_result {
             Ok(request_count) => imported_requests += request_count,
+            Err(ref err) if err == "ERR_SYNC_BATCH_PRUNED_RETRY" => {
+                // 批次已被远端清理，重置游标为 0，下次同步将从快照重建
+                let _ = db.upsert_import_cursor(
+                    &device_id,
+                    Some(&manifest.instance_id),
+                    0,
+                    "retry",
+                    Some(err),
+                );
+                eprintln!(
+                    "[UsageMeter] WebDAV sync device {} batches pruned, cursor reset to 0 for snapshot recovery",
+                    device_id
+                );
+            }
             Err(err) => {
                 db.upsert_webdav_sync_state(&format!("failed:{}:manifest", device_id), &err)?;
                 let _ = db.upsert_import_cursor(

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed, onMounted } from 'vue'
+import { ref, watch, computed, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
@@ -78,6 +78,7 @@ const syncMessage = ref('')
 const syncDeviceIdError = ref('')
 const syncConfirmMode = ref<'remove-device' | 'clear-imported' | null>(null)
 const syncConfirmDeviceId = ref('')
+let syncStatusPollTimer: ReturnType<typeof setInterval> | null = null
 const takeoverStatuses = ref<ToolTakeoverStatus[]>([])
 const takeoverLoading = ref<Record<string, boolean>>({})
 const showOfficialApiWarning = ref(false)
@@ -263,6 +264,45 @@ const syncErrorMessage = (error: unknown) => {
   if (message.startsWith('ERR_SYNC_LEGACY_PACKAGE_UNSUPPORTED')) {
     return t(store.settings.locale, 'settings.syncLegacyPackageUnsupported')
   }
+  if (message.startsWith('ERR_WEBDAV_AUTH_FAILED')) {
+    return t(store.settings.locale, 'settings.syncAuthFailed')
+  }
+  if (message.startsWith('ERR_WEBDAV_URL_INVALID')) {
+    return t(store.settings.locale, 'settings.syncUrlInvalid')
+  }
+  if (message.startsWith('ERR_WEBDAV_REQUEST_FAILED')) {
+    return t(store.settings.locale, 'settings.syncRequestFailed')
+  }
+  if (message.startsWith('ERR_WEBDAV_MKCOL_FAILED')) {
+    return t(store.settings.locale, 'settings.syncMkcolFailed')
+  }
+  if (message.startsWith('ERR_WEBDAV_PUT_FAILED')) {
+    return t(store.settings.locale, 'settings.syncPutFailed')
+  }
+  if (message.startsWith('ERR_WEBDAV_GET_FAILED')) {
+    return t(store.settings.locale, 'settings.syncGetFailed')
+  }
+  if (message.startsWith('ERR_WEBDAV_PROPFIND_FAILED')) {
+    return t(store.settings.locale, 'settings.syncPropfindFailed')
+  }
+  if (message.startsWith('ERR_SYNC_SCHEMA_UNSUPPORTED')) {
+    return t(store.settings.locale, 'settings.syncSchemaUnsupported')
+  }
+  if (message.startsWith('ERR_SYNC_KEYRING_SCHEMA_UNSUPPORTED')) {
+    return t(store.settings.locale, 'settings.syncSchemaUnsupported')
+  }
+  if (message.startsWith('ERR_SYNC_DEK_INVALID')) {
+    return t(store.settings.locale, 'settings.syncDekInvalid')
+  }
+  if (message.startsWith('ERR_SYNC_BATCH_PRUNED_RETRY')) {
+    return t(store.settings.locale, 'settings.syncBatchPrunedRetry')
+  }
+  if (message.startsWith('ERR_SYNC_BATCH_MISSING')) {
+    return t(store.settings.locale, 'settings.syncBatchMissing')
+  }
+  if (message.startsWith('ERR_SYNC_BATCH_SEQ_MISMATCH') || message.startsWith('ERR_SYNC_BATCH_CHAIN_BROKEN')) {
+    return t(store.settings.locale, 'settings.syncBatchChainBroken')
+  }
   return message
 }
 
@@ -279,6 +319,38 @@ const loadSyncDevices = async () => {
     syncDevices.value = await invoke<RemoteSyncDevice[]>('list_sync_devices')
   } catch {
     syncDevices.value = []
+  }
+}
+
+/** 从后端读回实际生效的 device_id，用于"留空时自动生成"场景 */
+const refreshActiveDeviceId = async () => {
+  if (localSyncDeviceId.value) return  // 用户已手动填写，不覆盖
+  try {
+    const activeId = await invoke<string | null>('get_active_sync_device_id')
+    if (activeId && !localSyncDeviceId.value) {
+      localSyncDeviceId.value = activeId
+      store.settings.sync.deviceId = activeId
+      // 无需 saveSettings，只是让 UI 反映后端实际值
+    }
+  } catch {
+    // 读取失败静默忽略
+  }
+}
+
+/** 开启 sync status 轮询（Settings 页面打开时，auto sync 开启时使用） */
+const startSyncStatusPoll = () => {
+  if (syncStatusPollTimer) return
+  syncStatusPollTimer = setInterval(async () => {
+    if (localSyncEnabled.value) {
+      await loadSyncStatus()
+    }
+  }, 15_000)
+}
+
+const stopSyncStatusPoll = () => {
+  if (syncStatusPollTimer) {
+    clearInterval(syncStatusPollTimer)
+    syncStatusPollTimer = null
   }
 }
 
@@ -311,6 +383,7 @@ const runWebdavSync = async () => {
     syncStatus.value = await invoke<SyncStatus>('sync_now', { settings: store.settings, credentials: syncCredentials() })
     syncMessage.value = t(store.settings.locale, 'settings.syncSuccess')
     await loadSyncDevices()
+    await refreshActiveDeviceId()
     await store.refreshUsage()
   } catch (e) {
     syncMessage.value = syncErrorMessage(e)
@@ -505,6 +578,12 @@ onMounted(async () => {
   await loadTakeoverStatuses()
   await loadSyncStatus()
   await loadSyncDevices()
+  // 如果 device_id 是空的，尝试从后端读回自动生成的值
+  await refreshActiveDeviceId()
+  // 开启状态轮询（auto sync 打开时后台静默同步，需要前端感知）
+  if (localSyncEnabled.value) {
+    startSyncStatusPoll()
+  }
   try {
     const systemState = await invoke<boolean>('is_autostart_enabled')
     autoStartEnabled.value = systemState
@@ -517,6 +596,34 @@ onMounted(async () => {
     console.error('Failed to check autostart status:', e)
     // 如果系统查询失败，使用配置中的值
     autoStartEnabled.value = store.settings.autoStart
+  }
+  // Escape 键：关闭弹窗
+  window.addEventListener('keydown', handleGlobalKeydown)
+})
+
+onUnmounted(() => {
+  stopSyncStatusPoll()
+  window.removeEventListener('keydown', handleGlobalKeydown)
+})
+
+const handleGlobalKeydown = (e: KeyboardEvent) => {
+  if (e.key === 'Escape') {
+    if (syncConfirmMode.value) {
+      closeSyncConfirm()
+    } else if (showOfficialApiWarning.value) {
+      closeOfficialApiWarning(false)
+    } else if (rotatePasswordExpanded.value) {
+      resetRotatePasswordForm()
+    }
+  }
+}
+
+// 当 sync 开关变化时，同步管理轮询
+watch(localSyncEnabled, (enabled) => {
+  if (enabled) {
+    startSyncStatusPoll()
+  } else {
+    stopSyncStatusPoll()
   }
 })
 
@@ -913,11 +1020,30 @@ const formatSyncTimestamp = (timestamp: number | null | undefined) => {
               <div class="flex items-start justify-between gap-2 rounded-xl bg-white/90 px-3 py-2 dark:bg-neutral-950/80">
                 <div class="min-w-0 flex-1">
                   <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-gray-400 dark:text-gray-500">
-                    <span>{{ t(store.settings.locale, 'settings.syncLast') }} {{ formatSyncTimestamp(syncStatus?.lastSyncAt) }}</span>
+                    <!-- 同步状态指示点 -->
+                    <span class="flex items-center gap-1">
+                      <span :class="[
+                        'inline-block w-1.5 h-1.5 rounded-full shrink-0',
+                        syncStatus?.lastStatus === 'success' ? 'bg-green-500' :
+                        syncStatus?.lastStatus === 'failed' ? 'bg-red-500' : 'bg-gray-300 dark:bg-neutral-600'
+                      ]"></span>
+                      <span>{{ t(store.settings.locale, 'settings.syncLast') }} {{ formatSyncTimestamp(syncStatus?.lastSyncAt) }}</span>
+                    </span>
                     <span>{{ t(store.settings.locale, 'settings.syncLocalCount') }} {{ syncStatus?.localRequestCount ?? 0 }}</span>
                     <span>{{ t(store.settings.locale, 'settings.syncTotalCount') }} {{ syncStatus?.totalRequestCount ?? 0 }}</span>
+                    <template v-if="syncStatus && (syncStatus.uploadedRequests > 0 || syncStatus.importedRequests > 0)">
+                      <span>{{ t(store.settings.locale, 'settings.syncUploaded') }} {{ syncStatus.uploadedRequests }}</span>
+                      <span>{{ t(store.settings.locale, 'settings.syncImported') }} {{ syncStatus.importedRequests }}</span>
+                    </template>
                   </div>
-                  <div v-if="syncMessage" class="mt-1 truncate text-[10px] text-gray-500 dark:text-gray-400">
+                  <!-- 失败时展示错误信息 -->
+                  <div v-if="syncStatus?.lastStatus === 'failed' && syncStatus?.lastError && !syncMessage"
+                       class="mt-1 truncate text-[10px] text-red-500 dark:text-red-400">
+                    {{ syncErrorMessage(syncStatus.lastError) }}
+                  </div>
+                  <div v-if="syncMessage" class="mt-1 truncate text-[10px]"
+                       :class="syncMessage === t(store.settings.locale, 'settings.syncSuccess') || syncMessage === t(store.settings.locale, 'settings.syncTestSuccess')
+                         ? 'text-green-600 dark:text-green-400' : 'text-gray-500 dark:text-gray-400'">
                     {{ syncMessage }}
                   </div>
                 </div>

@@ -340,6 +340,7 @@ pub fn run() {
             commands::list_sync_devices,
             commands::remove_sync_device,
             commands::clear_imported_sync_data,
+            commands::get_active_sync_device_id,
             // 退出命令
             commands::prepare_exit,
             commands::confirm_exit,
