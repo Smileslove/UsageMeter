@@ -1567,6 +1567,7 @@ impl WebDavClient {
         }
     }
 
+    #[allow(dead_code)]
     async fn get(&self, path: &str) -> Result<Vec<u8>, String> {
         let builder = self
             .client

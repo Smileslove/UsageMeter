@@ -77,6 +77,8 @@ pub struct StatisticsTotals {
     pub cache_read_tokens: u64,
     pub cost: f64,
     pub model_count: u64,
+    pub local_request_count: u64,
+    pub proxy_request_count: u64,
     pub success_requests: Option<u64>,
     pub error_requests: Option<u64>,
 }
@@ -299,6 +301,13 @@ fn add_fact_to_stat_acc(acc: &mut StatAccumulator, fact: &MergedRequestFact) {
         fact.estimated_cost,
     );
 
+    // 按来源分类计数
+    if matches!(fact.coverage_origin, CoverageOrigin::LocalOnly) {
+        acc.local_request_count += 1;
+    } else {
+        acc.proxy_request_count += 1;
+    }
+
     if let Some(status_code) = fact.status_code {
         if (200..300).contains(&status_code) {
             acc.success_requests += 1;
@@ -477,7 +486,14 @@ fn build_merged_statistics(
         None
     };
 
-    let totals = totals_from_acc(&total, models.len() as u64, capability.has_status_codes);
+    let totals = totals_from_acc(
+        &total,
+        models.len() as u64,
+        // 代理合并模式：只要有任何请求采集到了状态码就如实返回，
+        // 而不是因为存在本地文件记录就整体置 None。
+        // 纯本地文件模式在 build_jsonl_statistics 里固定传 false。
+        total.success_requests + total.client_error_requests + total.server_error_requests > 0,
+    );
     let insights = build_insights(
         &totals,
         &trend,
@@ -1640,6 +1656,8 @@ fn local_tool_filter_matches_local_jsonl(settings: &AppSettings) -> bool {
 #[derive(Default, Clone)]
 struct StatAccumulator {
     request_count: u64,
+    local_request_count: u64,
+    proxy_request_count: u64,
     total_tokens: u64,
     input_tokens: u64,
     output_tokens: u64,
@@ -1778,6 +1796,8 @@ fn totals_from_acc(acc: &StatAccumulator, model_count: u64, with_status: bool) -
         cache_read_tokens: acc.cache_read_tokens,
         cost: acc.cost,
         model_count,
+        local_request_count: acc.local_request_count,
+        proxy_request_count: acc.proxy_request_count,
         success_requests: with_status.then_some(acc.success_requests),
         error_requests: with_status.then_some(error_requests),
     }
@@ -1874,6 +1894,8 @@ fn build_jsonl_statistics(
         };
         let cost = estimate_cost_for_local_request(&record, &pricings, &match_mode);
         let bucket = bucket_start(event_epoch, &query.bucket);
+        // 本地文件模式：全部请求归入 local_request_count
+        total.local_request_count += 1;
         total.add_tokens(
             record.input_tokens,
             record.output_tokens,

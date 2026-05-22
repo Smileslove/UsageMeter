@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { CircleDollarSign, Database, MessageSquare, Sigma } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
+import { CircleDollarSign, CircleX, Database, MessageSquare, Sigma, CheckCircle2 } from 'lucide-vue-next'
 import { t } from '../../i18n'
 import { formatCost, formatRequestCount, formatTokenPair, formatTokenValue } from '../../utils/format'
 import type { AppLocale, StatisticsTotals } from '../../types'
@@ -43,9 +43,6 @@ function value(key: 'requests' | 'tokens' | 'input' | 'output' | 'cost' | 'cache
   return '0'
 }
 
-function countValue(value: number | null | undefined): string {
-  return formatRequestCount(value ?? 0)
-}
 
 function cacheValue(value: number | null | undefined): string {
   if (!value || value <= 0) return '0'
@@ -56,16 +53,33 @@ function detailedNumber(value: number | null | undefined): string {
   return new Intl.NumberFormat(props.locale).format(Math.round(value ?? 0))
 }
 
+// 请求来源拆分
+const localCount  = computed(() => props.totals?.localRequestCount  ?? 0)
+const proxyCount  = computed(() => props.totals?.proxyRequestCount  ?? 0)
+const hasMixedSources = computed(() => localCount.value > 0 && proxyCount.value > 0)
+const hasProxyRequests = computed(() => proxyCount.value > 0)
+
+// 是否有状态码数据（代理请求才有）
+const hasStatusData = computed(() => props.totals?.successRequests != null)
+
+function requestCountDisplay(count: number): string {
+  return isDetailMode.value
+    ? detailedNumber(count)
+    : formatRequestCount(count)
+}
+
+function requestStatusValue(raw: number | null | undefined): string {
+  if (raw == null) return '--'
+  return isDetailMode.value ? detailedNumber(raw) : formatRequestCount(raw)
+}
+
 function requestDisplay(key: 'total' | 'success' | 'error'): string {
   const totals = props.totals
-  if (isDetailMode.value) {
-    if (key === 'total') return detailedNumber(totals?.requestCount)
-    if (key === 'success') return detailedNumber(totals?.successRequests)
-    return detailedNumber(totals?.errorRequests)
+  if (key === 'total') {
+    return isDetailMode.value ? detailedNumber(totals?.requestCount) : value('requests')
   }
-  if (key === 'total') return value('requests')
-  if (key === 'success') return countValue(totals?.successRequests)
-  return countValue(totals?.errorRequests)
+  if (key === 'success') return requestStatusValue(totals?.successRequests)
+  return requestStatusValue(totals?.errorRequests)
 }
 
 function tokenDisplay(key: 'total' | 'input' | 'output'): string {
@@ -168,16 +182,54 @@ function detailPairSizeClass(first: string, second: string): string {
             <p :class="['metric-value dark:!text-gray-50', metricValueSizeClass(requestDisplay('total'))]">{{ requestDisplay('total') }}</p>
           </div>
           <div class="metric-details">
-            <div class="metric-detail-row text-emerald-600 dark:text-emerald-300">
-              <span class="metric-dot bg-emerald-400/70"></span>
-              <span class="metric-detail-label">{{ t(locale, 'statistics.successRequests') }}</span>
-              <span :class="['metric-detail-value', detailPairSizeClass(requestDisplay('success'), requestDisplay('error'))]">{{ requestDisplay('success') }}</span>
-            </div>
-            <div class="metric-detail-row text-rose-500 dark:text-rose-300">
-              <span class="metric-dot bg-rose-400/70"></span>
-              <span class="metric-detail-label">{{ t(locale, 'statistics.errorRequests') }}</span>
-              <span :class="['metric-detail-value', detailPairSizeClass(requestDisplay('success'), requestDisplay('error'))]">{{ requestDisplay('error') }}</span>
-            </div>
+            <!-- 混合来源：分别展示本地 / 代理行 -->
+            <template v-if="hasMixedSources">
+              <!-- 本地行 -->
+              <div class="metric-detail-row text-slate-500 dark:text-slate-400">
+                <span class="metric-dot bg-slate-400/70"></span>
+                <span class="metric-detail-label">{{ t(locale, 'statistics.localRequests') }}</span>
+                <span :class="['metric-detail-value', detailPairSizeClass(requestCountDisplay(localCount), requestCountDisplay(proxyCount))]">{{ requestCountDisplay(localCount) }}</span>
+              </div>
+              <!-- 代理行（含成功/失败子级） -->
+              <div class="metric-detail-row text-emerald-600 dark:text-emerald-300">
+                <span class="metric-dot bg-emerald-400/70"></span>
+                <span class="metric-detail-label">
+                  {{ t(locale, 'statistics.proxyRequests') }}
+                  <template v-if="hasStatusData">
+                    <span class="opacity-60 inline-flex items-center gap-0.5">
+                      (<CheckCircle2 class="inline w-2.5 h-2.5" />{{ requestStatusValue(props.totals?.successRequests) }}
+                      <CircleX class="inline w-2.5 h-2.5 text-rose-400" />{{ requestStatusValue(props.totals?.errorRequests) }})
+                    </span>
+                  </template>
+                </span>
+                <span :class="['metric-detail-value', detailPairSizeClass(requestCountDisplay(localCount), requestCountDisplay(proxyCount))]">{{ requestCountDisplay(proxyCount) }}</span>
+              </div>
+            </template>
+            <!-- 纯代理：本地 = 0，只展示成功/失败 -->
+            <template v-else-if="hasProxyRequests">
+              <div class="metric-detail-row text-emerald-600 dark:text-emerald-300">
+                <CheckCircle2 class="w-3 h-3 shrink-0" />
+                <span class="metric-detail-label">{{ t(locale, 'statistics.successRequests') }}</span>
+                <span :class="['metric-detail-value', detailPairSizeClass(requestDisplay('success'), requestDisplay('error'))]">{{ requestDisplay('success') }}</span>
+              </div>
+              <div class="metric-detail-row text-rose-500 dark:text-rose-300">
+                <CircleX class="w-3 h-3 shrink-0" />
+                <span class="metric-detail-label">{{ t(locale, 'statistics.errorRequests') }}</span>
+                <span :class="['metric-detail-value', detailPairSizeClass(requestDisplay('success'), requestDisplay('error'))]">{{ requestDisplay('error') }}</span>
+              </div>
+            </template>
+            <!-- 纯本地文件：无代理数据 -->
+            <template v-else>
+              <div class="metric-detail-row text-slate-500 dark:text-slate-400">
+                <span class="metric-dot bg-slate-400/70"></span>
+                <span class="metric-detail-label">{{ t(locale, 'statistics.localRequests') }}</span>
+                <span class="metric-detail-value">{{ requestCountDisplay(localCount) }}</span>
+              </div>
+              <div class="metric-detail-row text-gray-400 dark:text-gray-500">
+                <span class="metric-dot bg-gray-300/70 dark:bg-gray-600/70"></span>
+                <span class="metric-detail-label">{{ t(locale, 'statistics.statusNotAvailable') }}</span>
+              </div>
+            </template>
           </div>
         </div>
       </div>

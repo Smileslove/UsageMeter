@@ -417,6 +417,8 @@ export interface StatisticsTotals {
   cacheReadTokens: number
   cost: number
   modelCount: number
+  localRequestCount: number
+  proxyRequestCount: number
   successRequests?: number | null
   errorRequests?: number | null
 }

@@ -212,6 +212,13 @@ impl ConfigChangeMonitor {
     }
 }
 
+/// 外部工具（如 cc switch）修改配置时发送给前端的事件载荷
+#[derive(serde::Serialize, Clone)]
+struct ProxyConfigChangedPayload {
+    new_real_base_url: String,
+    source_id: String,
+}
+
 async fn sync_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
     let config_manager = ClaudeConfigManager::new();
     let Ok(settings) = config_manager.read_settings() else {
@@ -241,6 +248,17 @@ async fn sync_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
                 Some(&handle.id),
             ) {
                 eprintln!("[proxy] Failed to re-apply source-aware takeover: {}", e);
+            } else {
+                // 通知前端：外部工具修改了配置，代理已自动切换目标
+                if let Some(ref app_handle) = *state.app_handle.read().await {
+                    let _ = app_handle.emit(
+                        "proxy_config_changed",
+                        ProxyConfigChangedPayload {
+                            new_real_base_url: handle.real_base_url.clone(),
+                            source_id: handle.id.clone(),
+                        },
+                    );
+                }
             }
         }
         Ok(None) => {}

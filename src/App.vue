@@ -10,7 +10,7 @@ import Settings from './views/Settings.vue'
 import SourceSelector from './components/SourceSelector.vue'
 import ToolSelector from './components/ToolSelector.vue'
 import type { ThemeMode } from './types'
-import { RefreshCw, Sun, Moon, Monitor } from 'lucide-vue-next'
+import { RefreshCw, Sun, Moon, Monitor, ArrowLeftRight } from 'lucide-vue-next'
 import { t } from './i18n'
 
 const store = useMonitorStore()
@@ -77,9 +77,26 @@ watch(
   }
 )
 
+// 外部配置变更通知
+interface ConfigChangedPayload {
+  new_real_base_url: string
+  source_id: string
+}
+const configChangedNotification = ref<ConfigChangedPayload | null>(null)
+let configChangedTimer: ReturnType<typeof setTimeout> | null = null
+
+function dismissConfigNotification() {
+  configChangedNotification.value = null
+  if (configChangedTimer) {
+    clearTimeout(configChangedTimer)
+    configChangedTimer = null
+  }
+}
+
 // 退出事件监听器
 let unlistenQuit: UnlistenFn | null = null
 let unlistenSourceDetected: UnlistenFn | null = null
+let unlistenConfigChanged: UnlistenFn | null = null
 
 onMounted(async () => {
   await store.initialize()
@@ -108,6 +125,16 @@ onMounted(async () => {
     // 重新加载设置以获取最新的来源列表
     await store.loadSettings()
   })
+
+  // 监听外部工具（如 cc switch）修改代理配置事件
+  unlistenConfigChanged = await listen<ConfigChangedPayload>('proxy_config_changed', async (event) => {
+    configChangedNotification.value = event.payload
+    // 重新加载设置以同步最新来源
+    await store.loadSettings()
+    // 5 秒后自动消失
+    if (configChangedTimer) clearTimeout(configChangedTimer)
+    configChangedTimer = setTimeout(dismissConfigNotification, 5000)
+  })
 })
 
 onUnmounted(() => {
@@ -115,12 +142,10 @@ onUnmounted(() => {
   if (mediaQuery) {
     mediaQuery.removeEventListener('change', handleSystemThemeChange)
   }
-  if (unlistenQuit) {
-    unlistenQuit()
-  }
-  if (unlistenSourceDetected) {
-    unlistenSourceDetected()
-  }
+  if (unlistenQuit) unlistenQuit()
+  if (unlistenSourceDetected) unlistenSourceDetected()
+  if (unlistenConfigChanged) unlistenConfigChanged()
+  if (configChangedTimer) clearTimeout(configChangedTimer)
 })
 </script>
 
@@ -180,6 +205,35 @@ onUnmounted(() => {
     <div class="pointer-events-none absolute inset-x-0 top-[78px] z-10 h-2 bg-gradient-to-b from-[#E7EBEF]/72 to-transparent dark:from-[#111216]/72"></div>
     <div class="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-9 bg-gradient-to-t from-[#E7EBEF]/92 to-transparent dark:from-[#111216]/92"></div>
   </main>
+
+  <!-- 外部工具修改配置通知 Toast -->
+  <Transition name="toast-slide">
+    <div
+      v-if="configChangedNotification"
+      class="fixed bottom-4 left-1/2 z-50 flex w-[calc(100%-32px)] max-w-[360px] -translate-x-1/2 items-start gap-2.5 rounded-2xl border border-amber-200/60 bg-amber-50/95 px-3.5 py-3 shadow-[0_8px_24px_rgba(245,158,11,0.18)] backdrop-blur-xl dark:border-amber-500/20 dark:bg-[#1c1a12]/92 dark:shadow-[0_8px_24px_rgba(0,0,0,0.4)]"
+    >
+      <div class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-400/20 dark:bg-amber-400/15">
+        <ArrowLeftRight class="h-3 w-3 text-amber-500 dark:text-amber-400" />
+      </div>
+      <div class="min-w-0 flex-1">
+        <p class="text-[11.5px] font-semibold leading-tight text-amber-800 dark:text-amber-300">
+          {{ t(store.settings.locale, 'settings.externalConfigChanged') }}
+        </p>
+        <p class="mt-0.5 truncate text-[10.5px] leading-tight text-amber-600/80 dark:text-amber-400/70">
+          {{ t(store.settings.locale, 'settings.externalConfigChangedDesc') }}
+        </p>
+      </div>
+      <button
+        @click="dismissConfigNotification"
+        class="ml-1 shrink-0 text-amber-400/60 transition-colors hover:text-amber-500 dark:text-amber-500/50 dark:hover:text-amber-400"
+        aria-label="close"
+      >
+        <svg class="h-3.5 w-3.5" viewBox="0 0 12 12" fill="none">
+          <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+  </Transition>
 </template>
 
 <style>
@@ -201,5 +255,14 @@ onUnmounted(() => {
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+.toast-slide-enter-active,
+.toast-slide-leave-active {
+  transition: opacity 0.22s ease, transform 0.22s ease;
+}
+.toast-slide-enter-from,
+.toast-slide-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(10px);
 }
 </style>
