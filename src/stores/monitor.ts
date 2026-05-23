@@ -270,6 +270,7 @@ export const useMonitorStore = defineStore('monitor', {
         // 不在这里调用 startAutoRefresh()，避免在设置页面时触发刷新
       } catch (e) {
         this.error = String(e)
+        throw e
       } finally {
         this.saving = false
       }

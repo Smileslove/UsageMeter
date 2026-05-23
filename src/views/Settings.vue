@@ -122,75 +122,122 @@ watch(() => store.settings.sync, (val) => {
 }, { deep: true })
 
 // ============ 网络代理 ============
-const networkProxyExpanded = ref(false)
+
 type NetworkProxyScheme = 'http' | 'https' | 'socks5'
+
+function buildProxyUrl(scheme: string, host: string, port: number): string {
+  if (!host) return ''
+  return `${scheme}://${host}:${port}`
+}
+
+function parseProxyUrl(url: string): { scheme: NetworkProxyScheme; host: string; port: number } | null {
+  try {
+    const u = new URL(url.trim())
+    const scheme = u.protocol.replace(':', '') as NetworkProxyScheme
+    if (!['http', 'https', 'socks5'].includes(scheme)) return null
+    const port = u.port ? parseInt(u.port) : (scheme === 'https' ? 443 : 1080)
+    if (!u.hostname || isNaN(port) || port < 1 || port > 65535) return null
+    return { scheme, host: u.hostname, port }
+  } catch {
+    return null
+  }
+}
+
 const npEnabled = ref(store.settings.networkProxy?.enabled ?? false)
-const npScheme = ref<NetworkProxyScheme>((store.settings.networkProxy?.scheme as NetworkProxyScheme) ?? 'http')
-const npHost = ref(store.settings.networkProxy?.host ?? '127.0.0.1')
-const npPort = ref<number>(store.settings.networkProxy?.port ?? 7890)
-const npRequireAuth = ref(!!store.settings.networkProxy?.username)
-const npUsername = ref(store.settings.networkProxy?.username ?? '')
-const npPassword = ref(store.settings.networkProxy?.password ?? '')
-const npShowPassword = ref(false)
-const npTesting = ref(false)
-const npTestStatus = ref<'idle' | 'success' | 'error'>('idle')
-const npTestMessage = ref('')
+const npUrl = ref(
+  store.settings.networkProxy?.host
+    ? buildProxyUrl(
+        store.settings.networkProxy.scheme ?? 'http',
+        store.settings.networkProxy.host,
+        store.settings.networkProxy.port ?? 7890
+      )
+    : ''
+)
 const npSavedFlash = ref(false)
 const npError = ref('')
 
+const proxyTargetIcons: Record<string, string> = {
+  github: 'M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12',
+  anthropic: 'M12.4553 3H11.0947L4.5 21h2.8026l1.4702-4.1082h6.4538L16.6974 21H19.5L12.4553 3ZM9.4614 14.4695 11.775 7.9185l2.3136 6.551H9.4614Z',
+  openai: 'M22.282 9.821a5.985 5.985 0 0 0-.516-4.911 6.046 6.046 0 0 0-6.51-2.9 6.065 6.065 0 0 0-4.981-2.529 6.046 6.046 0 0 0-5.777 4.196 6.065 6.065 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .511 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073zM13.26 22.43a4.476 4.476 0 0 1-2.876-1.041l.141-.081 4.779-2.758a.775.775 0 0 0 .392-.681v-6.737l2.02 1.169a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494zM3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.759a.771.771 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.676l5.815 3.355-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855-5.803-3.358L15.154 7.2a.076.076 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.104v-5.678a.79.79 0 0 0-.407-.666zm2.01-3.023-.141-.085-4.774-2.782a.776.776 0 0 0-.785 0L9.409 9.23V6.897a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135-2.02-1.167a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08-4.778 2.758a.775.775 0 0 0-.392.681zm1.097-2.365 2.602-1.5 2.607 1.5v2.999l-2.597 1.5-2.607-1.5z',
+}
+
+type TestState = { status: 'idle' | 'testing' | 'success' | 'error'; latency?: number; errorKey?: string; errorDetail?: string }
+const npTests = ref<Record<string, TestState>>({
+  github: { status: 'idle' },
+  anthropic: { status: 'idle' },
+  openai: { status: 'idle' },
+})
+
 watch(() => store.settings.networkProxy, (val) => {
-  npEnabled.value = val?.enabled ?? false
-  npScheme.value = (val?.scheme as NetworkProxyScheme) ?? 'http'
-  npHost.value = val?.host ?? '127.0.0.1'
-  npPort.value = val?.port ?? 7890
-  npRequireAuth.value = !!val?.username
-  npUsername.value = val?.username ?? ''
-  npPassword.value = val?.password ?? ''
+  const newEnabled = val?.enabled ?? false
+  const newUrl = val?.host ? buildProxyUrl(val.scheme ?? 'http', val.host, val.port ?? 7890) : ''
+  // 只有外部真正改变时才同步本地状态，避免自己保存触发覆盖
+  const enabledChanged = newEnabled !== npEnabled.value
+  const urlChanged = newUrl !== npUrl.value
+  if (enabledChanged) npEnabled.value = newEnabled
+  if (urlChanged) npUrl.value = newUrl
+  // 仅在外部真正变化时才重置测试状态，防止 saveNetworkProxy 写 store 触发的 watch 把刚启动的测试清掉
+  if (enabledChanged || urlChanged) resetTestStates()
 }, { deep: true })
 
 const networkProxyChipText = computed(() => {
   if (!npEnabled.value) {
     return t(store.settings.locale, 'settings.networkProxyChipFollowSystem')
   }
-  return `${npScheme.value}://${npHost.value}:${npPort.value}`
+  return npUrl.value || t(store.settings.locale, 'settings.networkProxyChipFollowSystem')
 })
 
 const networkProxyDirty = computed(() => {
-  const cur = store.settings.networkProxy ?? { enabled: false, scheme: 'http', host: '127.0.0.1', port: 7890, username: undefined, password: undefined }
-  const authUser = npRequireAuth.value ? npUsername.value : ''
-  const authPass = npRequireAuth.value ? npPassword.value : ''
-  const curUser = cur.username ?? ''
-  const curPass = cur.password ?? ''
-  return cur.enabled !== npEnabled.value
-    || cur.scheme !== npScheme.value
-    || cur.host !== npHost.value
-    || cur.port !== npPort.value
-    || curUser !== authUser
-    || curPass !== authPass
+  const cur = store.settings.networkProxy
+  const curEnabled = cur?.enabled ?? false
+  const curUrl = cur?.host ? buildProxyUrl(cur.scheme ?? 'http', cur.host, cur.port ?? 7890) : ''
+  return curEnabled !== npEnabled.value || curUrl !== npUrl.value
 })
 
 function validateNetworkProxy(): string {
   if (!npEnabled.value) return ''
-  if (!npHost.value.trim()) return t(store.settings.locale, 'settings.networkProxyHostRequired')
-  if (!Number.isInteger(npPort.value) || npPort.value < 1 || npPort.value > 65535) {
-    return t(store.settings.locale, 'settings.networkProxyPortInvalid')
-  }
-  if (npRequireAuth.value) {
-    if (!npUsername.value.trim() || !npPassword.value) {
-      return t(store.settings.locale, 'settings.networkProxyAuthIncomplete')
-    }
-  }
+  if (!npUrl.value.trim()) return t(store.settings.locale, 'settings.networkProxyUrlRequired')
+  if (!parseProxyUrl(npUrl.value)) return t(store.settings.locale, 'settings.networkProxyUrlInvalid')
   return ''
 }
 
 function currentProxyPayload() {
-  return {
-    enabled: npEnabled.value,
-    scheme: npScheme.value,
-    host: npHost.value.trim(),
-    port: npPort.value,
-    username: npRequireAuth.value && npUsername.value ? npUsername.value : undefined,
-    password: npRequireAuth.value && npPassword.value ? npPassword.value : undefined
+  // 透传已保存的 username/password，防止点击保存时把用户之前配置的代理凭据抹除
+  const saved = store.settings.networkProxy
+  const credentials = {
+    username: saved?.username,
+    password: saved?.password,
+  }
+  if (!npEnabled.value || !npUrl.value.trim()) {
+    return { enabled: false, scheme: 'http' as NetworkProxyScheme, host: '', port: 7890, ...credentials }
+  }
+  const parsed = parseProxyUrl(npUrl.value)!
+  return { enabled: true, scheme: parsed.scheme, host: parsed.host, port: parsed.port, ...credentials }
+}
+
+const toggleNetworkProxy = async () => {
+  npEnabled.value = !npEnabled.value
+  npError.value = ''
+  resetTestStates()
+  // 关闭时直接保存 disabled 状态；开启时等用户填写 URL 后点保存
+  if (!npEnabled.value) {
+    const previous = store.settings.networkProxy
+    // 透传凭据，避免 disable 操作抹除已保存的 username/password
+    store.settings.networkProxy = {
+      enabled: false,
+      scheme: previous?.scheme ?? 'http',
+      host: previous?.host ?? '',
+      port: previous?.port ?? 7890,
+      username: previous?.username,
+      password: previous?.password,
+    }
+    try {
+      await store.saveSettings()
+    } catch (e) {
+      store.settings.networkProxy = previous
+      npEnabled.value = true
+    }
   }
 }
 
@@ -204,24 +251,11 @@ const saveNetworkProxy = async () => {
     await store.saveSettings()
     npSavedFlash.value = true
     setTimeout(() => { npSavedFlash.value = false }, 1500)
+    if (npEnabled.value) testAllTargets()
   } catch (e) {
     store.settings.networkProxy = previous
     npError.value = String(e)
   }
-}
-
-const cancelNetworkProxy = () => {
-  const cur = store.settings.networkProxy ?? { enabled: false, scheme: 'http', host: '127.0.0.1', port: 7890 }
-  npEnabled.value = cur.enabled
-  npScheme.value = (cur.scheme as NetworkProxyScheme) ?? 'http'
-  npHost.value = cur.host
-  npPort.value = cur.port
-  npRequireAuth.value = !!cur.username
-  npUsername.value = cur.username ?? ''
-  npPassword.value = cur.password ?? ''
-  npError.value = ''
-  npTestStatus.value = 'idle'
-  npTestMessage.value = ''
 }
 
 interface NetworkProxyTestResult {
@@ -232,49 +266,45 @@ interface NetworkProxyTestResult {
   errorDetail?: string
 }
 
-const testNetworkProxy = async () => {
+function resetTestStates() {
+  npTests.value = {
+    github: { status: 'idle' },
+    anthropic: { status: 'idle' },
+    openai: { status: 'idle' },
+  }
+}
+
+async function testTarget(target: string) {
+  npTests.value[target] = { status: 'testing' }
+  try {
+    const result = await invoke<NetworkProxyTestResult>('test_network_proxy', {
+      config: currentProxyPayload(),
+      target,
+    })
+    if (result.ok) {
+      npTests.value[target] = { status: 'success', latency: result.latencyMs }
+    } else {
+      npTests.value[target] = {
+        status: 'error',
+        errorKey: result.errorKind ?? 'testUnknownError',
+        errorDetail: result.errorDetail,
+        latency: result.latencyMs,
+      }
+    }
+  } catch (e) {
+    npTests.value[target] = { status: 'error', errorKey: 'testUnknownError', errorDetail: String(e) }
+  }
+}
+
+function testAllTargets() {
   const err = validateNetworkProxy()
   if (err) { npError.value = err; return }
   npError.value = ''
-  npTesting.value = true
-  npTestStatus.value = 'idle'
-  try {
-    const result = await invoke<NetworkProxyTestResult>('test_network_proxy', {
-      config: currentProxyPayload()
-    })
-    if (result.ok) {
-      npTestStatus.value = 'success'
-      npTestMessage.value = t(store.settings.locale, 'settings.networkProxyTestSuccess')
-        .replace('{latency}', String(result.latencyMs ?? 0))
-    } else {
-      npTestStatus.value = 'error'
-      const kind = result.errorKind ?? 'testUnknownError'
-      const kindKeyMap: Record<string, string> = {
-        testTimeout: 'networkProxyTestTimeout',
-        testConnectFailed: 'networkProxyTestConnectFailed',
-        testAuthFailed: 'networkProxyTestAuthFailed',
-        testHttpError: 'networkProxyTestHttpError',
-        testUnknownError: 'networkProxyTestUnknownError',
-      }
-      const i18nKey = kindKeyMap[kind] ?? 'networkProxyTestUnknownError'
-      let msg = t(store.settings.locale, `settings.${i18nKey}`)
-      if (kind === 'testHttpError' && result.status != null) {
-        msg = t(store.settings.locale, 'settings.networkProxyTestHttpError')
-          .replace('{status}', String(result.status))
-      } else if (kind === 'testUnknownError') {
-        msg = t(store.settings.locale, 'settings.networkProxyTestUnknownError')
-          .replace('{message}', result.errorDetail ?? '')
-      }
-      npTestMessage.value = msg
-    }
-  } catch (e) {
-    npTestStatus.value = 'error'
-    npTestMessage.value = t(store.settings.locale, 'settings.networkProxyTestUnknownError')
-      .replace('{message}', String(e))
-  } finally {
-    npTesting.value = false
-  }
+  testTarget('github')
+  testTarget('anthropic')
+  testTarget('openai')
 }
+
 
 // 更新本地状态并保存
 const handleLocaleChange = async () => {
@@ -1149,159 +1179,96 @@ const formatSyncTimestamp = (timestamp: number | null | undefined) => {
             </div>
           </div>
 
-          <!-- 网络代理（折叠卡片） -->
+          <!-- 全局网络代理 -->
           <div class="p-3 px-4">
-            <div
-              class="flex items-center justify-between cursor-pointer select-none"
-              @click="networkProxyExpanded = !networkProxyExpanded"
-            >
+            <!-- 标题行：名称 + 描述副文本 + 开关 -->
+            <div class="flex items-center justify-between gap-3">
               <div class="min-w-0 flex-1">
                 <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.networkProxyTitle') }}</div>
                 <div class="text-[10px] text-gray-400 mt-0.5 truncate">{{ networkProxyChipText }}</div>
               </div>
-              <svg
-                class="w-4 h-4 text-gray-400 transition-transform"
-                :class="networkProxyExpanded ? 'rotate-90' : ''"
-                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+              <div
+                :class="[
+                  'w-10 h-6 rounded-full relative cursor-pointer flex items-center shrink-0 transition-colors',
+                  npEnabled ? 'bg-green-500' : 'bg-gray-300 dark:bg-neutral-600'
+                ]"
+                @click="toggleNetworkProxy"
               >
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-              </svg>
+                <div
+                  :class="[
+                    'w-[20px] h-[20px] bg-white rounded-full absolute shadow shadow-black/10 transition-all',
+                    npEnabled ? 'right-[2px]' : 'left-[2px]'
+                  ]"
+                ></div>
+              </div>
             </div>
 
-            <div v-if="networkProxyExpanded" class="mt-3 space-y-3">
-              <!-- 启用开关 -->
-              <div class="flex items-center justify-between">
-                <div class="min-w-0 pr-2">
-                  <div class="text-[12px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.networkProxyEnabled') }}</div>
-                  <div class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.networkProxyEnabledHint') }}</div>
-                </div>
-                <button
-                  type="button"
-                  @click="npEnabled = !npEnabled"
-                  :class="npEnabled ? 'bg-emerald-500' : 'bg-gray-200 dark:bg-neutral-700'"
-                  class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors"
-                >
-                  <span
-                    class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
-                    :class="npEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'"
-                  ></span>
-                </button>
-              </div>
-
-              <!-- 手动代理字段（仅在启用时可编辑） -->
-              <div :class="npEnabled ? '' : 'opacity-50 pointer-events-none'" class="space-y-2">
-                <div class="flex items-center gap-2">
-                  <label class="text-[12px] text-gray-600 dark:text-gray-300 w-12 shrink-0">{{ t(store.settings.locale, 'settings.networkProxyScheme') }}</label>
-                  <select
-                    v-model="npScheme"
-                    class="h-8 text-[12px] px-2 rounded-lg border border-gray-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-emerald-300"
-                  >
-                    <option value="http">HTTP</option>
-                    <option value="https">HTTPS</option>
-                    <option value="socks5">SOCKS5</option>
-                  </select>
-                </div>
-                <div class="flex items-center gap-2">
-                  <label class="text-[12px] text-gray-600 dark:text-gray-300 w-12 shrink-0">{{ t(store.settings.locale, 'settings.networkProxyHost') }}</label>
-                  <input
-                    v-model="npHost"
-                    type="text"
-                    class="h-8 text-[12px] px-2 flex-1 min-w-0 rounded-lg border border-gray-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-emerald-300"
-                    placeholder="127.0.0.1"
-                  />
-                </div>
-                <div class="flex items-center gap-2">
-                  <label class="text-[12px] text-gray-600 dark:text-gray-300 w-12 shrink-0">{{ t(store.settings.locale, 'settings.networkProxyPort') }}</label>
-                  <input
-                    v-model.number="npPort"
-                    type="number"
-                    min="1"
-                    max="65535"
-                    class="h-8 text-[12px] px-2 w-24 rounded-lg border border-gray-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-emerald-300"
-                  />
-                </div>
-
-                <!-- 认证 -->
-                <div class="pt-1">
-                  <label class="flex items-center gap-2 text-[12px] text-gray-600 dark:text-gray-300 cursor-pointer select-none">
-                    <input type="checkbox" v-model="npRequireAuth" class="w-3.5 h-3.5 accent-emerald-500" />
-                    {{ t(store.settings.locale, 'settings.networkProxyRequireAuth') }}
-                  </label>
-                </div>
-                <div v-if="npRequireAuth" class="space-y-2 pl-5">
-                  <div class="flex items-center gap-2">
-                    <label class="text-[12px] text-gray-600 dark:text-gray-300 w-14 shrink-0">{{ t(store.settings.locale, 'settings.networkProxyUsername') }}</label>
-                    <input
-                      v-model="npUsername"
-                      type="text"
-                      class="h-8 text-[12px] px-2 flex-1 min-w-0 rounded-lg border border-gray-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-emerald-300"
-                    />
-                  </div>
-                  <div class="flex items-center gap-2">
-                    <label class="text-[12px] text-gray-600 dark:text-gray-300 w-14 shrink-0">{{ t(store.settings.locale, 'settings.networkProxyPassword') }}</label>
-                    <div class="relative flex-1 min-w-0">
-                      <input
-                        v-model="npPassword"
-                        :type="npShowPassword ? 'text' : 'password'"
-                        class="h-8 text-[12px] px-2 pr-8 w-full rounded-lg border border-gray-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-emerald-300"
-                      />
-                      <button
-                        type="button"
-                        @click="npShowPassword = !npShowPassword"
-                        class="absolute inset-y-0 right-0 w-7 flex items-center justify-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-                      >
-                        <Eye v-if="!npShowPassword" class="w-3.5 h-3.5" />
-                        <EyeOff v-else class="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-                  <div class="pl-[60px] text-[10px] text-gray-400">{{ t(store.settings.locale, 'settings.networkProxyPasswordHint') }}</div>
-                </div>
-              </div>
-
-              <!-- 错误 -->
-              <div v-if="npError" class="text-[11px] text-red-500">{{ npError }}</div>
-
-              <!-- 测试连接 -->
-              <div class="flex items-center gap-2 pt-1">
-                <button
-                  type="button"
-                  @click="testNetworkProxy"
-                  :disabled="npTesting"
-                  class="h-7 px-2 text-[11px] rounded-lg border border-gray-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-neutral-700 disabled:opacity-50 inline-flex items-center gap-1"
-                >
-                  <TestTube2 class="w-3.5 h-3.5" />
-                  <span v-if="!npTesting">{{ t(store.settings.locale, 'settings.networkProxyTest') }}</span>
-                  <span v-else>{{ t(store.settings.locale, 'settings.networkProxyTesting') }}</span>
-                </button>
-                <span
-                  v-if="npTestStatus !== 'idle'"
-                  :class="npTestStatus === 'success' ? 'text-emerald-500' : 'text-red-500'"
-                  class="text-[11px] truncate"
-                >
-                  {{ npTestStatus === 'success' ? '✓' : '✗' }} {{ npTestMessage }}
-                </span>
-              </div>
-
-              <!-- 保存 / 取消 -->
-              <div class="flex items-center justify-end gap-2 pt-2 border-t border-gray-50 dark:border-neutral-800">
-                <button
-                  type="button"
-                  @click="cancelNetworkProxy"
-                  :disabled="!networkProxyDirty"
-                  class="h-7 px-3 text-[11px] rounded-lg text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-neutral-800 disabled:opacity-40"
-                >
-                  {{ t(store.settings.locale, 'settings.networkProxyCancel') }}
-                </button>
+            <!-- 展开区：仅在启用时显示 -->
+            <div v-if="npEnabled" class="mt-3 space-y-3">
+              <!-- 输入框 + 保存按钮同行 -->
+              <div class="flex items-center gap-2">
+                <input
+                  v-model="npUrl"
+                  type="text"
+                  @input="npError = ''"
+                  class="h-8 flex-1 min-w-0 text-[12px] px-3 rounded-lg border border-gray-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-1 focus:ring-emerald-300 placeholder:text-gray-300 dark:placeholder:text-neutral-600"
+                  :placeholder="t(store.settings.locale, 'settings.networkProxyUrlPlaceholder')"
+                />
                 <button
                   type="button"
                   @click="saveNetworkProxy"
                   :disabled="!networkProxyDirty"
-                  class="h-7 px-3 text-[11px] rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-40 disabled:hover:bg-emerald-500"
+                  class="h-8 px-3 text-[12px] shrink-0 rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-40 disabled:hover:bg-emerald-500 transition-colors"
                 >
-                  {{ t(store.settings.locale, 'settings.networkProxySave') }}
+                  <span v-if="npSavedFlash" class="text-white">✓</span>
+                  <span v-else>{{ t(store.settings.locale, 'settings.networkProxySave') }}</span>
                 </button>
-                <span v-if="npSavedFlash" class="text-[11px] text-emerald-500">{{ t(store.settings.locale, 'settings.networkProxySaved') }}</span>
+              </div>
+
+              <!-- 错误提示 -->
+              <div v-if="npError" class="text-[11px] text-red-500">{{ npError }}</div>
+
+              <!-- 连通性测试：列表样式 -->
+              <div class="rounded-xl overflow-hidden border border-gray-100 dark:border-neutral-700/60">
+                <button
+                  v-for="(target, i) in ['github', 'anthropic', 'openai']"
+                  :key="target"
+                  type="button"
+                  @click="testTarget(target)"
+                  class="w-full flex items-center justify-between px-3 py-2 text-[12px] transition-colors select-none"
+                  :class="[
+                    i < 2 ? 'border-b border-gray-100 dark:border-neutral-700/60' : '',
+                    npTests[target].status === 'success'
+                      ? 'bg-white dark:bg-neutral-800/40 hover:bg-gray-50 dark:hover:bg-neutral-800'
+                      : npTests[target].status === 'error'
+                        ? 'bg-white dark:bg-neutral-800/40 hover:bg-gray-50 dark:hover:bg-neutral-800'
+                        : 'bg-white dark:bg-neutral-800/40 hover:bg-gray-50 dark:hover:bg-neutral-800'
+                  ]"
+                >
+                  <span class="flex items-center gap-2">
+                    <svg viewBox="0 0 24 24" class="w-3.5 h-3.5 shrink-0 transition-colors"
+                      :class="[
+                        npTests[target].status === 'testing' ? 'text-amber-400 animate-pulse' :
+                        npTests[target].status === 'success' ? 'text-emerald-500' :
+                        npTests[target].status === 'error'   ? 'text-red-400' :
+                        'text-gray-400 dark:text-neutral-500'
+                      ]"
+                    ><path fill="currentColor" :d="proxyTargetIcons[target]" /></svg>
+                    <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, `settings.networkProxyTarget_${target}`) }}</span>
+                  </span>
+                  <span class="tabular-nums text-[11px]"
+                    :class="[
+                      npTests[target].status === 'success' ? 'text-emerald-500' :
+                      npTests[target].status === 'error'   ? 'text-red-400' :
+                      'text-gray-300 dark:text-neutral-600'
+                    ]"
+                  >
+                    <template v-if="npTests[target].status === 'idle'">—</template>
+                    <template v-else-if="npTests[target].status === 'testing'">…</template>
+                    <template v-else-if="npTests[target].status === 'success' && npTests[target].latency != null">{{ npTests[target].latency }}ms</template>
+                    <template v-else-if="npTests[target].status === 'error'">{{ t(store.settings.locale, `settings.networkProxyErr_${npTests[target].errorKey ?? 'testUnknownError'}`) }}</template>
+                  </span>
+                </button>
               </div>
             </div>
           </div>

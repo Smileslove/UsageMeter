@@ -10,8 +10,15 @@ use serde::Serialize;
 use crate::models::NetworkProxyConfig;
 use crate::net::HttpClientFactory;
 
-const TEST_ENDPOINT: &str = "https://api.github.com/zen";
 const TEST_TIMEOUT_SECS: u64 = 8;
+
+fn endpoint_for_target(target: &str) -> &'static str {
+    match target {
+        "anthropic" => "https://api.anthropic.com",
+        "openai" => "https://api.openai.com",
+        _ => "https://api.github.com/zen",
+    }
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,15 +35,18 @@ pub struct NetworkProxyTestResult {
     pub error_detail: Option<String>,
 }
 
-/// 测试给定网络代理配置能否连通 GitHub（不持久化、不影响全局 client）
+/// 测试给定网络代理配置能否连通指定目标（不持久化、不影响全局 client）
+/// target: "github" | "anthropic" | "openai"
 #[tauri::command]
 pub async fn test_network_proxy(
     config: NetworkProxyConfig,
+    target: Option<String>,
 ) -> Result<NetworkProxyTestResult, String> {
+    let endpoint = endpoint_for_target(target.as_deref().unwrap_or("github"));
     let client = HttpClientFactory::build_ephemeral(&config, TEST_TIMEOUT_SECS)?;
 
     let start = Instant::now();
-    let response = client.get(TEST_ENDPOINT).send().await;
+    let response = client.get(endpoint).send().await;
     let elapsed_ms = start.elapsed().as_millis() as u64;
 
     match response {
