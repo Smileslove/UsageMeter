@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SyncSettings } from '../types'
+import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SyncSettings, NetworkProxyConfig } from '../types'
 
 const defaultModelPricing: ModelPricingSettings = {
   matchMode: 'fuzzy',
@@ -31,6 +31,15 @@ const defaultSync: SyncSettings = {
   intervalMinutes: 15,
   autoSync: false,
   includeSessionText: false
+}
+
+const defaultNetworkProxy: NetworkProxyConfig = {
+  enabled: false,
+  scheme: 'http',
+  host: '127.0.0.1',
+  port: 7890,
+  username: undefined,
+  password: undefined
 }
 
 const defaultClientTools: ClientToolSettings = {
@@ -74,7 +83,8 @@ const defaultSettings: AppSettings = {
   sourceAware: defaultSourceAware,
   clientTools: defaultClientTools,
   currency: defaultCurrency,
-  sync: defaultSync
+  sync: defaultSync,
+  networkProxy: defaultNetworkProxy
 }
 
 export const useMonitorStore = defineStore('monitor', {

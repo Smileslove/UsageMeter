@@ -5,6 +5,7 @@
 mod commands;
 mod local_usage;
 mod models;
+mod net;
 mod proxy;
 mod session;
 mod subscription;
@@ -103,6 +104,17 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(ActivationPolicy::Accessory);
 
+            // HTTP 客户端工厂必须最先初始化：所有后续后台任务（local_usage 同步、
+            // WebDAV 同步、订阅查询等）都依赖 HttpClientFactory::global()。
+            // 同时缓存 settings 供下方 locale 复用，避免重复 load。
+            let initial_settings = commands::load_settings().ok();
+            net::HttpClientFactory::init(
+                initial_settings
+                    .as_ref()
+                    .map(|s| s.network_proxy.clone())
+                    .unwrap_or_default(),
+            );
+
             {
                 tauri::async_runtime::spawn(async move {
                     let _ = tauri::async_runtime::spawn_blocking(|| {
@@ -163,9 +175,9 @@ pub fn run() {
                 make_window_rounded(&window);
             }
 
-            let locale = commands::load_settings()
+            let locale = initial_settings
                 .map(|s| s.locale)
-                .unwrap_or_else(|_| models::default_locale());
+                .unwrap_or_else(models::default_locale);
             let (show_label, quit_label) = menu_labels(&locale);
 
             let show_item = MenuItem::with_id(app, "show", show_label, true, None::<&str>)?;
@@ -332,6 +344,8 @@ pub fn run() {
             commands::get_api_sources,
             // 货币命令
             commands::get_exchange_rates,
+            // 网络代理命令
+            commands::test_network_proxy,
             // WebDAV 同步命令
             commands::test_webdav_connection,
             commands::sync_now,

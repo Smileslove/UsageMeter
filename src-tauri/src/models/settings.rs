@@ -36,6 +36,92 @@ impl ProxyConfig {
     }
 }
 
+/// 全局出站网络代理配置
+///
+/// 与 `ProxyConfig`（本地代理接管 Claude Code）职责完全不同：
+/// - `enabled = false`：所有出站 HTTP 请求跟随系统代理（如 Clash/VPN）
+/// - `enabled = true`：所有出站请求强制走用户配置的代理地址
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkProxyConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_network_proxy_scheme")]
+    pub scheme: String,
+    #[serde(default = "default_network_proxy_host")]
+    pub host: String,
+    #[serde(default = "default_network_proxy_port")]
+    pub port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+}
+
+pub fn default_network_proxy_scheme() -> String {
+    "http".to_string()
+}
+
+pub fn default_network_proxy_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+pub fn default_network_proxy_port() -> u16 {
+    7890
+}
+
+impl Default for NetworkProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            scheme: default_network_proxy_scheme(),
+            host: default_network_proxy_host(),
+            port: default_network_proxy_port(),
+            username: None,
+            password: None,
+        }
+    }
+}
+
+impl NetworkProxyConfig {
+    /// 构造代理 URL，如 "http://127.0.0.1:7890"。
+    /// IPv6 host 自动加方括号，如 "http://[::1]:7890"。
+    /// scheme 统一小写，与 validate() 保持一致。
+    pub fn build_url(&self) -> String {
+        let host = self.host.trim();
+        let scheme = self.scheme.trim().to_ascii_lowercase();
+        if host.contains(':') && !host.starts_with('[') {
+            format!("{}://[{}]:{}", scheme, host, self.port)
+        } else {
+            format!("{}://{}:{}", scheme, host, self.port)
+        }
+    }
+
+    /// 是否需要 basic auth
+    pub fn has_auth(&self) -> bool {
+        matches!(&self.username, Some(u) if !u.is_empty())
+    }
+
+    /// 校验"启用模式"下配置是否合法。`enabled=false` 时不校验（跟随系统）。
+    /// 返回错误标识符，前端可对照 i18n 提示。
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let scheme = self.scheme.trim().to_ascii_lowercase();
+        if !matches!(scheme.as_str(), "http" | "https" | "socks5") {
+            return Err("ERR_NETWORK_PROXY_SCHEME".to_string());
+        }
+        if self.host.trim().is_empty() {
+            return Err("ERR_NETWORK_PROXY_HOST".to_string());
+        }
+        if self.port == 0 {
+            return Err("ERR_NETWORK_PROXY_PORT".to_string());
+        }
+        Ok(())
+    }
+}
+
 /// 模型价格配置
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -386,6 +472,8 @@ pub struct AppSettings {
     pub currency: CurrencySettings,
     #[serde(default)]
     pub sync: SyncSettings,
+    #[serde(default)]
+    pub network_proxy: NetworkProxyConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -569,6 +657,7 @@ impl Default for AppSettings {
             client_tools: ClientToolSettings::default(),
             currency: CurrencySettings::default(),
             sync: SyncSettings::default(),
+            network_proxy: NetworkProxyConfig::default(),
         }
     }
 }

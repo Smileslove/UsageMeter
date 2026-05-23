@@ -15,6 +15,18 @@ export interface ProxyConfig {
   includeErrorRequests: boolean  // 在请求数统计中是否包含错误请求（4xx/5xx）
 }
 
+export type NetworkProxyScheme = 'http' | 'https' | 'socks5'
+
+// 全局出站网络代理（与 ProxyConfig 即"本地接管"完全不同）
+export interface NetworkProxyConfig {
+  enabled: boolean        // false 时跟随系统代理；true 时强制走下方配置
+  scheme: NetworkProxyScheme
+  host: string
+  port: number
+  username?: string
+  password?: string
+}
+
 // 模型价格配置
 export interface ModelPricingConfig {
   modelId: string           // 模型ID，如 "claude-3-sonnet-20240229" 或 "minimax-m2-5"
@@ -87,6 +99,7 @@ export interface AppSettings {
   clientTools: ClientToolSettings      // 客户端工具识别设置
   currency: CurrencySettings           // 多货币设置
   sync: SyncSettings                    // WebDAV 多端同步
+  networkProxy: NetworkProxyConfig      // 全局出站网络代理
 }
 
 // API 来源配置

@@ -36,7 +36,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "socks"] }
 tokio-tungstenite = { version = "0.26", features = ["native-tls"] }
 
 # Async utilities

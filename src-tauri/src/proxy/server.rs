@@ -8,8 +8,9 @@ use super::openai_forwarder::{OpenAiForwardResult, OpenAiForwarder};
 use super::source_detector::{detect_source_info, normalize_base_url, register_source_to_settings};
 use super::source_registry::{ProxySourceHandle, ProxySourceRegistry};
 use super::types::{ProxyConfig, ProxyState, ProxyStatus, RequestContext};
-use crate::commands::{load_settings, save_settings};
+use crate::commands::{load_settings, save_settings_internal};
 use crate::models::{ClientToolProfile, DEFAULT_CLIENT_DETECTION_METHOD, DEFAULT_CLIENT_TOOL};
+use crate::net::HttpClientFactory;
 use http_body_util::BodyExt;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -361,8 +362,10 @@ impl ProxyServer {
     fn new_with_claude_takeover(config: ProxyConfig, takeover_claude: bool) -> Self {
         let usage_collector = Arc::new(UsageCollector::new());
 
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(config.request_timeout))
+        let client = HttpClientFactory::global()
+            .apply_proxy_to_builder(
+                reqwest::Client::builder().timeout(Duration::from_secs(config.request_timeout)),
+            )
             .build()
             .expect("Failed to create HTTP client");
 
@@ -460,7 +463,7 @@ impl ProxyServer {
                 let target_base_url = forwarder.get_target_base_url();
                 let (is_new, updated_settings) =
                     register_source_to_settings(&api_key, &target_base_url);
-                if let Err(e) = save_settings(updated_settings) {
+                if let Err(e) = save_settings_internal(updated_settings) {
                     eprintln!("[proxy] Failed to save source state on startup: {}", e);
                 }
                 if is_new {
@@ -798,7 +801,7 @@ async fn handle_codex_request(
         let sources = settings.source_aware.sources;
         let (prefix, base_url, _) = detect_source_info(api_key, &target_base_url, &sources);
         let (is_new, updated_settings) = register_source_to_settings(api_key, &target_base_url);
-        let _ = save_settings(updated_settings);
+        let _ = save_settings_internal(updated_settings);
         if is_new {
             if let Some(ref app_handle) = *state.app_handle.read().await {
                 let _ = app_handle.emit("source_detected", ());
@@ -1127,7 +1130,7 @@ async fn handle_request(
         // 检测并注册来源
         let is_new_source = if let Some(ref api_key) = effective_api_key {
             let (is_new, updated_settings) = register_source_to_settings(api_key, &target_base_url);
-            if let Err(e) = save_settings(updated_settings) {
+            if let Err(e) = save_settings_internal(updated_settings) {
                 eprintln!("[proxy] Failed to save source state: {}", e);
             }
             if is_new {

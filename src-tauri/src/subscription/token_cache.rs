@@ -6,6 +6,8 @@ use tokio::sync::RwLock;
 
 use super::types::{ChatGptTokens, SubscriptionError};
 
+use crate::net::HttpClientFactory;
+
 /// Token refresh threshold in seconds (refresh 60 seconds before expiry)
 const REFRESH_THRESHOLD_SECS: i64 = 60;
 
@@ -148,7 +150,7 @@ async fn refresh_gpt_token(refresh_token: &str) -> Result<ChatGptTokens, Subscri
     // Client ID from OpenAI's official Codex CLI tool
     const CLIENT_ID: &str = "pdlLIX2Y72MIl2rhLhTE9VV9bN905kBh";
 
-    let client = reqwest::Client::new();
+    let client = HttpClientFactory::global().standard();
 
     let response = client
         .post(TOKEN_URL)

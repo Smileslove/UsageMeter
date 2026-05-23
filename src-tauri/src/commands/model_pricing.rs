@@ -1,6 +1,7 @@
 //! 模型价格相关命令
 
 use crate::models::ModelPricingConfig;
+use crate::net::HttpClientFactory;
 use crate::proxy::ProxyDatabase;
 use std::sync::Arc;
 
@@ -32,11 +33,7 @@ pub struct ModelPricingSearchResult {
 #[tauri::command]
 pub async fn sync_model_pricing_from_api() -> Result<usize, String> {
     // 1. 从 API 获取价格数据
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .user_agent("UsageMeter/1.0")
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let client = HttpClientFactory::global().standard();
 
     let response = client
         .get("https://models.dev/api.json")

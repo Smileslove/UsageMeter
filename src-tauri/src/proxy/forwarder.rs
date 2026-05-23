@@ -5,13 +5,13 @@ use super::stream_processor::{
     create_database_collector, create_passthrough_stream, StreamContext,
 };
 use super::types::{RequestContext, SseEvent, UsageRecord};
+use crate::net::HttpClientFactory;
 use bytes::Bytes;
 use futures::TryStreamExt;
 use http_body_util::{BodyExt, StreamBody};
 use hyper::body::Frame;
 use reqwest::Client;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// UnsyncBoxBody 类型别名，用于响应体（不需要 Sync）
 /// 错误类型为 std::io::Error，实现了 Into<Box<dyn StdError + Send + Sync>>
@@ -53,10 +53,7 @@ impl RequestForwarder {
         target_base_url: String,
         api_key: Option<String>,
     ) -> Result<Self, String> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+        let client = HttpClientFactory::global().long();
 
         Ok(Self {
             client,

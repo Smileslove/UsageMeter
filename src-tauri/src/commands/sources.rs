@@ -1,6 +1,6 @@
 //! API 来源管理相关 Tauri 命令
 
-use crate::commands::{load_settings, save_settings};
+use crate::commands::{load_settings, save_settings_internal};
 use crate::models::ApiSource;
 
 /// 重命名 API 来源
@@ -16,7 +16,7 @@ pub async fn rename_api_source(source_id: String, name: String) -> Result<(), St
     {
         source.display_name = if name.is_empty() { None } else { Some(name) };
         source.auto_detected = false; // 用户已手动编辑
-        save_settings(settings)?;
+        save_settings_internal(settings).map_err(String::from)?;
         Ok(())
     } else {
         Err(format!("Source not found: {}", source_id))
@@ -49,7 +49,7 @@ pub async fn delete_api_source(source_id: String, also_delete_records: bool) -> 
         settings.source_aware.active_source_filter = None;
     }
 
-    save_settings(settings)?;
+    save_settings_internal(settings).map_err(String::from)?;
 
     // 如果需要删除关联的数据库记录
     if also_delete_records {
@@ -135,7 +135,7 @@ pub async fn merge_api_source(
         settings.source_aware.active_source_filter = Some(source_id_into);
     }
 
-    save_settings(settings)?;
+    save_settings_internal(settings).map_err(String::from)?;
 
     Ok(())
 }
@@ -179,7 +179,7 @@ pub async fn add_key_prefix_to_source(source_id: String, key_prefix: String) -> 
     if !source.api_key_prefixes.contains(&key_prefix) {
         source.api_key_prefixes.push(key_prefix);
         source.auto_detected = false;
-        save_settings(settings)?;
+        save_settings_internal(settings).map_err(String::from)?;
     }
 
     Ok(())
@@ -213,7 +213,7 @@ pub async fn update_api_source_key_note(
     }
     source.auto_detected = false;
 
-    save_settings(settings)?;
+    save_settings_internal(settings).map_err(String::from)?;
     Ok(())
 }
 
@@ -233,7 +233,7 @@ pub async fn set_active_source_filter(source_id: Option<String>) -> Result<(), S
     }
 
     settings.source_aware.active_source_filter = source_id;
-    save_settings(settings)?;
+    save_settings_internal(settings).map_err(String::from)?;
 
     Ok(())
 }

@@ -3,6 +3,7 @@
 use super::collector::UsageCollector;
 use super::sse::{append_utf8_safe, strip_sse_field, take_sse_block};
 use super::types::{RequestContext, UsageRecord};
+use crate::net::HttpClientFactory;
 use async_stream::stream;
 use bytes::Bytes;
 use futures::StreamExt;
@@ -58,14 +59,16 @@ struct OpenAiUsage {
 
 impl OpenAiForwarder {
     pub fn new(usage_collector: Arc<UsageCollector>) -> Result<Self, String> {
-        let client = Client::builder()
+        let builder = Client::builder()
             .timeout(Duration::from_secs(120))
             .http1_only()
             .http1_title_case_headers()
             .pool_max_idle_per_host(0)
             .no_gzip()
             .no_brotli()
-            .no_deflate()
+            .no_deflate();
+        let client = HttpClientFactory::global()
+            .apply_proxy_to_builder(builder)
             .build()
             .map_err(|e| format!("Failed to create OpenAI HTTP client: {}", e))?;
         Ok(Self {

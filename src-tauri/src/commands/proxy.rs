@@ -7,7 +7,7 @@ use crate::proxy::{
 use tauri::State;
 
 use super::usage::ProxyState;
-use super::{load_settings, save_settings};
+use super::{load_settings, save_settings_internal};
 
 /// 启动代理服务器
 #[tauri::command]
@@ -282,7 +282,7 @@ fn mark_client_tool_enabled(tool: &str, enabled: bool) -> Result<(), String> {
         .profiles
         .iter()
         .any(|profile| profile.enabled);
-    save_settings(settings)
+    save_settings_internal(settings).map_err(String::from)
 }
 
 fn mark_all_client_tools_enabled(enabled: bool) -> Result<(), String> {
@@ -293,7 +293,7 @@ fn mark_all_client_tools_enabled(enabled: bool) -> Result<(), String> {
         profile.last_seen_ms = now;
     }
     settings.proxy.enabled = enabled && settings.client_tools.profiles.iter().any(|p| p.enabled);
-    save_settings(settings)
+    save_settings_internal(settings).map_err(String::from)
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

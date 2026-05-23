@@ -6,6 +6,7 @@ use reqwest::Client;
 use serde::Deserialize;
 
 use crate::models::{CredentialStatus, QuotaTier, SubscriptionQueryResult, SubscriptionQuota};
+use crate::net::HttpClientFactory;
 use crate::proxy::CodexConfigManager;
 
 use super::token_cache::TokenCache;
@@ -30,10 +31,7 @@ impl Default for GptSubscriptionProvider {
 impl GptSubscriptionProvider {
     /// Create a new provider with its own token cache
     pub fn new() -> Self {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        let client = HttpClientFactory::global().standard();
 
         Self {
             client,
@@ -43,10 +41,7 @@ impl GptSubscriptionProvider {
 
     /// Create a provider with a shared token cache
     pub fn with_token_cache(token_cache: Arc<TokenCache>) -> Self {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .unwrap_or_else(|_| Client::new());
+        let client = HttpClientFactory::global().standard();
 
         Self {
             client,

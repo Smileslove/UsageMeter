@@ -3,6 +3,8 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
+use crate::net::HttpClientFactory;
+
 /// open.er-api.com 汇率 API 响应结构
 #[derive(Debug, Deserialize)]
 struct ExchangeRateResponse {
@@ -20,10 +22,7 @@ pub async fn get_exchange_rates(currencies: Vec<String>) -> Result<HashMap<Strin
     }
 
     let url = "https://open.er-api.com/v6/latest/USD";
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let client = HttpClientFactory::global().short();
 
     let response = client
         .get(url)

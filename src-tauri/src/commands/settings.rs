@@ -1,7 +1,9 @@
 //! 设置相关 Tauri 命令
 
 use crate::models::{AppSettings, CurrencySettings};
+use crate::net::HttpClientFactory;
 use std::fs;
+use tauri::{AppHandle, Emitter};
 
 /// 加载应用设置
 #[tauri::command]
@@ -33,19 +35,66 @@ pub fn load_settings() -> Result<AppSettings, String> {
     Ok(settings)
 }
 
-/// 保存应用设置
+/// 保存应用设置（Tauri 命令）。
+///
+/// 网络代理 reload 失败时会同时 emit `network-proxy-reload-failed` 事件并返回 Err，
+/// 让前端 UI 能感知"已落盘但运行时未应用"的状态。
 #[tauri::command]
-pub fn save_settings(settings: AppSettings) -> Result<(), String> {
+pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
+    match save_settings_internal(settings) {
+        Ok(()) => Ok(()),
+        Err(SaveSettingsError::ReloadFailed(err)) => {
+            let _ = app.emit("network-proxy-reload-failed", err.clone());
+            Err(err)
+        }
+        Err(SaveSettingsError::Other(err)) => Err(err),
+    }
+}
+
+/// 内部错误分类，让命令层能区分"保存失败"与"保存成功但热更新失败"。
+pub enum SaveSettingsError {
+    /// 序列化、写盘等失败（数据未落盘）。
+    Other(String),
+    /// 数据已落盘，但 HTTP 客户端热更新失败（运行时仍是旧配置）。
+    ReloadFailed(String),
+}
+
+impl From<SaveSettingsError> for String {
+    fn from(value: SaveSettingsError) -> Self {
+        match value {
+            SaveSettingsError::Other(s) | SaveSettingsError::ReloadFailed(s) => s,
+        }
+    }
+}
+
+impl std::fmt::Display for SaveSettingsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SaveSettingsError::Other(s) | SaveSettingsError::ReloadFailed(s) => f.write_str(s),
+        }
+    }
+}
+
+/// 真正的保存逻辑。供非 Tauri 上下文（后台同步、代理服务器内部）复用。
+pub fn save_settings_internal(settings: AppSettings) -> Result<(), SaveSettingsError> {
     let mut settings = settings;
-    migrate_sync(&mut settings)?;
-    let path = AppSettings::settings_path()?;
+    migrate_sync(&mut settings).map_err(SaveSettingsError::Other)?;
+    let path = AppSettings::settings_path().map_err(SaveSettingsError::Other)?;
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("ERR_CREATE_SETTINGS_DIR: {e}"))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| SaveSettingsError::Other(format!("ERR_CREATE_SETTINGS_DIR: {e}")))?;
     }
 
     let content = serde_json::to_string_pretty(&settings)
-        .map_err(|e| format!("ERR_SERIALIZE_SETTINGS: {e}"))?;
-    fs::write(path, content).map_err(|e| format!("ERR_WRITE_SETTINGS: {e}"))
+        .map_err(|e| SaveSettingsError::Other(format!("ERR_SERIALIZE_SETTINGS: {e}")))?;
+    fs::write(path, content)
+        .map_err(|e| SaveSettingsError::Other(format!("ERR_WRITE_SETTINGS: {e}")))?;
+
+    if let Err(err) = HttpClientFactory::global().reload(&settings.network_proxy) {
+        eprintln!("[UsageMeter] {err}");
+        return Err(SaveSettingsError::ReloadFailed(err));
+    }
+    Ok(())
 }
 
 /// 确保代理配置有效，修复端口问题

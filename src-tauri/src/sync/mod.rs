@@ -3,6 +3,7 @@ use crate::local_usage::{
     SyncOutboxBatch,
 };
 use crate::models::SyncSettings;
+use crate::net::HttpClientFactory;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use reqwest::header::RETRY_AFTER;
@@ -36,8 +37,6 @@ const SNAPSHOT_INTERVAL_BATCHES: i64 = 100;
 const BATCH_RETENTION_AFTER_SNAPSHOT: i64 = 20;
 const AUTO_SYNC_MIN_INTERVAL_SECONDS: u64 = 60;
 const MAX_BATCHES_PER_SYNC: usize = 20;
-const HTTP_CONNECT_TIMEOUT_SECONDS: u64 = 10;
-const HTTP_TOTAL_TIMEOUT_SECONDS: u64 = 60;
 const HTTP_MAX_ATTEMPTS: u32 = 3;
 const HTTP_RETRY_BASE_DELAY_MS: u64 = 1_000;
 const HTTP_RETRY_AFTER_CAP_SECONDS: u64 = 30;
@@ -962,7 +961,8 @@ async fn sync_shared_settings(
                 }
             }
             if changed {
-                crate::commands::save_settings(app_settings.clone())?;
+                crate::commands::save_settings_internal(app_settings.clone())
+                    .map_err(String::from)?;
                 // 持久化本地字段时间戳
                 for (field, ts) in &local_field_timestamps {
                     db.upsert_webdav_sync_state(
@@ -1476,12 +1476,7 @@ impl WebDavClient {
         if !url_is_allowed(root) {
             return Err("ERR_WEBDAV_URL_INVALID".to_string());
         }
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(HTTP_CONNECT_TIMEOUT_SECONDS))
-            .timeout(Duration::from_secs(HTTP_TOTAL_TIMEOUT_SECONDS))
-            .user_agent(concat!("UsageMeter/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|e| format!("ERR_WEBDAV_CLIENT_INIT_FAILED: {}", e))?;
+        let client = HttpClientFactory::global().webdav();
         Ok(Self {
             client,
             base_url: format!("{}/{}", root, root_dir),
