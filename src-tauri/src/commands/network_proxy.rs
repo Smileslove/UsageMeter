@@ -24,6 +24,7 @@ fn endpoint_for_target(target: &str) -> &'static str {
 #[serde(rename_all = "camelCase")]
 pub struct NetworkProxyTestResult {
     pub ok: bool,
+    pub reachable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -52,28 +53,35 @@ pub async fn test_network_proxy(
     match response {
         Ok(resp) => {
             let status = resp.status();
-            if status.is_success() {
-                Ok(NetworkProxyTestResult {
-                    ok: true,
-                    latency_ms: Some(elapsed_ms),
-                    status: Some(status.as_u16()),
-                    error_kind: None,
-                    error_detail: None,
-                })
-            } else if status.as_u16() == 407 {
+            if status.as_u16() == 407 {
                 Ok(NetworkProxyTestResult {
                     ok: false,
+                    reachable: false,
                     latency_ms: Some(elapsed_ms),
                     status: Some(status.as_u16()),
                     error_kind: Some("testAuthFailed".to_string()),
                     error_detail: None,
                 })
-            } else {
+            } else if status.is_server_error() {
                 Ok(NetworkProxyTestResult {
                     ok: false,
+                    reachable: false,
                     latency_ms: Some(elapsed_ms),
                     status: Some(status.as_u16()),
                     error_kind: Some("testHttpError".to_string()),
+                    error_detail: Some(status.to_string()),
+                })
+            } else {
+                Ok(NetworkProxyTestResult {
+                    ok: status.is_success(),
+                    reachable: true,
+                    latency_ms: Some(elapsed_ms),
+                    status: Some(status.as_u16()),
+                    error_kind: if status.is_success() {
+                        None
+                    } else {
+                        Some("testHttpError".to_string())
+                    },
                     error_detail: Some(status.to_string()),
                 })
             }
@@ -98,6 +106,7 @@ pub async fn test_network_proxy(
             };
             Ok(NetworkProxyTestResult {
                 ok: false,
+                reachable: false,
                 latency_ms: None,
                 status: None,
                 error_kind: Some(kind.to_string()),
