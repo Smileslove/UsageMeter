@@ -32,6 +32,16 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE3NzlCRjM5MEY2QUE0OTQKUldTVXBHb1BPYjk1cCtrbjF5M1dUK1c2bHoxc3BiNE9WWVBtUmh2ZzhJQ25VSFNOdkt3V1JQTVYK",
+      "endpoints": [
+        "https://github.com/Smileslove/UsageMeter/releases/latest/download/latest.json"
+      ],
+      "dialog": false
+    }
   }
 }

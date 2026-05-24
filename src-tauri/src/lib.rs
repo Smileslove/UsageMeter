@@ -82,13 +82,19 @@ fn make_window_rounded(window: &tauri::WebviewWindow) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::default(),
             None,
-        ))
+        ));
+
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+
+    builder
         .manage(commands::ProxyState::default())
+        .manage(commands::UpdaterState::default())
         .manage(subscription::SubscriptionState::new())
         .on_window_event(|window, event| match event {
             WindowEvent::Focused(false) => {
@@ -293,6 +299,59 @@ pub fn run() {
                 })
                 .build(app)?;
 
+            // 启动后延迟 10 秒静默检查更新，避免与其他初始化任务竞争资源
+            #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    let settings = commands::load_settings().unwrap_or_default();
+                    if !settings.auto_check_update {
+                        return;
+                    }
+                    use tauri_plugin_updater::UpdaterExt;
+
+                    // 构建带用户代理配置的 updater，确保检查请求走已配置的代理
+                    let mut builder = app_handle.updater_builder();
+                    if settings.network_proxy.enabled {
+                        let proxy_url = format!(
+                            "{}://{}:{}",
+                            settings.network_proxy.scheme,
+                            settings.network_proxy.host,
+                            settings.network_proxy.port
+                        );
+                        if let Ok(url) = proxy_url.parse() {
+                            builder = builder.proxy(url);
+                        }
+                    }
+                    let updater: tauri_plugin_updater::Updater = match builder.build() {
+                        Ok(u) => u,
+                        Err(e) => {
+                            eprintln!("[UsageMeter] Updater build failed: {e}");
+                            return;
+                        }
+                    };
+
+                    match updater.check().await {
+                        Ok(Some(update)) => {
+                            if update.version == settings.skipped_update_version {
+                                return;
+                            }
+                            let dto = commands::build_dto(&update);
+                            // 将 Update 对象存入 UpdaterState 供用户触发安装时使用
+                            if let Some(state) = app_handle.try_state::<commands::UpdaterState>() {
+                                *state.pending_update.lock().unwrap() = Some(update);
+                            }
+                            let _ = app_handle.emit("update-available", dto);
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            eprintln!("[UsageMeter] Background update check failed: {e}");
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -363,6 +422,10 @@ pub fn run() {
             commands::refresh_subscription_quota,
             commands::has_chatgpt_oauth,
             commands::clear_subscription_cache,
+            // 更新命令
+            commands::check_for_update,
+            commands::download_and_install_update,
+            commands::skip_update_version,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

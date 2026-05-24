@@ -474,6 +474,10 @@ pub struct AppSettings {
     pub sync: SyncSettings,
     #[serde(default)]
     pub network_proxy: NetworkProxyConfig,
+    #[serde(default = "default_auto_check_update")]
+    pub auto_check_update: bool,
+    #[serde(default)]
+    pub skipped_update_version: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -621,6 +625,10 @@ pub fn default_locale() -> String {
     "zh-CN".to_string()
 }
 
+pub fn default_auto_check_update() -> bool {
+    true
+}
+
 pub fn default_timezone() -> String {
     "Asia/Shanghai".to_string()
 }
@@ -658,6 +666,8 @@ impl Default for AppSettings {
             currency: CurrencySettings::default(),
             sync: SyncSettings::default(),
             network_proxy: NetworkProxyConfig::default(),
+            auto_check_update: default_auto_check_update(),
+            skipped_update_version: String::new(),
         }
     }
 }

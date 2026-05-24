@@ -9,6 +9,7 @@ mod settings;
 mod sources;
 mod subscription;
 mod sync;
+mod updater;
 mod usage;
 
 pub use autostart::*;
@@ -20,4 +21,5 @@ pub use settings::*;
 pub use sources::*;
 pub use subscription::*;
 pub use sync::*;
+pub use updater::*;
 pub use usage::*;

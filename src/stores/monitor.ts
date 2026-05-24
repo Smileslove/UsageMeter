@@ -84,7 +84,9 @@ const defaultSettings: AppSettings = {
   clientTools: defaultClientTools,
   currency: defaultCurrency,
   sync: defaultSync,
-  networkProxy: defaultNetworkProxy
+  networkProxy: defaultNetworkProxy,
+  autoCheckUpdate: true,
+  skippedUpdateVersion: ''
 }
 
 export const useMonitorStore = defineStore('monitor', {

@@ -3,6 +3,8 @@ import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { useMonitorStore } from './stores/monitor'
+import { useUpdaterStore } from './stores/updater'
+import type { UpdateInfo } from './stores/updater'
 import Overview from './views/Overview.vue'
 import Statistics from './views/Statistics.vue'
 import Sessions from './views/Sessions.vue'
@@ -14,6 +16,7 @@ import { RefreshCw, Sun, Moon, Monitor, ArrowLeftRight } from 'lucide-vue-next'
 import { t } from './i18n'
 
 const store = useMonitorStore()
+const updaterStore = useUpdaterStore()
 
 const currentView = ref('overview')
 const navItems = [
@@ -97,6 +100,8 @@ function dismissConfigNotification() {
 let unlistenQuit: UnlistenFn | null = null
 let unlistenSourceDetected: UnlistenFn | null = null
 let unlistenConfigChanged: UnlistenFn | null = null
+let unlistenUpdateAvailable: UnlistenFn | null = null
+let unlistenUpdateProgress: UnlistenFn | null = null
 
 onMounted(async () => {
   await store.initialize()
@@ -135,6 +140,19 @@ onMounted(async () => {
     if (configChangedTimer) clearTimeout(configChangedTimer)
     configChangedTimer = setTimeout(dismissConfigNotification, 5000)
   })
+
+  // 监听后台检查到有新版本可用
+  unlistenUpdateAvailable = await listen<UpdateInfo>('update-available', (event) => {
+    updaterStore.onUpdateAvailable(event.payload)
+  })
+
+  // 监听更新下载进度
+  unlistenUpdateProgress = await listen<{ downloadedBytes: number; totalBytes: number | null }>(
+    'update-download-progress',
+    (event) => {
+      updaterStore.onDownloadProgress(event.payload.downloadedBytes, event.payload.totalBytes)
+    }
+  )
 })
 
 onUnmounted(() => {
@@ -145,6 +163,8 @@ onUnmounted(() => {
   if (unlistenQuit) unlistenQuit()
   if (unlistenSourceDetected) unlistenSourceDetected()
   if (unlistenConfigChanged) unlistenConfigChanged()
+  if (unlistenUpdateAvailable) unlistenUpdateAvailable()
+  if (unlistenUpdateProgress) unlistenUpdateProgress()
   if (configChangedTimer) clearTimeout(configChangedTimer)
 })
 </script>

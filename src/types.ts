@@ -100,6 +100,8 @@ export interface AppSettings {
   currency: CurrencySettings           // 多货币设置
   sync: SyncSettings                    // WebDAV 多端同步
   networkProxy: NetworkProxyConfig      // 全局出站网络代理
+  autoCheckUpdate: boolean              // 启动时自动检查更新
+  skippedUpdateVersion: string          // 已跳过的版本号（空字符串表示不跳过）
 }
 
 // API 来源配置

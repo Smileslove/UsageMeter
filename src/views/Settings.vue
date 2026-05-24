@@ -2,18 +2,26 @@
 import { ref, watch, computed, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useMonitorStore } from '../stores/monitor'
+import { useUpdaterStore } from '../stores/updater'
 import { t } from '../i18n'
 import { type DataSource, type ThemeMode, type ToolTakeoverStatus, type SyncStatus, type RemoteSyncDevice } from '../types'
 import ModelPricingSettings from '../components/ModelPricingSettings.vue'
 import ApiSourceList from '../components/ApiSourceList.vue'
 import CurrencySettings from '../components/CurrencySettings.vue'
+import UpdateBanner from '../components/UpdateBanner.vue'
 import LobeIcon from '../components/LobeIcon.vue'
 import { TOOL_LOBE_ICONS } from '../iconConfig'
 import { Eye, EyeOff, RefreshCw, TestTube2 } from 'lucide-vue-next'
 
 const store = useMonitorStore()
+const updaterStore = useUpdaterStore()
 
-// 子页面状态
+// 应用版本号（onMounted 时读取）
+const appVersion = ref('')
+// 手动检查更新后短暂显示"已是最新"
+const checkUpdateFlash = ref(false)
+let checkUpdateFlashTimer: ReturnType<typeof setTimeout> | null = null
+
 const subView = ref<'main' | 'model-pricing' | 'api-sources' | 'currency'>('main')
 
 // 监听 subView 变化，触发子组件刷新
@@ -781,6 +789,23 @@ const toggleAutoStart = async () => {
   }
 }
 
+// 自动检查更新 toggle
+const toggleAutoCheckUpdate = async () => {
+  store.settings.autoCheckUpdate = !store.settings.autoCheckUpdate
+  await store.saveSettings()
+}
+
+// 手动检查更新
+const handleCheckUpdate = async () => {
+  if (updaterStore.status === 'checking') return
+  await updaterStore.checkForUpdate()
+  if (updaterStore.status === 'idle') {
+    checkUpdateFlash.value = true
+    if (checkUpdateFlashTimer) clearTimeout(checkUpdateFlashTimer)
+    checkUpdateFlashTimer = setTimeout(() => { checkUpdateFlash.value = false }, 2000)
+  }
+}
+
 // 初始化：从系统获取实际的 autostart 状态，与配置同步
 onMounted(async () => {
   await loadTakeoverStatuses()
@@ -788,6 +813,13 @@ onMounted(async () => {
   await loadSyncDevices()
   // 如果 device_id 是空的，尝试从后端读回自动生成的值
   await refreshActiveDeviceId()
+  // 读取应用版本号
+  try {
+    const { getVersion } = await import('@tauri-apps/api/app')
+    appVersion.value = await getVersion()
+  } catch {
+    // 忽略，保持空字符串
+  }
   // 开启状态轮询（auto sync 打开时后台静默同步，需要前端感知）
   if (localSyncEnabled.value) {
     startSyncStatusPoll()
@@ -812,6 +844,7 @@ onMounted(async () => {
 onUnmounted(() => {
   stopSyncStatusPoll()
   window.removeEventListener('keydown', handleGlobalKeydown)
+  if (checkUpdateFlashTimer) clearTimeout(checkUpdateFlashTimer)
 })
 
 const handleGlobalKeydown = (e: KeyboardEvent) => {
@@ -895,6 +928,9 @@ const formatSyncTimestamp = (timestamp: number | null | undefined) => {
 
     <!-- 主设置页面 -->
     <div v-show="subView === 'main'" class="space-y-5 animate-in fade-in zoom-in-95 duration-300 pb-6">
+      <!-- 有可用更新时显示 Banner -->
+      <UpdateBanner v-if="updaterStore.hasUpdate" />
+
       <div class="space-y-2">
         <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.general') }}</h3>
         <div class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 overflow-hidden divide-y divide-gray-50 dark:divide-neutral-800/50 shadow-sm">
@@ -948,9 +984,47 @@ const formatSyncTimestamp = (timestamp: number | null | undefined) => {
               ></div>
             </div>
           </div>
+          <!-- 自动检查更新 -->
+          <div class="p-3 px-4 flex items-center justify-between text-[13px]">
+            <div class="flex flex-col">
+              <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.update.autoCheck') }}</span>
+              <span class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.update.autoCheckDesc') }}</span>
+            </div>
+            <div
+              :class="[
+                'w-10 h-6 rounded-full relative cursor-pointer flex items-center shrink-0 transition-colors',
+                store.settings.autoCheckUpdate ? 'bg-green-500' : 'bg-gray-300 dark:bg-neutral-600'
+              ]"
+              @click="toggleAutoCheckUpdate"
+            >
+              <div
+                :class="[
+                  'w-[20px] h-[20px] bg-white rounded-full absolute shadow shadow-black/10 transition-all',
+                  store.settings.autoCheckUpdate ? 'right-[2px]' : 'left-[2px]'
+                ]"
+              ></div>
+            </div>
+          </div>
+          <!-- 当前版本 + 手动检查更新 -->
+          <div class="p-3 px-4 flex items-center justify-between text-[13px]">
+            <span class="text-gray-500 dark:text-gray-400">
+              {{ t(store.settings.locale, 'settings.update.currentVersion') }}
+              <span v-if="appVersion" class="ml-1 font-mono text-[12px]">v{{ appVersion }}</span>
+            </span>
+            <button
+              @click="handleCheckUpdate"
+              :disabled="updaterStore.status === 'checking'"
+              class="h-7 px-3 text-[11px] rounded-lg border border-gray-200 dark:border-neutral-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-neutral-800 disabled:opacity-50 transition-colors"
+            >
+              <span v-if="updaterStore.status === 'checking'">{{ t(store.settings.locale, 'settings.update.checking') }}</span>
+              <span v-else-if="checkUpdateFlash" class="text-green-500">✓ {{ t(store.settings.locale, 'settings.update.upToDate') }}</span>
+              <span v-else-if="updaterStore.status === 'error'" class="text-red-400">{{ t(store.settings.locale, 'settings.update.checkFailed') }}</span>
+              <span v-else>{{ t(store.settings.locale, 'settings.update.checkNow') }}</span>
+            </button>
+          </div>
         </div>
       </div>
-  
+
       <!-- 数据统计方式 -->
       <div class="space-y-2">
         <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.dataSource') }}</h3>
