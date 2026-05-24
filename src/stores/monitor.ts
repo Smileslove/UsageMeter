@@ -148,8 +148,9 @@ export const useMonitorStore = defineStore('monitor', {
           await this.startProxyOnly(this.settings.proxy.port)
         } catch (e) {
           console.error('Failed to auto-start proxy:', e)
-          // 启动失败时，更新状态但不阻止应用启动
+          // 启动失败时，持久化状态避免下次启动时循环重试
           this.settings.proxy.enabled = false
+          await this.saveSettings()
         }
       }
 
@@ -448,7 +449,6 @@ export const useMonitorStore = defineStore('monitor', {
       try {
         this.error = ''
         await invoke('stop_proxy')
-        await this.loadSettings()
         this.settings.proxy.enabled = false
         await this.saveSettings()
         await this.getProxyStatus()
@@ -546,6 +546,7 @@ export const useMonitorStore = defineStore('monitor', {
         try {
           await invoke('stop_proxy')
           this.settings.proxy.enabled = false
+          await this.saveSettings()
         } catch (e) {
           console.error('Failed to stop proxy on exit:', e)
           // 即使失败也继续退出，下次启动时会通过孤立状态恢复
