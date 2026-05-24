@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { t } from '../../i18n'
-import { formatCost, formatRequestCount, formatTokenPair, formatTokenValue } from '../../utils/format'
+import { formatCost, formatRequestCount, formatTokenValue } from '../../utils/format'
 import { getTodayKey, makeEmptyDay, intensityClass, valueOf, formatLocalDate, type AnnualCell } from './activityUtils'
 import type { AppLocale, DayActivity, StatisticsMetric, YearActivity } from '../../types'
 import { useMonitorStore } from '../../stores/monitor'
@@ -130,7 +130,10 @@ const hoveredTokenPair = computed(() => {
   if (!hovered.value) {
     return { input: '0.00', output: '0.00' }
   }
-  return formatTokenPair(hovered.value.inputTokens, hovered.value.outputTokens)
+  return {
+    input: formatTokenValue(hovered.value.inputTokens),
+    output: formatTokenValue(hovered.value.outputTokens),
+  }
 })
 
 function annualCellClass(day: DayActivity): string {

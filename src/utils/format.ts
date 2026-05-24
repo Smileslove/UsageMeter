@@ -412,6 +412,7 @@ export function formatCost(value: number, currency?: CurrencySettings, precision
 }
 
 export function formatRequestCount(value: number): string {
+  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`
   if (value >= 1_000) return `${(value / 1_000).toFixed(2)}K`
   return String(Math.round(value))
@@ -419,6 +420,7 @@ export function formatRequestCount(value: number): string {
 
 export function formatTokenValue(value: number, unitBase?: number): string {
   const base = unitBase ?? value
+  if (base >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`
   if (base >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`
   if (base >= 1_000) return `${(value / 1_000).toFixed(2)}K`
   return value.toFixed(2)

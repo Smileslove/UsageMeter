@@ -3,7 +3,7 @@ import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import { computed } from 'vue'
 import type { SessionStats } from '../types'
-import { formatCost as formatCostUtil } from '../utils/format'
+import { formatCost as formatCostUtil, formatTokenValue } from '../utils/format'
 
 const props = defineProps<{
   visible: boolean
@@ -39,12 +39,10 @@ const formatDuration = (ms: number) => {
   return `${minutes}m ${seconds}s`
 }
 
-// 格式化 Token 数量（1000以下显示整数，以上保留2位小数）
+// 格式化 Token 数量（保留2位小数，超过K/M/B自动换算单位）
 const formatTokens = (tokens: number) => {
   if (!tokens) return '0'
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(2)}M`
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(2)}K`
-  return Math.round(tokens).toString()
+  return formatTokenValue(tokens)
 }
 
 // 格式化费用（统一4位小数，支持多货币）

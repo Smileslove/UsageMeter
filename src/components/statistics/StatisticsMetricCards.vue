@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { CircleDollarSign, CircleX, Database, MessageSquare, Sigma, CheckCircle2 } from 'lucide-vue-next'
 import { t } from '../../i18n'
-import { formatCost, formatRequestCount, formatTokenPair, formatTokenValue } from '../../utils/format'
+import { formatCost, formatRequestCount, formatTokenValue } from '../../utils/format'
 import type { AppLocale, StatisticsTotals } from '../../types'
 import { useMonitorStore } from '../../stores/monitor'
 
@@ -35,8 +35,8 @@ function value(key: 'requests' | 'tokens' | 'input' | 'output' | 'cost' | 'cache
   if (key === 'requests') return formatRequestCount(totals.requestCount)
   if (key === 'tokens') return formatTokenValue(totals.totalTokens)
   // 输入显示总输入（包含缓存读取）
-  if (key === 'input') return formatTokenPair(totals.inputTokens + (totals.cacheReadTokens ?? 0), totals.outputTokens).input
-  if (key === 'output') return formatTokenPair(totals.inputTokens + (totals.cacheReadTokens ?? 0), totals.outputTokens).output
+  if (key === 'input') return formatTokenValue(totals.inputTokens + (totals.cacheReadTokens ?? 0))
+  if (key === 'output') return formatTokenValue(totals.outputTokens)
   if (key === 'cost') return formatCost(totals.cost, store.settings.currency)
   if (key === 'cacheCreate') return formatTokenValue(totals.cacheCreateTokens ?? 0)
   if (key === 'cacheRead') return formatTokenValue(totals.cacheReadTokens ?? 0)

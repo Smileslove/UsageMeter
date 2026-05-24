@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
+import { formatRequestCount } from '../utils/format'
 
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -57,7 +58,7 @@ const chartOptions = computed(() => {
           </div>
           <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;gap:16px;">
             <span style="font-size:12px;color:${secondaryColor}">${countLabel}</span>
-            <span style="font-size:15px;font-weight:700;font-family:monospace;color:${valueColor}">${params.data.requestCount}</span>
+            <span style="font-size:15px;font-weight:700;font-family:monospace;color:${valueColor}">${formatRequestCount(params.data.requestCount)}</span>
           </div>
           <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px;">
             <span style="font-size:12px;color:${secondaryColor} ;opacity: 0.8;">${percentLabel}</span>

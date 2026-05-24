@@ -6,7 +6,7 @@ import { LineChart, PieChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent } from 'echarts/components'
 import VChart from 'vue-echarts'
 import { t } from '../../i18n'
-import { formatCost, formatDurationMs, formatRate, formatRequestCount, formatTokenPair, formatTokenValue } from '../../utils/format'
+import { formatCost, formatDurationMs, formatRate, formatRequestCount, formatTokenValue } from '../../utils/format'
 import type { AppLocale, StatisticsModelBreakdown, StatisticsTrendPoint } from '../../types'
 import { useMonitorStore } from '../../stores/monitor'
 
@@ -44,7 +44,10 @@ const selectedIndex = computed(() => {
 
 const tokenPair = computed(() => {
   if (!selectedModel.value) return { input: '-', output: '-' }
-  return formatTokenPair(selectedModel.value.inputTokens, selectedModel.value.outputTokens)
+  return {
+    input: formatTokenValue(selectedModel.value.inputTokens),
+    output: formatTokenValue(selectedModel.value.outputTokens),
+  }
 })
 
 const avgSpeed = computed(() => {

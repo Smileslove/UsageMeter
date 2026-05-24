@@ -3,7 +3,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import { t, windowNameLabel } from '../i18n'
 import { MessageSquare, Sigma, CircleDollarSign, Database } from 'lucide-vue-next'
-import { formatRequestCount, formatTokenValue, formatTokenPair, formatCost } from '../utils/format'
+import { formatRequestCount, formatTokenValue, formatCost } from '../utils/format'
 import { WINDOW_ORDER, type WindowName } from '../types'
 import SubscriptionQuotaCard from './SubscriptionQuotaCard.vue'
 
@@ -101,9 +101,8 @@ function tokenDisplay(key: 'total' | 'input' | 'output'): string {
     return detailedNumber(data.outputTokens)
   }
   if (key === 'total') return formatTokenValue(data.tokenUsed)
-  const pair = formatTokenPair(totalInputTokens.value, data.outputTokens)
-  if (key === 'input') return pair.input
-  return pair.output
+  if (key === 'input') return formatTokenValue(totalInputTokens.value)
+  return formatTokenValue(data.outputTokens)
 }
 
 // 缓存显示
