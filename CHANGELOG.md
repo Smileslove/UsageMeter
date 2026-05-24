@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.1] - 2026-05-24
+
+### Added
+
+- **Global Outbound Network Proxy**: Added app-wide outbound proxy settings for UsageMeter's own HTTP traffic, with support for HTTP / HTTPS / SOCKS5 proxies and optional authentication
+- **Proxy Connectivity Diagnostics**: Added built-in connectivity tests for GitHub, Anthropic, and OpenAI targets so proxy reachability can be verified before use
+
+### Changed
+
+- **Network Proxy Settings UI**: Redesigned the global network proxy settings section into a compact inline editor with clearer status feedback and per-target test results
+- **Request Source Presentation**: Refined request cards and statistics summaries to distinguish local records from proxy-captured records more clearly
+
+### Fixed
+
+- **Proxy Config Change Notification**: Added frontend notification and automatic state refresh when external tools modify proxy takeover configuration
+- **Connectivity Test Reliability**: Improved proxy connectivity test classification and result display, including better handling for timeout, connect, authentication, and HTTP error cases
+
+---
+
+### 新增
+
+- **全局出站网络代理**：新增应用级全局出站代理配置，用于统一管理 UsageMeter 自身 HTTP 请求的代理行为，支持 HTTP / HTTPS / SOCKS5 以及可选认证
+- **代理连通性诊断**：新增 GitHub、Anthropic、OpenAI 三个目标的内建连通性测试，可在启用前验证代理可用性
+
+### 变更
+
+- **网络代理设置界面**：重构全局网络代理设置区为更紧凑的内联编辑形态，补充更清晰的状态反馈与目标级测试结果展示
+- **请求来源展示**：优化请求卡片与统计摘要，对本地记录和代理采集记录做更明确的来源区分
+
+### 修复
+
+- **代理配置变更通知**：当外部工具修改代理接管配置时，前端现在会及时提示并自动刷新相关状态
+- **连通性测试可靠性**：改进代理连通性测试的错误分类与结果展示，增强对超时、连接失败、认证失败和 HTTP 错误的处理
+
+---
+
 ## [0.5.0] - 2026-05-22
 
 ### Added
@@ -357,6 +393,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.5.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.5.1
 [0.5.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.5.0
 [0.4.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.4.0
 [0.3.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.3.0
