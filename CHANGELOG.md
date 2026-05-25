@@ -7,7 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.5.1] - 2026-05-24
+## [0.6.0] - 2026-05-25
+
+### Added
+
+- **Local Cache Persistence**: Parsed Claude / Codex session facts now persist in `local_usage.db` and survive deletion of source JSONL files — statistics never drop just because you cleaned up old sessions
+- **Local Cache Management UI**: New section in Settings → Data shows total facts and orphan facts (rows whose JSONL is gone), with one-click _Purge orphans_ (with 30 / 90 / 180 day or all-time retention) and _Rebuild cache_ actions
+- **Source Label on Merged Facts**: Merged request facts now carry a `source_label` derived from `api_key_prefix` or `request_base_url`, enabling honest "unidentified source" bucketing for proxy-bypassed local requests
+
+### Changed
+
+- **Per-field Merge Priority**: The proxy/local merge logic now picks priorities per field category instead of a blanket "proxy wins" rule:
+  - `input/output_tokens` → proxy preferred (most authoritative)
+  - `cache_create/cache_read_tokens` → **local preferred** (JSONL parsing is more complete than streaming SSE)
+  - `total_tokens` → **recomputed from parts** to avoid drift when either side under-reports
+  - `estimated_cost` → proxy when `cost_locked = true`, otherwise local real-time estimate so price-table edits take effect immediately
+  - status / duration / TTFT / rate → **proxy only**
+- **Source Filter No Longer Cuts Local Fallback**: When you filter by an API source, proxy-recorded requests of other sources are still excluded, but truly proxy-missed local requests are kept (bucketed as "unidentified source") — previously the entire local fallback was dropped
+- **Soft-delete Semantics**: `sync_from_scanner` now soft-deletes vanished sessions (mark `source_file_present = 0`) instead of physically removing rows, so history is preserved while the source-file table still tracks current filesystem state
+
+### Fixed
+
+- **Cross-device Sync Double-counting**: Outbox `request_key` and `event_id` now use the same normalized global key (`tool:message_id` / 9-tuple fallback) as the local table, fixing duplicate row creation in `remote_request_facts` after WebDAV import
+- **Schema v5 Upgrade Crash**: Old databases (v4) used to fail at startup with `no such column: deleted_at in CREATE INDEX ...` because v5 indexes were declared in the table-creation batch before the migration could add the columns; indexes are now created only inside the v5 migration branch
+- **`/clear` Context Not Erasing History**: When users clear in-session context inside Claude, the previously seen `message_id`s are now soft-marked instead of deleted — historical statistics no longer drop unexpectedly
+
+---
+
+### 新增
+
+- **本地缓存持久化**：解析过的 Claude / Codex 会话事实现在持久化到 `local_usage.db`，即便原始 JSONL 被删除统计也不会消失——清理旧会话不再让历史数字下降
+- **本地缓存管理 UI**：设置 → 数据与配额下新增本地缓存管理区，显示事实记录数与孤立记录数（来源 JSONL 已消失的行），并提供一键「清理孤立记录」（支持 30 / 90 / 180 天或全部窗口）与「重建缓存」按钮
+- **合并事实的来源标签**：合并请求事实新增 `source_label` 字段，从 `api_key_prefix` 或 `request_base_url` 派生，让代理未覆盖的本地请求可以诚实归入「未识别来源」桶
+
+### 变更
+
+- **字段级合并优先级**：代理与本地合并不再统一「代理优先」，改为按字段类别分桶：
+  - `input/output_tokens` → 代理优先（响应头/body 最权威）
+  - `cache_create/cache_read_tokens` → **本地优先**（JSONL 解析比流式 SSE 拿到的更全）
+  - `total_tokens` → **按各字段重新计算**，避免任一方少算导致漂移
+  - `estimated_cost` → `cost_locked = true` 时用代理冻结值，否则用本地实时估算（修改价格表后立即生效）
+  - 状态码 / 耗时 / TTFT / 速率 → **仅代理**
+- **来源过滤不再切断本地补全**：按某个 API 来源过滤时，被代理记录到的其他来源仍被排除，但代理真正漏掉的本地请求会被保留（归入「未识别来源」）——以前整片本地补全会被一刀切掉
+- **软删除语义**：`sync_from_scanner` 检测到会话消失时改为标记 `source_file_present = 0`，不再物理删除行；历史得以保留，同时源文件表仍能跟踪当前文件系统状态
+
+### 修复
+
+- **跨设备同步重复计数**：outbox 的 `request_key` 与 `event_id` 现在统一使用与本地表一致的规范化全局键（`tool:message_id` / 9 元组 fallback），修复了 WebDAV 导入后 `remote_request_facts` 出现重复行的问题
+- **Schema v5 升级崩溃**：旧版本数据库（v4）启动时会因 `no such column: deleted_at in CREATE INDEX ...` 报错——v5 索引曾被错误地放在建表语句批次里、早于迁移补列时机；现已只在 v5 迁移分支内创建
+- **`/clear` 上下文清空导致历史下降**：用户在 Claude 内清空上下文时，之前见过的 `message_id` 现在改为软标记而非删除，历史统计不会再意外下降
+
+---
 
 ### Added
 
@@ -393,6 +443,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.6.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.0
 [0.5.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.5.1
 [0.5.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.5.0
 [0.4.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.4.0
