@@ -2,16 +2,6 @@ use crate::proxy::UsageRecord;
 use crate::session::{LocalRequestRecord, SessionMeta};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MergeMode {
-    LocalOnly,
-    /// 历史上当 source_aware 启用过滤时进入的分支，现已收敛到
-    /// `ProxyWithLocalFallback`；保留枚举值是为了未来可能再次启用或单测覆盖。
-    #[allow(dead_code)]
-    ProxyOnly,
-    ProxyWithLocalFallback,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoverageOrigin {
     ProxyOnly,
     LocalOnly,

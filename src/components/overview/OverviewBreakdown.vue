@@ -53,7 +53,6 @@ watch(
     window: store.settings.summaryWindow,
     source: store.settings.sourceAware.activeSourceFilter,
     tool: store.settings.clientTools.activeToolFilter,
-    dataSource: store.settings.dataSource,
     snapshotEpoch: store.lastUpdatedEpoch
   }),
   ({ window }) => {

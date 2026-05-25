@@ -1,28 +1,8 @@
-use super::types::{CoverageOrigin, MergeMode, MergedCoverage, MergedRequestFact};
+use super::types::{CoverageOrigin, MergedCoverage, MergedRequestFact};
 use crate::models::{AppSettings, ToolFilter, UsageQueryFilter};
 use crate::proxy::{ProjectStats, ProjectToolStats, ProxyDatabase, SessionStats, UsageRecord};
 use crate::session::{LocalRequestRecord, SessionMeta};
 use std::collections::{BTreeSet, HashMap, HashSet};
-
-/// 决定合并模式。
-///
-/// 旧逻辑曾在 `source_aware` 启用过滤时切回 `ProxyOnly`——这导致用户
-/// 「只看某个 source」时本地补全被完全切断，代理关闭期间的本地请求消失。
-///
-/// 新规则：合并模式只看 `data_source`。
-/// - `data_source == "proxy"` → 始终 `ProxyWithLocalFallback`
-/// - 否则 → `LocalOnly`
-///
-/// `source_aware` 过滤只作用于 proxy 读取（通过 SQL where 过滤掉），
-/// 不再决定是否启用本地补全；同时合并循环里 `all_proxy_index` 兜底，
-/// 能正确区分「proxy 记录到但被 source filter 排除的请求」与
-/// 「proxy 完全没记录到的真本地请求」。
-fn resolve_merge_mode(settings: &AppSettings) -> MergeMode {
-    match settings.data_source.as_str() {
-        "proxy" => MergeMode::ProxyWithLocalFallback,
-        _ => MergeMode::LocalOnly,
-    }
-}
 
 fn request_key_for_local(record: &LocalRequestRecord) -> String {
     // 优先使用持久化的 request_key（v5 schema 之后由 local_usage 写入）；
@@ -204,7 +184,6 @@ pub async fn get_merged_request_facts(
     end_epoch: Option<i64>,
     include_errors: bool,
 ) -> Result<(Vec<MergedRequestFact>, MergedCoverage), String> {
-    let merge_mode = resolve_merge_mode(settings);
     let tool_filter = settings.client_tools.build_filter();
     let usage_filter = UsageQueryFilter {
         source: settings.source_aware.build_filter(),
@@ -262,19 +241,6 @@ pub async fn get_merged_request_facts(
     let session_meta_by_id = build_local_meta_index(&local_sessions);
     let message_to_session = build_message_to_session_index(&local_records);
 
-    if matches!(merge_mode, MergeMode::LocalOnly) {
-        let facts: Vec<MergedRequestFact> = local_records
-            .iter()
-            .map(|record| {
-                let cost = compute_local_request_cost(record, &pricings, &pricing_match_mode);
-                let meta = session_meta_by_id.get(&record.session_id);
-                MergedRequestFact::from_local(record, meta, cost)
-            })
-            .collect();
-        let coverage = build_coverage(&facts);
-        return Ok((facts, coverage));
-    }
-
     let (all_proxy_records, proxy_records) = if let Some(proxy_db) = ProxyDatabase::get_global() {
         proxy_db.backfill_unlocked_costs().await?;
         let mut records =
@@ -300,21 +266,6 @@ pub async fn get_merged_request_facts(
     } else {
         (Vec::new(), Vec::new())
     };
-
-    if matches!(merge_mode, MergeMode::ProxyOnly) {
-        let facts: Vec<MergedRequestFact> = proxy_records
-            .iter()
-            .map(|record| {
-                let meta = record
-                    .session_id
-                    .as_ref()
-                    .and_then(|session_id| session_meta_by_id.get(session_id));
-                MergedRequestFact::from_proxy(record, meta)
-            })
-            .collect();
-        let coverage = build_coverage(&facts);
-        return Ok((facts, coverage));
-    }
 
     let all_proxy_index = build_proxy_request_index(&all_proxy_records);
     let proxy_index = build_proxy_request_index(&proxy_records);
@@ -367,11 +318,7 @@ pub async fn get_merged_sessions(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<SessionStats>, String> {
-    let include_errors = if settings.data_source == "proxy" {
-        settings.proxy.include_error_requests
-    } else {
-        true
-    };
+    let include_errors = settings.proxy.include_error_requests;
     let (facts, _) = get_merged_request_facts(settings, None, None, include_errors).await?;
     let tool_filter = settings.client_tools.build_filter();
     let local_db = crate::local_usage::ensure_local_usage_synced()?;
@@ -524,11 +471,7 @@ pub async fn get_merged_session_detail(
 }
 
 pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<ProjectStats>, String> {
-    let include_errors = if settings.data_source == "proxy" {
-        settings.proxy.include_error_requests
-    } else {
-        true
-    };
+    let include_errors = settings.proxy.include_error_requests;
     let (facts, _) = get_merged_request_facts(settings, None, None, include_errors).await?;
     let mut map: HashMap<String, ProjectAggregate> = HashMap::new();
 

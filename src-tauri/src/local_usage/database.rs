@@ -1443,51 +1443,6 @@ impl LocalUsageDatabase {
         Ok(result)
     }
 
-    pub fn get_request_records_by_session(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<LocalRequestRecord>, String> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "SELECT session_id, tool, timestamp, message_id,
-                        input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-                        total_tokens, model, is_subagent, request_key, source_file_present
-                 FROM local_request_facts
-                 WHERE session_id = ?1
-                 ORDER BY timestamp ASC",
-            )
-            .map_err(|e| format!("Failed to prepare get_request_records_by_session: {}", e))?;
-        let rows = stmt
-            .query_map(params![session_id], |row| {
-                let request_key: Option<String> = row.get(11)?;
-                let source_file_present: Option<i64> = row.get(12)?;
-                Ok(LocalRequestRecord {
-                    session_id: row.get(0)?,
-                    tool: row.get(1)?,
-                    timestamp: row.get(2)?,
-                    message_id: row.get(3)?,
-                    input_tokens: row.get::<_, i64>(4)? as u64,
-                    output_tokens: row.get::<_, i64>(5)? as u64,
-                    cache_create_tokens: row.get::<_, i64>(6)? as u64,
-                    cache_read_tokens: row.get::<_, i64>(7)? as u64,
-                    total_tokens: row.get::<_, i64>(8)? as u64,
-                    model: row.get(9)?,
-                    is_subagent: row.get::<_, i64>(10)? != 0,
-                    request_key: request_key.filter(|v| !v.trim().is_empty()),
-                    source_file_present: source_file_present.map(|v| v != 0),
-                })
-            })
-            .map_err(|e| format!("Failed to query local request records by session: {}", e))?;
-        let mut result = Vec::new();
-        for row in rows {
-            result.push(row.map_err(|e| {
-                format!("Failed to read local request record by session row: {}", e)
-            })?);
-        }
-        Ok(result)
-    }
-
     pub fn get_all_sessions(&self, tool_filter: &ToolFilter) -> Result<Vec<SessionMeta>, String> {
         let conn = self.conn.lock().unwrap();
         let (sql, param) = match tool_filter {
@@ -1557,49 +1512,6 @@ impl LocalUsageDatabase {
             result.push(row.map_err(|e| format!("Failed to read local session row: {}", e))?);
         }
         Ok(result)
-    }
-
-    pub fn get_session_by_id(&self, session_id: &str) -> Result<Option<SessionMeta>, String> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "SELECT session_id, tool, cwd, project_name, topic, last_prompt, session_name,
-                        primary_file_path, file_size, last_modified, total_input_tokens,
-                        total_output_tokens, total_cache_create_tokens, total_cache_read_tokens,
-                        request_count, start_time, end_time, source_kind, model_list_json
-                 FROM local_sessions
-                 WHERE session_id = ?1",
-            )
-            .map_err(|e| format!("Failed to prepare get_session_by_id: {}", e))?;
-        let session = stmt
-            .query_row(params![session_id], |row| {
-                let model_list_json: String = row.get(18)?;
-                Ok(SessionMeta {
-                    session_id: row.get(0)?,
-                    tool: row.get(1)?,
-                    cwd: row.get(2)?,
-                    project_name: row.get(3)?,
-                    topic: row.get(4)?,
-                    last_prompt: row.get(5)?,
-                    session_name: row.get(6)?,
-                    file_path: row.get(7)?,
-                    file_size: row.get::<_, i64>(8)? as u64,
-                    last_modified: row.get(9)?,
-                    total_input_tokens: row.get::<_, i64>(10)? as u64,
-                    total_output_tokens: row.get::<_, i64>(11)? as u64,
-                    total_cache_create_tokens: row.get::<_, i64>(12)? as u64,
-                    total_cache_read_tokens: row.get::<_, i64>(13)? as u64,
-                    models: serde_json::from_str(&model_list_json).unwrap_or_default(),
-                    message_count: row.get::<_, i64>(14)? as u64,
-                    start_time: row.get(15)?,
-                    end_time: row.get(16)?,
-                    source: row.get(17)?,
-                    message_ids: Vec::new(),
-                })
-            })
-            .optional()
-            .map_err(|e| format!("Failed to query local session by id: {}", e))?;
-        Ok(session)
     }
 
     pub fn get_sync_export_data(&self) -> Result<SyncExportData, String> {

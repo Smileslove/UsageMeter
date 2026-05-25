@@ -189,7 +189,6 @@ watch([range, bucket, analysisMetric], fetchSummary, { deep: true })
 watch([activityView, monthYear, monthNumber, monthMetric], fetchMonth)
 watch(
   () => [
-    store.settings.dataSource,
     store.settings.sourceAware.activeSourceFilter,
     store.settings.clientTools.activeToolFilter
   ],

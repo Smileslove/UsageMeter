@@ -7,7 +7,6 @@ import LobeIcon from './LobeIcon.vue'
 import { TOOL_LOBE_ICONS } from '../iconConfig'
 
 const store = useMonitorStore()
-const LOCAL_SUPPORTED_TOOLS = new Set(['claude_code', 'codex'])
 
 const isOpen = ref(false)
 const dropdownRef = ref<HTMLElement | null>(null)
@@ -15,12 +14,7 @@ const iconFailed = ref(false)
 
 const activeFilter = computed(() => store.settings.clientTools.activeToolFilter)
 const profiles = computed(() => store.settings.clientTools.profiles)
-const visibleProfiles = computed(() => profiles.value.filter(profile => {
-  if (store.settings.dataSource === 'proxy') {
-    return true
-  }
-  return LOCAL_SUPPORTED_TOOLS.has(profile.tool)
-}))
+const visibleProfiles = computed(() => profiles.value)
 
 const showSelector = computed(() => {
   return visibleProfiles.value.length > 0

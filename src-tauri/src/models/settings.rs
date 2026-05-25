@@ -468,8 +468,6 @@ pub struct AppSettings {
     pub refresh_interval_seconds: u64,
     #[serde(default = "default_summary_window")]
     pub summary_window: String,
-    #[serde(default = "default_data_source")]
-    pub data_source: String,
     #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default = "default_theme")]
@@ -655,10 +653,6 @@ pub fn default_summary_window() -> String {
     "24h".to_string()
 }
 
-pub fn default_data_source() -> String {
-    "local".to_string()
-}
-
 pub fn default_theme() -> String {
     "system".to_string()
 }
@@ -670,7 +664,6 @@ impl Default for AppSettings {
             timezone: default_timezone(),
             refresh_interval_seconds: default_refresh_interval_seconds(),
             summary_window: default_summary_window(),
-            data_source: default_data_source(),
             proxy: ProxyConfig::default_config(),
             theme: default_theme(),
             model_pricing: ModelPricingSettings::default(),

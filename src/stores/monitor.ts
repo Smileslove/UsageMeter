@@ -70,7 +70,6 @@ const defaultSettings: AppSettings = {
   timezone: 'Asia/Shanghai',
   refreshIntervalSeconds: 30,
   summaryWindow: '24h',
-  dataSource: 'local',
   proxy: {
     enabled: false,
     port: 18765,
@@ -137,7 +136,7 @@ export const useMonitorStore = defineStore('monitor', {
     hasData: state => !!state.snapshot,
     windows: state => state.snapshot?.windows ?? [],
     isProxyRunning: state => state.proxyStatus?.running ?? false,
-    isProxyMode: state => state.settings.dataSource === 'proxy'
+    isProxyMode: () => true,
   },
   actions: {
     async initialize() {
@@ -156,8 +155,8 @@ export const useMonitorStore = defineStore('monitor', {
         }
       }
 
-      // 如果是代理模式，获取速率数据（解决初始化时序问题）
-      if (this.settings.dataSource === 'proxy' && this.settings.summaryWindow) {
+      // 如果代理启用，获取速率数据
+      if (this.settings.summaryWindow) {
         await this.fetchRateSummary(this.settings.summaryWindow)
       }
 
@@ -298,15 +297,14 @@ export const useMonitorStore = defineStore('monitor', {
       try {
         this.error = ''
 
-        // 统一调用 - 后端会根据 settings.dataSource 选择代理或本地文件
         const data = await invoke<UsageSnapshot>('get_usage_snapshot', {
           settings: this.settings
         })
         this.snapshot = data
 
         this.lastUpdatedEpoch = this.snapshot.generatedAtEpoch
-        // 如果是代理模式，刷新速率数据
-        if (this.settings.dataSource === 'proxy' && this.settings.summaryWindow) {
+        // 刷新速率数据
+        if (this.settings.summaryWindow) {
           await this.fetchRateSummary(this.settings.summaryWindow)
         }
         if (this.settings.summaryWindow) {
@@ -512,13 +510,8 @@ export const useMonitorStore = defineStore('monitor', {
         this.refreshTimer = null
       }
     },
-    // 速率统计操作（仅代理模式）
+    // 速率统计操作
     async fetchRateSummary(window: string) {
-      if (this.settings.dataSource !== 'proxy') {
-        this.rateSummary = null
-        return
-      }
-
       // 先重置，避免旧窗口数据残留
       this.rateSummary = null
 

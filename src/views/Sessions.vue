@@ -39,7 +39,7 @@ const copiedProjectPath = ref<string | null>(null)
 let proxyRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let copiedProjectPathTimer: ReturnType<typeof setTimeout> | null = null
 
-const cacheKey = () => `${store.settings.dataSource}:${selectedTool.value ?? '__all__'}`
+const cacheKey = () => `${selectedTool.value ?? '__all__'}`
 
 const sourceOptions = computed(() => {
   const profiles = store.settings.clientTools.profiles
@@ -86,7 +86,7 @@ const clearViewCaches = () => {
   projectCache.clear()
 }
 
-const projectCacheKey = () => `${store.settings.dataSource}:projects:all-tools`
+const projectCacheKey = () => `projects:all-tools`
 
 const triggerSessionViewRefresh = async () => {
   clearViewCaches()
@@ -302,8 +302,8 @@ const loadMore = async () => {
   loadingMore.value = false
 }
 
-// 监听数据源与页面内来源筛选变化
-watch([() => store.settings.dataSource, selectedTool], async () => {
+// 监听工具筛选变化
+watch([selectedTool], async () => {
   await reloadSessions()
   if (activeTab.value === 'projects') {
     await reloadProjectStats()
@@ -329,7 +329,7 @@ watch(() => store.sessionViewsRevision, async (current, previous) => {
 })
 
 watch(() => store.proxyStatus?.recordCount ?? null, async (current, previous) => {
-  if (store.settings.dataSource !== 'proxy' || current === null) {
+  if (current === null) {
     lastProxyRecordCount.value = current
     return
   }
@@ -425,10 +425,7 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <!-- 数据来源提示 -->
-    <div v-if="!store.isProxyMode" class="text-[10px] text-gray-400 px-1">
-      {{ t(store.settings.locale, 'sessions.jsonlSource') }}
-    </div>
+
 
     <!-- 加载状态 -->
     <div v-if="store.sessionsLoading" class="flex justify-center py-8">

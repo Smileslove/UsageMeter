@@ -4,8 +4,6 @@ export type WindowName = '5h' | '24h' | 'today' | '7d' | '30d' | 'current_month'
 
 export const WINDOW_ORDER: WindowName[] = ['5h', '24h', 'today', '7d', '30d', 'current_month']
 
-export type DataSource = 'local' | 'proxy'
-
 export type ThemeMode = 'light' | 'dark' | 'system'
 
 export interface ProxyConfig {
@@ -92,7 +90,6 @@ export interface AppSettings {
   timezone: string
   refreshIntervalSeconds: number
   summaryWindow: WindowName  // 概览面板汇总展示区显示的窗口
-  dataSource: DataSource     // 数据统计方式：local 或 proxy
   proxy: ProxyConfig         // 代理配置
   theme: ThemeMode           // 主题模式：light/dark/system
   modelPricing: ModelPricingSettings  // 模型价格设置

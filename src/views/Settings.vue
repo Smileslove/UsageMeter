@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useMonitorStore } from '../stores/monitor'
 import { useUpdaterStore } from '../stores/updater'
 import { t } from '../i18n'
-import { type DataSource, type ThemeMode, type ToolTakeoverStatus, type SyncStatus, type RemoteSyncDevice } from '../types'
+import { type ThemeMode, type ToolTakeoverStatus, type SyncStatus, type RemoteSyncDevice } from '../types'
 import ModelPricingSettings from '../components/ModelPricingSettings.vue'
 import ApiSourceList from '../components/ApiSourceList.vue'
 import CurrencySettings from '../components/CurrencySettings.vue'
@@ -56,7 +56,6 @@ const openCurrency = () => {
 // 本地状态用于双向绑定
 const localLocale = ref(store.settings.locale)
 const localRefreshInterval = ref(store.settings.refreshIntervalSeconds)
-const localDataSource = ref<DataSource>(store.settings.dataSource)
 const localTheme = ref<ThemeMode>(store.settings.theme || 'system')
 const localIncludeErrorRequests = ref(store.settings.proxy.includeErrorRequests ?? true)
 const localSyncEnabled = ref(store.settings.sync?.enabled ?? false)
@@ -102,10 +101,6 @@ watch(() => store.settings.locale, (val) => {
 
 watch(() => store.settings.refreshIntervalSeconds, (val) => {
   localRefreshInterval.value = val
-})
-
-watch(() => store.settings.dataSource, (val) => {
-  localDataSource.value = val
 })
 
 watch(() => store.settings.theme, (val) => {
@@ -347,11 +342,6 @@ const handleRefreshIntervalChange = async () => {
   const value = Math.max(5, Math.min(300, Number(localRefreshInterval.value) || 30))
   localRefreshInterval.value = value
   store.settings.refreshIntervalSeconds = value
-  await store.saveSettings()
-}
-
-const handleDataSourceChange = async () => {
-  store.settings.dataSource = localDataSource.value
   await store.saveSettings()
 }
 
@@ -1091,41 +1081,15 @@ const formatSyncTimestamp = (timestamp: number | null | undefined) => {
         </div>
       </div>
 
-      <!-- 数据统计方式 -->
+      <!-- 代理开关 -->
       <div class="space-y-2">
-        <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.dataSource') }}</h3>
         <div class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 overflow-hidden divide-y divide-gray-50 dark:divide-neutral-800/50 shadow-sm">
-          <div class="p-3 px-4">
-            <div class="flex gap-2">
-              <button
-                v-for="source in ['local', 'proxy'] as DataSource[]"
-                :key="source"
-                @click="localDataSource = source; handleDataSourceChange()"
-                :class="[
-                  'flex-1 py-2 px-3 rounded-lg text-xs font-medium transition-all',
-                  localDataSource === source
-                    ? 'bg-blue-500 text-white'
-                    : 'bg-gray-100 dark:bg-neutral-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-neutral-700'
-                ]"
-              >
-                {{ t(store.settings.locale, `settings.dataSource${source.charAt(0).toUpperCase() + source.slice(1)}`) }}
-              </button>
-            </div>
-            <!-- 数据源说明 -->
-            <p class="mt-2 text-[10px] text-gray-400 dark:text-gray-500 leading-relaxed">
-              {{ t(store.settings.locale, localDataSource === 'local' ? 'settings.dataSourceLocalDesc' : 'settings.dataSourceProxyDesc') }}
-            </p>
-          </div>
-  
           <!-- 代理开关 -->
           <div class="p-3 px-4 flex items-center justify-between text-[13px]">
             <div class="flex flex-col">
               <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.interceptRequests') }}</span>
               <span v-if="proxyEnabled && proxyStatusInfo" class="text-[10px] text-gray-400 mt-0.5">
                 {{ t(store.settings.locale, 'settings.proxyRunning') }} · {{ t(store.settings.locale, 'settings.port') }} {{ proxyStatusInfo.port }} · {{ proxyStatusInfo.uptime }}
-              </span>
-              <span v-else-if="localDataSource === 'proxy' && !proxyEnabled" class="text-[10px] text-amber-500 mt-0.5">
-                {{ t(store.settings.locale, 'settings.startProxyHint') }}
               </span>
             </div>
             <!-- iOS styled switch -->
@@ -1170,7 +1134,7 @@ const formatSyncTimestamp = (timestamp: number | null | undefined) => {
           </div>
 
           <!-- 工具接管 -->
-          <div v-if="localDataSource === 'proxy'" class="p-3 px-4">
+          <div class="p-3 px-4">
             <div class="mb-2 flex items-center justify-between">
               <div>
                 <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.proxyTools') }}</div>
@@ -1231,8 +1195,8 @@ const formatSyncTimestamp = (timestamp: number | null | undefined) => {
             </div>
           </div>
   
-          <!-- 包含错误请求（仅代理模式显示） -->
-          <div v-if="localDataSource === 'proxy'" class="p-3 px-4 flex items-center justify-between text-[13px]">
+          <!-- 包含错误请求 -->
+          <div class="p-3 px-4 flex items-center justify-between text-[13px]">
             <div class="flex flex-col">
               <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.includeErrorRequests') }}</span>
               <span class="text-[10px] text-gray-400 mt-0.5">{{ t(store.settings.locale, 'settings.includeErrorRequestsDesc') }}</span>
@@ -1278,9 +1242,8 @@ const formatSyncTimestamp = (timestamp: number | null | undefined) => {
         <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider px-1">{{ t(store.settings.locale, 'settings.dataManagement') }}</h3>
         <div class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 overflow-hidden divide-y divide-gray-50 dark:divide-neutral-800/50 shadow-sm">
   
-          <!-- API 来源入口（仅代理模式显示） -->
+          <!-- API 来源入口 -->
           <div
-            v-if="localDataSource === 'proxy'"
             @click="openApiSources"
             class="p-3 px-4 cursor-pointer hover:bg-gray-50 dark:hover:bg-neutral-800/50 transition-colors"
           >
