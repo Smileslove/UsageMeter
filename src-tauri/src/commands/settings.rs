@@ -103,6 +103,10 @@ fn migrate_proxy_config(settings: &mut AppSettings) {
     if settings.proxy.port == 0 {
         settings.proxy.port = crate::models::default_proxy_port();
     }
+    if settings.proxy.request_timeout_seconds == 0 {
+        settings.proxy.request_timeout_seconds =
+            crate::models::default_proxy_request_timeout_seconds();
+    }
 }
 
 /// 确保模型价格配置存在
@@ -182,4 +186,29 @@ fn migrate_sync(settings: &mut AppSettings) -> Result<(), String> {
     crate::models::validate_sync_device_id(&settings.sync.device_id)?;
     settings.sync.include_session_text = false;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrate_proxy_config_fills_missing_timeout_fields() {
+        let mut settings = AppSettings::default();
+        settings.proxy.port = 0;
+        settings.proxy.request_timeout_seconds = 0;
+        settings.proxy.streaming_idle_timeout_seconds = 0;
+
+        migrate_proxy_config(&mut settings);
+
+        assert_eq!(settings.proxy.port, crate::models::default_proxy_port());
+        assert_eq!(
+            settings.proxy.request_timeout_seconds,
+            crate::models::default_proxy_request_timeout_seconds()
+        );
+        assert_eq!(
+            settings.proxy.streaming_idle_timeout_seconds,
+            crate::models::default_proxy_streaming_idle_timeout_seconds()
+        );
+    }
 }

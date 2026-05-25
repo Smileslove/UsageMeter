@@ -13,6 +13,8 @@ export interface ProxyConfig {
   port: number
   autoStart: boolean
   includeErrorRequests: boolean  // 在请求数统计中是否包含错误请求（4xx/5xx）
+  requestTimeoutSeconds: number
+  streamingIdleTimeoutSeconds: number
 }
 
 export type NetworkProxyScheme = 'http' | 'https' | 'socks5'

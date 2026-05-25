@@ -75,7 +75,9 @@ const defaultSettings: AppSettings = {
     enabled: false,
     port: 18765,
     autoStart: false,
-    includeErrorRequests: true
+    includeErrorRequests: true,
+    requestTimeoutSeconds: 120,
+    streamingIdleTimeoutSeconds: 0
   },
   theme: 'system',
   modelPricing: defaultModelPricing,
@@ -177,7 +179,9 @@ export const useMonitorStore = defineStore('monitor', {
             enabled: false,
             port: 18765,
             autoStart: false,
-            includeErrorRequests: true
+            includeErrorRequests: true,
+            requestTimeoutSeconds: 120,
+            streamingIdleTimeoutSeconds: 0
           }
         } else {
           // 确保所有字段存在（迁移旧配置兼容）
@@ -186,6 +190,12 @@ export const useMonitorStore = defineStore('monitor', {
           }
           if (this.settings.proxy.includeErrorRequests === undefined) {
             this.settings.proxy.includeErrorRequests = true
+          }
+          if (this.settings.proxy.requestTimeoutSeconds === undefined || this.settings.proxy.requestTimeoutSeconds === 0) {
+            this.settings.proxy.requestTimeoutSeconds = 120
+          }
+          if (this.settings.proxy.streamingIdleTimeoutSeconds === undefined) {
+            this.settings.proxy.streamingIdleTimeoutSeconds = 0
           }
         }
 

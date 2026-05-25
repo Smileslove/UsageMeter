@@ -21,6 +21,8 @@ pub type BoxBody = http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Er
 pub struct RequestForwarder {
     /// HTTP 客户端
     client: Client,
+    /// SSE 流式请求客户端：仅连接超时 + 读空闲超时，无总时长超时
+    streaming_client: Client,
     /// 使用量收集器
     usage_collector: Arc<UsageCollector>,
     /// 目标基础 URL
@@ -52,11 +54,16 @@ impl RequestForwarder {
         usage_collector: Arc<UsageCollector>,
         target_base_url: String,
         api_key: Option<String>,
+        request_timeout_secs: u64,
+        streaming_idle_timeout_secs: u64,
     ) -> Result<Self, String> {
         let client = HttpClientFactory::global().long();
+        let streaming_client = HttpClientFactory::global()
+            .build_streaming(request_timeout_secs, streaming_idle_timeout_secs)?;
 
         Ok(Self {
             client,
+            streaming_client,
             usage_collector,
             target_base_url,
             api_key,
@@ -167,9 +174,14 @@ impl RequestForwarder {
             }
         }
 
+        let client = if context.stream {
+            &self.streaming_client
+        } else {
+            &self.client
+        };
+
         // 构建请求
-        let mut request = self
-            .client
+        let mut request = client
             .post(&url)
             .header("Content-Type", "application/json")
             .header("x-api-key", &api_key)

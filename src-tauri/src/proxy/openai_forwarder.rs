@@ -9,7 +9,7 @@ use bytes::Bytes;
 use futures::StreamExt;
 use http_body_util::StreamBody;
 use hyper::body::Frame;
-use hyper::{HeaderMap, Method};
+use hyper::{header, HeaderMap, Method};
 use reqwest::Client;
 use serde_json::Value;
 use std::sync::Arc;
@@ -43,6 +43,7 @@ pub struct OpenAiPassthroughResult {
 
 pub struct OpenAiForwarder {
     client: Client,
+    streaming_client: Client,
     usage_collector: Arc<UsageCollector>,
 }
 
@@ -58,9 +59,13 @@ struct OpenAiUsage {
 }
 
 impl OpenAiForwarder {
-    pub fn new(usage_collector: Arc<UsageCollector>) -> Result<Self, String> {
+    pub fn new(
+        usage_collector: Arc<UsageCollector>,
+        request_timeout_secs: u64,
+        streaming_idle_timeout_secs: u64,
+    ) -> Result<Self, String> {
         let builder = Client::builder()
-            .timeout(Duration::from_secs(120))
+            .timeout(Duration::from_secs(request_timeout_secs))
             .http1_only()
             .http1_title_case_headers()
             .pool_max_idle_per_host(0)
@@ -71,8 +76,22 @@ impl OpenAiForwarder {
             .apply_proxy_to_builder(builder)
             .build()
             .map_err(|e| format!("Failed to create OpenAI HTTP client: {}", e))?;
+        let streaming_builder = Client::builder()
+            .connect_timeout(Duration::from_secs(request_timeout_secs))
+            .read_timeout(Duration::from_secs(streaming_idle_timeout_secs))
+            .http1_only()
+            .http1_title_case_headers()
+            .pool_max_idle_per_host(0)
+            .no_gzip()
+            .no_brotli()
+            .no_deflate();
+        let streaming_client = HttpClientFactory::global()
+            .apply_proxy_to_builder(streaming_builder)
+            .build()
+            .map_err(|e| format!("Failed to create OpenAI streaming HTTP client: {}", e))?;
         Ok(Self {
             client,
+            streaming_client,
             usage_collector,
         })
     }
@@ -107,9 +126,16 @@ impl OpenAiForwarder {
                 .unwrap_or(false);
         }
 
+        let prefer_streaming_client = should_use_streaming_client(&headers, context.stream);
+
         let method = reqwest::Method::from_bytes(method.as_str().as_bytes())
             .unwrap_or(reqwest::Method::POST);
-        let mut request = self.client.request(method, &url);
+        let client = if prefer_streaming_client {
+            &self.streaming_client
+        } else {
+            &self.client
+        };
+        let mut request = client.request(method, &url);
         request = apply_passthrough_headers(request, &headers);
         request = apply_chatgpt_account_header(request, context.chatgpt_account_id.as_deref());
         if !body.is_empty() && !headers.contains_key("content-type") {
@@ -578,6 +604,18 @@ fn first_token_candidate(value: &Value) -> bool {
             .and_then(|v| v.as_str())
             .map(|t| t.contains("delta") || t.contains("output"))
             .unwrap_or(false)
+}
+
+fn should_use_streaming_client(headers: &HeaderMap, request_stream_flag: bool) -> bool {
+    if request_stream_flag {
+        return true;
+    }
+
+    headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.contains("text/event-stream"))
+        .unwrap_or(false)
 }
 
 fn parse_openai_stream_usage_event(event: &Value) -> Option<OpenAiUsage> {
@@ -1097,5 +1135,18 @@ mod tests {
             ),
             "https://chatgpt.com/backend-api/connectors/directory/list?external_logos=true"
         );
+    }
+
+    #[test]
+    fn prefers_streaming_client_for_accept_event_stream() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::ACCEPT, "text/event-stream".parse().unwrap());
+        assert!(should_use_streaming_client(&headers, false));
+    }
+
+    #[test]
+    fn does_not_require_streaming_client_for_plain_json_request() {
+        let headers = HeaderMap::new();
+        assert!(!should_use_streaming_client(&headers, false));
     }
 }

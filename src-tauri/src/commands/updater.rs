@@ -56,8 +56,8 @@ pub async fn check_for_update(
 ) -> Result<Option<UpdateInfoDto>, String> {
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
-        use tauri_plugin_updater::UpdaterExt;
         use crate::commands::load_settings;
+        use tauri_plugin_updater::UpdaterExt;
 
         let settings = load_settings().unwrap_or_default();
 
@@ -76,7 +76,9 @@ pub async fn check_for_update(
             }
         }
 
-        let updater = builder.build().map_err(|e| format!("ERR_UPDATER_BUILD: {e}"))?;
+        let updater = builder
+            .build()
+            .map_err(|e| format!("ERR_UPDATER_BUILD: {e}"))?;
 
         match updater.check().await {
             Ok(Some(update)) => {
@@ -173,12 +175,11 @@ pub fn skip_update_version(version: String) -> Result<(), String> {
         );
     }
 
-    let content = serde_json::to_string_pretty(&json)
-        .map_err(|e| format!("ERR_SERIALIZE_SETTINGS: {e}"))?;
+    let content =
+        serde_json::to_string_pretty(&json).map_err(|e| format!("ERR_SERIALIZE_SETTINGS: {e}"))?;
 
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("ERR_CREATE_SETTINGS_DIR: {e}"))?;
+        fs::create_dir_all(parent).map_err(|e| format!("ERR_CREATE_SETTINGS_DIR: {e}"))?;
     }
     fs::write(&path, content).map_err(|e| format!("ERR_WRITE_SETTINGS: {e}"))?;
 

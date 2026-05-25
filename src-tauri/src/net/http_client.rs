@@ -141,6 +141,22 @@ impl HttpClientFactory {
             .map_err(|e| format!("ERR_HTTP_CLIENT_EPHEMERAL: {}", e))
     }
 
+    /// 构造一次性流式 client：仅设置连接超时和读空闲超时，不设置总时长超时。
+    ///
+    /// 适用于 SSE / 长流式响应，避免正常的长输出因为总超时被提前截断。
+    pub fn build_streaming(
+        &self,
+        connect_timeout_secs: u64,
+        read_idle_timeout_secs: u64,
+    ) -> Result<Client, String> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| "ERR_HTTP_CLIENT_LOCK".to_string())?;
+        build_streaming_one(&guard.config, connect_timeout_secs, read_idle_timeout_secs)
+            .map_err(|e| format!("ERR_HTTP_CLIENT_STREAMING: {}", e))
+    }
+
     /// 将当前生效的代理配置应用到外部传入的 `ClientBuilder`。
     ///
     /// 用于需要自定义 builder 链（如 OpenAI 流式响应所需的 http1_only、no_gzip 等）
@@ -205,6 +221,38 @@ fn build_one(
     builder
         .build()
         .map_err(|e| format!("ERR_HTTP_CLIENT_BUILD: {}", e))
+}
+
+fn build_streaming_one(
+    config: &NetworkProxyConfig,
+    connect_timeout_secs: u64,
+    read_idle_timeout_secs: u64,
+) -> Result<Client, String> {
+    let mut builder = Client::builder().user_agent(APP_USER_AGENT);
+
+    if connect_timeout_secs > 0 {
+        builder = builder.connect_timeout(Duration::from_secs(connect_timeout_secs));
+    }
+    if read_idle_timeout_secs > 0 {
+        builder = builder.read_timeout(Duration::from_secs(read_idle_timeout_secs));
+    }
+
+    builder = apply_proxy(builder, config)?;
+    builder
+        .build()
+        .map_err(|e| format!("ERR_HTTP_CLIENT_BUILD: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_streaming_allows_disabling_read_idle_timeout() {
+        let config = NetworkProxyConfig::default();
+        let client = build_streaming_one(&config, 120, 0);
+        assert!(client.is_ok());
+    }
 }
 
 /// 把代理配置应用到 builder 上。`enabled=false` 时什么都不做，

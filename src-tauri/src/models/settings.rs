@@ -15,6 +15,10 @@ pub struct ProxyConfig {
     pub auto_start: bool,
     #[serde(default = "default_include_error_requests")]
     pub include_error_requests: bool,
+    #[serde(default = "default_proxy_request_timeout_seconds")]
+    pub request_timeout_seconds: u64,
+    #[serde(default = "default_proxy_streaming_idle_timeout_seconds")]
+    pub streaming_idle_timeout_seconds: u64,
 }
 
 pub fn default_proxy_port() -> u16 {
@@ -25,6 +29,14 @@ pub fn default_include_error_requests() -> bool {
     true
 }
 
+pub fn default_proxy_request_timeout_seconds() -> u64 {
+    120
+}
+
+pub fn default_proxy_streaming_idle_timeout_seconds() -> u64 {
+    0
+}
+
 impl ProxyConfig {
     pub fn default_config() -> Self {
         Self {
@@ -32,6 +44,8 @@ impl ProxyConfig {
             port: 18765,
             auto_start: false,
             include_error_requests: true,
+            request_timeout_seconds: default_proxy_request_timeout_seconds(),
+            streaming_idle_timeout_seconds: default_proxy_streaming_idle_timeout_seconds(),
         }
     }
 }

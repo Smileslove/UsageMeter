@@ -30,7 +30,7 @@ pub async fn start_proxy(
         .profiles
         .iter()
         .any(|profile| profile.tool != "claude_code" && profile.enabled);
-    let config = proxy_config(port);
+    let config = proxy_config_from_settings(port, &settings);
 
     let server = if takeover_claude {
         ProxyServer::new(config.clone())
@@ -247,13 +247,13 @@ async fn set_codex_takeover(
     Ok(())
 }
 
-fn proxy_config(port: u16) -> ProxyConfig {
+fn proxy_config_from_settings(port: u16, settings: &crate::models::AppSettings) -> ProxyConfig {
     ProxyConfig {
         enabled: true,
         port,
         target_base_url: "https://api.anthropic.com".to_string(),
-        request_timeout: 120,
-        streaming_idle_timeout: 30,
+        request_timeout: settings.proxy.request_timeout_seconds,
+        streaming_idle_timeout: settings.proxy.streaming_idle_timeout_seconds,
     }
 }
 
@@ -455,4 +455,20 @@ pub async fn prepare_exit(state: State<'_, ProxyState>) -> Result<(), String> {
 #[tauri::command]
 pub async fn confirm_exit(app: tauri::AppHandle) {
     app.exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_config_uses_settings_timeouts() {
+        let mut settings = crate::models::AppSettings::default();
+        settings.proxy.request_timeout_seconds = 240;
+        settings.proxy.streaming_idle_timeout_seconds = 15;
+
+        let config = proxy_config_from_settings(18765, &settings);
+        assert_eq!(config.request_timeout, 240);
+        assert_eq!(config.streaming_idle_timeout, 15);
+    }
 }

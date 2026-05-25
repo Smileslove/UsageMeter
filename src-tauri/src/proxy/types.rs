@@ -28,7 +28,7 @@ impl Default for ProxyConfig {
             port: 18765,
             target_base_url: "https://api.anthropic.com".to_string(),
             request_timeout: 120,
-            streaming_idle_timeout: 30,
+            streaming_idle_timeout: 0,
         }
     }
 }

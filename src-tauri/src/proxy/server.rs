@@ -442,14 +442,24 @@ impl ProxyServer {
 
         // 创建转发器
         let forwarder = Arc::new(
-            RequestForwarder::new(self.state.usage_collector.clone(), target_base_url, api_key)
-                .map_err(|e| format!("Failed to create forwarder: {}", e))?,
+            RequestForwarder::new(
+                self.state.usage_collector.clone(),
+                target_base_url,
+                api_key,
+                self.config.request_timeout,
+                self.config.streaming_idle_timeout,
+            )
+            .map_err(|e| format!("Failed to create forwarder: {}", e))?,
         );
 
         // 创建 OpenAI-compatible 转发器（Codex 等），一次性创建后复用
         let openai_forwarder = Arc::new(
-            OpenAiForwarder::new(self.state.usage_collector.clone())
-                .map_err(|e| format!("Failed to create OpenAI forwarder: {}", e))?,
+            OpenAiForwarder::new(
+                self.state.usage_collector.clone(),
+                self.config.request_timeout,
+                self.config.streaming_idle_timeout,
+            )
+            .map_err(|e| format!("Failed to create OpenAI forwarder: {}", e))?,
         );
         *self.state.openai_forwarder.write().await = Some(openai_forwarder);
 
