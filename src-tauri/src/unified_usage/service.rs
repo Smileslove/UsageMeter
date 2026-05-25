@@ -1,24 +1,38 @@
 use super::types::{CoverageOrigin, MergeMode, MergedCoverage, MergedRequestFact};
-use crate::models::{AppSettings, SourceFilter, ToolFilter, UsageQueryFilter};
+use crate::models::{AppSettings, ToolFilter, UsageQueryFilter};
 use crate::proxy::{ProjectStats, ProjectToolStats, ProxyDatabase, SessionStats, UsageRecord};
 use crate::session::{LocalRequestRecord, SessionMeta};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+/// 决定合并模式。
+///
+/// 旧逻辑曾在 `source_aware` 启用过滤时切回 `ProxyOnly`——这导致用户
+/// 「只看某个 source」时本地补全被完全切断，代理关闭期间的本地请求消失。
+///
+/// 新规则：合并模式只看 `data_source`。
+/// - `data_source == "proxy"` → 始终 `ProxyWithLocalFallback`
+/// - 否则 → `LocalOnly`
+///
+/// `source_aware` 过滤只作用于 proxy 读取（通过 SQL where 过滤掉），
+/// 不再决定是否启用本地补全；同时合并循环里 `all_proxy_index` 兜底，
+/// 能正确区分「proxy 记录到但被 source filter 排除的请求」与
+/// 「proxy 完全没记录到的真本地请求」。
 fn resolve_merge_mode(settings: &AppSettings) -> MergeMode {
     match settings.data_source.as_str() {
-        "proxy" => {
-            let source_filter = settings.source_aware.build_filter();
-            if matches!(source_filter, SourceFilter::All) {
-                MergeMode::ProxyWithLocalFallback
-            } else {
-                MergeMode::ProxyOnly
-            }
-        }
+        "proxy" => MergeMode::ProxyWithLocalFallback,
         _ => MergeMode::LocalOnly,
     }
 }
 
 fn request_key_for_local(record: &LocalRequestRecord) -> String {
+    // 优先使用持久化的 request_key（v5 schema 之后由 local_usage 写入）；
+    // 老数据或 scanner 直读路径没有这个字段时，落回与写入时一致的拼接规则。
+    if let Some(key) = record.request_key.as_ref() {
+        let trimmed = key.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
     if record.message_id.trim().is_empty() {
         format!(
             "{}:{}:{}:{}:{}:{}:{}:{}:{}",
@@ -196,6 +210,25 @@ pub async fn get_merged_request_facts(
         source: settings.source_aware.build_filter(),
         tool: settings.client_tools.build_filter(),
     };
+    // source_aware 启用过滤时，本地补全也要感知 source：
+    // - 若一条 local 请求对应的 proxy 记录在「未过滤的代理集合」里能找到，
+    //   说明它属于某个具体 source（可能不是当前 filter 选中的那个）——
+    //   必须排除，避免「只看 source A」时混入 source B 的本地请求；
+    // - 若在「未过滤代理集合」里也找不到，说明 proxy 真的漏掉了这条本地请求——
+    //   归为 local-only 收录，source_label = None（未识别来源桶）。
+    //
+    // 这条无 source 过滤的副查询只在 source filter != All 时才需要；
+    // All 模式下 unfiltered_proxy_records == filtered proxy_records，省一次 IO。
+    let needs_unfiltered_proxy_lookup =
+        !matches!(usage_filter.source, crate::models::SourceFilter::All);
+    let unfiltered_usage_filter = if needs_unfiltered_proxy_lookup {
+        Some(UsageQueryFilter {
+            source: crate::models::SourceFilter::All,
+            tool: settings.client_tools.build_filter(),
+        })
+    } else {
+        None
+    };
     let mut pricings = settings.model_pricing.pricings.clone();
     if let Ok(db) = crate::proxy::ProxyDatabase::new() {
         if let Ok(db_pricings) = db.get_all_model_pricings() {
@@ -247,12 +280,23 @@ pub async fn get_merged_request_facts(
         let mut records =
             fetch_proxy_records(proxy_db.as_ref(), &usage_filter, start_epoch, end_epoch).await?;
         attach_proxy_session_ids(&mut records, &message_to_session);
-        let visible_records = records
+        let visible_records: Vec<UsageRecord> = records
             .iter()
             .filter(|record| include_errors || (200..300).contains(&record.status_code))
             .cloned()
             .collect();
-        (records, visible_records)
+        // 当 source filter ≠ All 时，重新读一次无 source 过滤的代理集合作为 all_proxy_index。
+        // 这条副查询不能省——否则当用户「只看 source A」时，被 source B 命中的 proxy 记录
+        // 不会出现在 records 里，本地补全分支会误把它们当成「真本地补全」收录进来。
+        let all_records: Vec<UsageRecord> = if let Some(filter) = unfiltered_usage_filter.as_ref() {
+            let mut unfiltered =
+                fetch_proxy_records(proxy_db.as_ref(), filter, start_epoch, end_epoch).await?;
+            attach_proxy_session_ids(&mut unfiltered, &message_to_session);
+            unfiltered
+        } else {
+            records
+        };
+        (all_records, visible_records)
     } else {
         (Vec::new(), Vec::new())
     };

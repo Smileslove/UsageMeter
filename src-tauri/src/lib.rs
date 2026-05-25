@@ -369,6 +369,10 @@ pub fn run() {
             commands::get_sessions,
             commands::get_session_detail,
             commands::get_project_stats,
+            // 本地缓存维护命令
+            commands::get_local_usage_maintenance_stats,
+            commands::purge_orphan_local_facts,
+            commands::rebuild_local_usage_cache,
             // 代理命令
             commands::start_proxy,
             commands::stop_proxy,

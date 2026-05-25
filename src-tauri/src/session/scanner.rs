@@ -852,6 +852,7 @@ fn parse_codex_session_file(session: &SessionFile) -> ParsedSessionData {
                         total_tokens,
                         model: current_model.clone(),
                         is_subagent: false,
+                        ..Default::default()
                     });
                 }
                 _ => {}
@@ -1188,6 +1189,7 @@ fn extract_request_record(
         total_tokens,
         model: extract_model(json).unwrap_or_else(|| "unknown".to_string()),
         is_subagent,
+        ..Default::default()
     })
 }
 

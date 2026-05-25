@@ -165,7 +165,9 @@ impl LocalUsageDatabase {
                 last_scanned_at INTEGER NOT NULL,
                 last_synced_at INTEGER,
                 sync_status TEXT NOT NULL DEFAULT 'ready',
-                sync_error TEXT
+                sync_error TEXT,
+                deleted_at INTEGER,
+                deletion_reason TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_local_source_files_session_id
                 ON local_source_files(session_id);
@@ -173,6 +175,9 @@ impl LocalUsageDatabase {
                 ON local_source_files(tool);
             CREATE INDEX IF NOT EXISTS idx_local_source_files_project_key
                 ON local_source_files(project_key);
+            -- idx_local_source_files_deleted_at 在 v5 迁移分支创建；
+            -- 老库的 local_source_files 在 schema_version<5 时没有 deleted_at 列，
+            -- 在这里建索引会立即炸（CREATE TABLE IF NOT EXISTS 不会补列）。
 
             CREATE TABLE IF NOT EXISTS local_sessions (
                 session_id TEXT PRIMARY KEY,
@@ -214,6 +219,7 @@ impl LocalUsageDatabase {
                 timestamp INTEGER NOT NULL,
                 message_id TEXT,
                 dedupe_key TEXT NOT NULL,
+                request_key TEXT,
                 model TEXT NOT NULL DEFAULT '',
                 input_tokens INTEGER NOT NULL DEFAULT 0,
                 output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -221,6 +227,8 @@ impl LocalUsageDatabase {
                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
                 total_tokens INTEGER NOT NULL DEFAULT 0,
                 source_file_id INTEGER,
+                source_file_path TEXT,
+                source_file_present INTEGER NOT NULL DEFAULT 1,
                 source_offset INTEGER,
                 event_index INTEGER,
                 is_subagent INTEGER NOT NULL DEFAULT 0,
@@ -239,6 +247,8 @@ impl LocalUsageDatabase {
                 ON local_request_facts(tool, timestamp);
             CREATE INDEX IF NOT EXISTS idx_local_request_facts_model
                 ON local_request_facts(model);
+            -- idx_local_request_facts_request_key / _source_file_present 在 v5 迁移分支创建；
+            -- 老库的 local_request_facts 缺这两列，在 create_cache_tables 阶段建索引会炸。
 
             CREATE TABLE IF NOT EXISTS local_sync_cursors (
                 cursor_key TEXT PRIMARY KEY,
@@ -405,7 +415,7 @@ impl LocalUsageDatabase {
 
     fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 4 {
+        if schema_version >= 5 {
             return Ok(());
         }
 
@@ -502,6 +512,92 @@ impl LocalUsageDatabase {
             tx.commit()
                 .map_err(|e| format!("Failed to commit sync V2 schema migration: {}", e))?;
         }
+
+        if schema_version < 5 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v5 schema migration: {}", e))?;
+
+            // 软删除 + request_key 持久化所需的新列。
+            // ALTER TABLE ADD COLUMN 在 SQLite 中是幂等失败（重复加列报错），
+            // 所以先按表/列名检测，避免在重启后再次迁移时报错。
+            Self::add_column_if_missing(&tx, "local_request_facts", "request_key", "TEXT")?;
+            Self::add_column_if_missing(&tx, "local_request_facts", "source_file_path", "TEXT")?;
+            Self::add_column_if_missing(
+                &tx,
+                "local_request_facts",
+                "source_file_present",
+                "INTEGER NOT NULL DEFAULT 1",
+            )?;
+            Self::add_column_if_missing(&tx, "local_source_files", "deleted_at", "INTEGER")?;
+            Self::add_column_if_missing(&tx, "local_source_files", "deletion_reason", "TEXT")?;
+
+            tx.execute_batch(
+                r#"
+                CREATE INDEX IF NOT EXISTS idx_local_request_facts_request_key
+                    ON local_request_facts(request_key);
+                CREATE INDEX IF NOT EXISTS idx_local_request_facts_source_file_present
+                    ON local_request_facts(source_file_present);
+                CREATE INDEX IF NOT EXISTS idx_local_source_files_deleted_at
+                    ON local_source_files(deleted_at);
+                "#,
+            )
+            .map_err(|e| format!("Failed to create v5 indexes: {}", e))?;
+
+            // 回填 request_key：message_id 非空走 tool:message_id，否则走 9 元组。
+            // 这一规则必须与 unified_usage::service::request_key_for_local 保持一致。
+            tx.execute(
+                "UPDATE local_request_facts
+                 SET request_key = CASE
+                     WHEN message_id IS NOT NULL AND TRIM(message_id) != ''
+                       THEN tool || ':' || message_id
+                     ELSE tool || ':' || session_id || ':' || timestamp || ':' || model
+                          || ':' || input_tokens || ':' || output_tokens
+                          || ':' || cache_create_tokens || ':' || cache_read_tokens
+                          || ':' || total_tokens
+                 END
+                 WHERE request_key IS NULL OR request_key = ''",
+                [],
+            )
+            .map_err(|e| format!("Failed to backfill request_key: {}", e))?;
+
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '5', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v5 schema version: {}", e))?;
+
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v5 schema migration: {}", e))?;
+        }
+        Ok(())
+    }
+
+    fn add_column_if_missing(
+        tx: &rusqlite::Transaction<'_>,
+        table: &str,
+        column: &str,
+        column_def: &str,
+    ) -> Result<(), String> {
+        let exists: bool = tx
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .map_err(|e| format!("Failed to inspect table {}: {}", table, e))?
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| format!("Failed to read columns of {}: {}", table, e))?
+            .filter_map(|name| name.ok())
+            .any(|name| name == column);
+        if exists {
+            return Ok(());
+        }
+        tx.execute(
+            &format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, column_def),
+            [],
+        )
+        .map_err(|e| format!("Failed to add column {}.{}: {}", table, column, e))?;
         Ok(())
     }
 
@@ -529,7 +625,7 @@ impl LocalUsageDatabase {
             .prepare(
                 "SELECT session_id, fingerprint
                  FROM local_source_files
-                 WHERE file_role = 'session_group'",
+                 WHERE file_role = 'session_group' AND deleted_at IS NULL",
             )
             .map_err(|e| format!("Failed to prepare load_session_fingerprints: {}", e))?;
         let rows = stmt
@@ -609,22 +705,26 @@ impl LocalUsageDatabase {
             .unchecked_transaction()
             .map_err(|e| format!("Failed to start local usage transaction: {}", e))?;
 
-        for session_id in removed_ids {
+        for session_id in &removed_ids {
+            // 软删除：不再 DELETE 事实表，仅标记 source 文件已消失。
+            // - local_request_facts：保留行，source_file_present 置 0
+            // - local_sessions：保留摘要，不动（用户在统计页仍能看到历史）
+            // - local_source_files：保留行，记录 deleted_at；不删，便于「revive」时复用同一行
             tx.execute(
-                "DELETE FROM local_request_facts WHERE session_id = ?1",
+                "UPDATE local_request_facts
+                 SET source_file_present = 0
+                 WHERE session_id = ?1",
                 params![session_id],
             )
-            .map_err(|e| format!("Failed to delete removed local request facts: {}", e))?;
+            .map_err(|e| format!("Failed to soft-delete local request facts: {}", e))?;
             tx.execute(
-                "DELETE FROM local_sessions WHERE session_id = ?1",
-                params![session_id],
+                "UPDATE local_source_files
+                 SET deleted_at = ?2,
+                     deletion_reason = 'missing'
+                 WHERE session_id = ?1 AND deleted_at IS NULL",
+                params![session_id, now],
             )
-            .map_err(|e| format!("Failed to delete removed local session: {}", e))?;
-            tx.execute(
-                "DELETE FROM local_source_files WHERE session_id = ?1",
-                params![session_id],
-            )
-            .map_err(|e| format!("Failed to delete removed local source file rows: {}", e))?;
+            .map_err(|e| format!("Failed to mark local source file removed: {}", e))?;
         }
 
         for dirty_session in dirty_sessions {
@@ -636,27 +736,53 @@ impl LocalUsageDatabase {
             } = dirty_session;
             let fingerprint = session.fingerprint.to_string();
 
-            tx.execute(
-                "DELETE FROM local_request_facts WHERE session_id = ?1",
-                params![session.session_id.as_str()],
-            )
-            .map_err(|e| format!("Failed to clear stale local request facts: {}", e))?;
+            // 抓取本会话历史 dedupe_key 集合，便于：
+            // 1. 走 upsert 路径而不 delete-then-insert，保留 created_at（孤立清理的依据）
+            // 2. 把"新 JSONL 内容里没出现的旧 message_id"标记为 source_file_present = 0
+            let existing_dedupe_keys: HashSet<String> = {
+                let mut stmt = tx
+                    .prepare("SELECT dedupe_key FROM local_request_facts WHERE session_id = ?1")
+                    .map_err(|e| format!("Failed to prepare existing dedupe_key query: {}", e))?;
+                let rows = stmt
+                    .query_map(params![session.session_id.as_str()], |row| {
+                        row.get::<_, String>(0)
+                    })
+                    .map_err(|e| format!("Failed to query existing dedupe_keys: {}", e))?;
+                let mut keys = HashSet::new();
+                for row in rows {
+                    let key =
+                        row.map_err(|e| format!("Failed to read existing dedupe_key row: {}", e))?;
+                    keys.insert(key);
+                }
+                keys
+            };
+            // local_sessions：摘要可以直接覆盖
             tx.execute(
                 "DELETE FROM local_sessions WHERE session_id = ?1",
                 params![session.session_id.as_str()],
             )
             .map_err(|e| format!("Failed to clear stale local session row: {}", e))?;
-            tx.execute(
-                "DELETE FROM local_source_files WHERE session_id = ?1",
-                params![session.session_id.as_str()],
-            )
-            .map_err(|e| format!("Failed to clear stale local source rows: {}", e))?;
 
+            // local_source_files：用 file_path upsert（file_path 是 UNIQUE），
+            // 复用旧行可保留历史指纹链；同时清掉旧的 deleted_at
             tx.execute(
                 "INSERT INTO local_source_files (
                     tool, session_id, project_key, file_path, file_role, file_size,
-                    mtime_epoch, fingerprint, last_scanned_at, last_synced_at, sync_status
-                ) VALUES (?1, ?2, ?3, ?4, 'session_group', ?5, ?6, ?7, ?8, ?9, 'ready')",
+                    mtime_epoch, fingerprint, last_scanned_at, last_synced_at, sync_status,
+                    deleted_at, deletion_reason
+                ) VALUES (?1, ?2, ?3, ?4, 'session_group', ?5, ?6, ?7, ?8, ?9, 'ready', NULL, NULL)
+                ON CONFLICT(file_path) DO UPDATE SET
+                    tool = excluded.tool,
+                    session_id = excluded.session_id,
+                    project_key = excluded.project_key,
+                    file_size = excluded.file_size,
+                    mtime_epoch = excluded.mtime_epoch,
+                    fingerprint = excluded.fingerprint,
+                    last_scanned_at = excluded.last_scanned_at,
+                    last_synced_at = excluded.last_synced_at,
+                    sync_status = 'ready',
+                    deleted_at = NULL,
+                    deletion_reason = NULL",
                 params![
                     session.tool.as_str(),
                     session.session_id.as_str(),
@@ -669,7 +795,7 @@ impl LocalUsageDatabase {
                     now
                 ],
             )
-            .map_err(|e| format!("Failed to insert local source row: {}", e))?;
+            .map_err(|e| format!("Failed to upsert local source row: {}", e))?;
 
             let model_list_json = serde_json::to_string(&meta.models)
                 .map_err(|e| format!("Failed to serialize model list: {}", e))?;
@@ -767,6 +893,7 @@ impl LocalUsageDatabase {
             )
             .map_err(|e| format!("Failed to enqueue sync session outbox payload: {}", e))?;
 
+            let mut seen_dedupe_keys: HashSet<String> = HashSet::new();
             for (idx, request) in requests.iter().enumerate() {
                 let request_identity = if request.message_id.trim().is_empty() {
                     format!(
@@ -778,14 +905,51 @@ impl LocalUsageDatabase {
                 };
                 let dedupe_key = format!("{}:{}", request.session_id, request_identity);
                 let request_id = format!("{}:{}", request.tool, dedupe_key);
+                // request_key：与合并层一致的全局键，落库一列；
+                // 规则必须与 unified_usage::service::request_key_for_local 保持同步。
+                let request_key = if request.message_id.trim().is_empty() {
+                    format!(
+                        "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                        request.tool,
+                        request.session_id,
+                        request.timestamp,
+                        request.model,
+                        request.input_tokens,
+                        request.output_tokens,
+                        request.cache_create_tokens,
+                        request.cache_read_tokens,
+                        request.total_tokens
+                    )
+                } else {
+                    format!("{}:{}", request.tool, request.message_id)
+                };
+                seen_dedupe_keys.insert(dedupe_key.clone());
                 tx.execute(
                     "INSERT INTO local_request_facts (
                         request_id, session_id, tool, project_key, timestamp, message_id, dedupe_key,
-                        model, input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-                        total_tokens, source_offset, event_index, is_subagent, raw_event_kind,
-                        sync_version, created_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                              NULL, ?14, ?15, 'request', 1, ?16)",
+                        request_key, model, input_tokens, output_tokens, cache_create_tokens,
+                        cache_read_tokens, total_tokens, source_offset, event_index, is_subagent,
+                        raw_event_kind, sync_version, created_at, source_file_path,
+                        source_file_present
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+                              NULL, ?15, ?16, 'request', 1, ?17, ?18, 1)
+                    ON CONFLICT(tool, dedupe_key) DO UPDATE SET
+                        session_id = excluded.session_id,
+                        project_key = excluded.project_key,
+                        timestamp = excluded.timestamp,
+                        message_id = excluded.message_id,
+                        request_key = excluded.request_key,
+                        model = excluded.model,
+                        input_tokens = excluded.input_tokens,
+                        output_tokens = excluded.output_tokens,
+                        cache_create_tokens = excluded.cache_create_tokens,
+                        cache_read_tokens = excluded.cache_read_tokens,
+                        total_tokens = excluded.total_tokens,
+                        event_index = excluded.event_index,
+                        is_subagent = excluded.is_subagent,
+                        sync_version = sync_version + 1,
+                        source_file_path = excluded.source_file_path,
+                        source_file_present = 1",
                     params![
                         request_id.as_str(),
                         request.session_id.as_str(),
@@ -794,6 +958,7 @@ impl LocalUsageDatabase {
                         request.timestamp,
                         request.message_id.as_str(),
                         dedupe_key.as_str(),
+                        request_key.as_str(),
                         request.model.as_str(),
                         request.input_tokens as i64,
                         request.output_tokens as i64,
@@ -802,13 +967,17 @@ impl LocalUsageDatabase {
                         request.total_tokens as i64,
                         idx as i64,
                         if request.is_subagent { 1 } else { 0 },
-                        now
+                        now,
+                        session.file_path.as_str()
                     ],
                 )
-                .map_err(|e| format!("Failed to insert local request fact: {}", e))?;
+                .map_err(|e| format!("Failed to upsert local request fact: {}", e))?;
 
                 let request_export = SyncExportRequest {
-                    request_key: request_id.clone(),
+                    // outbox/远程导入侧也使用与合并层一致的全局键，
+                    // 否则远端导入的记录在合并层会因 key 形态不同而无法与本地数据去重，
+                    // 导致同一条请求双计。
+                    request_key: request_key.clone(),
                     session_id: request.session_id.clone(),
                     tool: request.tool.clone(),
                     project_key: Some(project_key.clone()),
@@ -844,14 +1013,32 @@ impl LocalUsageDatabase {
                         batched_seq = NULL,
                         uploaded_at = NULL",
                     params![
-                        format!("{}:{}", origin_device_id, request_id),
+                        // event_id 与 seed_sync_outbox_from_local 保持同一规范化形态
+                        // （device_id:request_key），避免两条路径写入不同 event_id 造成 outbox 重复。
+                        format!("{}:{}", origin_device_id, request_key),
                         origin_device_id.as_str(),
-                        request_id.as_str(),
+                        request_key.as_str(),
                         request_payload.as_str(),
                         now
                     ],
                 )
                 .map_err(|e| format!("Failed to enqueue sync request outbox payload: {}", e))?;
+            }
+
+            // 本次新内容里没出现的旧 dedupe_key → 标记为 source_file_present = 0。
+            // 不 DELETE：用户可能用 /clear 清掉了上下文，但历史 request 已经发生过、应保留。
+            let stale_keys: Vec<String> = existing_dedupe_keys
+                .difference(&seen_dedupe_keys)
+                .cloned()
+                .collect();
+            for stale_key in stale_keys {
+                tx.execute(
+                    "UPDATE local_request_facts
+                     SET source_file_present = 0
+                     WHERE tool = ?1 AND dedupe_key = ?2",
+                    params![session.tool.as_str(), stale_key],
+                )
+                .map_err(|e| format!("Failed to soft-mark stale local request fact: {}", e))?;
             }
         }
 
@@ -1199,7 +1386,7 @@ impl LocalUsageDatabase {
             ToolFilter::All => (
                 "SELECT session_id, tool, timestamp, message_id,
                         input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-                        total_tokens, model, is_subagent
+                        total_tokens, model, is_subagent, request_key, source_file_present
                  FROM local_request_facts
                  ORDER BY timestamp ASC"
                     .to_string(),
@@ -1208,7 +1395,7 @@ impl LocalUsageDatabase {
             ToolFilter::Tool(tool) => (
                 "SELECT session_id, tool, timestamp, message_id,
                         input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-                        total_tokens, model, is_subagent
+                        total_tokens, model, is_subagent, request_key, source_file_present
                  FROM local_request_facts
                  WHERE tool = ?1
                  ORDER BY timestamp ASC"
@@ -1220,6 +1407,8 @@ impl LocalUsageDatabase {
             .prepare(&sql)
             .map_err(|e| format!("Failed to prepare get_all_request_records: {}", e))?;
         let mapper = |row: &rusqlite::Row<'_>| {
+            let request_key: Option<String> = row.get(11)?;
+            let source_file_present: Option<i64> = row.get(12)?;
             Ok(LocalRequestRecord {
                 session_id: row.get(0)?,
                 tool: row.get(1)?,
@@ -1232,6 +1421,8 @@ impl LocalUsageDatabase {
                 total_tokens: row.get::<_, i64>(8)? as u64,
                 model: row.get(9)?,
                 is_subagent: row.get::<_, i64>(10)? != 0,
+                request_key: request_key.filter(|v| !v.trim().is_empty()),
+                source_file_present: source_file_present.map(|v| v != 0),
             })
         };
 
@@ -1261,7 +1452,7 @@ impl LocalUsageDatabase {
             .prepare(
                 "SELECT session_id, tool, timestamp, message_id,
                         input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-                        total_tokens, model, is_subagent
+                        total_tokens, model, is_subagent, request_key, source_file_present
                  FROM local_request_facts
                  WHERE session_id = ?1
                  ORDER BY timestamp ASC",
@@ -1269,6 +1460,8 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to prepare get_request_records_by_session: {}", e))?;
         let rows = stmt
             .query_map(params![session_id], |row| {
+                let request_key: Option<String> = row.get(11)?;
+                let source_file_present: Option<i64> = row.get(12)?;
                 Ok(LocalRequestRecord {
                     session_id: row.get(0)?,
                     tool: row.get(1)?,
@@ -1281,6 +1474,8 @@ impl LocalUsageDatabase {
                     total_tokens: row.get::<_, i64>(8)? as u64,
                     model: row.get(9)?,
                     is_subagent: row.get::<_, i64>(10)? != 0,
+                    request_key: request_key.filter(|v| !v.trim().is_empty()),
+                    source_file_present: source_file_present.map(|v| v != 0),
                 })
             })
             .map_err(|e| format!("Failed to query local request records by session: {}", e))?;
@@ -1656,7 +1851,7 @@ impl LocalUsageDatabase {
             ToolFilter::All => (
                 "SELECT session_id, tool, timestamp, COALESCE(message_id, ''),
                         input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-                        total_tokens, model, is_subagent
+                        total_tokens, model, is_subagent, request_key
                  FROM remote_request_facts
                  ORDER BY timestamp ASC"
                     .to_string(),
@@ -1665,7 +1860,7 @@ impl LocalUsageDatabase {
             ToolFilter::Tool(tool) => (
                 "SELECT session_id, tool, timestamp, COALESCE(message_id, ''),
                         input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-                        total_tokens, model, is_subagent
+                        total_tokens, model, is_subagent, request_key
                  FROM remote_request_facts
                  WHERE tool = ?1
                  ORDER BY timestamp ASC"
@@ -1677,6 +1872,7 @@ impl LocalUsageDatabase {
             .prepare(&sql)
             .map_err(|e| format!("Failed to prepare get_remote_request_records: {}", e))?;
         let mapper = |row: &rusqlite::Row<'_>| {
+            let request_key: Option<String> = row.get(11)?;
             Ok(LocalRequestRecord {
                 session_id: row.get(0)?,
                 tool: row.get(1)?,
@@ -1689,6 +1885,8 @@ impl LocalUsageDatabase {
                 total_tokens: row.get::<_, i64>(8)? as u64,
                 model: row.get(9)?,
                 is_subagent: row.get::<_, i64>(10)? != 0,
+                request_key: request_key.filter(|v| !v.trim().is_empty()),
+                source_file_present: None,
             })
         };
         let rows = match param {
@@ -1907,10 +2105,524 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to vacuum after imported sync clear: {}", e))?;
         Ok(())
     }
+
+    /// 统计孤立的本地事实（来源文件已消失）。
+    pub fn count_orphan_local_facts(&self) -> Result<u64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM local_request_facts WHERE source_file_present = 0",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count.max(0) as u64)
+        .map_err(|e| format!("Failed to count orphan local request facts: {}", e))
+    }
+
+    /// 主动清理孤立的本地事实（来源文件已消失）。
+    ///
+    /// - `older_than_seconds`: 仅清理 `created_at` 早于 `now - older_than_seconds` 的行；
+    ///   传 0 表示不限时间，全清。
+    ///
+    /// 返回删除的事实行数。同时清理掉随之无任何关联事实的 session 摘要与 source 文件行。
+    pub fn purge_orphan_facts(&self, older_than_seconds: i64) -> Result<u64, String> {
+        let now = chrono::Utc::now().timestamp();
+        let cutoff = if older_than_seconds <= 0 {
+            now
+        } else {
+            now - older_than_seconds
+        };
+        let conn = self.conn.lock().unwrap();
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to start orphan purge transaction: {}", e))?;
+
+        let affected = tx
+            .execute(
+                "DELETE FROM local_request_facts
+                 WHERE source_file_present = 0 AND created_at <= ?1",
+                params![cutoff],
+            )
+            .map_err(|e| format!("Failed to purge orphan request facts: {}", e))?;
+
+        // 清掉孤立的 session 摘要：本身已被软删过（即对应 source_files.deleted_at 非空）
+        // 且不再有任何 request fact 引用。
+        tx.execute(
+            "DELETE FROM local_sessions
+             WHERE session_id IN (
+                 SELECT session_id FROM local_source_files
+                 WHERE deleted_at IS NOT NULL
+             )
+             AND session_id NOT IN (SELECT DISTINCT session_id FROM local_request_facts)",
+            [],
+        )
+        .map_err(|e| format!("Failed to purge orphan local sessions: {}", e))?;
+
+        // 清掉同样无引用的 source files 软删行
+        tx.execute(
+            "DELETE FROM local_source_files
+             WHERE deleted_at IS NOT NULL
+               AND session_id NOT IN (SELECT DISTINCT session_id FROM local_request_facts)",
+            [],
+        )
+        .map_err(|e| format!("Failed to purge orphan local source files: {}", e))?;
+
+        Self::upsert_sync_state(&tx, "last_orphan_purge_at", &now.to_string(), now)?;
+        Self::upsert_sync_state(
+            &tx,
+            "last_orphan_purge_count",
+            &(affected as i64).to_string(),
+            now,
+        )?;
+
+        tx.commit()
+            .map_err(|e| format!("Failed to commit orphan purge: {}", e))?;
+        Ok(affected.max(0) as u64)
+    }
+
+    /// 清空本地缓存并强制下一次同步从 JSONL 全量重建。
+    ///
+    /// 主要给用户「重建本地缓存」按钮使用。会清掉 `local_request_facts` /
+    /// `local_sessions` / `local_source_files`；不影响 remote_* 表或 outbox 表。
+    pub fn truncate_all_local_facts(&self) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp();
+        let conn = self.conn.lock().unwrap();
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to start truncate local facts: {}", e))?;
+        tx.execute("DELETE FROM local_request_facts", [])
+            .map_err(|e| format!("Failed to delete local request facts: {}", e))?;
+        tx.execute("DELETE FROM local_sessions", [])
+            .map_err(|e| format!("Failed to delete local sessions: {}", e))?;
+        tx.execute("DELETE FROM local_source_files", [])
+            .map_err(|e| format!("Failed to delete local source files: {}", e))?;
+        tx.execute("DELETE FROM local_sync_cursors", [])
+            .map_err(|e| format!("Failed to delete local sync cursors: {}", e))?;
+        Self::upsert_sync_state(&tx, "last_truncate_local_at", &now.to_string(), now)?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit truncate local facts: {}", e))?;
+        Ok(())
+    }
 }
 
 pub fn ensure_local_usage_synced() -> Result<Arc<LocalUsageDatabase>, String> {
     let db = LocalUsageDatabase::get_global()?;
     db.sync_from_scanner()?;
     Ok(db)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::params;
+
+    fn temp_db() -> (tempfile::TempDir, LocalUsageDatabase) {
+        let tmpdir = tempfile::tempdir().expect("create temp dir");
+        let path = tmpdir.path().join("local_usage.db");
+        let db = LocalUsageDatabase::new_with_path(&path).expect("open temp db");
+        (tmpdir, db)
+    }
+
+    /// 直接往表里插一条事实，绕过 sync_from_scanner（测试不能 mock 文件系统）。
+    fn insert_request_fact(
+        db: &LocalUsageDatabase,
+        session_id: &str,
+        message_id: &str,
+        source_file_path: &str,
+        present: bool,
+        created_at: i64,
+    ) {
+        let conn = db.conn.lock().unwrap();
+        let dedupe_key = format!("{}:{}", session_id, message_id);
+        let request_id = format!("claude_code:{}", dedupe_key);
+        let request_key = format!("claude_code:{}", message_id);
+        conn.execute(
+            "INSERT INTO local_request_facts (
+                request_id, session_id, tool, project_key, timestamp, message_id, dedupe_key,
+                request_key, model, input_tokens, output_tokens, cache_create_tokens,
+                cache_read_tokens, total_tokens, source_file_path, source_file_present,
+                created_at, raw_event_kind, sync_version, is_subagent
+             ) VALUES (?1, ?2, 'claude_code', 'p', ?3, ?4, ?5, ?6, 'claude-3', 10, 20, 0, 0, 30,
+                       ?7, ?8, ?9, 'request', 1, 0)",
+            params![
+                request_id,
+                session_id,
+                created_at,
+                message_id,
+                dedupe_key,
+                request_key,
+                source_file_path,
+                if present { 1 } else { 0 },
+                created_at
+            ],
+        )
+        .expect("insert fact");
+    }
+
+    fn insert_source_file(
+        db: &LocalUsageDatabase,
+        session_id: &str,
+        file_path: &str,
+        deleted_at: Option<i64>,
+    ) {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO local_source_files (
+                tool, session_id, project_key, file_path, file_role, file_size,
+                mtime_epoch, fingerprint, last_scanned_at, last_synced_at,
+                sync_status, deleted_at, deletion_reason
+             ) VALUES ('claude_code', ?1, 'p', ?2, 'session_group', 100, 0, 'fp', 0, 0,
+                       'ready', ?3, ?4)",
+            params![
+                session_id,
+                file_path,
+                deleted_at,
+                deleted_at.map(|_| "missing"),
+            ],
+        )
+        .expect("insert source file");
+    }
+
+    #[test]
+    fn migration_creates_v5_columns() {
+        let (_tmp, db) = temp_db();
+        let conn = db.conn.lock().unwrap();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(local_request_facts)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(cols.contains(&"request_key".to_string()), "{:?}", cols);
+        assert!(
+            cols.contains(&"source_file_present".to_string()),
+            "{:?}",
+            cols
+        );
+        assert!(cols.contains(&"source_file_path".to_string()), "{:?}", cols);
+
+        let scols: Vec<String> = conn
+            .prepare("PRAGMA table_info(local_source_files)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(scols.contains(&"deleted_at".to_string()), "{:?}", scols);
+        assert!(
+            scols.contains(&"deletion_reason".to_string()),
+            "{:?}",
+            scols
+        );
+
+        // v5 索引也必须建出来。回归 issue：曾经把这三个索引误放在 create_cache_tables 里，
+        // 老库升级时 CREATE TABLE IF NOT EXISTS 不会补列，索引创建在 ALTER TABLE 之前先炸。
+        let indexes: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='index'")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for required in [
+            "idx_local_request_facts_request_key",
+            "idx_local_request_facts_source_file_present",
+            "idx_local_source_files_deleted_at",
+        ] {
+            assert!(
+                indexes.iter().any(|n| n == required),
+                "missing v5 index {}: {:?}",
+                required,
+                indexes
+            );
+        }
+    }
+
+    /// 回归测试：模拟「老库（v4 schema）」打开时，迁移到 v5 不应该炸。
+    /// 之前把 v5 索引误放在 create_cache_tables 里时，这条路径会报
+    /// "no such column: deleted_at in CREATE INDEX ..."。
+    #[test]
+    fn open_v4_db_upgrades_to_v5_without_error() {
+        let tmpdir = tempfile::tempdir().expect("create temp dir");
+        let path = tmpdir.path().join("legacy.db");
+
+        // 1) 手工建一个「v4」库：表结构故意缺少 v5 才有的列。
+        {
+            let conn = Connection::open(&path).expect("open legacy db");
+            conn.execute_batch(
+                r#"
+                CREATE TABLE local_sync_state (
+                    state_key TEXT PRIMARY KEY,
+                    state_value TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE local_source_files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tool TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    project_key TEXT,
+                    file_path TEXT NOT NULL UNIQUE,
+                    file_role TEXT NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    mtime_epoch INTEGER NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    last_scanned_at INTEGER NOT NULL,
+                    last_synced_at INTEGER,
+                    sync_status TEXT NOT NULL DEFAULT 'ready',
+                    sync_error TEXT
+                );
+                CREATE TABLE local_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    tool TEXT NOT NULL,
+                    project_key TEXT,
+                    cwd TEXT,
+                    project_name TEXT,
+                    topic TEXT,
+                    last_prompt TEXT,
+                    session_name TEXT,
+                    primary_file_path TEXT,
+                    file_size INTEGER NOT NULL DEFAULT 0,
+                    last_modified INTEGER NOT NULL DEFAULT 0,
+                    start_time INTEGER NOT NULL DEFAULT 0,
+                    end_time INTEGER NOT NULL DEFAULT 0,
+                    request_count INTEGER NOT NULL DEFAULT 0,
+                    total_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_output_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    model_list_json TEXT NOT NULL DEFAULT '[]',
+                    source_kind TEXT NOT NULL DEFAULT 'local_transcript',
+                    sync_version INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE local_request_facts (
+                    request_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    tool TEXT NOT NULL,
+                    project_key TEXT,
+                    timestamp INTEGER NOT NULL,
+                    message_id TEXT,
+                    dedupe_key TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    source_file_id INTEGER,
+                    source_offset INTEGER,
+                    event_index INTEGER,
+                    is_subagent INTEGER NOT NULL DEFAULT 0,
+                    raw_event_kind TEXT NOT NULL DEFAULT '',
+                    sync_version INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    UNIQUE(tool, dedupe_key)
+                );
+                "#,
+            )
+            .expect("create legacy v4 tables");
+            // 灌一条老数据，验证 v5 回填 request_key 不会漏
+            conn.execute(
+                "INSERT INTO local_request_facts (
+                    request_id, session_id, tool, dedupe_key, timestamp, message_id,
+                    model, input_tokens, output_tokens, total_tokens, created_at
+                ) VALUES ('rid', 'sess-x', 'claude_code', 'sess-x:msg-legacy', 1700000000,
+                          'msg-legacy', 'm', 10, 20, 30, 1700000000)",
+                [],
+            )
+            .expect("insert legacy fact");
+            conn.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '4', 1700000000)",
+                [],
+            )
+            .expect("set schema_version=4");
+        }
+
+        // 2) 用 new_with_path 重新打开 → 应当走 v5 迁移，且不能报错。
+        let db = LocalUsageDatabase::new_with_path(&path)
+            .expect("open legacy db should trigger v5 migration without error");
+
+        // 3) 验证 v5 列与索引都建出来了
+        let conn = db.conn.lock().unwrap();
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(local_request_facts)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for required in ["request_key", "source_file_present", "source_file_path"] {
+            assert!(
+                cols.contains(&required.to_string()),
+                "migration missed column {}: {:?}",
+                required,
+                cols
+            );
+        }
+
+        // 4) 验证回填：老数据 request_key 应为 'claude_code:msg-legacy'
+        let request_key: String = conn
+            .query_row(
+                "SELECT request_key FROM local_request_facts WHERE request_id = 'rid'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read backfilled request_key");
+        assert_eq!(request_key, "claude_code:msg-legacy");
+    }
+
+    #[test]
+    fn count_orphan_facts_filters_by_source_present() {
+        let (_tmp, db) = temp_db();
+        insert_request_fact(&db, "sess-a", "msg-1", "/tmp/a.jsonl", true, 100);
+        insert_request_fact(&db, "sess-a", "msg-2", "/tmp/a.jsonl", false, 100);
+        insert_request_fact(&db, "sess-b", "msg-3", "/tmp/b.jsonl", false, 200);
+
+        let total = db.count_local_request_facts().unwrap();
+        let orphan = db.count_orphan_local_facts().unwrap();
+        assert_eq!(total, 3);
+        assert_eq!(orphan, 2);
+    }
+
+    #[test]
+    fn purge_orphan_respects_cutoff_seconds() {
+        let (_tmp, db) = temp_db();
+        let now = chrono::Utc::now().timestamp();
+        // 一条很久以前的孤立事实
+        insert_request_fact(
+            &db,
+            "sess-old",
+            "msg-old",
+            "/tmp/old.jsonl",
+            false,
+            now - 86400 * 30,
+        );
+        // 一条最近的孤立事实
+        insert_request_fact(
+            &db,
+            "sess-new",
+            "msg-new",
+            "/tmp/new.jsonl",
+            false,
+            now - 60,
+        );
+        // 一条仍然 present 的事实，不该被动
+        insert_request_fact(
+            &db,
+            "sess-alive",
+            "msg-alive",
+            "/tmp/alive.jsonl",
+            true,
+            now - 86400 * 30,
+        );
+
+        // 清理 7 天前的孤立 → 只应该清掉 msg-old
+        let removed = db.purge_orphan_facts(86400 * 7).unwrap();
+        assert_eq!(removed, 1);
+
+        let total = db.count_local_request_facts().unwrap();
+        assert_eq!(total, 2, "msg-new 与 msg-alive 应保留");
+
+        // 再用 0 秒（不限时间）全清剩下的 orphan → msg-new 应被删
+        let removed_2 = db.purge_orphan_facts(0).unwrap();
+        assert_eq!(removed_2, 1);
+
+        let orphan = db.count_orphan_local_facts().unwrap();
+        assert_eq!(orphan, 0);
+        let total = db.count_local_request_facts().unwrap();
+        assert_eq!(total, 1, "仅 msg-alive 应保留");
+    }
+
+    #[test]
+    fn purge_orphan_cleans_sessions_and_source_files_with_no_references() {
+        let (_tmp, db) = temp_db();
+        let now = chrono::Utc::now().timestamp();
+        insert_source_file(&db, "sess-vanished", "/tmp/v.jsonl", Some(now - 86400));
+        insert_request_fact(
+            &db,
+            "sess-vanished",
+            "msg-x",
+            "/tmp/v.jsonl",
+            false,
+            now - 86400 * 100,
+        );
+
+        // 同时写一条 local_sessions 行
+        {
+            let conn = db.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO local_sessions (
+                    session_id, tool, project_key, updated_at
+                 ) VALUES ('sess-vanished', 'claude_code', 'p', ?1)",
+                params![now - 86400],
+            )
+            .unwrap();
+        }
+
+        let removed = db.purge_orphan_facts(0).unwrap();
+        assert_eq!(removed, 1);
+
+        let conn = db.conn.lock().unwrap();
+        let session_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM local_sessions", [], |r| r.get(0))
+            .unwrap();
+        let source_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM local_source_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(session_count, 0, "无引用的 session 应被清除");
+        assert_eq!(source_count, 0, "无引用的 source 软删行应被清除");
+    }
+
+    #[test]
+    fn truncate_all_clears_local_tables() {
+        let (_tmp, db) = temp_db();
+        let now = chrono::Utc::now().timestamp();
+        insert_source_file(&db, "sess-a", "/tmp/a.jsonl", None);
+        insert_request_fact(&db, "sess-a", "msg-1", "/tmp/a.jsonl", true, now);
+
+        db.truncate_all_local_facts().unwrap();
+        assert_eq!(db.count_local_request_facts().unwrap(), 0);
+        let conn = db.conn.lock().unwrap();
+        let source_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM local_source_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(source_count, 0);
+    }
+
+    #[test]
+    fn get_all_request_records_returns_persisted_request_key() {
+        let (_tmp, db) = temp_db();
+        insert_request_fact(&db, "sess-a", "msg-1", "/tmp/a.jsonl", true, 100);
+        let records = db
+            .get_all_request_records(&crate::models::ToolFilter::All)
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        let key = records[0]
+            .request_key
+            .as_deref()
+            .expect("request_key 应该被读出来");
+        assert_eq!(key, "claude_code:msg-1");
+        assert_eq!(records[0].source_file_present, Some(true));
+    }
+
+    #[test]
+    fn soft_deleted_facts_do_not_disappear_from_query() {
+        let (_tmp, db) = temp_db();
+        insert_request_fact(&db, "sess-a", "msg-alive", "/tmp/a.jsonl", true, 100);
+        insert_request_fact(&db, "sess-a", "msg-vanished", "/tmp/a.jsonl", false, 100);
+
+        let records = db
+            .get_all_request_records(&crate::models::ToolFilter::All)
+            .unwrap();
+        // 软删行同样会出现在查询里——这是设计要点：合并层仍要看见它们
+        assert_eq!(records.len(), 2);
+        let presents: Vec<_> = records
+            .iter()
+            .map(|r| (r.message_id.clone(), r.source_file_present))
+            .collect();
+        assert!(presents.contains(&("msg-alive".to_string(), Some(true))));
+        assert!(presents.contains(&("msg-vanished".to_string(), Some(false))));
+    }
 }

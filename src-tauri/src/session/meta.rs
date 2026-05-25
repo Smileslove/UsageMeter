@@ -101,6 +101,14 @@ pub struct LocalRequestRecord {
     /// 是否来自子代理 transcript
     #[serde(default)]
     pub is_subagent: bool,
+    /// 全局请求键（持久化在 local_request_facts.request_key）；
+    /// scanner 直接解析文件时不填，由 local_usage 层加载并填充。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_key: Option<String>,
+    /// 来源文件当前是否仍存在；scanner 不填，由 local_usage 层加载并填充。
+    /// None 视为"未知/仍存在"。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_file_present: Option<bool>,
 }
 
 /// 会话文件信息（用于扫描）
