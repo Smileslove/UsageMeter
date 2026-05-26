@@ -120,6 +120,7 @@ export const useMonitorStore = defineStore('monitor', {
     yearActivityLoading: false,
     statisticsError: '' as string,
     statisticsRequestSeq: 0,
+    statisticsRequestKey: '' as string,
     monthActivityRequestSeq: 0,
     yearActivityRequestSeq: 0,
     // 概览归因排行
@@ -327,7 +328,13 @@ export const useMonitorStore = defineStore('monitor', {
       this.sessionViewsRevision += 1
     },
     async fetchStatisticsSummary(query: StatisticsQuery) {
+      const requestKey = JSON.stringify(query)
+      if (this.statisticsLoading && this.statisticsRequestKey === requestKey) {
+        return
+      }
+
       const requestSeq = ++this.statisticsRequestSeq
+      this.statisticsRequestKey = requestKey
       this.statisticsLoading = true
       try {
         this.statisticsError = ''

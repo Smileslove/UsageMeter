@@ -1377,8 +1377,10 @@ impl LocalUsageDatabase {
         Ok(())
     }
 
-    pub fn get_all_request_records(
+    pub fn get_request_records_in_range(
         &self,
+        start_epoch: i64,
+        end_epoch: i64,
         tool_filter: &ToolFilter,
     ) -> Result<Vec<LocalRequestRecord>, String> {
         let conn = self.conn.lock().unwrap();
@@ -1388,6 +1390,7 @@ impl LocalUsageDatabase {
                         input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
                         total_tokens, model, is_subagent, request_key, source_file_present
                  FROM local_request_facts
+                 WHERE timestamp >= ?1 AND timestamp < ?2
                  ORDER BY timestamp ASC"
                     .to_string(),
                 None,
@@ -1397,7 +1400,7 @@ impl LocalUsageDatabase {
                         input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
                         total_tokens, model, is_subagent, request_key, source_file_present
                  FROM local_request_facts
-                 WHERE tool = ?1
+                 WHERE timestamp >= ?1 AND timestamp < ?2 AND tool = ?3
                  ORDER BY timestamp ASC"
                     .to_string(),
                 Some(tool.clone()),
@@ -1405,7 +1408,7 @@ impl LocalUsageDatabase {
         };
         let mut stmt = conn
             .prepare(&sql)
-            .map_err(|e| format!("Failed to prepare get_all_request_records: {}", e))?;
+            .map_err(|e| format!("Failed to prepare get_request_records_in_range: {}", e))?;
         let mapper = |row: &rusqlite::Row<'_>| {
             let request_key: Option<String> = row.get(11)?;
             let source_file_present: Option<i64> = row.get(12)?;
@@ -1428,17 +1431,25 @@ impl LocalUsageDatabase {
 
         let rows = match param {
             Some(tool) => stmt
-                .query_map(params![tool], mapper)
-                .map_err(|e| format!("Failed to query local request records by tool: {}", e))?,
+                .query_map(params![start_epoch, end_epoch, tool], mapper)
+                .map_err(|e| {
+                    format!(
+                        "Failed to query local request records in range by tool: {}",
+                        e
+                    )
+                })?,
             None => stmt
-                .query_map([], mapper)
-                .map_err(|e| format!("Failed to query local request records: {}", e))?,
+                .query_map(params![start_epoch, end_epoch], mapper)
+                .map_err(|e| format!("Failed to query local request records in range: {}", e))?,
         };
 
         let mut result = Vec::new();
         for row in rows {
-            result
-                .push(row.map_err(|e| format!("Failed to read local request record row: {}", e))?);
+            result.push(
+                row.map_err(|e| {
+                    format!("Failed to read local request record row in range: {}", e)
+                })?,
+            );
         }
         Ok(result)
     }
@@ -1754,8 +1765,10 @@ impl LocalUsageDatabase {
         Ok(())
     }
 
-    pub fn get_remote_request_records(
+    pub fn get_remote_request_records_in_range(
         &self,
+        start_epoch: i64,
+        end_epoch: i64,
         tool_filter: &ToolFilter,
     ) -> Result<Vec<LocalRequestRecord>, String> {
         let conn = self.conn.lock().unwrap();
@@ -1765,6 +1778,7 @@ impl LocalUsageDatabase {
                         input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
                         total_tokens, model, is_subagent, request_key
                  FROM remote_request_facts
+                 WHERE timestamp >= ?1 AND timestamp < ?2
                  ORDER BY timestamp ASC"
                     .to_string(),
                 None,
@@ -1774,15 +1788,18 @@ impl LocalUsageDatabase {
                         input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
                         total_tokens, model, is_subagent, request_key
                  FROM remote_request_facts
-                 WHERE tool = ?1
+                 WHERE timestamp >= ?1 AND timestamp < ?2 AND tool = ?3
                  ORDER BY timestamp ASC"
                     .to_string(),
                 Some(tool.clone()),
             ),
         };
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| format!("Failed to prepare get_remote_request_records: {}", e))?;
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
+            format!(
+                "Failed to prepare get_remote_request_records_in_range: {}",
+                e
+            )
+        })?;
         let mapper = |row: &rusqlite::Row<'_>| {
             let request_key: Option<String> = row.get(11)?;
             Ok(LocalRequestRecord {
@@ -1803,15 +1820,17 @@ impl LocalUsageDatabase {
         };
         let rows = match param {
             Some(tool) => stmt
-                .query_map(params![tool], mapper)
-                .map_err(|e| format!("Failed to query remote records by tool: {}", e))?,
+                .query_map(params![start_epoch, end_epoch, tool], mapper)
+                .map_err(|e| format!("Failed to query remote records in range by tool: {}", e))?,
             None => stmt
-                .query_map([], mapper)
-                .map_err(|e| format!("Failed to query remote records: {}", e))?,
+                .query_map(params![start_epoch, end_epoch], mapper)
+                .map_err(|e| format!("Failed to query remote records in range: {}", e))?,
         };
         let mut result = Vec::new();
         for row in rows {
-            result.push(row.map_err(|e| format!("Failed to read remote request row: {}", e))?);
+            result.push(
+                row.map_err(|e| format!("Failed to read remote request row in range: {}", e))?,
+            );
         }
         Ok(result)
     }
@@ -2508,7 +2527,7 @@ mod tests {
         let (_tmp, db) = temp_db();
         insert_request_fact(&db, "sess-a", "msg-1", "/tmp/a.jsonl", true, 100);
         let records = db
-            .get_all_request_records(&crate::models::ToolFilter::All)
+            .get_request_records_in_range(0, i64::MAX, &crate::models::ToolFilter::All)
             .unwrap();
         assert_eq!(records.len(), 1);
         let key = records[0]
@@ -2526,7 +2545,7 @@ mod tests {
         insert_request_fact(&db, "sess-a", "msg-vanished", "/tmp/a.jsonl", false, 100);
 
         let records = db
-            .get_all_request_records(&crate::models::ToolFilter::All)
+            .get_request_records_in_range(0, i64::MAX, &crate::models::ToolFilter::All)
             .unwrap();
         // 软删行同样会出现在查询里——这是设计要点：合并层仍要看见它们
         assert_eq!(records.len(), 2);

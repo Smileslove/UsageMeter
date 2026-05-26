@@ -132,6 +132,16 @@ pub fn run() {
                 });
             }
 
+            {
+                tauri::async_runtime::spawn(async move {
+                    if let Some(proxy_db) = crate::proxy::ProxyDatabase::get_global() {
+                        if let Err(err) = proxy_db.backfill_unlocked_costs().await {
+                            eprintln!("[UsageMeter] Failed to prewarm unlocked proxy costs: {err}");
+                        }
+                    }
+                });
+            }
+
             crate::sync::spawn_background_sync_loop();
 
             // 启动时检测并恢复孤立的代理状态

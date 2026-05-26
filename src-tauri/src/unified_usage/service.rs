@@ -178,12 +178,19 @@ async fn fetch_proxy_records(
         .await
 }
 
+fn normalize_range_bounds(start_epoch: Option<i64>, end_epoch: Option<i64>) -> (i64, i64) {
+    let start = start_epoch.unwrap_or(0);
+    let end = end_epoch.unwrap_or(i64::MAX);
+    (start.max(0), end.max(start.max(0)))
+}
+
 pub async fn get_merged_request_facts(
     settings: &AppSettings,
     start_epoch: Option<i64>,
     end_epoch: Option<i64>,
     include_errors: bool,
 ) -> Result<(Vec<MergedRequestFact>, MergedCoverage), String> {
+    let (range_start, range_end) = normalize_range_bounds(start_epoch, end_epoch);
     let tool_filter = settings.client_tools.build_filter();
     let usage_filter = UsageQueryFilter {
         source: settings.source_aware.build_filter(),
@@ -223,18 +230,14 @@ pub async fn get_merged_request_facts(
         .into_iter()
         .filter(|meta| session_meta_matches(meta, &tool_filter))
         .collect();
-    let mut local_records = local_db.get_all_request_records(&tool_filter)?;
+    let mut local_records =
+        local_db.get_request_records_in_range(range_start, range_end, &tool_filter)?;
     let local_request_keys: HashSet<String> =
         local_records.iter().map(request_key_for_local).collect();
-    let mut remote_records = local_db.get_remote_request_records(&tool_filter)?;
+    let mut remote_records =
+        local_db.get_remote_request_records_in_range(range_start, range_end, &tool_filter)?;
     remote_records.retain(|record| !local_request_keys.contains(&request_key_for_local(record)));
     local_records.extend(remote_records);
-    if let Some(start_epoch) = start_epoch {
-        local_records.retain(|record| record.timestamp >= start_epoch);
-    }
-    if let Some(end_epoch) = end_epoch {
-        local_records.retain(|record| record.timestamp < end_epoch);
-    }
     local_records.retain(|record| local_tool_matches(record, &tool_filter));
     let mut seen_local_keys = HashSet::new();
     local_records.retain(|record| seen_local_keys.insert(request_key_for_local(record)));
@@ -242,7 +245,6 @@ pub async fn get_merged_request_facts(
     let message_to_session = build_message_to_session_index(&local_records);
 
     let (all_proxy_records, proxy_records) = if let Some(proxy_db) = ProxyDatabase::get_global() {
-        proxy_db.backfill_unlocked_costs().await?;
         let mut records =
             fetch_proxy_records(proxy_db.as_ref(), &usage_filter, start_epoch, end_epoch).await?;
         attach_proxy_session_ids(&mut records, &message_to_session);

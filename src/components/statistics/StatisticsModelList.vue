@@ -34,12 +34,14 @@ const rankedModels = computed(() => {
   return [...props.models].filter(model => model.percent > 0).sort((a, b) => b.percent - a.percent)
 })
 
+const displayModels = computed(() => rankedModels.value.slice(0, 6))
+
 const selectedModel = computed(() => {
-  return rankedModels.value[selectedModelIndex.value] ?? rankedModels.value[0] ?? null
+  return displayModels.value[selectedModelIndex.value] ?? displayModels.value[0] ?? null
 })
 
 const selectedIndex = computed(() => {
-  return selectedModel.value ? Math.max(0, Math.min(selectedModelIndex.value, rankedModels.value.length - 1)) : -1
+  return selectedModel.value ? Math.max(0, Math.min(selectedModelIndex.value, displayModels.value.length - 1)) : -1
 })
 
 const tokenPair = computed(() => {
@@ -115,7 +117,7 @@ function handleTrendMouseover(params: any) {
 }
 
 const chartOptions = computed(() => {
-  const data = rankedModels.value.map((model, index) => ({
+  const data = displayModels.value.map((model, index) => ({
     name: model.modelName,
     value: Number(model.percent.toFixed(2)),
     requestCount: model.requestCount,
@@ -136,7 +138,7 @@ const chartOptions = computed(() => {
       padding: [7, 9],
       textStyle: { color: '#374151', fontSize: 11 },
       formatter: (params: any) => {
-        const model = rankedModels.value[params.dataIndex]
+        const model = displayModels.value[params.dataIndex]
         if (!model) return ''
         return `
           <div style="font-weight:600;margin-bottom:5px;">${model.modelName}</div>
@@ -259,13 +261,13 @@ function selectModel(index: number) {
 }
 
 function handleChartClick(params: any) {
-  if (typeof params?.dataIndex === 'number' && rankedModels.value[params.dataIndex]) {
+  if (typeof params?.dataIndex === 'number' && displayModels.value[params.dataIndex]) {
     selectModel(params.dataIndex)
   }
 }
 
 watch(
-  rankedModels,
+  displayModels,
   models => {
     if (!models.length) {
       selectedModelIndex.value = 0
@@ -286,10 +288,10 @@ watch(
       <p class="text-[10px] text-gray-400 dark:text-gray-500">{{ t(locale, 'statistics.modelsUsed') }} {{ rankedModels.length }}</p>
     </div>
 
-    <div v-if="rankedModels.length && selectedModel" class="space-y-2">
+    <div v-if="displayModels.length && selectedModel" class="space-y-2">
       <div class="flex max-w-full gap-1.5 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <button
-          v-for="(model, index) in rankedModels.slice(0, 6)"
+          v-for="(model, index) in displayModels"
           :key="`${index}-${model.modelName}`"
           type="button"
           class="flex w-[124px] shrink-0 items-center gap-1.5 rounded-full border px-2 py-1.5 text-left transition focus:outline-none"

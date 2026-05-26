@@ -7,7 +7,7 @@ use crate::models::{
 use crate::proxy::{compute_source_id, ProxyServer, SessionStats};
 use crate::unified_usage::{CoverageOrigin, MergedCoverage, MergedRequestFact};
 use chrono::{Local, NaiveDate, TimeZone};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -245,6 +245,7 @@ pub struct DayActivity {
 
 const MERGED_SOURCE: &str = "proxy-merged";
 const USAGE_WINDOWS: &[&str] = &["5h", "24h", "today", "7d", "30d", "current_month"];
+const MODEL_TREND_LIMIT: usize = 6;
 
 /// 从数据源获取用量快照
 #[tauri::command]
@@ -328,7 +329,6 @@ fn build_merged_statistics(
     let mut total = StatAccumulator::default();
     let mut trend_map: HashMap<i64, StatAccumulator> = HashMap::new();
     let mut model_map: HashMap<String, StatAccumulator> = HashMap::new();
-    let mut model_trend_map: HashMap<String, HashMap<i64, StatAccumulator>> = HashMap::new();
 
     for fact in &facts {
         let model_name = if fact.model.is_empty() {
@@ -340,14 +340,6 @@ fn build_merged_statistics(
         add_fact_to_stat_acc(&mut total, fact);
         add_fact_to_stat_acc(trend_map.entry(bucket).or_default(), fact);
         add_fact_to_stat_acc(model_map.entry(model_name.clone()).or_default(), fact);
-        add_fact_to_stat_acc(
-            model_trend_map
-                .entry(model_name)
-                .or_default()
-                .entry(bucket)
-                .or_default(),
-            fact,
-        );
     }
 
     let mut trend = trend_from_map(&trend_map, start_epoch, end_epoch, &query.bucket);
@@ -391,16 +383,45 @@ fn build_merged_statistics(
                 client_error_requests: has_status.then_some(acc.client_error_requests),
                 server_error_requests: has_status.then_some(acc.server_error_requests),
                 status_codes,
-                trend: model_trend_map
-                    .get(&model_name)
-                    .map(|trend_map| {
-                        trend_from_map(trend_map, start_epoch, end_epoch, &query.bucket)
-                    })
-                    .unwrap_or_else(|| make_empty_trend(start_epoch, end_epoch, &query.bucket)),
+                trend: Vec::new(),
             }
         })
         .collect();
     models.sort_by(|a, b| b.total_tokens.cmp(&a.total_tokens));
+
+    let top_model_names: HashSet<String> = models
+        .iter()
+        .take(MODEL_TREND_LIMIT)
+        .map(|model| model.model_name.clone())
+        .collect();
+    let mut model_trend_map: HashMap<String, HashMap<i64, StatAccumulator>> = HashMap::new();
+
+    for fact in &facts {
+        let model_name = if fact.model.is_empty() {
+            "unknown"
+        } else {
+            fact.model.as_str()
+        };
+        if !top_model_names.contains(model_name) {
+            continue;
+        }
+        let bucket = bucket_start(fact.timestamp_sec, &query.bucket);
+        add_fact_to_stat_acc(
+            model_trend_map
+                .entry(model_name.to_string())
+                .or_default()
+                .entry(bucket)
+                .or_default(),
+            fact,
+        );
+    }
+
+    for model in models.iter_mut().take(MODEL_TREND_LIMIT) {
+        model.trend = model_trend_map
+            .get(&model.model_name)
+            .map(|trend_map| trend_from_map(trend_map, start_epoch, end_epoch, &query.bucket))
+            .unwrap_or_else(|| make_empty_trend(start_epoch, end_epoch, &query.bucket));
+    }
 
     let capability = merged_stat_capability_from_facts(&facts, coverage);
     if !capability.has_performance {

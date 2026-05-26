@@ -20,6 +20,7 @@ const customStart = ref(toDateTimeInput(startOfLocalDay(new Date())))
 const customEnd = ref(toDateTimeInput(new Date()))
 // 标记是否已经初始化完成，用于区分用户操作和初始化
 const initialized = ref(false)
+let customRangeTimer: ReturnType<typeof setTimeout> | null = null
 
 const locale = computed(() => store.settings.locale)
 
@@ -120,6 +121,23 @@ function fetchSummary() {
   })
 }
 
+function scheduleSummaryFetch() {
+  if (customRangeTimer) {
+    clearTimeout(customRangeTimer)
+    customRangeTimer = null
+  }
+
+  if (preset.value === 'custom') {
+    customRangeTimer = setTimeout(() => {
+      fetchSummary()
+      customRangeTimer = null
+    }, 160)
+    return
+  }
+
+  fetchSummary()
+}
+
 function fetchMonth() {
   if (activityView.value === 'year') {
     store.fetchYearActivity(monthYear.value, monthMetric.value)
@@ -185,7 +203,7 @@ function setActivityView(mode: 'month' | 'year') {
   }
 }
 
-watch([range, bucket, analysisMetric], fetchSummary, { deep: true })
+watch([range, bucket, analysisMetric], scheduleSummaryFetch, { deep: true })
 watch([activityView, monthYear, monthNumber, monthMetric], fetchMonth)
 watch(
   () => [
