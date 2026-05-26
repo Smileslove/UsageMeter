@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.1] - 2026-05-26
+
+### Removed
+
+- **`LocalOnly` Data Source Mode**: Removed the redundant `LocalOnly` data source setting — `ProxyWithLocalFallback` already automatically falls back to local file statistics when no proxy data is available, making the manual toggle unnecessary
+
+### Fixed
+
+- **Update Checker Reliability**: Extracted shared `build_updater` helper so both background startup checks and manual checks use the same proxy-aware updater instance — fixes cases where one path ignored proxy settings
+- **Update Banner with Error State**: When an update is detected but the download fails, the update banner now remains visible instead of disappearing with the error state
+- **Update Error Message Clarity**: Update check failures now surface a localized `checkFailed` key instead of a raw error string, preventing untranslated technical messages from appearing in the UI
+
+---
+
+### 移除
+
+- **`LocalOnly` 数据源模式**：移除冗余的「仅本地文件」数据源选项——`ProxyWithLocalFallback` 已在无代理数据时自动回退至本地文件统计，用户无需手动切换，该选项对用户而言是多余的
+
+### 修复
+
+- **更新检测可靠性**：抽取 `build_updater` 公共函数，确保启动后台检测与手动检测均复用同一套代理感知逻辑，修复了某些路径下未注入代理配置的问题
+- **有更新时错误状态下横幅消失**：下载失败进入错误状态时，若已检测到新版本，更新横幅现在会持续显示而非随错误状态消失
+- **更新检测错误信息显示**：更新检测失败现在使用本地化 Key `checkFailed`，不再将原始错误字符串直接渲染到界面
+
+---
+
 ## [0.6.0] - 2026-05-25
 
 ### Added
