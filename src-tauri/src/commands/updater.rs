@@ -44,6 +44,30 @@ pub struct UpdateDownloadProgressEvent {
     pub total_bytes: Option<u64>,
 }
 
+/// 构建带代理配置的 Updater 实例（供命令和后台检查共用）
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+pub fn build_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    use crate::commands::load_settings;
+    use tauri_plugin_updater::UpdaterExt;
+
+    let settings = load_settings().unwrap_or_default();
+    let mut builder = app.updater_builder();
+
+    if settings.network_proxy.enabled {
+        let proxy_url = format!(
+            "{}://{}:{}",
+            settings.network_proxy.scheme,
+            settings.network_proxy.host,
+            settings.network_proxy.port
+        );
+        if let Ok(url) = proxy_url.parse() {
+            builder = builder.proxy(url);
+        }
+    }
+
+    builder.build().map_err(|e| format!("ERR_UPDATER_BUILD: {e}"))
+}
+
 /// 检查是否有可用更新
 ///
 /// 若有更新，将 Update 对象存入 UpdaterState 供后续下载，并返回版本信息。
@@ -56,29 +80,7 @@ pub async fn check_for_update(
 ) -> Result<Option<UpdateInfoDto>, String> {
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
-        use crate::commands::load_settings;
-        use tauri_plugin_updater::UpdaterExt;
-
-        let settings = load_settings().unwrap_or_default();
-
-        let mut builder = app.updater_builder();
-
-        // 注入用户配置的全局网络代理
-        if settings.network_proxy.enabled {
-            let proxy_url = format!(
-                "{}://{}:{}",
-                settings.network_proxy.scheme,
-                settings.network_proxy.host,
-                settings.network_proxy.port
-            );
-            if let Ok(url) = proxy_url.parse() {
-                builder = builder.proxy(url);
-            }
-        }
-
-        let updater = builder
-            .build()
-            .map_err(|e| format!("ERR_UPDATER_BUILD: {e}"))?;
+        let updater = build_updater(&app)?;
 
         match updater.check().await {
             Ok(Some(update)) => {

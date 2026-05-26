@@ -81,8 +81,9 @@ async function handleRetry() {
 
       <!-- 错误状态：提供重试入口 -->
       <div v-else-if="hasError" class="px-4 py-3 space-y-2">
-        <p class="text-[12px] text-red-500">{{ t(locale, 'settings.update.downloadFailed') }}</p>
-        <p v-if="updaterStore.errorMessage" class="text-[11px] text-gray-400 truncate">{{ updaterStore.errorMessage }}</p>
+        <p class="text-[12px] text-red-500">
+          {{ t(locale, updaterStore.errorMessage === 'downloadFailed' ? 'settings.update.downloadFailed' : 'settings.update.checkFailed') }}
+        </p>
         <button
           @click="handleRetry"
           class="flex items-center gap-1.5 h-7 px-3 text-[11px] text-gray-600 dark:text-gray-400 rounded-lg border border-gray-200 dark:border-neutral-700 hover:bg-gray-50 dark:hover:bg-neutral-800 transition-colors"

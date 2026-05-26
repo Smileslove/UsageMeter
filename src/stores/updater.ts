@@ -20,7 +20,8 @@ export const useUpdaterStore = defineStore('updater', {
 
   getters: {
     hasUpdate: (state): boolean =>
-      state.status === 'available' || state.status === 'downloading',
+      state.status === 'available' || state.status === 'downloading' ||
+      (state.status === 'error' && state.updateInfo != null),
 
     downloadProgress: (state): number => {
       if (!state.totalBytes || state.totalBytes === 0) return 0
@@ -45,9 +46,9 @@ export const useUpdaterStore = defineStore('updater', {
         } else {
           this.status = 'idle'
         }
-      } catch (e) {
+      } catch {
         this.status = 'error'
-        this.errorMessage = String(e)
+        this.errorMessage = 'checkFailed'
       }
     },
 
@@ -59,9 +60,9 @@ export const useUpdaterStore = defineStore('updater', {
       try {
         await invoke('download_and_install_update')
         // app.restart() 在 Rust 侧调用，前端不会执行到此处
-      } catch (e) {
+      } catch {
         this.status = 'error'
-        this.errorMessage = String(e)
+        this.errorMessage = 'downloadFailed'
       }
     },
 
@@ -70,8 +71,8 @@ export const useUpdaterStore = defineStore('updater', {
       try {
         await invoke('skip_update_version', { version: this.updateInfo.version })
         this.reset()
-      } catch (e) {
-        this.errorMessage = String(e)
+      } catch {
+        this.errorMessage = 'checkFailed'
       }
     },
 

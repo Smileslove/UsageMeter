@@ -309,22 +309,7 @@ pub fn run() {
                     if !settings.auto_check_update {
                         return;
                     }
-                    use tauri_plugin_updater::UpdaterExt;
-
-                    // 构建带用户代理配置的 updater，确保检查请求走已配置的代理
-                    let mut builder = app_handle.updater_builder();
-                    if settings.network_proxy.enabled {
-                        let proxy_url = format!(
-                            "{}://{}:{}",
-                            settings.network_proxy.scheme,
-                            settings.network_proxy.host,
-                            settings.network_proxy.port
-                        );
-                        if let Ok(url) = proxy_url.parse() {
-                            builder = builder.proxy(url);
-                        }
-                    }
-                    let updater: tauri_plugin_updater::Updater = match builder.build() {
+                    let updater = match commands::build_updater(&app_handle) {
                         Ok(u) => u,
                         Err(e) => {
                             eprintln!("[UsageMeter] Updater build failed: {e}");
