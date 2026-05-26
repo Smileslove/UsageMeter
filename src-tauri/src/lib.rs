@@ -361,6 +361,7 @@ pub fn run() {
             // 代理命令
             commands::start_proxy,
             commands::stop_proxy,
+            commands::stop_proxy_runtime_only,
             commands::get_proxy_status,
             commands::is_proxy_running,
             commands::get_proxy_usage,

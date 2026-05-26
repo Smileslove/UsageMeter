@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
 
+use super::usage::ProxyState;
+
 /// 跨命令共享的更新状态（持有 Update 对象供后续下载使用）
 pub struct UpdaterState {
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -56,16 +58,16 @@ pub fn build_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, S
     if settings.network_proxy.enabled {
         let proxy_url = format!(
             "{}://{}:{}",
-            settings.network_proxy.scheme,
-            settings.network_proxy.host,
-            settings.network_proxy.port
+            settings.network_proxy.scheme, settings.network_proxy.host, settings.network_proxy.port
         );
         if let Ok(url) = proxy_url.parse() {
             builder = builder.proxy(url);
         }
     }
 
-    builder.build().map_err(|e| format!("ERR_UPDATER_BUILD: {e}"))
+    builder
+        .build()
+        .map_err(|e| format!("ERR_UPDATER_BUILD: {e}"))
 }
 
 /// 检查是否有可用更新
@@ -107,10 +109,13 @@ pub async fn check_for_update(
 #[tauri::command]
 pub async fn download_and_install_update(
     app: AppHandle,
+    proxy_state: State<'_, ProxyState>,
     state: State<'_, UpdaterState>,
 ) -> Result<(), String> {
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
+        crate::commands::stop_proxy_runtime_only_inner(&proxy_state).await?;
+
         let update = state
             .pending_update
             .lock()
@@ -144,7 +149,7 @@ pub async fn download_and_install_update(
     // 仅在非桌面平台（不支持更新）时返回 Ok
     #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     {
-        let _ = (app, state);
+        let _ = (app, proxy_state, state);
         Ok(())
     }
 }

@@ -547,9 +547,7 @@ export const useMonitorStore = defineStore('monitor', {
       // 如果代理正在运行，先停止并恢复配置
       if (this.isProxyRunning) {
         try {
-          await invoke('stop_proxy')
-          this.settings.proxy.enabled = false
-          await this.saveSettings()
+          await invoke('stop_proxy_runtime_only')
         } catch (e) {
           console.error('Failed to stop proxy on exit:', e)
           // 即使失败也继续退出，下次启动时会通过孤立状态恢复

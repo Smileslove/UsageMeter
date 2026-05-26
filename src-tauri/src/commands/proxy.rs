@@ -73,6 +73,23 @@ pub async fn start_proxy(
 /// 停止代理服务器
 #[tauri::command]
 pub async fn stop_proxy(state: State<'_, ProxyState>) -> Result<(), String> {
+    stop_proxy_runtime_only_inner(&state).await?;
+    mark_all_client_tools_enabled(false)?;
+    Ok(())
+}
+
+/// 仅停止当前运行中的代理并恢复外部工具配置，不修改用户保存的开启意图。
+///
+/// 该命令用于应用退出、更新重启等场景：
+/// - 需要确保 Claude/Codex 不再指向本地代理
+/// - 但下次打开应用时仍应按用户上次偏好自动恢复代理/接管
+#[tauri::command]
+pub async fn stop_proxy_runtime_only(state: State<'_, ProxyState>) -> Result<(), String> {
+    stop_proxy_runtime_only_inner(&state).await
+}
+
+/// 共享的运行时停机逻辑：停止本地服务并恢复外部配置，但不改用户偏好。
+pub async fn stop_proxy_runtime_only_inner(state: &State<'_, ProxyState>) -> Result<(), String> {
     let settings = load_settings().unwrap_or_default();
     let port = settings.proxy.port;
     let mut server_guard = state.server.write().await;
@@ -82,7 +99,6 @@ pub async fn stop_proxy(state: State<'_, ProxyState>) -> Result<(), String> {
     }
 
     restore_codex_takeover_if_active(port)?;
-    mark_all_client_tools_enabled(false)?;
 
     Ok(())
 }
@@ -441,14 +457,7 @@ pub struct ProxyUsageSnapshot {
 /// 在应用退出前调用，确保 Claude 配置被恢复
 #[tauri::command]
 pub async fn prepare_exit(state: State<'_, ProxyState>) -> Result<(), String> {
-    let mut server_guard = state.server.write().await;
-
-    if let Some(server) = server_guard.take() {
-        // 停止服务器（内部会调用 ClaudeConfigManager::restore()）
-        server.stop().await?;
-    }
-
-    Ok(())
+    stop_proxy_runtime_only_inner(&state).await
 }
 
 /// 确认退出：前端清理完成后调用
