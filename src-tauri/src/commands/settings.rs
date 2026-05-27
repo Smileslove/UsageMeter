@@ -10,27 +10,16 @@ use tauri::{AppHandle, Emitter};
 pub fn load_settings() -> Result<AppSettings, String> {
     let path = AppSettings::settings_path()?;
     if !path.exists() {
-        return Ok(AppSettings::default());
+        let mut settings = AppSettings::default();
+        normalize_settings(&mut settings)?;
+        return Ok(settings);
     }
 
     let raw = fs::read_to_string(path).map_err(|e| format!("ERR_READ_SETTINGS: {e}"))?;
     let mut settings: AppSettings =
         serde_json::from_str(&raw).map_err(|e| format!("ERR_PARSE_SETTINGS: {e}"))?;
 
-    // 确保代理配置有效（迁移旧配置）
-    migrate_proxy_config(&mut settings);
-
-    // 确保模型价格配置存在（迁移旧配置）
-    migrate_model_pricing(&mut settings);
-
-    // 确保货币配置存在（迁移旧配置）
-    migrate_currency(&mut settings);
-
-    // 确保客户端工具配置完整（迁移旧配置）
-    migrate_client_tools(&mut settings);
-
-    // 确保同步配置完整（迁移旧配置）
-    migrate_sync(&mut settings)?;
+    normalize_settings(&mut settings)?;
 
     Ok(settings)
 }
@@ -78,7 +67,7 @@ impl std::fmt::Display for SaveSettingsError {
 /// 真正的保存逻辑。供非 Tauri 上下文（后台同步、代理服务器内部）复用。
 pub fn save_settings_internal(settings: AppSettings) -> Result<(), SaveSettingsError> {
     let mut settings = settings;
-    migrate_sync(&mut settings).map_err(SaveSettingsError::Other)?;
+    normalize_settings(&mut settings).map_err(SaveSettingsError::Other)?;
     let path = AppSettings::settings_path().map_err(SaveSettingsError::Other)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -97,6 +86,15 @@ pub fn save_settings_internal(settings: AppSettings) -> Result<(), SaveSettingsE
     Ok(())
 }
 
+fn normalize_settings(settings: &mut AppSettings) -> Result<(), String> {
+    migrate_proxy_config(settings);
+    migrate_model_pricing(settings);
+    migrate_currency(settings);
+    migrate_client_tools(settings);
+    migrate_sync(settings)?;
+    Ok(())
+}
+
 /// 确保代理配置有效，修复端口问题
 fn migrate_proxy_config(settings: &mut AppSettings) {
     // 修复端口为 0 或无效的情况
@@ -106,6 +104,10 @@ fn migrate_proxy_config(settings: &mut AppSettings) {
     if settings.proxy.request_timeout_seconds == 0 {
         settings.proxy.request_timeout_seconds =
             crate::models::default_proxy_request_timeout_seconds();
+    }
+    if settings.proxy.streaming_idle_timeout_seconds == 0 {
+        settings.proxy.streaming_idle_timeout_seconds =
+            crate::models::default_proxy_streaming_idle_timeout_seconds();
     }
 }
 
@@ -191,6 +193,8 @@ fn migrate_sync(settings: &mut AppSettings) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{AppSettings, CurrencySettings, SyncSettings};
+    use std::collections::HashMap;
 
     #[test]
     fn migrate_proxy_config_fills_missing_timeout_fields() {
@@ -209,6 +213,66 @@ mod tests {
         assert_eq!(
             settings.proxy.streaming_idle_timeout_seconds,
             crate::models::default_proxy_streaming_idle_timeout_seconds()
+        );
+    }
+
+    #[test]
+    fn normalize_settings_restores_invalid_legacy_values() {
+        let mut settings = AppSettings::default();
+        settings.model_pricing.match_mode.clear();
+        settings.currency = CurrencySettings {
+            display_currency: "CNY".to_string(),
+            exchange_rates: HashMap::new(),
+            tracked_currencies: vec![],
+            last_rate_update: None,
+        };
+        settings.client_tools.profiles.clear();
+        settings.proxy.enabled = false;
+        settings.sync = SyncSettings {
+            provider: String::new(),
+            device_id: "Invalid Device ID".to_string(),
+            interval_minutes: 0,
+            include_session_text: true,
+            ..SyncSettings::default()
+        };
+
+        normalize_settings(&mut settings).unwrap();
+
+        assert_eq!(settings.model_pricing.match_mode, "fuzzy");
+        assert!(settings.currency.exchange_rates.contains_key("USD"));
+        assert_eq!(settings.currency.display_currency, "USD");
+        assert_eq!(
+            settings.currency.tracked_currencies,
+            vec!["USD".to_string()]
+        );
+        assert!(settings
+            .client_tools
+            .profiles
+            .iter()
+            .any(|profile| profile.tool == "claude_code"));
+        assert!(settings.proxy.enabled);
+        assert_eq!(
+            settings.sync.provider,
+            crate::models::default_sync_provider()
+        );
+        assert_eq!(
+            settings.sync.interval_minutes,
+            crate::models::default_sync_interval_minutes()
+        );
+        assert_eq!(settings.sync.device_id, "invalid-device-id");
+        assert!(!settings.sync.include_session_text);
+    }
+
+    #[test]
+    fn normalize_settings_generates_default_sync_device_id_when_empty() {
+        let mut settings = AppSettings::default();
+        settings.sync.device_id.clear();
+
+        normalize_settings(&mut settings).unwrap();
+
+        assert_eq!(
+            settings.sync.device_id,
+            crate::models::default_sync_device_id()
         );
     }
 }

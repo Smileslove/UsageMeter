@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import { t, windowNameLabel } from '../i18n'
 import { MessageSquare, Sigma, CircleDollarSign, Database } from 'lucide-vue-next'
@@ -33,10 +33,7 @@ async function selectWindow(window: WindowName) {
     store.settings.summaryWindow = window
     await store.saveSettings()
 
-    // 如果是代理模式，加载对应的速率数据
-    if (store.isProxyMode) {
-      store.fetchRateSummary(window)
-    }
+    store.fetchRateSummary(window)
     store.fetchOverviewBreakdown(window)
   } catch (e) {
     console.error('Failed to save settings:', e)
@@ -46,9 +43,9 @@ async function selectWindow(window: WindowName) {
 // 速率摘要数据
 const rateSummary = computed(() => store.rateSummary)
 
-// 是否有速率数据（代理模式下且窗口匹配且有实际请求时展示速率）
+// 是否有速率数据（窗口匹配且有实际请求时展示速率）
 const hasRateData = computed(() => {
-  if (!store.isProxyMode || !rateSummary.value) return false
+  if (!rateSummary.value) return false
   if (rateSummary.value.window !== store.settings.summaryWindow) return false
   // 必须有实际请求才算有数据，避免错误时返回的空统计显示为 0.00
   return rateSummary.value.overall.requestCount > 0
@@ -172,23 +169,15 @@ function detailPairSizeClass(first: string, second: string): string {
   return detailValueSizeClass(first.length >= second.length ? first : second)
 }
 
-// 监听代理模式变化，自动加载速率数据
 watch(
-  () => ({ isProxy: store.isProxyMode, window: store.settings.summaryWindow }),
-  ({ isProxy, window }) => {
-    if (isProxy && window) {
+  () => store.settings.summaryWindow,
+  (window) => {
+    if (window) {
       store.fetchRateSummary(window)
     }
   },
   { immediate: true }
 )
-
-// 组件挂载时，如果是代理模式，加载速率数据
-onMounted(() => {
-  if (store.isProxyMode && store.settings.summaryWindow) {
-    store.fetchRateSummary(store.settings.summaryWindow)
-  }
-})
 </script>
 
 <template>

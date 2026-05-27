@@ -137,7 +137,6 @@ export const useMonitorStore = defineStore('monitor', {
     hasData: state => !!state.snapshot,
     windows: state => state.snapshot?.windows ?? [],
     isProxyRunning: state => state.proxyStatus?.running ?? false,
-    isProxyMode: () => true,
   },
   actions: {
     async initialize() {
@@ -170,107 +169,7 @@ export const useMonitorStore = defineStore('monitor', {
     async loadSettings() {
       try {
         this.error = ''
-        const data = await invoke<AppSettings>('load_settings')
-        this.settings = data
-
-        // 确保代理配置存在（迁移兼容）
-        if (!this.settings.proxy) {
-          this.settings.proxy = {
-            enabled: false,
-            port: 18765,
-            autoStart: false,
-            includeErrorRequests: true,
-            requestTimeoutSeconds: 120,
-            streamingIdleTimeoutSeconds: 0
-          }
-        } else {
-          // 确保所有字段存在（迁移旧配置兼容）
-          if (!this.settings.proxy.port || this.settings.proxy.port === 0) {
-            this.settings.proxy.port = 18765
-          }
-          if (this.settings.proxy.includeErrorRequests === undefined) {
-            this.settings.proxy.includeErrorRequests = true
-          }
-          if (this.settings.proxy.requestTimeoutSeconds === undefined || this.settings.proxy.requestTimeoutSeconds === 0) {
-            this.settings.proxy.requestTimeoutSeconds = 120
-          }
-          if (this.settings.proxy.streamingIdleTimeoutSeconds === undefined) {
-            this.settings.proxy.streamingIdleTimeoutSeconds = 0
-          }
-        }
-
-        // 确保模型价格配置存在（迁移兼容）
-        if (!this.settings.modelPricing) {
-          this.settings.modelPricing = defaultModelPricing
-        } else {
-          if (this.settings.modelPricing.matchMode === undefined) {
-            this.settings.modelPricing.matchMode = 'fuzzy'
-          }
-          if (!this.settings.modelPricing.pricings) {
-            this.settings.modelPricing.pricings = []
-          }
-        }
-
-        // 确保来源识别配置存在（迁移兼容）
-        if (!this.settings.sourceAware) {
-          this.settings.sourceAware = defaultSourceAware
-        }
-        if (!this.settings.clientTools) {
-          this.settings.clientTools = defaultClientTools
-        } else {
-          if (!this.settings.clientTools.profiles?.length) {
-            this.settings.clientTools.profiles = defaultClientTools.profiles
-          } else {
-            for (const defaultProfile of defaultClientTools.profiles) {
-              if (!this.settings.clientTools.profiles.some(profile => profile.tool === defaultProfile.tool)) {
-                this.settings.clientTools.profiles.push(defaultProfile)
-              }
-            }
-          }
-          if (this.settings.clientTools.activeToolFilter === undefined) {
-            this.settings.clientTools.activeToolFilter = null
-          }
-        }
-        if (this.settings.clientTools.profiles.some(profile => profile.enabled)) {
-          this.settings.proxy.enabled = true
-        }
-
-        // 确保货币设置存在（迁移兼容）
-        if (!this.settings.currency) {
-          this.settings.currency = defaultCurrency
-        } else {
-          if (!this.settings.currency.displayCurrency) {
-            this.settings.currency.displayCurrency = 'USD'
-          }
-          if (!this.settings.currency.exchangeRates) {
-            this.settings.currency.exchangeRates = { USD: 1.0 }
-          }
-          if (!this.settings.currency.trackedCurrencies?.length) {
-            this.settings.currency.trackedCurrencies = ['USD']
-          }
-        }
-        if (!this.settings.sync) {
-          this.settings.sync = defaultSync
-        } else {
-          this.settings.sync.provider = 'webdav'
-          if (this.settings.sync.password === undefined) {
-            this.settings.sync.password = ''
-          }
-          if (this.settings.sync.syncPassword === undefined) {
-            this.settings.sync.syncPassword = ''
-          }
-          const legacySync = this.settings.sync as SyncSettings & { syncOnStartup?: boolean }
-          if (legacySync.autoSync === undefined) {
-            legacySync.autoSync = legacySync.syncOnStartup ?? false
-          }
-          if (!this.settings.sync.deviceId) {
-            this.settings.sync.deviceId = defaultSync.deviceId
-          }
-          if (!this.settings.sync.intervalMinutes) {
-            this.settings.sync.intervalMinutes = defaultSync.intervalMinutes
-          }
-          this.settings.sync.includeSessionText = false
-        }
+        this.settings = await invoke<AppSettings>('load_settings')
       } catch (e) {
         this.error = String(e)
       }

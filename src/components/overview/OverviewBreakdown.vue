@@ -44,8 +44,8 @@ const sourceItems = computed(() => sortItems(breakdown.value?.sourceRanking ?? [
 const toolItems = computed(() => sortItems(breakdown.value?.toolRanking ?? []))
 const modelItems = computed(() => sortItems(breakdown.value?.modelRanking ?? []))
 
-const showSourceSection = computed(() => store.isProxyMode && sourceItems.value.length > 0)
-const showSourceHint = computed(() => !store.isProxyMode)
+const showSourceSection = computed(() => sourceItems.value.length > 0)
+const showSourceHint = computed(() => !showSourceSection.value && hasAnyItems.value)
 const hasAnyItems = computed(() => sourceItems.value.length + toolItems.value.length + modelItems.value.length > 0)
 
 watch(

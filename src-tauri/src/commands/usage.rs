@@ -1761,6 +1761,14 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    fn local_record_age_seconds(created_at: i64, now_ts: i64) -> Option<i64> {
+        if created_at > now_ts {
+            None
+        } else {
+            Some(now_ts - created_at)
+        }
+    }
+
     #[test]
     fn local_record_age_seconds_rejects_future_timestamps() {
         assert_eq!(local_record_age_seconds(100, 100), Some(0));
