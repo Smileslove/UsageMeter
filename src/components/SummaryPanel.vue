@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import { t, windowNameLabel } from '../i18n'
 import { MessageSquare, Sigma, CircleDollarSign, Database } from 'lucide-vue-next'
@@ -32,9 +32,7 @@ async function selectWindow(window: WindowName) {
   try {
     store.settings.summaryWindow = window
     await store.saveSettings()
-
-    store.fetchRateSummary(window)
-    store.fetchOverviewBreakdown(window)
+    await store.refreshUsage()
   } catch (e) {
     console.error('Failed to save settings:', e)
   }
@@ -169,15 +167,6 @@ function detailPairSizeClass(first: string, second: string): string {
   return detailValueSizeClass(first.length >= second.length ? first : second)
 }
 
-watch(
-  () => store.settings.summaryWindow,
-  (window) => {
-    if (window) {
-      store.fetchRateSummary(window)
-    }
-  },
-  { immediate: true }
-)
 </script>
 
 <template>

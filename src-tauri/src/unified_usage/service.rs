@@ -1,8 +1,210 @@
 use super::types::{CoverageOrigin, MergedCoverage, MergedRequestFact};
 use crate::models::{AppSettings, ToolFilter, UsageQueryFilter};
+use crate::proxy::ProxyMergeCacheSignature;
 use crate::proxy::{ProjectStats, ProjectToolStats, ProxyDatabase, SessionStats, UsageRecord};
 use crate::session::{LocalRequestRecord, SessionMeta};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct MergeCacheKey {
+    start_epoch: i64,
+    end_epoch: i64,
+    include_errors: bool,
+    source_filter: String,
+    tool_filter: String,
+    pricing_match_mode: String,
+    pricing_fingerprint: u64,
+    local_signature: crate::local_usage::LocalMergeCacheSignature,
+    proxy_signature: Option<ProxyMergeCacheSignature>,
+}
+
+#[derive(Debug, Clone)]
+struct MergeCacheEntry {
+    key: MergeCacheKey,
+    facts: Vec<MergedRequestFact>,
+    coverage: MergedCoverage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SessionDerivedCacheKey {
+    merge_key: MergeCacheKey,
+    limit: i64,
+    offset: i64,
+}
+
+#[derive(Debug, Clone)]
+struct SessionDerivedCacheEntry {
+    key: SessionDerivedCacheKey,
+    sessions: Vec<SessionStats>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ProjectDerivedCacheKey {
+    merge_key: MergeCacheKey,
+}
+
+#[derive(Debug, Clone)]
+struct ProjectDerivedCacheEntry {
+    key: ProjectDerivedCacheKey,
+    projects: Vec<ProjectStats>,
+}
+
+static MERGED_REQUEST_FACTS_CACHE: OnceLock<Mutex<Vec<MergeCacheEntry>>> = OnceLock::new();
+static MERGED_SESSIONS_CACHE: OnceLock<Mutex<Vec<SessionDerivedCacheEntry>>> = OnceLock::new();
+static MERGED_PROJECTS_CACHE: OnceLock<Mutex<Vec<ProjectDerivedCacheEntry>>> = OnceLock::new();
+const MERGED_REQUEST_FACTS_CACHE_CAPACITY: usize = 8;
+const MERGED_SESSIONS_CACHE_CAPACITY: usize = 6;
+const MERGED_PROJECTS_CACHE_CAPACITY: usize = 6;
+
+fn perf_logging_enabled() -> bool {
+    cfg!(debug_assertions) || matches!(std::env::var("USAGEMETER_DEBUG_PERF"), Ok(v) if v == "1")
+}
+
+fn perf_log(event: &str, message: impl AsRef<str>) {
+    if perf_logging_enabled() {
+        eprintln!("[UsageMeter][perf][{event}] {}", message.as_ref());
+    }
+}
+
+fn merge_cache() -> &'static Mutex<Vec<MergeCacheEntry>> {
+    MERGED_REQUEST_FACTS_CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn merged_sessions_cache() -> &'static Mutex<Vec<SessionDerivedCacheEntry>> {
+    MERGED_SESSIONS_CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn merged_projects_cache() -> &'static Mutex<Vec<ProjectDerivedCacheEntry>> {
+    MERGED_PROJECTS_CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn cache_key_for_source_filter(filter: &crate::models::SourceFilter) -> String {
+    match filter {
+        crate::models::SourceFilter::All => "all".to_string(),
+        crate::models::SourceFilter::Unknown { known_pairs } => {
+            format!("unknown:{known_pairs:?}")
+        }
+        crate::models::SourceFilter::Source {
+            api_key_prefixes,
+            base_url,
+        } => format!("source:{api_key_prefixes:?}:{base_url:?}"),
+    }
+}
+
+fn cache_key_for_tool_filter(filter: &ToolFilter) -> String {
+    match filter {
+        ToolFilter::All => "all".to_string(),
+        ToolFilter::Tool(tool) => format!("tool:{tool}"),
+    }
+}
+
+fn fingerprint_pricings(pricings: &[crate::models::ModelPricingConfig]) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    for pricing in pricings {
+        pricing.model_id.hash(&mut hasher);
+        pricing.display_name.hash(&mut hasher);
+        pricing.input_price.to_bits().hash(&mut hasher);
+        pricing.output_price.to_bits().hash(&mut hasher);
+        pricing.cache_read_price.map(f64::to_bits).hash(&mut hasher);
+        pricing
+            .cache_write_price
+            .map(f64::to_bits)
+            .hash(&mut hasher);
+        pricing.source.hash(&mut hasher);
+        pricing.last_updated.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+fn lookup_merge_cache(key: &MergeCacheKey) -> Option<(Vec<MergedRequestFact>, MergedCoverage)> {
+    let cache = merge_cache();
+    let mut guard = cache.lock().unwrap();
+    let idx = guard.iter().position(|entry| entry.key == *key)?;
+    let entry = guard.remove(idx);
+    let result = (entry.facts.clone(), entry.coverage.clone());
+    guard.insert(0, entry);
+    Some(result)
+}
+
+fn store_merge_cache(key: MergeCacheKey, facts: &[MergedRequestFact], coverage: &MergedCoverage) {
+    let cache = merge_cache();
+    let mut guard = cache.lock().unwrap();
+    if let Some(idx) = guard.iter().position(|entry| entry.key == key) {
+        guard.remove(idx);
+    }
+    guard.insert(
+        0,
+        MergeCacheEntry {
+            key,
+            facts: facts.to_vec(),
+            coverage: coverage.clone(),
+        },
+    );
+    if guard.len() > MERGED_REQUEST_FACTS_CACHE_CAPACITY {
+        guard.truncate(MERGED_REQUEST_FACTS_CACHE_CAPACITY);
+    }
+}
+
+fn lookup_sessions_cache(key: &SessionDerivedCacheKey) -> Option<Vec<SessionStats>> {
+    let cache = merged_sessions_cache();
+    let mut guard = cache.lock().unwrap();
+    let idx = guard.iter().position(|entry| entry.key == *key)?;
+    let entry = guard.remove(idx);
+    let result = entry.sessions.clone();
+    guard.insert(0, entry);
+    Some(result)
+}
+
+fn store_sessions_cache(key: SessionDerivedCacheKey, sessions: &[SessionStats]) {
+    let cache = merged_sessions_cache();
+    let mut guard = cache.lock().unwrap();
+    if let Some(idx) = guard.iter().position(|entry| entry.key == key) {
+        guard.remove(idx);
+    }
+    guard.insert(
+        0,
+        SessionDerivedCacheEntry {
+            key,
+            sessions: sessions.to_vec(),
+        },
+    );
+    if guard.len() > MERGED_SESSIONS_CACHE_CAPACITY {
+        guard.truncate(MERGED_SESSIONS_CACHE_CAPACITY);
+    }
+}
+
+fn lookup_projects_cache(key: &ProjectDerivedCacheKey) -> Option<Vec<ProjectStats>> {
+    let cache = merged_projects_cache();
+    let mut guard = cache.lock().unwrap();
+    let idx = guard.iter().position(|entry| entry.key == *key)?;
+    let entry = guard.remove(idx);
+    let result = entry.projects.clone();
+    guard.insert(0, entry);
+    Some(result)
+}
+
+fn store_projects_cache(key: ProjectDerivedCacheKey, projects: &[ProjectStats]) {
+    let cache = merged_projects_cache();
+    let mut guard = cache.lock().unwrap();
+    if let Some(idx) = guard.iter().position(|entry| entry.key == key) {
+        guard.remove(idx);
+    }
+    guard.insert(
+        0,
+        ProjectDerivedCacheEntry {
+            key,
+            projects: projects.to_vec(),
+        },
+    );
+    if guard.len() > MERGED_PROJECTS_CACHE_CAPACITY {
+        guard.truncate(MERGED_PROJECTS_CACHE_CAPACITY);
+    }
+}
 
 fn request_key_for_local(record: &LocalRequestRecord) -> String {
     // 优先使用持久化的 request_key（v5 schema 之后由 local_usage 写入）；
@@ -118,27 +320,6 @@ fn compute_local_request_cost(
     )
 }
 
-fn build_coverage(facts: &[MergedRequestFact]) -> MergedCoverage {
-    let mut coverage = MergedCoverage::default();
-
-    for fact in facts {
-        match fact.coverage_origin {
-            CoverageOrigin::ProxyOnly => coverage.proxy_backed_requests += 1,
-            CoverageOrigin::LocalOnly => coverage.local_only_requests += 1,
-            CoverageOrigin::MergedProxyPreferred => {
-                coverage.proxy_backed_requests += 1;
-                coverage.merged_overlap_requests += 1;
-            }
-        }
-    }
-
-    coverage.has_partial_status_coverage =
-        coverage.proxy_backed_requests > 0 && coverage.local_only_requests > 0;
-    coverage.has_partial_performance_coverage =
-        coverage.proxy_backed_requests > 0 && coverage.local_only_requests > 0;
-    coverage
-}
-
 #[derive(Default)]
 struct ProjectAggregate {
     stats: ProjectStats,
@@ -184,12 +365,60 @@ fn normalize_range_bounds(start_epoch: Option<i64>, end_epoch: Option<i64>) -> (
     (start.max(0), end.max(start.max(0)))
 }
 
+struct MergeCacheKeyParts<'a> {
+    settings: &'a AppSettings,
+    range_start: i64,
+    range_end: i64,
+    include_errors: bool,
+    source_filter: &'a crate::models::SourceFilter,
+    tool_filter: &'a ToolFilter,
+    local_signature: crate::local_usage::LocalMergeCacheSignature,
+    proxy_signature: Option<ProxyMergeCacheSignature>,
+    pricings: &'a [crate::models::ModelPricingConfig],
+}
+
+fn build_merge_cache_key(parts: MergeCacheKeyParts<'_>) -> MergeCacheKey {
+    MergeCacheKey {
+        start_epoch: parts.range_start,
+        end_epoch: parts.range_end,
+        include_errors: parts.include_errors,
+        source_filter: cache_key_for_source_filter(parts.source_filter),
+        tool_filter: cache_key_for_tool_filter(parts.tool_filter),
+        pricing_match_mode: parts.settings.model_pricing.match_mode.clone(),
+        pricing_fingerprint: fingerprint_pricings(parts.pricings),
+        local_signature: parts.local_signature,
+        proxy_signature: parts.proxy_signature,
+    }
+}
+
+pub(crate) fn build_coverage(facts: &[MergedRequestFact]) -> MergedCoverage {
+    let mut coverage = MergedCoverage::default();
+
+    for fact in facts {
+        match fact.coverage_origin {
+            CoverageOrigin::ProxyOnly => coverage.proxy_backed_requests += 1,
+            CoverageOrigin::LocalOnly => coverage.local_only_requests += 1,
+            CoverageOrigin::MergedProxyPreferred => {
+                coverage.proxy_backed_requests += 1;
+                coverage.merged_overlap_requests += 1;
+            }
+        }
+    }
+
+    coverage.has_partial_status_coverage =
+        coverage.proxy_backed_requests > 0 && coverage.local_only_requests > 0;
+    coverage.has_partial_performance_coverage =
+        coverage.proxy_backed_requests > 0 && coverage.local_only_requests > 0;
+    coverage
+}
+
 pub async fn get_merged_request_facts(
     settings: &AppSettings,
     start_epoch: Option<i64>,
     end_epoch: Option<i64>,
     include_errors: bool,
 ) -> Result<(Vec<MergedRequestFact>, MergedCoverage), String> {
+    let overall_started_at = Instant::now();
     let (range_start, range_end) = normalize_range_bounds(start_epoch, end_epoch);
     let tool_filter = settings.client_tools.build_filter();
     let usage_filter = UsageQueryFilter {
@@ -224,6 +453,44 @@ pub async fn get_merged_request_facts(
     let pricing_match_mode = settings.model_pricing.match_mode.clone();
 
     let local_db = crate::local_usage::ensure_local_usage_synced()?;
+    let local_signature = local_db.get_merge_cache_signature()?;
+    let proxy_signature = ProxyDatabase::get_global()
+        .map(|db| db.get_merge_cache_signature())
+        .transpose()?;
+    let cache_key = build_merge_cache_key(MergeCacheKeyParts {
+        settings,
+        range_start,
+        range_end,
+        include_errors,
+        source_filter: &usage_filter.source,
+        tool_filter: &tool_filter,
+        local_signature,
+        proxy_signature,
+        pricings: &pricings,
+    });
+    if let Some((facts, coverage)) = lookup_merge_cache(&cache_key) {
+        perf_log(
+            "merge_cache_hit",
+            format!(
+                "range={range_start}..{range_end} tool={} source={} include_errors={} facts={} elapsed_ms={}",
+                cache_key.tool_filter,
+                cache_key.source_filter,
+                include_errors,
+                facts.len(),
+                overall_started_at.elapsed().as_millis(),
+            ),
+        );
+        return Ok((facts, coverage));
+    }
+    perf_log(
+        "merge_cache_miss",
+        format!(
+            "range={range_start}..{range_end} tool={} source={} include_errors={}",
+            cache_key.tool_filter, cache_key.source_filter, include_errors,
+        ),
+    );
+
+    let query_started_at = Instant::now();
     let mut local_sessions_all = local_db.get_all_sessions(&tool_filter)?;
     local_sessions_all.extend(local_db.get_remote_sessions(&tool_filter)?);
     let local_sessions: Vec<SessionMeta> = local_sessions_all
@@ -268,7 +535,9 @@ pub async fn get_merged_request_facts(
     } else {
         (Vec::new(), Vec::new())
     };
+    let query_elapsed_ms = query_started_at.elapsed().as_millis();
 
+    let merge_started_at = Instant::now();
     let all_proxy_index = build_proxy_request_index(&all_proxy_records);
     let proxy_index = build_proxy_request_index(&proxy_records);
     let local_index = build_local_request_index(&local_records);
@@ -312,6 +581,20 @@ pub async fn get_merged_request_facts(
 
     merged.sort_by_key(|fact| fact.timestamp_ms);
     let coverage = build_coverage(&merged);
+    store_merge_cache(cache_key, &merged, &coverage);
+    perf_log(
+        "merge_cache_store",
+        format!(
+            "range={range_start}..{range_end} local_records={} proxy_records={} all_proxy_records={} facts={} query_ms={} merge_ms={} total_ms={}",
+            local_index.len(),
+            proxy_index.len(),
+            all_proxy_index.len(),
+            merged.len(),
+            query_elapsed_ms,
+            merge_started_at.elapsed().as_millis(),
+            overall_started_at.elapsed().as_millis(),
+        ),
+    );
     Ok((merged, coverage))
 }
 
@@ -320,10 +603,52 @@ pub async fn get_merged_sessions(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<SessionStats>, String> {
+    let started_at = Instant::now();
     let include_errors = settings.proxy.include_error_requests;
-    let (facts, _) = get_merged_request_facts(settings, None, None, include_errors).await?;
     let tool_filter = settings.client_tools.build_filter();
+    let source_filter = settings.source_aware.build_filter();
+    let mut pricings = settings.model_pricing.pricings.clone();
+    if let Ok(db) = crate::proxy::ProxyDatabase::new() {
+        if let Ok(db_pricings) = db.get_all_model_pricings() {
+            pricings.extend(db_pricings);
+        }
+    }
     let local_db = crate::local_usage::ensure_local_usage_synced()?;
+    let local_signature = local_db.get_merge_cache_signature()?;
+    let proxy_signature = ProxyDatabase::get_global()
+        .map(|db| db.get_merge_cache_signature())
+        .transpose()?;
+    let merge_key = build_merge_cache_key(MergeCacheKeyParts {
+        settings,
+        range_start: 0,
+        range_end: i64::MAX,
+        include_errors,
+        source_filter: &source_filter,
+        tool_filter: &tool_filter,
+        local_signature,
+        proxy_signature,
+        pricings: &pricings,
+    });
+    let session_cache_key = SessionDerivedCacheKey {
+        merge_key,
+        limit,
+        offset,
+    };
+    if let Some(sessions) = lookup_sessions_cache(&session_cache_key) {
+        perf_log(
+            "merged_sessions_cache_hit",
+            format!(
+                "tool={} returned={} elapsed_ms={}",
+                cache_key_for_tool_filter(&tool_filter),
+                sessions.len(),
+                started_at.elapsed().as_millis(),
+            ),
+        );
+        return Ok(sessions);
+    }
+
+    let (facts, _) = get_merged_request_facts(settings, None, None, include_errors).await?;
+    let facts_count = facts.len();
     let mut local_sessions = local_db.get_all_sessions(&tool_filter)?;
     local_sessions.extend(local_db.get_remote_sessions(&tool_filter)?);
     let meta_by_id: HashMap<String, SessionMeta> = local_sessions
@@ -455,11 +780,23 @@ pub async fn get_merged_sessions(
     }
 
     result.sort_by_key(|session| std::cmp::Reverse(session.last_request_time));
-    Ok(result
+    let result: Vec<SessionStats> = result
         .into_iter()
         .skip(offset.max(0) as usize)
         .take(limit.max(0) as usize)
-        .collect())
+        .collect();
+    perf_log(
+        "merged_sessions",
+        format!(
+            "tool={} facts={} returned={} elapsed_ms={}",
+            cache_key_for_tool_filter(&tool_filter),
+            facts_count,
+            result.len(),
+            started_at.elapsed().as_millis(),
+        ),
+    );
+    store_sessions_cache(session_cache_key, &result);
+    Ok(result)
 }
 
 pub async fn get_merged_session_detail(
@@ -473,8 +810,49 @@ pub async fn get_merged_session_detail(
 }
 
 pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<ProjectStats>, String> {
+    let started_at = Instant::now();
     let include_errors = settings.proxy.include_error_requests;
+    let tool_filter = settings.client_tools.build_filter();
+    let source_filter = settings.source_aware.build_filter();
+    let mut pricings = settings.model_pricing.pricings.clone();
+    if let Ok(db) = crate::proxy::ProxyDatabase::new() {
+        if let Ok(db_pricings) = db.get_all_model_pricings() {
+            pricings.extend(db_pricings);
+        }
+    }
+    let local_db = crate::local_usage::ensure_local_usage_synced()?;
+    let local_signature = local_db.get_merge_cache_signature()?;
+    let proxy_signature = ProxyDatabase::get_global()
+        .map(|db| db.get_merge_cache_signature())
+        .transpose()?;
+    let project_cache_key = ProjectDerivedCacheKey {
+        merge_key: build_merge_cache_key(MergeCacheKeyParts {
+            settings,
+            range_start: 0,
+            range_end: i64::MAX,
+            include_errors,
+            source_filter: &source_filter,
+            tool_filter: &tool_filter,
+            local_signature,
+            proxy_signature,
+            pricings: &pricings,
+        }),
+    };
+    if let Some(projects) = lookup_projects_cache(&project_cache_key) {
+        perf_log(
+            "merged_projects_cache_hit",
+            format!(
+                "tool={} projects={} elapsed_ms={}",
+                cache_key_for_tool_filter(&tool_filter),
+                projects.len(),
+                started_at.elapsed().as_millis(),
+            ),
+        );
+        return Ok(projects);
+    }
+
     let (facts, _) = get_merged_request_facts(settings, None, None, include_errors).await?;
+    let facts_count = facts.len();
     let mut map: HashMap<String, ProjectAggregate> = HashMap::new();
 
     for fact in facts {
@@ -563,5 +941,16 @@ pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<Proj
         })
         .collect();
     projects.sort_by_key(|project| std::cmp::Reverse(project.last_active));
+    perf_log(
+        "merged_projects",
+        format!(
+            "tool={} facts={} projects={} elapsed_ms={}",
+            cache_key_for_tool_filter(&tool_filter),
+            facts_count,
+            projects.len(),
+            started_at.elapsed().as_millis(),
+        ),
+    );
+    store_projects_cache(project_cache_key, &projects);
     Ok(projects)
 }

@@ -142,8 +142,11 @@ pub fn register_source_to_settings(
         }
     } else {
         // 创建新来源
-        let new_source =
-            create_new_source(prefix.clone(), base_url.clone(), settings.source_aware.sources.len());
+        let new_source = create_new_source(
+            prefix.clone(),
+            base_url.clone(),
+            settings.source_aware.sources.len(),
+        );
         settings.source_aware.sources.push(new_source);
         SourceRegistrationResult {
             is_new: true,

@@ -210,6 +210,15 @@ pub struct OverviewBreakdown {
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UsageRefreshBundle {
+    pub generated_at_epoch: u64,
+    pub snapshot: UsageSnapshot,
+    pub rate_summary: WindowRateSummary,
+    pub overview_breakdown: OverviewBreakdown,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MonthActivity {
     pub year: i32,
     pub month: u8,
@@ -247,18 +256,105 @@ const MERGED_SOURCE: &str = "proxy-merged";
 const USAGE_WINDOWS: &[&str] = &["5h", "24h", "today", "7d", "30d", "current_month"];
 const MODEL_TREND_LIMIT: usize = 6;
 
-/// 从数据源获取用量快照
-#[tauri::command]
-pub async fn get_usage_snapshot(
-    settings: AppSettings,
-    _proxy_state: tauri::State<'_, ProxyState>,
-) -> Result<UsageSnapshot, String> {
-    get_proxy_usage_snapshot(&settings).await
+#[derive(Debug, Clone)]
+struct WindowPreparedFacts {
+    window: String,
+    start_index: usize,
 }
 
-/// 从代理收集器获取用量快照
-async fn get_proxy_usage_snapshot(settings: &AppSettings) -> Result<UsageSnapshot, String> {
-    build_merged_usage_snapshot(settings).await
+#[derive(Debug, Clone)]
+struct PreparedUsageRefreshData {
+    generated_at_epoch: u64,
+    facts: Vec<MergedRequestFact>,
+    windows: Vec<WindowPreparedFacts>,
+}
+
+#[tauri::command]
+pub async fn refresh_usage_bundle(
+    settings: AppSettings,
+    _proxy_state: tauri::State<'_, ProxyState>,
+) -> Result<UsageRefreshBundle, String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let prepared = prepare_usage_refresh_data(&settings, now).await?;
+    Ok(build_usage_refresh_bundle_from_prepared(
+        &settings, &prepared,
+    ))
+}
+
+fn usage_window_cutoff_epoch(window: &str) -> i64 {
+    crate::proxy::UsageCollector::calculate_window_cutoff_public(window) / 1000
+}
+
+fn epoch_u64_to_i64_saturating(epoch: u64) -> i64 {
+    i64::try_from(epoch).unwrap_or(i64::MAX)
+}
+
+fn first_fact_index_in_range(facts: &[MergedRequestFact], cutoff_epoch: i64) -> usize {
+    facts.partition_point(|fact| fact.timestamp_sec < cutoff_epoch)
+}
+
+fn facts_slice_for_window<'a>(
+    prepared: &'a PreparedUsageRefreshData,
+    window: &str,
+) -> &'a [MergedRequestFact] {
+    prepared
+        .windows
+        .iter()
+        .find(|entry| entry.window == window)
+        .map(|entry| &prepared.facts[entry.start_index..])
+        .unwrap_or(&prepared.facts[..0])
+}
+
+async fn prepare_usage_refresh_data(
+    settings: &AppSettings,
+    generated_at_epoch: u64,
+) -> Result<PreparedUsageRefreshData, String> {
+    let include_errors = settings.proxy.include_error_requests;
+    let mut window_cutoffs: Vec<(String, i64)> = USAGE_WINDOWS
+        .iter()
+        .map(|window| ((*window).to_string(), usage_window_cutoff_epoch(window)))
+        .collect();
+    let summary_window = settings.summary_window.clone();
+    if !window_cutoffs
+        .iter()
+        .any(|(window, _)| *window == summary_window)
+    {
+        window_cutoffs.push((
+            summary_window.clone(),
+            usage_window_cutoff_epoch(&summary_window),
+        ));
+    }
+
+    let earliest_cutoff = window_cutoffs
+        .iter()
+        .map(|(_, cutoff)| *cutoff)
+        .min()
+        .unwrap_or(0);
+    let end_epoch = generated_at_epoch.saturating_add(1);
+    let (facts, _coverage) = crate::unified_usage::get_merged_request_facts(
+        settings,
+        Some(earliest_cutoff),
+        Some(epoch_u64_to_i64_saturating(end_epoch)),
+        include_errors,
+    )
+    .await?;
+
+    let windows = window_cutoffs
+        .into_iter()
+        .map(|(window, cutoff_epoch)| WindowPreparedFacts {
+            start_index: first_fact_index_in_range(&facts, cutoff_epoch),
+            window,
+        })
+        .collect();
+
+    Ok(PreparedUsageRefreshData {
+        generated_at_epoch,
+        facts,
+        windows,
+    })
 }
 
 fn merged_stat_capability_from_facts(
@@ -710,69 +806,53 @@ fn build_window_rate_summary_from_facts(
     }
 }
 
-async fn build_merged_usage_snapshot(settings: &AppSettings) -> Result<UsageSnapshot, String> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let include_errors = settings.proxy.include_error_requests;
+fn build_window_usage_from_facts(
+    window: &str,
+    facts: &[MergedRequestFact],
+    coverage: &MergedCoverage,
+) -> (WindowUsage, HashMap<String, ModelTokenTotals>) {
+    let mut model_stats: HashMap<String, ModelTokenTotals> = HashMap::new();
+    let mut token_used = 0_u64;
+    let mut input_tokens = 0_u64;
+    let mut output_tokens = 0_u64;
+    let mut cache_create_tokens = 0_u64;
+    let mut cache_read_tokens = 0_u64;
+    let request_used = facts.len() as u64;
+    let mut success_requests = 0_u64;
+    let mut client_error_requests = 0_u64;
+    let mut server_error_requests = 0_u64;
 
-    let mut windows = Vec::new();
-    let mut has_partial_snapshot_coverage = false;
-    for window_name in USAGE_WINDOWS {
-        let cutoff_ms = crate::proxy::UsageCollector::calculate_window_cutoff_public(window_name);
-        let (facts, capability) = crate::unified_usage::get_merged_request_facts(
-            settings,
-            Some(cutoff_ms / 1000),
-            Some(now as i64 + 1),
-            include_errors,
-        )
-        .await?;
-        has_partial_snapshot_coverage |=
-            capability.has_partial_status_coverage || capability.has_partial_performance_coverage;
+    for fact in facts {
+        token_used += fact.total_tokens;
+        input_tokens += fact.input_tokens;
+        output_tokens += fact.output_tokens;
+        cache_create_tokens += fact.cache_create_tokens;
+        cache_read_tokens += fact.cache_read_tokens;
 
-        let mut model_stats: HashMap<String, ModelTokenTotals> = HashMap::new();
-        let mut token_used = 0_u64;
-        let mut input_tokens = 0_u64;
-        let mut output_tokens = 0_u64;
-        let mut cache_create_tokens = 0_u64;
-        let mut cache_read_tokens = 0_u64;
-        let request_used = facts.len() as u64;
-        let mut success_requests = 0_u64;
-        let mut client_error_requests = 0_u64;
-        let mut server_error_requests = 0_u64;
-
-        for fact in &facts {
-            token_used += fact.total_tokens;
-            input_tokens += fact.input_tokens;
-            output_tokens += fact.output_tokens;
-            cache_create_tokens += fact.cache_create_tokens;
-            cache_read_tokens += fact.cache_read_tokens;
-
-            if let Some(status_code) = fact.status_code {
-                if (200..300).contains(&status_code) {
-                    success_requests += 1;
-                } else if (400..500).contains(&status_code) {
-                    client_error_requests += 1;
-                } else if status_code >= 500 {
-                    server_error_requests += 1;
-                }
-            }
-
-            if !fact.model.is_empty() {
-                let entry = model_stats.entry(fact.model.clone()).or_default();
-                entry.input_tokens += fact.input_tokens;
-                entry.output_tokens += fact.output_tokens;
-                entry.cache_create_tokens += fact.cache_create_tokens;
-                entry.cache_read_tokens += fact.cache_read_tokens;
-                entry.request_count += 1;
+        if let Some(status_code) = fact.status_code {
+            if (200..300).contains(&status_code) {
+                success_requests += 1;
+            } else if (400..500).contains(&status_code) {
+                client_error_requests += 1;
+            } else if status_code >= 500 {
+                server_error_requests += 1;
             }
         }
 
-        let cost: f64 = facts.iter().map(|fact| fact.estimated_cost).sum();
+        if !fact.model.is_empty() {
+            let entry = model_stats.entry(fact.model.clone()).or_default();
+            entry.input_tokens += fact.input_tokens;
+            entry.output_tokens += fact.output_tokens;
+            entry.cache_create_tokens += fact.cache_create_tokens;
+            entry.cache_read_tokens += fact.cache_read_tokens;
+            entry.request_count += 1;
+        }
+    }
 
-        windows.push(WindowUsage {
-            window: (*window_name).to_string(),
+    let cost: f64 = facts.iter().map(|fact| fact.estimated_cost).sum();
+    (
+        WindowUsage {
+            window: window.to_string(),
             token_used,
             input_tokens,
             output_tokens,
@@ -780,47 +860,106 @@ async fn build_merged_usage_snapshot(settings: &AppSettings) -> Result<UsageSnap
             cache_read_tokens,
             request_used,
             cost,
-            success_requests: if capability.has_partial_status_coverage {
+            success_requests: if coverage.has_partial_status_coverage {
                 0
             } else {
                 success_requests
             },
-            client_error_requests: if capability.has_partial_status_coverage {
+            client_error_requests: if coverage.has_partial_status_coverage {
                 0
             } else {
                 client_error_requests
             },
-            server_error_requests: if capability.has_partial_status_coverage {
+            server_error_requests: if coverage.has_partial_status_coverage {
                 0
             } else {
                 server_error_requests
             },
-        });
+        },
+        model_stats,
+    )
+}
+
+fn build_overview_breakdown_from_facts(
+    settings: &AppSettings,
+    window: String,
+    generated_at_epoch: i64,
+    facts: &[MergedRequestFact],
+    coverage: &MergedCoverage,
+) -> OverviewBreakdown {
+    let mut source_map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)> = HashMap::new();
+    let mut tool_map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)> = HashMap::new();
+    let mut model_map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)> = HashMap::new();
+
+    for fact in facts {
+        add_breakdown_fact(&mut source_map, source_meta_for_fact(settings, fact), fact);
+        add_breakdown_fact(&mut tool_map, tool_meta_for_fact(settings, fact), fact);
+        add_breakdown_fact(&mut model_map, model_meta_for_fact(fact), fact);
     }
 
-    let summary_cutoff_ms =
-        crate::proxy::UsageCollector::calculate_window_cutoff_public(&settings.summary_window);
-    let (summary_facts, summary_coverage) = crate::unified_usage::get_merged_request_facts(
-        settings,
-        Some(summary_cutoff_ms / 1000),
-        Some(now as i64 + 1),
-        include_errors,
-    )
-    .await?;
+    let capability = OverviewBreakdownCapability {
+        has_source: !source_map.is_empty(),
+        has_tool: !tool_map.is_empty(),
+        has_cost: facts.iter().any(|fact| fact.estimated_cost > 0.0),
+        has_status: !coverage.has_partial_status_coverage
+            && facts.iter().any(|fact| fact.status_code.is_some()),
+        has_performance: !coverage.has_partial_performance_coverage
+            && facts
+                .iter()
+                .any(|fact| fact.output_tokens_per_second.is_some() || fact.ttft_ms.is_some()),
+    };
 
-    let mut summary_model_stats: HashMap<String, ModelTokenTotals> = HashMap::new();
+    OverviewBreakdown {
+        window,
+        generated_at_epoch,
+        source_ranking: overview_items_from_map(source_map),
+        tool_ranking: overview_items_from_map(tool_map),
+        model_ranking: overview_items_from_map(model_map),
+        capability,
+    }
+}
+
+fn build_usage_refresh_bundle_from_prepared(
+    settings: &AppSettings,
+    prepared: &PreparedUsageRefreshData,
+) -> UsageRefreshBundle {
+    let mut windows = Vec::new();
+    let mut has_partial_snapshot_coverage = false;
+    let mut summary_model_stats: Option<HashMap<String, ModelTokenTotals>> = None;
+
+    for window_name in USAGE_WINDOWS {
+        let facts = facts_slice_for_window(prepared, window_name);
+        let coverage = crate::unified_usage::build_coverage(facts);
+        has_partial_snapshot_coverage |=
+            coverage.has_partial_status_coverage || coverage.has_partial_performance_coverage;
+        let (window_usage, model_stats) =
+            build_window_usage_from_facts(window_name, facts, &coverage);
+        if *window_name == settings.summary_window {
+            summary_model_stats = Some(model_stats.clone());
+        }
+        windows.push(window_usage);
+    }
+
+    let summary_facts = facts_slice_for_window(prepared, &settings.summary_window);
+    let summary_coverage = crate::unified_usage::build_coverage(summary_facts);
+    let (summary_window_usage, summary_window_model_stats) =
+        build_window_usage_from_facts(&settings.summary_window, summary_facts, &summary_coverage);
+    if summary_model_stats.is_none() {
+        summary_model_stats = Some(summary_window_model_stats);
+    }
+    let derived_summary_model_stats = summary_model_stats
+        .is_none()
+        .then(|| build_model_token_totals_from_facts(summary_facts));
+    let summary_model_distribution = build_model_distribution_from_window_stats(
+        summary_model_stats
+            .as_ref()
+            .or(derived_summary_model_stats.as_ref()),
+    );
     let mut summary_success_requests = 0_u64;
     let mut summary_client_error_requests = 0_u64;
     let mut summary_server_error_requests = 0_u64;
-    for fact in &summary_facts {
-        if !fact.model.is_empty() {
-            let entry = summary_model_stats.entry(fact.model.clone()).or_default();
-            entry.input_tokens += fact.input_tokens;
-            entry.output_tokens += fact.output_tokens;
-            entry.cache_create_tokens += fact.cache_create_tokens;
-            entry.cache_read_tokens += fact.cache_read_tokens;
-            entry.request_count += 1;
-        }
+
+    for fact in summary_facts {
         if let Some(status_code) = fact.status_code {
             if (200..300).contains(&status_code) {
                 summary_success_requests += 1;
@@ -832,9 +971,8 @@ async fn build_merged_usage_snapshot(settings: &AppSettings) -> Result<UsageSnap
         }
     }
 
-    let summary = build_usage_summary_from_window(
-        &windows,
-        &settings.summary_window,
+    let summary = build_usage_summary_from_usage(
+        &summary_window_usage,
         if summary_coverage.has_partial_status_coverage {
             0
         } else {
@@ -851,9 +989,8 @@ async fn build_merged_usage_snapshot(settings: &AppSettings) -> Result<UsageSnap
             summary_server_error_requests
         },
     );
-
-    Ok(UsageSnapshot {
-        generated_at_epoch: now,
+    let snapshot = UsageSnapshot {
+        generated_at_epoch: prepared.generated_at_epoch,
         windows,
         source: MERGED_SOURCE.to_string(),
         note: (has_partial_snapshot_coverage
@@ -861,8 +998,28 @@ async fn build_merged_usage_snapshot(settings: &AppSettings) -> Result<UsageSnap
             || summary_coverage.has_partial_performance_coverage)
             .then_some("NOTE_PARTIAL_PROXY_COVERAGE".to_string()),
         summary,
-        model_distribution: build_model_distribution_from_window_stats(Some(&summary_model_stats)),
-    })
+        model_distribution: summary_model_distribution,
+    };
+
+    let rate_summary = build_window_rate_summary_from_facts(
+        settings.summary_window.clone(),
+        summary_facts.to_vec(),
+        &summary_coverage,
+    );
+    let overview_breakdown = build_overview_breakdown_from_facts(
+        settings,
+        settings.summary_window.clone(),
+        epoch_u64_to_i64_saturating(prepared.generated_at_epoch),
+        summary_facts,
+        &summary_coverage,
+    );
+
+    UsageRefreshBundle {
+        generated_at_epoch: prepared.generated_at_epoch,
+        snapshot,
+        rate_summary,
+        overview_breakdown,
+    }
 }
 
 #[derive(Default)]
@@ -1140,40 +1297,12 @@ pub async fn get_overview_breakdown(
         include_errors,
     )
     .await?;
-
-    let mut source_map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)> = HashMap::new();
-    let mut tool_map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)> = HashMap::new();
-    let mut model_map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)> = HashMap::new();
-
-    for fact in &facts {
-        add_breakdown_fact(&mut source_map, source_meta_for_fact(&settings, fact), fact);
-        add_breakdown_fact(&mut tool_map, tool_meta_for_fact(&settings, fact), fact);
-        add_breakdown_fact(&mut model_map, model_meta_for_fact(fact), fact);
-    }
-
-    let capability = OverviewBreakdownCapability {
-        has_source: !source_map.is_empty(),
-        has_tool: !tool_map.is_empty(),
-        has_cost: facts.iter().any(|fact| fact.estimated_cost > 0.0),
-        has_status: !coverage.has_partial_status_coverage
-            && facts.iter().any(|fact| fact.status_code.is_some()),
-        has_performance: !coverage.has_partial_performance_coverage
-            && facts
-                .iter()
-                .any(|fact| fact.output_tokens_per_second.is_some() || fact.ttft_ms.is_some()),
-    };
-
-    Ok(OverviewBreakdown {
-        window,
-        generated_at_epoch: now,
-        source_ranking: overview_items_from_map(source_map),
-        tool_ranking: overview_items_from_map(tool_map),
-        model_ranking: overview_items_from_map(model_map),
-        capability,
-    })
+    Ok(build_overview_breakdown_from_facts(
+        &settings, window, now, &facts, &coverage,
+    ))
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct ModelTokenTotals {
     input_tokens: u64,
     output_tokens: u64,
@@ -1229,23 +1358,41 @@ fn build_model_distribution_from_window_stats(
     model_distribution
 }
 
-fn build_usage_summary_from_window(
-    windows: &[WindowUsage],
-    summary_window: &str,
+fn build_model_token_totals_from_facts(
+    facts: &[MergedRequestFact],
+) -> HashMap<String, ModelTokenTotals> {
+    let mut model_stats: HashMap<String, ModelTokenTotals> = HashMap::new();
+
+    for fact in facts {
+        if fact.model.is_empty() {
+            continue;
+        }
+
+        let entry = model_stats.entry(fact.model.clone()).or_default();
+        entry.input_tokens += fact.input_tokens;
+        entry.output_tokens += fact.output_tokens;
+        entry.cache_create_tokens += fact.cache_create_tokens;
+        entry.cache_read_tokens += fact.cache_read_tokens;
+        entry.request_count += 1;
+    }
+
+    model_stats
+}
+
+fn build_usage_summary_from_usage(
+    usage: &WindowUsage,
     total_success_requests: u64,
     total_client_error_requests: u64,
     total_server_error_requests: u64,
 ) -> crate::models::UsageSummary {
-    let selected_window = windows.iter().find(|w| w.window == summary_window);
-
     crate::models::UsageSummary {
-        total_tokens: selected_window.map(|w| w.token_used).unwrap_or(0),
-        total_requests: selected_window.map(|w| w.request_used).unwrap_or(0),
-        total_input_tokens: selected_window.map(|w| w.input_tokens).unwrap_or(0),
-        total_output_tokens: selected_window.map(|w| w.output_tokens).unwrap_or(0),
-        total_cache_create_tokens: selected_window.map(|w| w.cache_create_tokens).unwrap_or(0),
-        total_cache_read_tokens: selected_window.map(|w| w.cache_read_tokens).unwrap_or(0),
-        total_cost: selected_window.map(|w| w.cost).unwrap_or(0.0),
+        total_tokens: usage.token_used,
+        total_requests: usage.request_used,
+        total_input_tokens: usage.input_tokens,
+        total_output_tokens: usage.output_tokens,
+        total_cache_create_tokens: usage.cache_create_tokens,
+        total_cache_read_tokens: usage.cache_read_tokens,
+        total_cost: usage.cost,
         total_success_requests,
         total_client_error_requests,
         total_server_error_requests,
@@ -1777,37 +1924,22 @@ mod tests {
     }
 
     #[test]
-    fn build_usage_summary_from_window_keeps_cost_in_same_window() {
-        let windows = vec![
-            WindowUsage {
-                window: "5h".to_string(),
-                token_used: 120,
-                input_tokens: 70,
-                output_tokens: 40,
-                cache_create_tokens: 5,
-                cache_read_tokens: 5,
-                request_used: 3,
-                cost: 1.25,
-                success_requests: 0,
-                client_error_requests: 0,
-                server_error_requests: 0,
-            },
-            WindowUsage {
-                window: "30d".to_string(),
-                token_used: 2400,
-                input_tokens: 1400,
-                output_tokens: 800,
-                cache_create_tokens: 100,
-                cache_read_tokens: 100,
-                request_used: 60,
-                cost: 9.75,
-                success_requests: 0,
-                client_error_requests: 0,
-                server_error_requests: 0,
-            },
-        ];
+    fn build_usage_summary_from_usage_keeps_cost_in_same_window() {
+        let usage = WindowUsage {
+            window: "5h".to_string(),
+            token_used: 120,
+            input_tokens: 70,
+            output_tokens: 40,
+            cache_create_tokens: 5,
+            cache_read_tokens: 5,
+            request_used: 3,
+            cost: 1.25,
+            success_requests: 0,
+            client_error_requests: 0,
+            server_error_requests: 0,
+        };
 
-        let summary = build_usage_summary_from_window(&windows, "5h", 0, 0, 0);
+        let summary = build_usage_summary_from_usage(&usage, 0, 0, 0);
 
         assert_eq!(summary.total_tokens, 120);
         assert_eq!(summary.total_requests, 3);
@@ -1857,5 +1989,118 @@ mod tests {
         assert_eq!(thirty_day_distribution[0].model_name, "model-b");
         assert_eq!(thirty_day_distribution[0].token_used, 1000);
         assert_eq!(thirty_day_distribution[0].request_count, 20);
+    }
+
+    fn test_fact(
+        session_id: &str,
+        timestamp_sec: i64,
+        model: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_create_tokens: u64,
+        cache_read_tokens: u64,
+        coverage_origin: CoverageOrigin,
+    ) -> MergedRequestFact {
+        MergedRequestFact {
+            session_id: session_id.to_string(),
+            project_name: None,
+            project_path: None,
+            api_key_prefix: None,
+            request_base_url: None,
+            tool: "claude_code".to_string(),
+            timestamp_sec,
+            timestamp_ms: timestamp_sec.saturating_mul(1000),
+            model: model.to_string(),
+            input_tokens,
+            output_tokens,
+            cache_create_tokens,
+            cache_read_tokens,
+            total_tokens: input_tokens + output_tokens + cache_create_tokens + cache_read_tokens,
+            estimated_cost: 0.0,
+            coverage_origin,
+            status_code: Some(200),
+            duration_ms: None,
+            output_tokens_per_second: None,
+            ttft_ms: None,
+            source_label: None,
+        }
+    }
+
+    #[test]
+    fn build_model_distribution_from_facts_supports_custom_summary_window() {
+        let facts = vec![
+            test_fact(
+                "session-1",
+                1,
+                "model-a",
+                100,
+                50,
+                10,
+                0,
+                CoverageOrigin::LocalOnly,
+            ),
+            test_fact(
+                "session-2",
+                2,
+                "model-b",
+                20,
+                20,
+                0,
+                0,
+                CoverageOrigin::ProxyOnly,
+            ),
+        ];
+
+        let distribution = build_model_distribution_from_window_stats(Some(
+            &build_model_token_totals_from_facts(&facts),
+        ));
+
+        assert_eq!(distribution.len(), 2);
+        assert_eq!(distribution[0].model_name, "model-a");
+        assert_eq!(distribution[0].token_used, 160);
+        assert_eq!(distribution[0].request_count, 1);
+        assert!((distribution[0].percent - 80.0).abs() < f64::EPSILON);
+        assert_eq!(distribution[1].model_name, "model-b");
+        assert_eq!(distribution[1].token_used, 40);
+        assert_eq!(distribution[1].request_count, 1);
+        assert!((distribution[1].percent - 20.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn build_usage_summary_from_usage_supports_custom_summary_window() {
+        let facts = vec![
+            test_fact(
+                "session-1",
+                1,
+                "model-a",
+                100,
+                50,
+                10,
+                0,
+                CoverageOrigin::LocalOnly,
+            ),
+            test_fact(
+                "session-2",
+                2,
+                "model-b",
+                20,
+                20,
+                0,
+                0,
+                CoverageOrigin::ProxyOnly,
+            ),
+        ];
+        let coverage = crate::unified_usage::build_coverage(&facts);
+        let (summary_usage, _) = build_window_usage_from_facts("custom", &facts, &coverage);
+
+        let summary = build_usage_summary_from_usage(&summary_usage, 1, 0, 0);
+
+        assert_eq!(summary.total_tokens, 200);
+        assert_eq!(summary.total_requests, 2);
+        assert_eq!(summary.total_input_tokens, 120);
+        assert_eq!(summary.total_output_tokens, 70);
+        assert_eq!(summary.total_cache_create_tokens, 10);
+        assert_eq!(summary.total_cache_read_tokens, 0);
+        assert_eq!(summary.total_success_requests, 1);
     }
 }

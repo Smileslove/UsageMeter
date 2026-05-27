@@ -17,6 +17,13 @@ static GLOBAL_DB: OnceLock<Arc<ProxyDatabase>> = OnceLock::new();
 
 const LEGACY_UNMATCHED_SESSION_ID: &str = "__legacy_unmatched__";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProxyMergeCacheSignature {
+    pub usage_record_count: u64,
+    pub max_timestamp: i64,
+    pub session_stats_max_updated_at: i64,
+}
+
 /// 数据库管理器，用于代理使用数据
 /// 使用线程安全的 SQLite 连接包装器
 pub struct ProxyDatabase {
@@ -1087,6 +1094,30 @@ impl ProxyDatabase {
             .map_err(|e| format!("Failed to count records: {}", e))?;
 
         Ok(count as usize)
+    }
+
+    pub fn get_merge_cache_signature(&self) -> Result<ProxyMergeCacheSignature, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+        conn.query_row(
+            r#"
+            SELECT
+                (SELECT COUNT(*) FROM usage_records),
+                (SELECT COALESCE(MAX(timestamp), 0) FROM usage_records),
+                (SELECT COALESCE(MAX(last_updated), 0) FROM session_stats)
+            "#,
+            [],
+            |row| {
+                Ok(ProxyMergeCacheSignature {
+                    usage_record_count: row.get::<_, i64>(0)?.max(0) as u64,
+                    max_timestamp: row.get::<_, i64>(1)?,
+                    session_stats_max_updated_at: row.get::<_, i64>(2)?,
+                })
+            },
+        )
+        .map_err(|e| format!("Failed to compute proxy merge cache signature: {}", e))
     }
 
     /// 删除指定天数之前的记录

@@ -354,7 +354,7 @@ pub fn run() {
             commands::load_settings,
             commands::save_settings,
             // 用量命令
-            commands::get_usage_snapshot,
+            commands::refresh_usage_bundle,
             commands::get_overview_breakdown,
             commands::get_window_rate_summary,
             commands::get_statistics_summary,

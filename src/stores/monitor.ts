@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SyncSettings, NetworkProxyConfig } from '../types'
+import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SyncSettings, NetworkProxyConfig } from '../types'
 
 const defaultModelPricing: ModelPricingSettings = {
   matchMode: 'fuzzy',
@@ -155,11 +155,6 @@ export const useMonitorStore = defineStore('monitor', {
         }
       }
 
-      // 如果代理启用，获取速率数据
-      if (this.settings.summaryWindow) {
-        await this.fetchRateSummary(this.settings.summaryWindow)
-      }
-
       // 检查是否有 ChatGPT OAuth 配置，如果有则查询订阅
       await this.checkChatGptOAuth()
       if (this.hasChatGptOAuth) {
@@ -197,19 +192,14 @@ export const useMonitorStore = defineStore('monitor', {
       try {
         this.error = ''
 
-        const data = await invoke<UsageSnapshot>('get_usage_snapshot', {
+        const bundle = await invoke<UsageRefreshBundle>('refresh_usage_bundle', {
           settings: this.settings
         })
-        this.snapshot = data
+        this.snapshot = bundle.snapshot
+        this.rateSummary = bundle.rateSummary
+        this.overviewBreakdown = bundle.overviewBreakdown
 
         this.lastUpdatedEpoch = this.snapshot.generatedAtEpoch
-        // 刷新速率数据
-        if (this.settings.summaryWindow) {
-          await this.fetchRateSummary(this.settings.summaryWindow)
-        }
-        if (this.settings.summaryWindow) {
-          await this.fetchOverviewBreakdown(this.settings.summaryWindow)
-        }
       } catch (e) {
         this.error = String(e)
       } finally {

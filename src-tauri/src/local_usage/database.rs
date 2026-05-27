@@ -4,10 +4,11 @@ use crate::session::{scan_session_files, LocalRequestRecord, SessionMeta};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 static GLOBAL_LOCAL_USAGE_DB: OnceLock<Arc<LocalUsageDatabase>> = OnceLock::new();
+const LOCAL_SYNC_THROTTLE_INTERVAL: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone)]
 struct DirtySessionSync {
@@ -78,8 +79,27 @@ pub struct RemoteSyncDevice {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LocalMergeCacheSignature {
+    pub local_request_count: u64,
+    pub local_max_sync_version: i64,
+    pub local_max_timestamp: i64,
+    pub remote_request_count: u64,
+    pub remote_max_export_seq: i64,
+    pub remote_max_timestamp: i64,
+    pub local_session_max_updated_at: i64,
+    pub remote_session_max_imported_at: i64,
+}
+
 pub struct LocalUsageDatabase {
     conn: Arc<Mutex<Connection>>,
+    sync_gate: Arc<(Mutex<SyncGateState>, Condvar)>,
+}
+
+#[derive(Debug, Default)]
+struct SyncGateState {
+    last_completed_at: Option<Instant>,
+    sync_in_progress: bool,
 }
 
 impl LocalUsageDatabase {
@@ -115,6 +135,7 @@ impl LocalUsageDatabase {
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            sync_gate: Arc::new((Mutex::new(SyncGateState::default()), Condvar::new())),
         })
     }
 
@@ -1940,6 +1961,37 @@ impl LocalUsageDatabase {
         .map_err(|e| format!("Failed to count local request facts: {}", e))
     }
 
+    pub fn get_merge_cache_signature(&self) -> Result<LocalMergeCacheSignature, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            r#"
+            SELECT
+                (SELECT COUNT(*) FROM local_request_facts),
+                (SELECT COALESCE(MAX(sync_version), 0) FROM local_request_facts),
+                (SELECT COALESCE(MAX(timestamp), 0) FROM local_request_facts),
+                (SELECT COUNT(*) FROM remote_request_facts),
+                (SELECT COALESCE(MAX(export_seq), 0) FROM remote_request_facts),
+                (SELECT COALESCE(MAX(timestamp), 0) FROM remote_request_facts),
+                (SELECT COALESCE(MAX(updated_at), 0) FROM local_sessions),
+                (SELECT COALESCE(MAX(imported_at), 0) FROM remote_sessions)
+            "#,
+            [],
+            |row| {
+                Ok(LocalMergeCacheSignature {
+                    local_request_count: row.get::<_, i64>(0)?.max(0) as u64,
+                    local_max_sync_version: row.get::<_, i64>(1)?,
+                    local_max_timestamp: row.get::<_, i64>(2)?,
+                    remote_request_count: row.get::<_, i64>(3)?.max(0) as u64,
+                    remote_max_export_seq: row.get::<_, i64>(4)?,
+                    remote_max_timestamp: row.get::<_, i64>(5)?,
+                    local_session_max_updated_at: row.get::<_, i64>(6)?,
+                    remote_session_max_imported_at: row.get::<_, i64>(7)?,
+                })
+            },
+        )
+        .map_err(|e| format!("Failed to compute local merge cache signature: {}", e))
+    }
+
     pub fn count_remote_request_facts(&self) -> Result<u64, String> {
         let conn = self.conn.lock().unwrap();
         conn.query_row("SELECT COUNT(*) FROM remote_request_facts", [], |row| {
@@ -2133,11 +2185,42 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to commit truncate local facts: {}", e))?;
         Ok(())
     }
+
+    pub fn ensure_synced_throttled(&self, min_interval: Duration) -> Result<(), String> {
+        let (lock, cvar) = self.sync_gate.as_ref();
+
+        loop {
+            let mut state = lock.lock().unwrap();
+            if let Some(last_completed_at) = state.last_completed_at {
+                if last_completed_at.elapsed() < min_interval {
+                    return Ok(());
+                }
+            }
+
+            if state.sync_in_progress {
+                let _guard = cvar.wait(state).unwrap();
+                continue;
+            }
+
+            state.sync_in_progress = true;
+            drop(state);
+
+            let result = self.sync_from_scanner();
+
+            let mut state = lock.lock().unwrap();
+            state.sync_in_progress = false;
+            if result.is_ok() {
+                state.last_completed_at = Some(Instant::now());
+            }
+            cvar.notify_all();
+            return result;
+        }
+    }
 }
 
 pub fn ensure_local_usage_synced() -> Result<Arc<LocalUsageDatabase>, String> {
     let db = LocalUsageDatabase::get_global()?;
-    db.sync_from_scanner()?;
+    db.ensure_synced_throttled(LOCAL_SYNC_THROTTLE_INTERVAL)?;
     Ok(db)
 }
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import { Activity, Boxes, CircleDollarSign, HelpCircle, Layers3, LayoutGrid } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
@@ -47,27 +47,6 @@ const modelItems = computed(() => sortItems(breakdown.value?.modelRanking ?? [])
 const showSourceSection = computed(() => sourceItems.value.length > 0)
 const showSourceHint = computed(() => !showSourceSection.value && hasAnyItems.value)
 const hasAnyItems = computed(() => sourceItems.value.length + toolItems.value.length + modelItems.value.length > 0)
-
-watch(
-  () => ({
-    window: store.settings.summaryWindow,
-    source: store.settings.sourceAware.activeSourceFilter,
-    tool: store.settings.clientTools.activeToolFilter,
-    snapshotEpoch: store.lastUpdatedEpoch
-  }),
-  ({ window }) => {
-    if (window) {
-      store.fetchOverviewBreakdown(window)
-    }
-  },
-  { immediate: false }
-)
-
-onMounted(() => {
-  if (store.settings.summaryWindow) {
-    store.fetchOverviewBreakdown(store.settings.summaryWindow)
-  }
-})
 
 function primaryValue(item: OverviewBreakdownItem): string {
   if (effectiveSortMetric.value === 'cost') return formatCost(item.cost, store.settings.currency)

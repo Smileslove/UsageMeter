@@ -246,6 +246,13 @@ export interface OverviewBreakdown {
   capability: OverviewBreakdownCapability
 }
 
+export interface UsageRefreshBundle {
+  generatedAtEpoch: number
+  snapshot: UsageSnapshot
+  rateSummary: WindowRateSummary
+  overviewBreakdown: OverviewBreakdown
+}
+
 // 代理相关类型
 export interface ProxyStatus {
   running: boolean
