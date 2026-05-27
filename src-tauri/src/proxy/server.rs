@@ -5,11 +5,15 @@ use super::collector::UsageCollector;
 use super::config_manager::ClaudeConfigManager;
 use super::forwarder::{ForwardResult, RequestForwarder};
 use super::openai_forwarder::{OpenAiForwardResult, OpenAiForwarder};
-use super::source_detector::{detect_source_info, normalize_base_url, register_source_to_settings};
+use super::source_detector::{
+    detect_source_info, normalize_base_url, register_source_to_settings, SourceRegistrationResult,
+};
 use super::source_registry::{ProxySourceHandle, ProxySourceRegistry};
 use super::types::{ProxyConfig, ProxyState, ProxyStatus, RequestContext};
 use crate::commands::{load_settings, save_settings_internal};
-use crate::models::{ClientToolProfile, DEFAULT_CLIENT_DETECTION_METHOD, DEFAULT_CLIENT_TOOL};
+use crate::models::{
+    AppSettings, ClientToolProfile, DEFAULT_CLIENT_DETECTION_METHOD, DEFAULT_CLIENT_TOOL,
+};
 use crate::net::HttpClientFactory;
 use http_body_util::BodyExt;
 use hyper::server::conn::http1;
@@ -17,6 +21,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde_json::Value;
+use std::fs;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -59,8 +64,12 @@ fn default_profile_for_tool<'a>(
     profiles.iter().find(|profile| profile.tool == tool)
 }
 
-fn detect_client_route(path: &str) -> ClientRoute {
-    let settings = load_settings().unwrap_or_default();
+fn settings_file_mtime() -> Option<SystemTime> {
+    let path = AppSettings::settings_path().ok()?;
+    fs::metadata(path).ok()?.modified().ok()
+}
+
+fn detect_client_route(path: &str, settings: &AppSettings) -> ClientRoute {
     for profile in settings
         .client_tools
         .profiles
@@ -117,6 +126,70 @@ fn detect_client_route(path: &str) -> ClientRoute {
         target_base_url: None,
         source_id: None,
     }
+}
+
+async fn get_settings_snapshot(state: &Arc<ProxyState>) -> AppSettings {
+    state.settings_snapshot.read().await.clone()
+}
+
+async fn store_settings_snapshot(
+    state: &Arc<ProxyState>,
+    settings: AppSettings,
+    mtime: Option<SystemTime>,
+) {
+    *state.settings_snapshot.write().await = settings;
+    *state.settings_file_mtime.write().await = mtime;
+}
+
+async fn persist_proxy_settings(
+    state: &Arc<ProxyState>,
+    settings: AppSettings,
+) -> Result<(), String> {
+    save_settings_internal(settings.clone()).map_err(String::from)?;
+    store_settings_snapshot(state, settings, settings_file_mtime()).await;
+    Ok(())
+}
+
+async fn refresh_settings_snapshot_if_needed(state: &Arc<ProxyState>) {
+    let current_mtime = settings_file_mtime();
+    {
+        let known_mtime = state.settings_file_mtime.read().await;
+        if *known_mtime == current_mtime {
+            return;
+        }
+    }
+
+    match load_settings() {
+        Ok(settings) => {
+            store_settings_snapshot(state, settings, current_mtime).await;
+        }
+        Err(err) => {
+            eprintln!("[proxy] Failed to reload settings snapshot: {}", err);
+        }
+    }
+}
+
+async fn register_source_for_runtime(
+    state: &Arc<ProxyState>,
+    api_key: &str,
+    target_base_url: &str,
+) -> SourceRegistrationResult {
+    let mut settings = state.settings_snapshot.write().await;
+    let result = register_source_to_settings(&mut settings, api_key, target_base_url);
+    let settings_to_persist = if result.is_new {
+        Some(settings.clone())
+    } else {
+        None
+    };
+    drop(settings);
+
+    if let Some(settings) = settings_to_persist {
+        if let Err(err) = persist_proxy_settings(state, settings).await {
+            eprintln!("[proxy] Failed to persist source state: {}", err);
+        }
+    }
+
+    result
 }
 
 fn strip_source_handle_path(path: &str) -> (String, Option<String>) {
@@ -270,8 +343,8 @@ async fn sync_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
     }
 }
 
-async fn sync_codex_external_config_change(proxy_port: u16) {
-    let settings = load_settings().unwrap_or_default();
+async fn sync_codex_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
+    let settings = get_settings_snapshot(&state).await;
     let codex_enabled = settings
         .client_tools
         .profiles
@@ -361,6 +434,8 @@ impl ProxyServer {
 
     fn new_with_claude_takeover(config: ProxyConfig, takeover_claude: bool) -> Self {
         let usage_collector = Arc::new(UsageCollector::new());
+        let initial_settings = load_settings().unwrap_or_default();
+        let initial_settings_mtime = settings_file_mtime();
 
         let client = HttpClientFactory::global()
             .apply_proxy_to_builder(
@@ -378,6 +453,8 @@ impl ProxyServer {
             app_handle: Arc::new(RwLock::new(None)),
             active_source_id: Arc::new(RwLock::new(None)),
             openai_forwarder: Arc::new(RwLock::new(None)),
+            settings_snapshot: Arc::new(RwLock::new(initial_settings)),
+            settings_file_mtime: Arc::new(RwLock::new(initial_settings_mtime)),
         });
 
         Self {
@@ -471,12 +548,9 @@ impl ProxyServer {
                 source_handle.as_ref().and_then(|h| h.api_key.as_deref()),
             ) {
                 let target_base_url = forwarder.get_target_base_url();
-                let (is_new, updated_settings) =
-                    register_source_to_settings(&api_key, &target_base_url);
-                if let Err(e) = save_settings_internal(updated_settings) {
-                    eprintln!("[proxy] Failed to save source state on startup: {}", e);
-                }
-                if is_new {
+                let result =
+                    register_source_for_runtime(&self.state, &api_key, &target_base_url).await;
+                if result.is_new {
                     if let Some(ref app_handle) = *self.state.app_handle.read().await {
                         let _ = app_handle.emit("source_detected", ());
                     }
@@ -508,7 +582,7 @@ impl ProxyServer {
             status.port = self.config.port;
         }
 
-        sync_codex_external_config_change(self.config.port).await;
+        sync_codex_external_config_change(self.config.port, self.state.clone()).await;
 
         // 创建关闭通道
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
@@ -535,10 +609,11 @@ impl ProxyServer {
                         }
                     }
                     _ = config_monitor.changed() => {
+                        refresh_settings_snapshot_if_needed(&state).await;
                         if takeover_claude {
                             sync_external_config_change(proxy_port, state.clone()).await;
                         }
-                        sync_codex_external_config_change(proxy_port).await;
+                        sync_codex_external_config_change(proxy_port, state.clone()).await;
                         None
                     }
                     _ = &mut shutdown_rx => {
@@ -807,17 +882,13 @@ async fn handle_codex_request(
     // 来源检测
     let key_for_source_detection = target_api_key.as_deref();
     let (api_key_prefix, request_base_url) = if let Some(api_key) = key_for_source_detection {
-        let settings = load_settings().unwrap_or_default();
-        let sources = settings.source_aware.sources;
-        let (prefix, base_url, _) = detect_source_info(api_key, &target_base_url, &sources);
-        let (is_new, updated_settings) = register_source_to_settings(api_key, &target_base_url);
-        let _ = save_settings_internal(updated_settings);
-        if is_new {
+        let result = register_source_for_runtime(state, api_key, &target_base_url).await;
+        if result.is_new {
             if let Some(ref app_handle) = *state.app_handle.read().await {
                 let _ = app_handle.emit("source_detected", ());
             }
         }
-        (prefix, base_url)
+        (result.prefix, result.base_url)
     } else {
         (String::new(), normalize_base_url(&target_base_url))
     };
@@ -1035,7 +1106,8 @@ async fn handle_request(
     let method = req.method().clone();
     let raw_path = req.uri().path().to_string();
     let raw_query = req.uri().query().map(str::to_string);
-    let client_route = detect_client_route(&raw_path);
+    let settings = get_settings_snapshot(&state).await;
+    let client_route = detect_client_route(&raw_path, &settings);
     let path = client_route.normalized_path.clone();
     let forward_path = append_query(&path, raw_query.as_deref());
 
@@ -1139,23 +1211,20 @@ async fn handle_request(
 
         // 检测并注册来源
         let is_new_source = if let Some(ref api_key) = effective_api_key {
-            let (is_new, updated_settings) = register_source_to_settings(api_key, &target_base_url);
-            if let Err(e) = save_settings_internal(updated_settings) {
-                eprintln!("[proxy] Failed to save source state: {}", e);
-            }
-            if is_new {
+            let result = register_source_for_runtime(&state, api_key, &target_base_url).await;
+            if result.is_new {
                 if let Some(ref app_handle) = *state.app_handle.read().await {
                     let _ = app_handle.emit("source_detected", ());
                 }
             }
-            is_new
+            result.is_new
         } else {
             false
         };
 
         // 获取来源信息用于 RequestContext
         let (api_key_prefix, request_base_url) = if let Some(ref api_key) = effective_api_key {
-            let settings = load_settings().unwrap_or_default();
+            let settings = get_settings_snapshot(&state).await;
             let sources = settings.source_aware.sources;
             let (prefix, base_url, _) = detect_source_info(api_key, &target_base_url, &sources);
             (prefix, base_url)

@@ -2,10 +2,15 @@
 //!
 //! 从请求中提取 API Key 前缀和 Base URL，用于自动识别和注册来源
 
-use crate::commands::load_settings;
 use crate::models::{ApiSource, AppSettings, SOURCE_COLORS};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+
+pub struct SourceRegistrationResult {
+    pub is_new: bool,
+    pub prefix: String,
+    pub base_url: Option<String>,
+}
 
 /// 计算来源的稳定 ID（基于 key 前缀 + base_url）
 ///
@@ -103,12 +108,15 @@ pub fn create_new_source(
     }
 }
 
-/// 注册新来源到设置
+/// 在已有设置快照中注册来源。
 ///
-/// 如果是新来源，会自动添加到 settings.source_aware.sources 列表
-/// 返回 (是否为新来源, 更新后的设置)
-pub fn register_source_to_settings(api_key: &str, target_base_url: &str) -> (bool, AppSettings) {
-    let mut settings = load_settings().unwrap_or_default();
+/// - 新来源会追加到 `settings.source_aware.sources`
+/// - 已有来源只刷新内存中的 `last_seen_ms`
+pub fn register_source_to_settings(
+    settings: &mut AppSettings,
+    api_key: &str,
+    target_base_url: &str,
+) -> SourceRegistrationResult {
     let prefix = extract_key_prefix(api_key, 12);
     let base_url = normalize_base_url(target_base_url);
 
@@ -127,12 +135,21 @@ pub fn register_source_to_settings(api_key: &str, target_base_url: &str) -> (boo
                 break;
             }
         }
-        (false, settings)
+        SourceRegistrationResult {
+            is_new: false,
+            prefix,
+            base_url,
+        }
     } else {
         // 创建新来源
-        let new_source = create_new_source(prefix, base_url, settings.source_aware.sources.len());
+        let new_source =
+            create_new_source(prefix.clone(), base_url.clone(), settings.source_aware.sources.len());
         settings.source_aware.sources.push(new_source);
-        (true, settings)
+        SourceRegistrationResult {
+            is_new: true,
+            prefix,
+            base_url,
+        }
     }
 }
 
@@ -244,5 +261,56 @@ mod tests {
         assert!(source.display_name.is_none());
         // 第一个来源使用第一个颜色
         assert_eq!(source.color, SOURCE_COLORS[0]);
+    }
+
+    #[test]
+    fn test_register_source_to_settings_updates_existing_source_without_duplication() {
+        let mut settings = AppSettings::default();
+        settings.source_aware.sources.push(ApiSource {
+            id: "test-id".to_string(),
+            display_name: Some("Test".to_string()),
+            base_url: Some("https://openrouter.ai/api/v1".to_string()),
+            api_key_prefixes: vec!["sk-ant-api03".to_string()],
+            api_key_notes: HashMap::new(),
+            color: "#3B82F6".to_string(),
+            icon: None,
+            auto_detected: true,
+            first_seen_ms: 1000,
+            last_seen_ms: 1000,
+        });
+
+        let result = register_source_to_settings(
+            &mut settings,
+            "sk-ant-api03-xxxx",
+            "https://openrouter.ai/api/v1",
+        );
+
+        assert!(!result.is_new);
+        assert_eq!(result.prefix, "sk-ant-api03");
+        assert_eq!(
+            result.base_url,
+            Some("https://openrouter.ai/api/v1".to_string())
+        );
+        assert_eq!(settings.source_aware.sources.len(), 1);
+        assert!(settings.source_aware.sources[0].last_seen_ms >= 1000);
+    }
+
+    #[test]
+    fn test_register_source_to_settings_adds_new_source() {
+        let mut settings = AppSettings::default();
+
+        let result = register_source_to_settings(
+            &mut settings,
+            "sk-ant-api04-yyyy",
+            "https://openrouter.ai/api/v1",
+        );
+
+        assert!(result.is_new);
+        assert_eq!(result.prefix, "sk-ant-api04");
+        assert_eq!(
+            result.base_url,
+            Some("https://openrouter.ai/api/v1".to_string())
+        );
+        assert_eq!(settings.source_aware.sources.len(), 1);
     }
 }

@@ -2,8 +2,10 @@
 
 use super::collector::UsageCollector;
 use super::openai_forwarder::OpenAiForwarder;
+use crate::models::AppSettings;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::RwLock;
 
 /// 代理配置
@@ -363,6 +365,10 @@ pub struct ProxyState {
     pub active_source_id: Arc<RwLock<Option<String>>>,
     /// OpenAI-compatible 转发器（Codex 等），在服务器启动时创建一次并复用。
     pub openai_forwarder: Arc<RwLock<Option<Arc<OpenAiForwarder>>>>,
+    /// 代理运行期的设置快照，避免在请求热路径重复读盘。
+    pub settings_snapshot: Arc<RwLock<AppSettings>>,
+    /// 设置文件最后一次已知修改时间，用于轮询刷新快照。
+    pub settings_file_mtime: Arc<RwLock<Option<SystemTime>>>,
 }
 
 /// Claude API 的 SSE 事件类型
