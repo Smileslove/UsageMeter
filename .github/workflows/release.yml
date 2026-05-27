@@ -46,6 +46,35 @@ jobs:
           fi
           echo "Changelog entry found for version $VERSION"
 
+      - name: Verify version in config files matches tag
+        run: |
+          VERSION="${{ steps.version.outputs.value }}"
+          ERRORS=""
+
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$PKG_VERSION" != "$VERSION" ]; then
+            ERRORS="$ERRORS\n  package.json: $PKG_VERSION (expected $VERSION)"
+          fi
+
+          TAURI_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "$TAURI_VERSION" != "$VERSION" ]; then
+            ERRORS="$ERRORS\n  tauri.conf.json: $TAURI_VERSION (expected $VERSION)"
+          fi
+
+          CARGO_VERSION=$(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          if [ "$CARGO_VERSION" != "$VERSION" ]; then
+            ERRORS="$ERRORS\n  Cargo.toml: $CARGO_VERSION (expected $VERSION)"
+          fi
+
+          if [ -n "$ERRORS" ]; then
+            echo "Error: Version mismatch detected in config files:"
+            echo -e "$ERRORS"
+            echo ""
+            echo "Please update all version fields to $VERSION before releasing."
+            exit 1
+          fi
+          echo "All config files match version $VERSION"
+
   build-macos:
     name: Build macOS (${{ matrix.arch }})
     needs: verify

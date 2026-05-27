@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.2] - 2026-05-27
+
+### Changed
+
+- **Usage Refresh Pipeline**: Optimized the usage data refresh pipeline to reduce CPU overhead, removing redundant local query paths during time-range switches
+- **Settings View Structure**: Refactored oversized settings views into smaller, more maintainable components
+
+### Fixed
+
+- **Settings Migration Logic**: Consolidated settings migration logic and removed hardcoded proxy mode markers that could cause stale state
+- **Proxy Settings Cache**: Settings are now cached in-memory at runtime, eliminating per-request file I/O that degraded proxy throughput
+- **Proxy State on Exit/Update**: Exiting or restarting for an update no longer clears the proxy takeover enabled flag — only external provider config is restored
+
+---
+
+### 变更
+
+- **用量刷新链路优化**：优化用量数据刷新管线以降低 CPU 开销，移除切换时间范围时冗余的本地查询路径
+- **设置视图结构**：将过大的设置视图拆分为更小、更易维护的组件
+
+### 修复
+
+- **设置迁移逻辑**：收口设置迁移逻辑，移除可能导致陈旧状态的硬编码代理模式标记
+- **代理设置缓存**：设置现在在运行时缓存到内存，消除每次请求的文件 I/O 对代理吞吐量的影响
+- **退出/更新时代理状态**：退出或更新重启时不再清除代理接管开关状态，仅恢复外部供应商配置
+
+---
+
 ## [0.6.1] - 2026-05-26
 
 ### Removed
@@ -469,6 +497,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.6.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.2
 [0.6.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.0
 [0.5.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.5.1
 [0.5.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.5.0
