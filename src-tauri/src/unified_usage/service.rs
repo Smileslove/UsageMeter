@@ -1,10 +1,15 @@
-use super::types::{CoverageOrigin, MergedCoverage, MergedRequestFact};
+use super::types::{
+    canonical_request_key_for_local, canonical_request_key_for_proxy, has_partial_coverage,
+    CoverageOrigin, MergedCoverage, MergedRequestFact,
+};
 use crate::models::{AppSettings, ToolFilter, UsageQueryFilter};
 use crate::proxy::ProxyMergeCacheSignature;
 use crate::proxy::{ProjectStats, ProjectToolStats, ProxyDatabase, SessionStats, UsageRecord};
 use crate::session::{LocalRequestRecord, SessionMeta};
+use chrono::{Local, TimeZone};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -25,6 +30,24 @@ struct MergeCacheEntry {
     key: MergeCacheKey,
     facts: Vec<MergedRequestFact>,
     coverage: MergedCoverage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct HotMergeCacheKey {
+    local_date: String,
+    include_errors: bool,
+    source_filter: String,
+    tool_filter: String,
+    pricing_match_mode: String,
+    pricing_fingerprint: u64,
+    local_signature: crate::local_usage::LocalMergeCacheSignature,
+    proxy_signature: Option<ProxyMergeCacheSignature>,
+}
+
+#[derive(Debug, Clone)]
+struct HotMergeCacheEntry {
+    key: HotMergeCacheKey,
+    facts: Vec<MergedRequestFact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -52,9 +75,12 @@ struct ProjectDerivedCacheEntry {
 }
 
 static MERGED_REQUEST_FACTS_CACHE: OnceLock<Mutex<Vec<MergeCacheEntry>>> = OnceLock::new();
+static HOT_MERGED_REQUEST_FACTS_CACHE: OnceLock<Mutex<Vec<HotMergeCacheEntry>>> = OnceLock::new();
 static MERGED_SESSIONS_CACHE: OnceLock<Mutex<Vec<SessionDerivedCacheEntry>>> = OnceLock::new();
 static MERGED_PROJECTS_CACHE: OnceLock<Mutex<Vec<ProjectDerivedCacheEntry>>> = OnceLock::new();
+static UNIFIED_INFLIGHT_KEYS: OnceLock<tokio::sync::Mutex<HashSet<String>>> = OnceLock::new();
 const MERGED_REQUEST_FACTS_CACHE_CAPACITY: usize = 8;
+const HOT_MERGED_REQUEST_FACTS_CACHE_CAPACITY: usize = 4;
 const MERGED_SESSIONS_CACHE_CAPACITY: usize = 6;
 const MERGED_PROJECTS_CACHE_CAPACITY: usize = 6;
 
@@ -78,6 +104,14 @@ fn merged_sessions_cache() -> &'static Mutex<Vec<SessionDerivedCacheEntry>> {
 
 fn merged_projects_cache() -> &'static Mutex<Vec<ProjectDerivedCacheEntry>> {
     MERGED_PROJECTS_CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn hot_merge_cache() -> &'static Mutex<Vec<HotMergeCacheEntry>> {
+    HOT_MERGED_REQUEST_FACTS_CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn inflight_keys() -> &'static tokio::sync::Mutex<HashSet<String>> {
+    UNIFIED_INFLIGHT_KEYS.get_or_init(|| tokio::sync::Mutex::new(HashSet::new()))
 }
 
 fn cache_key_for_source_filter(filter: &crate::models::SourceFilter) -> String {
@@ -150,6 +184,34 @@ fn store_merge_cache(key: MergeCacheKey, facts: &[MergedRequestFact], coverage: 
     }
 }
 
+fn lookup_hot_merge_cache(key: &HotMergeCacheKey) -> Option<Vec<MergedRequestFact>> {
+    let cache = hot_merge_cache();
+    let mut guard = cache.lock().unwrap();
+    let idx = guard.iter().position(|entry| entry.key == *key)?;
+    let entry = guard.remove(idx);
+    let result = entry.facts.clone();
+    guard.insert(0, entry);
+    Some(result)
+}
+
+fn store_hot_merge_cache(key: HotMergeCacheKey, facts: &[MergedRequestFact]) {
+    let cache = hot_merge_cache();
+    let mut guard = cache.lock().unwrap();
+    if let Some(idx) = guard.iter().position(|entry| entry.key == key) {
+        guard.remove(idx);
+    }
+    guard.insert(
+        0,
+        HotMergeCacheEntry {
+            key,
+            facts: facts.to_vec(),
+        },
+    );
+    if guard.len() > HOT_MERGED_REQUEST_FACTS_CACHE_CAPACITY {
+        guard.truncate(HOT_MERGED_REQUEST_FACTS_CACHE_CAPACITY);
+    }
+}
+
 fn lookup_sessions_cache(key: &SessionDerivedCacheKey) -> Option<Vec<SessionStats>> {
     let cache = merged_sessions_cache();
     let mut guard = cache.lock().unwrap();
@@ -207,49 +269,11 @@ fn store_projects_cache(key: ProjectDerivedCacheKey, projects: &[ProjectStats]) 
 }
 
 fn request_key_for_local(record: &LocalRequestRecord) -> String {
-    // 优先使用持久化的 request_key（v5 schema 之后由 local_usage 写入）；
-    // 老数据或 scanner 直读路径没有这个字段时，落回与写入时一致的拼接规则。
-    if let Some(key) = record.request_key.as_ref() {
-        let trimmed = key.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-    if record.message_id.trim().is_empty() {
-        format!(
-            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
-            record.tool,
-            record.session_id,
-            record.timestamp,
-            record.model,
-            record.input_tokens,
-            record.output_tokens,
-            record.cache_create_tokens,
-            record.cache_read_tokens,
-            record.total_tokens
-        )
-    } else {
-        format!("{}:{}", record.tool, record.message_id)
-    }
+    canonical_request_key_for_local(record)
 }
 
 fn request_key_for_proxy(record: &UsageRecord) -> String {
-    if record.message_id.trim().is_empty() {
-        format!(
-            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
-            record.client_tool,
-            record.session_id.clone().unwrap_or_default(),
-            record.timestamp / 1000,
-            record.model,
-            record.input_tokens,
-            record.output_tokens,
-            record.cache_create_tokens,
-            record.cache_read_tokens,
-            record.total_tokens
-        )
-    } else {
-        format!("{}:{}", record.client_tool, record.message_id)
-    }
+    canonical_request_key_for_proxy(record)
 }
 
 fn local_tool_matches(record: &LocalRequestRecord, tool_filter: &ToolFilter) -> bool {
@@ -304,20 +328,23 @@ fn attach_proxy_session_ids(
     }
 }
 
-fn compute_local_request_cost(
+fn compute_local_request_cost_cached(
     record: &LocalRequestRecord,
     pricings: &[crate::models::ModelPricingConfig],
     match_mode: &str,
+    pricing_cache: &mut HashMap<String, crate::models::ModelPricing>,
 ) -> f64 {
-    crate::models::estimate_session_cost(
-        record.input_tokens,
-        record.output_tokens,
-        record.cache_create_tokens,
-        record.cache_read_tokens,
-        &record.model,
-        pricings,
-        match_mode,
-    )
+    let pricing = pricing_cache
+        .entry(record.model.clone())
+        .or_insert_with(|| crate::models::get_pricing(&record.model, pricings, match_mode));
+
+    let input_cost = (record.input_tokens as f64 / 1_000_000.0) * pricing.input;
+    let output_cost = (record.output_tokens as f64 / 1_000_000.0) * pricing.output;
+    let cache_read_cost = (record.cache_read_tokens as f64 / 1_000_000.0) * pricing.cache_read;
+    let cache_create_cost =
+        (record.cache_create_tokens as f64 / 1_000_000.0) * pricing.cache_write_1h;
+
+    input_cost + output_cost + cache_read_cost + cache_create_cost
 }
 
 #[derive(Default)]
@@ -343,6 +370,31 @@ fn build_proxy_request_index(proxy_records: &[UsageRecord]) -> HashMap<String, U
         map.insert(request_key_for_proxy(record), record.clone());
     }
     map
+}
+
+fn enumerate_local_dates(start_epoch: i64, end_epoch: i64) -> Vec<String> {
+    if end_epoch <= start_epoch {
+        return Vec::new();
+    }
+    let mut dates = Vec::new();
+    let mut current = Local
+        .timestamp_opt(start_epoch, 0)
+        .single()
+        .unwrap_or_else(Local::now)
+        .date_naive();
+    let end_date = Local
+        .timestamp_opt(end_epoch.saturating_sub(1), 0)
+        .single()
+        .unwrap_or_else(Local::now)
+        .date_naive();
+    while current <= end_date {
+        dates.push(current.format("%Y-%m-%d").to_string());
+        let Some(next) = current.succ_opt() else {
+            break;
+        };
+        current = next;
+    }
+    dates
 }
 
 async fn fetch_proxy_records(
@@ -377,6 +429,24 @@ struct MergeCacheKeyParts<'a> {
     pricings: &'a [crate::models::ModelPricingConfig],
 }
 
+struct RealtimeMergeResult {
+    facts: Vec<MergedRequestFact>,
+    local_record_count: usize,
+    remote_record_count: usize,
+    proxy_record_count: usize,
+    proxy_all_record_count: usize,
+}
+
+struct MergeRealtimeParams<'a> {
+    settings: &'a AppSettings,
+    start_epoch: Option<i64>,
+    end_epoch: Option<i64>,
+    include_errors: bool,
+    pricings: &'a [crate::models::ModelPricingConfig],
+    pricing_match_mode: &'a str,
+    phase_label: &'a str,
+}
+
 fn build_merge_cache_key(parts: MergeCacheKeyParts<'_>) -> MergeCacheKey {
     MergeCacheKey {
         start_epoch: parts.range_start,
@@ -389,6 +459,70 @@ fn build_merge_cache_key(parts: MergeCacheKeyParts<'_>) -> MergeCacheKey {
         local_signature: parts.local_signature,
         proxy_signature: parts.proxy_signature,
     }
+}
+
+fn build_hot_merge_cache_key(
+    parts: MergeCacheKeyParts<'_>,
+    local_date: String,
+) -> HotMergeCacheKey {
+    HotMergeCacheKey {
+        local_date,
+        include_errors: parts.include_errors,
+        source_filter: cache_key_for_source_filter(parts.source_filter),
+        tool_filter: cache_key_for_tool_filter(parts.tool_filter),
+        pricing_match_mode: parts.settings.model_pricing.match_mode.clone(),
+        pricing_fingerprint: fingerprint_pricings(parts.pricings),
+        local_signature: parts.local_signature,
+        proxy_signature: parts.proxy_signature,
+    }
+}
+
+fn merge_cache_inflight_key(key: &MergeCacheKey) -> String {
+    format!(
+        "merge:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        key.start_epoch,
+        key.end_epoch,
+        key.include_errors,
+        key.source_filter,
+        key.tool_filter,
+        key.pricing_match_mode,
+        key.pricing_fingerprint,
+        key.local_signature.local_request_count,
+        key.local_signature.local_max_sync_version,
+        key.local_signature.remote_request_count,
+        key.local_signature
+            .unified_materialization_invalidation_version,
+        key.proxy_signature
+            .map(|sig| format!(
+                "{}:{}:{}",
+                sig.usage_record_count, sig.max_timestamp, sig.max_updated_at
+            ))
+            .unwrap_or_else(|| "none".to_string()),
+    )
+}
+
+async fn acquire_inflight_key(key: &str) {
+    loop {
+        let mut guard = inflight_keys().lock().await;
+        if !guard.contains(key) {
+            guard.insert(key.to_string());
+            return;
+        }
+        drop(guard);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+async fn release_inflight_key(key: &str) {
+    let mut guard = inflight_keys().lock().await;
+    guard.remove(key);
+}
+
+fn canonical_history_settings(settings: &AppSettings) -> AppSettings {
+    let mut canonical = settings.clone();
+    canonical.client_tools.active_tool_filter = None;
+    canonical.source_aware.active_source_filter = None;
+    canonical
 }
 
 pub(crate) fn build_coverage(facts: &[MergedRequestFact]) -> MergedCoverage {
@@ -405,11 +539,560 @@ pub(crate) fn build_coverage(facts: &[MergedRequestFact]) -> MergedCoverage {
         }
     }
 
-    coverage.has_partial_status_coverage =
-        coverage.proxy_backed_requests > 0 && coverage.local_only_requests > 0;
-    coverage.has_partial_performance_coverage =
-        coverage.proxy_backed_requests > 0 && coverage.local_only_requests > 0;
+    let has_partial =
+        has_partial_coverage(coverage.proxy_backed_requests, coverage.local_only_requests);
+    coverage.has_partial_status_coverage = has_partial;
+    coverage.has_partial_performance_coverage = has_partial;
     coverage
+}
+
+async fn merge_realtime_range(
+    local_db: &crate::local_usage::LocalUsageDatabase,
+    params: MergeRealtimeParams<'_>,
+) -> Result<RealtimeMergeResult, String> {
+    let overall_started_at = Instant::now();
+    let MergeRealtimeParams {
+        settings,
+        start_epoch,
+        end_epoch,
+        include_errors,
+        pricings,
+        pricing_match_mode,
+        phase_label,
+    } = params;
+    let tool_filter = settings.client_tools.build_filter();
+    let usage_filter = UsageQueryFilter {
+        source: settings.source_aware.build_filter(),
+        tool: settings.client_tools.build_filter(),
+    };
+    let needs_unfiltered_proxy_lookup =
+        !matches!(usage_filter.source, crate::models::SourceFilter::All);
+    let unfiltered_usage_filter = if needs_unfiltered_proxy_lookup {
+        Some(UsageQueryFilter {
+            source: crate::models::SourceFilter::All,
+            tool: settings.client_tools.build_filter(),
+        })
+    } else {
+        None
+    };
+
+    let (range_start, range_end) = normalize_range_bounds(start_epoch, end_epoch);
+    let local_query_started_at = Instant::now();
+    let mut local_sessions_all = local_db.get_all_sessions(&tool_filter)?;
+    local_sessions_all.extend(local_db.get_remote_sessions(&tool_filter)?);
+    let local_sessions: Vec<SessionMeta> = local_sessions_all
+        .into_iter()
+        .filter(|meta| session_meta_matches(meta, &tool_filter))
+        .collect();
+    let mut local_records =
+        local_db.get_request_records_in_range(range_start, range_end, &tool_filter)?;
+    let local_record_count = local_records.len();
+    let local_request_keys: HashSet<String> =
+        local_records.iter().map(request_key_for_local).collect();
+    let mut remote_records =
+        local_db.get_remote_request_records_in_range(range_start, range_end, &tool_filter)?;
+    let remote_record_count = remote_records.len();
+    remote_records.retain(|record| !local_request_keys.contains(&request_key_for_local(record)));
+    local_records.extend(remote_records);
+    local_records.retain(|record| local_tool_matches(record, &tool_filter));
+    let mut seen_local_keys = HashSet::new();
+    local_records.retain(|record| seen_local_keys.insert(request_key_for_local(record)));
+    let session_meta_by_id = build_local_meta_index(&local_sessions);
+    let message_to_session = build_message_to_session_index(&local_records);
+    let local_query_elapsed_ms = local_query_started_at.elapsed().as_millis();
+
+    let proxy_query_started_at = Instant::now();
+    let (all_proxy_records, proxy_records) = if let Some(proxy_db) = ProxyDatabase::get_global() {
+        let mut records =
+            fetch_proxy_records(proxy_db.as_ref(), &usage_filter, start_epoch, end_epoch).await?;
+        attach_proxy_session_ids(&mut records, &message_to_session);
+        let visible_records: Vec<UsageRecord> = records
+            .iter()
+            .filter(|record| include_errors || (200..300).contains(&record.status_code))
+            .cloned()
+            .collect();
+        let all_records: Vec<UsageRecord> = if let Some(filter) = unfiltered_usage_filter.as_ref() {
+            let mut unfiltered =
+                fetch_proxy_records(proxy_db.as_ref(), filter, start_epoch, end_epoch).await?;
+            attach_proxy_session_ids(&mut unfiltered, &message_to_session);
+            unfiltered
+        } else {
+            records
+        };
+        (all_records, visible_records)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let proxy_query_elapsed_ms = proxy_query_started_at.elapsed().as_millis();
+
+    let index_build_started_at = Instant::now();
+    let all_proxy_index = build_proxy_request_index(&all_proxy_records);
+    let proxy_index = build_proxy_request_index(&proxy_records);
+    let local_index = build_local_request_index(&local_records);
+    let index_build_elapsed_ms = index_build_started_at.elapsed().as_millis();
+
+    let merge_loop_started_at = Instant::now();
+    let mut pricing_cache: HashMap<String, crate::models::ModelPricing> = HashMap::new();
+    let mut keys = HashSet::new();
+    keys.extend(proxy_index.keys().cloned());
+    keys.extend(local_index.keys().cloned());
+
+    let mut merged = Vec::new();
+    for key in keys {
+        match (proxy_index.get(&key), local_index.get(&key)) {
+            (Some(proxy), Some(local)) => {
+                let meta = session_meta_by_id.get(&local.session_id);
+                let fallback_cost = compute_local_request_cost_cached(
+                    local,
+                    pricings,
+                    pricing_match_mode,
+                    &mut pricing_cache,
+                );
+                merged.push(MergedRequestFact::merge_proxy_preferred(
+                    proxy,
+                    local,
+                    meta,
+                    fallback_cost,
+                ));
+            }
+            (Some(proxy), None) => {
+                let meta = proxy
+                    .session_id
+                    .as_ref()
+                    .and_then(|session_id| session_meta_by_id.get(session_id));
+                merged.push(MergedRequestFact::from_proxy(proxy, meta));
+            }
+            (None, Some(local)) => {
+                if all_proxy_index.contains_key(&key) {
+                    continue;
+                }
+                let meta = session_meta_by_id.get(&local.session_id);
+                let cost = compute_local_request_cost_cached(
+                    local,
+                    pricings,
+                    pricing_match_mode,
+                    &mut pricing_cache,
+                );
+                merged.push(MergedRequestFact::from_local(local, meta, cost));
+            }
+            (None, None) => {}
+        }
+    }
+    let merge_loop_elapsed_ms = merge_loop_started_at.elapsed().as_millis();
+
+    let sort_started_at = Instant::now();
+    merged.sort_by_key(|fact| fact.timestamp_ms);
+    let sort_elapsed_ms = sort_started_at.elapsed().as_millis();
+    perf_log(
+        "merge_realtime_breakdown",
+        format!(
+            "phase={} range={}..{} local_ms={} proxy_ms={} index_ms={} merge_ms={} sort_ms={} local_records={} remote_records={} proxy_records={} all_proxy_records={} facts={} total_ms={}",
+            phase_label,
+            range_start,
+            range_end,
+            local_query_elapsed_ms,
+            proxy_query_elapsed_ms,
+            index_build_elapsed_ms,
+            merge_loop_elapsed_ms,
+            sort_elapsed_ms,
+            local_record_count,
+            remote_record_count,
+            proxy_index.len(),
+            all_proxy_index.len(),
+            merged.len(),
+            overall_started_at.elapsed().as_millis(),
+        ),
+    );
+    Ok(RealtimeMergeResult {
+        facts: merged,
+        local_record_count,
+        remote_record_count,
+        proxy_record_count: proxy_index.len(),
+        proxy_all_record_count: all_proxy_index.len(),
+    })
+}
+
+fn request_key_for_fact(fact: &MergedRequestFact) -> String {
+    if !fact.canonical_request_key.trim().is_empty() {
+        return fact.canonical_request_key.clone();
+    }
+    if !fact.tool.trim().is_empty()
+        && fact.timestamp_ms > 0
+        && fact
+            .api_key_prefix
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+    {
+        return format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            fact.tool,
+            fact.session_id,
+            fact.timestamp_ms,
+            fact.model,
+            fact.input_tokens,
+            fact.output_tokens,
+            fact.cache_create_tokens,
+            fact.cache_read_tokens,
+            fact.total_tokens
+        );
+    }
+    format!(
+        "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        fact.tool,
+        fact.session_id,
+        fact.timestamp_ms,
+        fact.model,
+        fact.input_tokens,
+        fact.output_tokens,
+        fact.cache_create_tokens,
+        fact.cache_read_tokens,
+        fact.total_tokens
+    )
+}
+
+fn materialization_state_matches(
+    state: &crate::local_usage::UnifiedDayMaterializationState,
+    snapshot: &crate::local_usage::UnifiedDayLocalSnapshot,
+    proxy_snapshot: crate::proxy::ProxyDayDependencySnapshot,
+    pricing_fingerprint: u64,
+) -> bool {
+    state.is_finalized
+        && state.pricing_fingerprint == pricing_fingerprint
+        && state.local_request_count == snapshot.local_request_count
+        && state.local_max_sync_version == snapshot.local_max_sync_version
+        && state.local_max_timestamp == snapshot.local_max_timestamp
+        && state.remote_request_count == snapshot.remote_request_count
+        && state.remote_max_export_seq == snapshot.remote_max_export_seq
+        && state.remote_max_timestamp == snapshot.remote_max_timestamp
+        && state.proxy_record_count == proxy_snapshot.record_count
+        && state.proxy_max_timestamp_ms == proxy_snapshot.max_timestamp_ms
+        && state.proxy_max_updated_at == proxy_snapshot.max_updated_at
+}
+
+fn build_materialization_state(
+    local_date: &str,
+    fact_count: usize,
+    local_snapshot: &crate::local_usage::UnifiedDayLocalSnapshot,
+    proxy_snapshot: crate::proxy::ProxyDayDependencySnapshot,
+    pricing_fingerprint: u64,
+    max_fact_timestamp_ms: i64,
+    materialized_at: i64,
+) -> crate::local_usage::UnifiedDayMaterializationState {
+    crate::local_usage::UnifiedDayMaterializationState {
+        local_date: local_date.to_string(),
+        fact_count: fact_count as u64,
+        local_request_count: local_snapshot.local_request_count,
+        local_max_sync_version: local_snapshot.local_max_sync_version,
+        local_max_timestamp: local_snapshot.local_max_timestamp,
+        remote_request_count: local_snapshot.remote_request_count,
+        remote_max_export_seq: local_snapshot.remote_max_export_seq,
+        remote_max_timestamp: local_snapshot.remote_max_timestamp,
+        proxy_record_count: proxy_snapshot.record_count,
+        proxy_all_record_count: proxy_snapshot.record_count,
+        proxy_max_timestamp_ms: proxy_snapshot.max_timestamp_ms,
+        proxy_max_updated_at: proxy_snapshot.max_updated_at,
+        max_fact_timestamp_ms,
+        pricing_fingerprint,
+        is_finalized: true,
+        finalized_at: Some(materialized_at),
+        materialized_at,
+    }
+}
+
+async fn ensure_materialized_history_for_range(
+    local_db: &crate::local_usage::LocalUsageDatabase,
+    settings: &AppSettings,
+    range_start: i64,
+    range_end: i64,
+    pricings: &[crate::models::ModelPricingConfig],
+    pricing_match_mode: &str,
+) -> Result<Vec<String>, String> {
+    let today = crate::local_usage::LocalUsageDatabase::today_local_date();
+    let canonical_settings = canonical_history_settings(settings);
+    let materializable_dates: Vec<String> = enumerate_local_dates(range_start, range_end)
+        .into_iter()
+        .filter(|date| date < &today)
+        .collect();
+
+    let mut ready_dates = Vec::new();
+    let pricing_fingerprint = fingerprint_pricings(pricings);
+    for local_date in materializable_dates {
+        let day_started_at = Instant::now();
+        let (day_start, day_end) =
+            crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds(&local_date)?;
+        let local_snapshot = local_db.get_unified_day_local_snapshot(&local_date)?;
+        let proxy_snapshot = ProxyDatabase::get_global()
+            .map(|db| {
+                db.get_day_dependency_snapshot(
+                    day_start.saturating_mul(1000),
+                    day_end.saturating_mul(1000),
+                )
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let state = local_db.get_unified_day_materialization_state(&local_date)?;
+        let needs_rebuild = match state {
+            Some(ref state) => !materialization_state_matches(
+                state,
+                &local_snapshot,
+                proxy_snapshot,
+                pricing_fingerprint,
+            ),
+            None => true,
+        };
+
+        if needs_rebuild {
+            let inflight_key = format!("materialize:{local_date}");
+            acquire_inflight_key(&inflight_key).await;
+            let latest_state = local_db.get_unified_day_materialization_state(&local_date)?;
+            let latest_local_snapshot = local_db.get_unified_day_local_snapshot(&local_date)?;
+            let latest_proxy_snapshot = ProxyDatabase::get_global()
+                .map(|db| {
+                    db.get_day_dependency_snapshot(
+                        day_start.saturating_mul(1000),
+                        day_end.saturating_mul(1000),
+                    )
+                })
+                .transpose()?
+                .unwrap_or_default();
+            let still_needs_rebuild = match latest_state {
+                Some(ref state) => !materialization_state_matches(
+                    state,
+                    &latest_local_snapshot,
+                    latest_proxy_snapshot,
+                    pricing_fingerprint,
+                ),
+                None => true,
+            };
+            let materialize_result = async {
+                if still_needs_rebuild {
+                    let merge = merge_realtime_range(
+                        local_db,
+                        MergeRealtimeParams {
+                            settings: &canonical_settings,
+                            start_epoch: Some(day_start),
+                            end_epoch: Some(day_end),
+                            include_errors: true,
+                            pricings,
+                            pricing_match_mode,
+                            phase_label: "materialize_day",
+                        },
+                    )
+                    .await?;
+                    let fact_entries: Vec<(String, MergedRequestFact)> = merge
+                        .facts
+                        .iter()
+                        .map(|fact| (request_key_for_fact(fact), fact.clone()))
+                        .collect();
+                    let max_fact_timestamp_ms = merge
+                        .facts
+                        .iter()
+                        .map(|fact| fact.timestamp_ms)
+                        .max()
+                        .unwrap_or(0);
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    local_db.replace_unified_day_materialization(
+                        &local_date,
+                        &fact_entries,
+                        &build_materialization_state(
+                            &local_date,
+                            merge.facts.len(),
+                            &latest_local_snapshot,
+                            latest_proxy_snapshot,
+                            pricing_fingerprint,
+                            max_fact_timestamp_ms,
+                            now_ms,
+                        ),
+                    )?;
+                    perf_log(
+                        "merge_materialize_day",
+                        format!(
+                            "date={} facts={} local_records={} remote_records={} proxy_records={} all_proxy_records={} elapsed_ms={}",
+                            local_date,
+                            merge.facts.len(),
+                            merge.local_record_count,
+                            merge.remote_record_count,
+                            merge.proxy_record_count,
+                            merge.proxy_all_record_count,
+                            day_started_at.elapsed().as_millis(),
+                        ),
+                    );
+                } else {
+                    perf_log(
+                        "merge_materialize_reuse",
+                        format!(
+                            "date={} pricing_fingerprint={} elapsed_ms={}",
+                            local_date,
+                            pricing_fingerprint,
+                            day_started_at.elapsed().as_millis(),
+                        ),
+                    );
+                }
+                Ok::<(), String>(())
+            }
+            .await;
+            release_inflight_key(&inflight_key).await;
+            materialize_result?;
+        } else {
+            perf_log(
+                "merge_materialize_reuse",
+                format!(
+                    "date={} pricing_fingerprint={} elapsed_ms={}",
+                    local_date,
+                    pricing_fingerprint,
+                    day_started_at.elapsed().as_millis(),
+                ),
+            );
+        }
+        ready_dates.push(local_date);
+    }
+
+    Ok(ready_dates)
+}
+
+fn combined_data_time_bounds(
+    local_db: &crate::local_usage::LocalUsageDatabase,
+) -> Result<Option<(i64, i64)>, String> {
+    let local_bounds = local_db.get_request_time_bounds()?;
+    let proxy_bounds = ProxyDatabase::get_global()
+        .map(|db| db.get_request_time_bounds())
+        .transpose()?
+        .flatten();
+
+    Ok(match (local_bounds, proxy_bounds) {
+        (Some((local_start, local_end)), Some((proxy_start, proxy_end))) => {
+            Some((local_start.min(proxy_start), local_end.max(proxy_end)))
+        }
+        (Some(bounds), None) | (None, Some(bounds)) => Some(bounds),
+        (None, None) => None,
+    })
+}
+
+pub(crate) async fn ensure_materialized_history(
+    settings: &AppSettings,
+    start_epoch: i64,
+    end_epoch: i64,
+) -> Result<(), String> {
+    let local_db = crate::local_usage::ensure_local_usage_synced()?;
+    let mut pricings = settings.model_pricing.pricings.clone();
+    if let Ok(db) = crate::proxy::ProxyDatabase::new() {
+        if let Ok(db_pricings) = db.get_all_model_pricings() {
+            pricings.extend(db_pricings);
+        }
+    }
+    let pricing_match_mode = settings.model_pricing.match_mode.clone();
+    let effective_range =
+        if let Some((data_start, data_end)) = combined_data_time_bounds(&local_db)? {
+            let effective_start = start_epoch.max(data_start);
+            let effective_end = end_epoch.min(data_end.max(start_epoch.saturating_add(1)));
+            (effective_start, effective_end)
+        } else {
+            (start_epoch, start_epoch)
+        };
+    if effective_range.1 <= effective_range.0 {
+        return Ok(());
+    }
+    let _ = ensure_materialized_history_for_range(
+        &local_db,
+        settings,
+        effective_range.0,
+        effective_range.1,
+        &pricings,
+        &pricing_match_mode,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn get_hot_merge_facts(
+    local_db: &crate::local_usage::LocalUsageDatabase,
+    settings: &AppSettings,
+    include_errors: bool,
+    pricings: &[crate::models::ModelPricingConfig],
+    pricing_match_mode: &str,
+    local_signature: crate::local_usage::LocalMergeCacheSignature,
+    proxy_signature: Option<ProxyMergeCacheSignature>,
+) -> Result<Vec<MergedRequestFact>, String> {
+    let today = crate::local_usage::LocalUsageDatabase::today_local_date();
+    let today_start = crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds(&today)
+        .map(|(start, _)| start)?;
+    let tool_filter = settings.client_tools.build_filter();
+    let source_filter = settings.source_aware.build_filter();
+    let cache_key = build_hot_merge_cache_key(
+        MergeCacheKeyParts {
+            settings,
+            range_start: today_start,
+            range_end: i64::MAX,
+            include_errors,
+            source_filter: &source_filter,
+            tool_filter: &tool_filter,
+            local_signature,
+            proxy_signature,
+            pricings,
+        },
+        today.clone(),
+    );
+    if let Some(facts) = lookup_hot_merge_cache(&cache_key) {
+        perf_log(
+            "merge_hot_cache_hit",
+            format!("date={} facts={}", today, facts.len()),
+        );
+        return Ok(facts);
+    }
+
+    let inflight_key = format!(
+        "hot:{}:{}:{}:{}:{}:{}",
+        cache_key.local_date,
+        cache_key.include_errors,
+        cache_key.tool_filter,
+        cache_key.source_filter,
+        cache_key.pricing_match_mode,
+        cache_key.pricing_fingerprint
+    );
+    acquire_inflight_key(&inflight_key).await;
+    if let Some(facts) = lookup_hot_merge_cache(&cache_key) {
+        release_inflight_key(&inflight_key).await;
+        perf_log(
+            "merge_hot_cache_hit_after_wait",
+            format!("date={} facts={}", today, facts.len()),
+        );
+        return Ok(facts);
+    }
+
+    let compute_result = async {
+        let merge = merge_realtime_range(
+            local_db,
+            MergeRealtimeParams {
+                settings,
+                start_epoch: Some(today_start),
+                end_epoch: None,
+                include_errors,
+                pricings,
+                pricing_match_mode,
+                phase_label: "hot_day",
+            },
+        )
+        .await?;
+        store_hot_merge_cache(cache_key.clone(), &merge.facts);
+        perf_log(
+            "merge_hot_cache_store",
+            format!(
+                "date={} facts={} local_records={} remote_records={} proxy_records={} all_proxy_records={}",
+                today,
+                merge.facts.len(),
+                merge.local_record_count,
+                merge.remote_record_count,
+                merge.proxy_record_count,
+                merge.proxy_all_record_count,
+            ),
+        );
+        Ok::<Vec<MergedRequestFact>, String>(merge.facts)
+    }
+    .await;
+    release_inflight_key(&inflight_key).await;
+    compute_result
 }
 
 pub async fn get_merged_request_facts(
@@ -421,29 +1104,7 @@ pub async fn get_merged_request_facts(
     let overall_started_at = Instant::now();
     let (range_start, range_end) = normalize_range_bounds(start_epoch, end_epoch);
     let tool_filter = settings.client_tools.build_filter();
-    let usage_filter = UsageQueryFilter {
-        source: settings.source_aware.build_filter(),
-        tool: settings.client_tools.build_filter(),
-    };
-    // source_aware 启用过滤时，本地补全也要感知 source：
-    // - 若一条 local 请求对应的 proxy 记录在「未过滤的代理集合」里能找到，
-    //   说明它属于某个具体 source（可能不是当前 filter 选中的那个）——
-    //   必须排除，避免「只看 source A」时混入 source B 的本地请求；
-    // - 若在「未过滤代理集合」里也找不到，说明 proxy 真的漏掉了这条本地请求——
-    //   归为 local-only 收录，source_label = None（未识别来源桶）。
-    //
-    // 这条无 source 过滤的副查询只在 source filter != All 时才需要；
-    // All 模式下 unfiltered_proxy_records == filtered proxy_records，省一次 IO。
-    let needs_unfiltered_proxy_lookup =
-        !matches!(usage_filter.source, crate::models::SourceFilter::All);
-    let unfiltered_usage_filter = if needs_unfiltered_proxy_lookup {
-        Some(UsageQueryFilter {
-            source: crate::models::SourceFilter::All,
-            tool: settings.client_tools.build_filter(),
-        })
-    } else {
-        None
-    };
+    let source_filter = settings.source_aware.build_filter();
     let mut pricings = settings.model_pricing.pricings.clone();
     if let Ok(db) = crate::proxy::ProxyDatabase::new() {
         if let Ok(db_pricings) = db.get_all_model_pricings() {
@@ -462,7 +1123,7 @@ pub async fn get_merged_request_facts(
         range_start,
         range_end,
         include_errors,
-        source_filter: &usage_filter.source,
+        source_filter: &source_filter,
         tool_filter: &tool_filter,
         local_signature,
         proxy_signature,
@@ -489,113 +1150,153 @@ pub async fn get_merged_request_facts(
             cache_key.tool_filter, cache_key.source_filter, include_errors,
         ),
     );
-
-    let query_started_at = Instant::now();
-    let mut local_sessions_all = local_db.get_all_sessions(&tool_filter)?;
-    local_sessions_all.extend(local_db.get_remote_sessions(&tool_filter)?);
-    let local_sessions: Vec<SessionMeta> = local_sessions_all
-        .into_iter()
-        .filter(|meta| session_meta_matches(meta, &tool_filter))
-        .collect();
-    let mut local_records =
-        local_db.get_request_records_in_range(range_start, range_end, &tool_filter)?;
-    let local_request_keys: HashSet<String> =
-        local_records.iter().map(request_key_for_local).collect();
-    let mut remote_records =
-        local_db.get_remote_request_records_in_range(range_start, range_end, &tool_filter)?;
-    remote_records.retain(|record| !local_request_keys.contains(&request_key_for_local(record)));
-    local_records.extend(remote_records);
-    local_records.retain(|record| local_tool_matches(record, &tool_filter));
-    let mut seen_local_keys = HashSet::new();
-    local_records.retain(|record| seen_local_keys.insert(request_key_for_local(record)));
-    let session_meta_by_id = build_local_meta_index(&local_sessions);
-    let message_to_session = build_message_to_session_index(&local_records);
-
-    let (all_proxy_records, proxy_records) = if let Some(proxy_db) = ProxyDatabase::get_global() {
-        let mut records =
-            fetch_proxy_records(proxy_db.as_ref(), &usage_filter, start_epoch, end_epoch).await?;
-        attach_proxy_session_ids(&mut records, &message_to_session);
-        let visible_records: Vec<UsageRecord> = records
-            .iter()
-            .filter(|record| include_errors || (200..300).contains(&record.status_code))
-            .cloned()
-            .collect();
-        // 当 source filter ≠ All 时，重新读一次无 source 过滤的代理集合作为 all_proxy_index。
-        // 这条副查询不能省——否则当用户「只看 source A」时，被 source B 命中的 proxy 记录
-        // 不会出现在 records 里，本地补全分支会误把它们当成「真本地补全」收录进来。
-        let all_records: Vec<UsageRecord> = if let Some(filter) = unfiltered_usage_filter.as_ref() {
-            let mut unfiltered =
-                fetch_proxy_records(proxy_db.as_ref(), filter, start_epoch, end_epoch).await?;
-            attach_proxy_session_ids(&mut unfiltered, &message_to_session);
-            unfiltered
-        } else {
-            records
-        };
-        (all_records, visible_records)
-    } else {
-        (Vec::new(), Vec::new())
-    };
-    let query_elapsed_ms = query_started_at.elapsed().as_millis();
-
-    let merge_started_at = Instant::now();
-    let all_proxy_index = build_proxy_request_index(&all_proxy_records);
-    let proxy_index = build_proxy_request_index(&proxy_records);
-    let local_index = build_local_request_index(&local_records);
-
-    let mut keys = HashSet::new();
-    keys.extend(proxy_index.keys().cloned());
-    keys.extend(local_index.keys().cloned());
-
-    let mut merged = Vec::new();
-    for key in keys {
-        match (proxy_index.get(&key), local_index.get(&key)) {
-            (Some(proxy), Some(local)) => {
-                let meta = session_meta_by_id.get(&local.session_id);
-                let fallback_cost =
-                    compute_local_request_cost(local, &pricings, &pricing_match_mode);
-                merged.push(MergedRequestFact::merge_proxy_preferred(
-                    proxy,
-                    local,
-                    meta,
-                    fallback_cost,
-                ));
-            }
-            (Some(proxy), None) => {
-                let meta = proxy
-                    .session_id
-                    .as_ref()
-                    .and_then(|session_id| session_meta_by_id.get(session_id));
-                merged.push(MergedRequestFact::from_proxy(proxy, meta));
-            }
-            (None, Some(local)) => {
-                if all_proxy_index.contains_key(&key) {
-                    continue;
-                }
-                let meta = session_meta_by_id.get(&local.session_id);
-                let cost = compute_local_request_cost(local, &pricings, &pricing_match_mode);
-                merged.push(MergedRequestFact::from_local(local, meta, cost));
-            }
-            (None, None) => {}
-        }
+    let inflight_key = merge_cache_inflight_key(&cache_key);
+    acquire_inflight_key(&inflight_key).await;
+    if let Some((facts, coverage)) = lookup_merge_cache(&cache_key) {
+        release_inflight_key(&inflight_key).await;
+        perf_log(
+            "merge_cache_hit_after_wait",
+            format!(
+                "range={range_start}..{range_end} tool={} source={} include_errors={} facts={} elapsed_ms={}",
+                cache_key.tool_filter,
+                cache_key.source_filter,
+                include_errors,
+                facts.len(),
+                overall_started_at.elapsed().as_millis(),
+            ),
+        );
+        return Ok((facts, coverage));
     }
+    let query_started_at = Instant::now();
+    let compute_result = async {
+        let history_materialize_started_at = Instant::now();
+        let history_ready_dates = if let Some((data_start, data_end)) = combined_data_time_bounds(&local_db)? {
+            let effective_start = range_start.max(data_start);
+            let effective_end = range_end.min(data_end.max(range_start + 1));
+            if effective_end > effective_start {
+                ensure_materialized_history_for_range(
+                    &local_db,
+                    settings,
+                    effective_start,
+                    effective_end,
+                    &pricings,
+                    &pricing_match_mode,
+                )
+                .await?
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+        let history_materialize_elapsed_ms = history_materialize_started_at.elapsed().as_millis();
+        perf_log(
+            "merge_history_materialize",
+            format!(
+                "range={range_start}..{range_end} dates={} elapsed_ms={}",
+                history_ready_dates.len(),
+                history_materialize_elapsed_ms,
+            ),
+        );
 
-    merged.sort_by_key(|fact| fact.timestamp_ms);
-    let coverage = build_coverage(&merged);
-    store_merge_cache(cache_key, &merged, &coverage);
-    perf_log(
-        "merge_cache_store",
-        format!(
-            "range={range_start}..{range_end} local_records={} proxy_records={} all_proxy_records={} facts={} query_ms={} merge_ms={} total_ms={}",
-            local_index.len(),
-            proxy_index.len(),
-            all_proxy_index.len(),
-            merged.len(),
-            query_elapsed_ms,
-            merge_started_at.elapsed().as_millis(),
-            overall_started_at.elapsed().as_millis(),
-        ),
-    );
-    Ok((merged, coverage))
+        let cold_read_started_at = Instant::now();
+        let mut merged =
+            local_db.get_unified_facts_for_dates(&history_ready_dates, &tool_filter)?;
+        let cold_facts_count = merged.len();
+        let cold_read_elapsed_ms = cold_read_started_at.elapsed().as_millis();
+        perf_log(
+            "merge_cold_read",
+            format!(
+                "range={range_start}..{range_end} dates={} facts={} elapsed_ms={}",
+                history_ready_dates.len(),
+                cold_facts_count,
+                cold_read_elapsed_ms,
+            ),
+        );
+
+        let filter_started_at = Instant::now();
+        merged.retain(|fact| {
+            fact.timestamp_sec >= range_start
+                && fact.timestamp_sec < range_end
+                && crate::unified_usage::matches_source_filter(fact, &source_filter)
+                && (include_errors || fact.status_code.map(|code| code < 300).unwrap_or(true))
+        });
+        let filtered_cold_facts_count = merged.len();
+        perf_log(
+            "merge_cold_filter",
+            format!(
+                "range={range_start}..{range_end} before={} after={} elapsed_ms={}",
+                cold_facts_count,
+                filtered_cold_facts_count,
+                filter_started_at.elapsed().as_millis(),
+            ),
+        );
+
+        let today_start = {
+            let today = crate::local_usage::LocalUsageDatabase::today_local_date();
+            crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds(&today)
+                .map(|(start, _)| start)?
+        };
+        let hot_start = range_start.max(today_start);
+        let hot_merge_started_at = Instant::now();
+        let hot_facts = if range_end > hot_start {
+            Some(
+                get_hot_merge_facts(
+                    &local_db,
+                    settings,
+                    include_errors,
+                    &pricings,
+                    &pricing_match_mode,
+                    local_signature,
+                    proxy_signature,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let hot_full_facts_count = hot_facts.as_ref().map(Vec::len).unwrap_or(0);
+        let mut filtered_hot_facts = hot_facts.unwrap_or_default();
+        filtered_hot_facts.retain(|fact| {
+            fact.timestamp_sec >= hot_start
+                && fact.timestamp_sec < range_end
+                && (include_errors || fact.status_code.map(|code| code < 300).unwrap_or(true))
+        });
+        let hot_facts_count = filtered_hot_facts.len();
+        perf_log(
+            "merge_hot_read",
+            format!(
+                "range={range_start}..{range_end} hot_start={} full_day_facts={} filtered_facts={} elapsed_ms={}",
+                hot_start,
+                hot_full_facts_count,
+                hot_facts_count,
+                hot_merge_started_at.elapsed().as_millis(),
+            ),
+        );
+        merged.extend(filtered_hot_facts);
+
+        merged.sort_by_key(|fact| fact.timestamp_ms);
+        let coverage = build_coverage(&merged);
+        let query_elapsed_ms = query_started_at.elapsed().as_millis();
+        store_merge_cache(cache_key, &merged, &coverage);
+        perf_log(
+            "merge_cache_store",
+            format!(
+                "range={range_start}..{range_end} cold_days={} cold_facts={} hot_facts={} facts={} query_ms={} merge_ms={} total_ms={}",
+                history_ready_dates.len(),
+                filtered_cold_facts_count,
+                hot_facts_count,
+                merged.len(),
+                query_elapsed_ms,
+                history_materialize_elapsed_ms,
+                overall_started_at.elapsed().as_millis(),
+            ),
+        );
+        Ok::<(Vec<MergedRequestFact>, MergedCoverage), String>((merged, coverage))
+    }
+    .await;
+    release_inflight_key(&inflight_key).await;
+    compute_result
 }
 
 pub async fn get_merged_sessions(
@@ -685,7 +1386,8 @@ pub async fn get_merged_sessions(
         let mut ttft_count = 0_u64;
         let mut success_requests = 0_u64;
         let mut error_requests = 0_u64;
-        let mut has_partial_status_coverage = false;
+        let mut proxy_backed_requests = 0_u64;
+        let mut local_only_requests = 0_u64;
 
         for fact in &session_facts {
             if !fact.model.trim().is_empty() {
@@ -699,8 +1401,11 @@ pub async fn get_merged_sessions(
             first_request_time = first_request_time.min(fact.timestamp_sec);
             last_request_time = last_request_time.max(fact.timestamp_sec);
 
-            if matches!(fact.coverage_origin, CoverageOrigin::LocalOnly) {
-                has_partial_status_coverage = true;
+            match fact.coverage_origin {
+                CoverageOrigin::LocalOnly => local_only_requests += 1,
+                CoverageOrigin::ProxyOnly | CoverageOrigin::MergedProxyPreferred => {
+                    proxy_backed_requests += 1;
+                }
             }
 
             if let Some(duration_ms) = fact.duration_ms {
@@ -726,6 +1431,8 @@ pub async fn get_merged_sessions(
                 }
             }
         }
+        let has_partial_status_coverage =
+            has_partial_coverage(proxy_backed_requests, local_only_requests);
 
         result.push(SessionStats {
             session_id: session_id.clone(),

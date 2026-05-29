@@ -1,3 +1,4 @@
+use crate::models::SourceFilter;
 use crate::proxy::UsageRecord;
 use crate::session::{LocalRequestRecord, SessionMeta};
 
@@ -19,6 +20,7 @@ pub struct MergedCoverage {
 
 #[derive(Debug, Clone)]
 pub struct MergedRequestFact {
+    pub canonical_request_key: String,
     pub session_id: String,
     pub project_name: Option<String>,
     pub project_path: Option<String>,
@@ -50,6 +52,73 @@ pub struct MergedRequestFact {
     pub source_label: Option<String>,
 }
 
+pub(crate) fn has_partial_coverage(proxy_backed_requests: u64, local_only_requests: u64) -> bool {
+    proxy_backed_requests > 0 && local_only_requests > 0
+}
+
+pub(crate) fn canonical_request_key_for_local(record: &LocalRequestRecord) -> String {
+    if let Some(key) = record.request_key.as_ref() {
+        let trimmed = key.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if record.message_id.trim().is_empty() {
+        format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            record.tool,
+            record.session_id,
+            record.timestamp,
+            record.model,
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_create_tokens,
+            record.cache_read_tokens,
+            record.total_tokens
+        )
+    } else {
+        format!("{}:{}", record.tool, record.message_id)
+    }
+}
+
+pub(crate) fn canonical_request_key_for_proxy(record: &UsageRecord) -> String {
+    if record.message_id.trim().is_empty() {
+        format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            record.client_tool,
+            record.session_id.clone().unwrap_or_default(),
+            record.timestamp / 1000,
+            record.model,
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_create_tokens,
+            record.cache_read_tokens,
+            record.total_tokens
+        )
+    } else {
+        format!("{}:{}", record.client_tool, record.message_id)
+    }
+}
+
+impl CoverageOrigin {
+    pub fn as_storage_str(self) -> &'static str {
+        match self {
+            CoverageOrigin::ProxyOnly => "proxy_only",
+            CoverageOrigin::LocalOnly => "local_only",
+            CoverageOrigin::MergedProxyPreferred => "merged_proxy_preferred",
+        }
+    }
+
+    pub fn from_storage_str(value: &str) -> Self {
+        match value {
+            "proxy_only" => CoverageOrigin::ProxyOnly,
+            "local_only" => CoverageOrigin::LocalOnly,
+            "merged_proxy_preferred" => CoverageOrigin::MergedProxyPreferred,
+            _ => CoverageOrigin::LocalOnly,
+        }
+    }
+}
+
 /// 根据 proxy 字段派生面向 UI 的来源标签。
 /// 与 `SourceFilter` 的匹配规则保持同源：先看 api_key_prefix，再看 base_url。
 fn derive_source_label(
@@ -71,12 +140,39 @@ fn derive_source_label(
     None
 }
 
+pub(crate) fn matches_source_filter(fact: &MergedRequestFact, filter: &SourceFilter) -> bool {
+    match filter {
+        SourceFilter::All => true,
+        SourceFilter::Unknown { known_pairs } => {
+            let prefix = fact.api_key_prefix.as_deref().unwrap_or_default();
+            let base_url = fact.request_base_url.clone();
+            let known = known_pairs
+                .iter()
+                .any(|(known_prefix, known_url)| known_prefix == prefix && *known_url == base_url);
+            !known
+        }
+        SourceFilter::Source {
+            api_key_prefixes,
+            base_url,
+        } => {
+            let prefix_match = fact
+                .api_key_prefix
+                .as_ref()
+                .map(|prefix| api_key_prefixes.iter().any(|candidate| candidate == prefix))
+                .unwrap_or(false);
+            let base_url_match = &fact.request_base_url == base_url;
+            prefix_match && base_url_match
+        }
+    }
+}
+
 impl MergedRequestFact {
     pub fn from_local(record: &LocalRequestRecord, meta: Option<&SessionMeta>, cost: f64) -> Self {
         let project_name = meta.and_then(|m| m.project_name.clone());
         let project_path = meta.and_then(|m| m.cwd.clone());
 
         Self {
+            canonical_request_key: canonical_request_key_for_local(record),
             session_id: record.session_id.clone(),
             project_name,
             project_path,
@@ -111,6 +207,7 @@ impl MergedRequestFact {
         );
 
         Self {
+            canonical_request_key: canonical_request_key_for_proxy(record),
             session_id: record.session_id.clone().unwrap_or_default(),
             project_name,
             project_path,
@@ -214,8 +311,15 @@ impl MergedRequestFact {
         } else {
             fallback_cost
         };
+        let local_request_key = canonical_request_key_for_local(local);
+        let canonical_request_key = if !local_request_key.trim().is_empty() {
+            local_request_key
+        } else {
+            canonical_request_key_for_proxy(proxy)
+        };
 
         Self {
+            canonical_request_key,
             session_id,
             project_name,
             project_path,
@@ -486,5 +590,26 @@ mod tests {
         let merged = MergedRequestFact::merge_proxy_preferred(&proxy, &local, None, 0.0);
         // 合并时 source 永远跟 proxy 走——local 本就无 source 维度
         assert_eq!(merged.source_label.as_deref(), Some("sk-xxxxxxxxxxxx"));
+    }
+
+    #[test]
+    fn merged_fact_preserves_canonical_request_key() {
+        let proxy = proxy_with(100, 200, 0, 0, 0.0, false);
+        let local = local_with(100, 200, 0, 0, "sess", 1_700_000_000);
+        let merged = MergedRequestFact::merge_proxy_preferred(&proxy, &local, None, 0.0);
+        assert_eq!(merged.canonical_request_key, "claude_code:msg-1");
+
+        let local_only = MergedRequestFact::from_local(&local, None, 0.0);
+        assert_eq!(local_only.canonical_request_key, "claude_code:msg-1");
+
+        let proxy_only = MergedRequestFact::from_proxy(&proxy, None);
+        assert_eq!(proxy_only.canonical_request_key, "claude_code:msg-1");
+    }
+
+    #[test]
+    fn partial_coverage_requires_mixed_proxy_and_local_only_data() {
+        assert!(!has_partial_coverage(0, 1));
+        assert!(!has_partial_coverage(3, 0));
+        assert!(has_partial_coverage(2, 1));
     }
 }

@@ -19,7 +19,8 @@ pub use codex_config::{
 pub use collector::UsageCollector;
 pub use config_manager::ClaudeConfigManager;
 pub use database::{
-    PreviewPricingApplyResult, PricingMatchFilter, ProxyDatabase, ProxyMergeCacheSignature,
+    PreviewPricingApplyResult, PricingMatchFilter, ProxyDatabase, ProxyDayDependencySnapshot,
+    ProxyMergeCacheSignature,
 };
 pub use server::ProxyServer;
 pub use source_detector::compute_source_id;

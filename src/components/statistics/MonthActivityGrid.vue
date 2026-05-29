@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { t } from '../../i18n'
 import { formatCost, formatRequestCount, formatTokenValue } from '../../utils/format'
 import { getTodayKey, makeEmptyDay, getMonthDayCount, intensityClass, valueOf, type CalendarCell } from './activityUtils'
@@ -139,6 +139,15 @@ function handleDayLeave() {
   hovered.value = null
   tooltipStyle.value = {}
 }
+
+watch(activeDays, days => {
+  if (!hovered.value) return
+  const next = days.find(day => day.date === hovered.value?.date) ?? null
+  hovered.value = next
+  if (!next) {
+    tooltipStyle.value = {}
+  }
+})
 </script>
 
 <template>

@@ -21,7 +21,15 @@ const LEGACY_UNMATCHED_SESSION_ID: &str = "__legacy_unmatched__";
 pub struct ProxyMergeCacheSignature {
     pub usage_record_count: u64,
     pub max_timestamp: i64,
+    pub max_updated_at: i64,
     pub session_stats_max_updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProxyDayDependencySnapshot {
+    pub record_count: u64,
+    pub max_timestamp_ms: i64,
+    pub max_updated_at: i64,
 }
 
 /// 数据库管理器，用于代理使用数据
@@ -128,7 +136,8 @@ impl ProxyDatabase {
                 estimated_cost REAL NOT NULL DEFAULT 0,
                 pricing_snapshot_id TEXT,
                 cost_locked INTEGER NOT NULL DEFAULT 0,
-                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
             );
 
             -- 索引用于加速查询
@@ -289,6 +298,7 @@ impl ProxyDatabase {
             "ALTER TABLE usage_records ADD COLUMN estimated_cost REAL NOT NULL DEFAULT 0",
             "ALTER TABLE usage_records ADD COLUMN pricing_snapshot_id TEXT",
             "ALTER TABLE usage_records ADD COLUMN cost_locked INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE usage_records ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
             // 来源识别字段
             "ALTER TABLE usage_records ADD COLUMN api_key_prefix TEXT",
             "ALTER TABLE usage_records ADD COLUMN request_base_url TEXT",
@@ -443,6 +453,7 @@ impl ProxyDatabase {
             .pricing_snapshot_id
             .clone()
             .unwrap_or_else(|| snapshot_id.clone());
+        let now = chrono::Utc::now().timestamp();
         let conn = self
             .conn
             .lock()
@@ -455,8 +466,8 @@ impl ProxyDatabase {
              cache_read_tokens, model, session_id, request_start_time,
              request_end_time, duration_ms, output_tokens_per_second, ttft_ms, status_code,
              estimated_cost, pricing_snapshot_id, cost_locked, api_key_prefix, request_base_url,
-             client_tool, proxy_profile_id, client_detection_method)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1, ?17, ?18, ?19, ?20, ?21)
+             client_tool, proxy_profile_id, client_detection_method, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1, ?17, ?18, ?19, ?20, ?21, ?22)
             "#,
             rusqlite::params![
                 record.timestamp,
@@ -480,6 +491,7 @@ impl ProxyDatabase {
                 &record.client_tool,
                 &record.proxy_profile_id,
                 &record.client_detection_method,
+                now,
             ],
         )
         .map_err(|e| format!("Failed to insert record: {}", e))?;
@@ -488,6 +500,9 @@ impl ProxyDatabase {
         let date = Self::record_local_date(record.timestamp);
         if date < Self::today_local_date() {
             Self::refresh_daily_summary_for_date_conn(&conn, &date)?;
+            if let Ok(local_db) = crate::local_usage::LocalUsageDatabase::get_global() {
+                let _ = local_db.invalidate_unified_materialization_dates(&[date]);
+            }
         }
         Ok(id)
     }
@@ -607,12 +622,13 @@ impl ProxyDatabase {
         }
 
         let mut touched_dates = std::collections::HashSet::new();
+        let now = chrono::Utc::now().timestamp();
         let mut stmt = conn
             .prepare(
                 r#"
                 UPDATE usage_records
-                SET estimated_cost = ?1, pricing_snapshot_id = ?2, cost_locked = 1
-                WHERE id = ?3
+                SET estimated_cost = ?1, pricing_snapshot_id = ?2, cost_locked = 1, updated_at = ?3
+                WHERE id = ?4
                 "#,
             )
             .map_err(|e| format!("Failed to prepare cost backfill update: {}", e))?;
@@ -627,7 +643,7 @@ impl ProxyDatabase {
                 &pricings,
                 &match_mode,
             );
-            stmt.execute(rusqlite::params![cost, snapshot_id, id])
+            stmt.execute(rusqlite::params![cost, snapshot_id, now, id])
                 .map_err(|e| format!("Failed to update cost backfill record: {}", e))?;
             let date = Self::record_local_date(*timestamp);
             if date < Self::today_local_date() {
@@ -636,14 +652,21 @@ impl ProxyDatabase {
         }
         drop(stmt);
 
-        for date in touched_dates {
-            Self::refresh_daily_summary_for_date_conn(&conn, &date)?;
+        for date in &touched_dates {
+            Self::refresh_daily_summary_for_date_conn(&conn, date)?;
         }
 
         eprintln!(
             "[database] Backfilled frozen cost for {} usage records",
             records.len()
         );
+        if !touched_dates.is_empty() {
+            if let Ok(local_db) = crate::local_usage::LocalUsageDatabase::get_global() {
+                let _ = local_db.invalidate_unified_materialization_dates(
+                    &touched_dates.into_iter().collect::<Vec<_>>(),
+                );
+            }
+        }
         Ok(records.len())
     }
 
@@ -941,6 +964,7 @@ impl ProxyDatabase {
         let tx = conn
             .transaction()
             .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+        let now = chrono::Utc::now().timestamp();
 
         const BATCH_SIZE: usize = 1000;
         let mut total_updated: i64 = 0;
@@ -949,8 +973,8 @@ impl ProxyDatabase {
             .prepare(
                 r#"
                 UPDATE usage_records
-                SET estimated_cost = ?1, pricing_snapshot_id = ?2, cost_locked = 1
-                WHERE id = ?3
+                SET estimated_cost = ?1, pricing_snapshot_id = ?2, cost_locked = 1, updated_at = ?3
+                WHERE id = ?4
                 "#,
             )
             .map_err(|e| format!("Failed to prepare update statement: {}", e))?;
@@ -967,7 +991,7 @@ impl ProxyDatabase {
                     "exact",
                 );
                 update_stmt
-                    .execute(rusqlite::params![cost, &snapshot_id, id])
+                    .execute(rusqlite::params![cost, &snapshot_id, now, id])
                     .map_err(|e| format!("Failed to update record: {}", e))?;
                 total_updated += 1;
             }
@@ -986,6 +1010,13 @@ impl ProxyDatabase {
             "[database] Applied pricing to {} records for model '{}'",
             total_updated, filter.model_id
         );
+        if !touched_dates.is_empty() {
+            if let Ok(local_db) = crate::local_usage::LocalUsageDatabase::get_global() {
+                let _ = local_db.invalidate_unified_materialization_dates(
+                    &touched_dates.into_iter().collect::<Vec<_>>(),
+                );
+            }
+        }
         Ok(total_updated)
     }
 
@@ -1106,6 +1137,7 @@ impl ProxyDatabase {
             SELECT
                 (SELECT COUNT(*) FROM usage_records),
                 (SELECT COALESCE(MAX(timestamp), 0) FROM usage_records),
+                (SELECT COALESCE(MAX(updated_at), 0) FROM usage_records),
                 (SELECT COALESCE(MAX(last_updated), 0) FROM session_stats)
             "#,
             [],
@@ -1113,11 +1145,64 @@ impl ProxyDatabase {
                 Ok(ProxyMergeCacheSignature {
                     usage_record_count: row.get::<_, i64>(0)?.max(0) as u64,
                     max_timestamp: row.get::<_, i64>(1)?,
-                    session_stats_max_updated_at: row.get::<_, i64>(2)?,
+                    max_updated_at: row.get::<_, i64>(2)?,
+                    session_stats_max_updated_at: row.get::<_, i64>(3)?,
                 })
             },
         )
         .map_err(|e| format!("Failed to compute proxy merge cache signature: {}", e))
+    }
+
+    pub fn get_day_dependency_snapshot(
+        &self,
+        start_ms: i64,
+        end_ms: i64,
+    ) -> Result<ProxyDayDependencySnapshot, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+        conn.query_row(
+            r#"
+            SELECT
+                COUNT(*),
+                COALESCE(MAX(timestamp), 0),
+                COALESCE(MAX(updated_at), 0)
+            FROM usage_records
+            WHERE timestamp >= ?1 AND timestamp < ?2
+            "#,
+            rusqlite::params![start_ms, end_ms],
+            |row| {
+                Ok(ProxyDayDependencySnapshot {
+                    record_count: row.get::<_, i64>(0)?.max(0) as u64,
+                    max_timestamp_ms: row.get::<_, i64>(1)?,
+                    max_updated_at: row.get::<_, i64>(2)?,
+                })
+            },
+        )
+        .map_err(|e| format!("Failed to compute proxy day dependency snapshot: {}", e))
+    }
+
+    pub fn get_request_time_bounds(&self) -> Result<Option<(i64, i64)>, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+        conn.query_row(
+            "SELECT MIN(timestamp), MAX(timestamp) FROM usage_records",
+            [],
+            |row| {
+                let min_ts: Option<i64> = row.get(0)?;
+                let max_ts: Option<i64> = row.get(1)?;
+                Ok(match (min_ts, max_ts) {
+                    (Some(start_ms), Some(end_ms)) => {
+                        Some((start_ms / 1000, (end_ms / 1000).saturating_add(1)))
+                    }
+                    _ => None,
+                })
+            },
+        )
+        .map_err(|e| format!("Failed to query proxy request time bounds: {}", e))
     }
 
     /// 删除指定天数之前的记录
@@ -1132,6 +1217,12 @@ impl ProxyDatabase {
         let affected = conn
             .execute("DELETE FROM usage_records WHERE timestamp < ?1", [cutoff])
             .map_err(|e| format!("Failed to cleanup records: {}", e))?;
+
+        if affected > 0 {
+            if let Ok(local_db) = crate::local_usage::LocalUsageDatabase::get_global() {
+                let _ = local_db.clear_unified_materialization();
+            }
+        }
 
         Ok(affected)
     }
@@ -2506,18 +2597,18 @@ impl ProxyDatabase {
 
         {
             let mut update_record_stmt = tx
-                .prepare("UPDATE usage_records SET session_id = ?1 WHERE id = ?2")
+                .prepare("UPDATE usage_records SET session_id = ?1, updated_at = ?2 WHERE id = ?3")
                 .map_err(|e| format!("Failed to prepare record migration update: {}", e))?;
 
             for (session_id, record_id) in &record_updates {
-                let _ = update_record_stmt.execute(rusqlite::params![session_id, record_id]);
+                let _ = update_record_stmt.execute(rusqlite::params![session_id, now, record_id]);
             }
         }
 
         if !unmatched_record_ids.is_empty() {
             let mut mark_unmatched_stmt = tx
                 .prepare(
-                    "UPDATE usage_records SET session_id = ?1, migration_attempted_at = ?2 WHERE id = ?3",
+                    "UPDATE usage_records SET session_id = ?1, migration_attempted_at = ?2, updated_at = ?2 WHERE id = ?3",
                 )
                 .map_err(|e| format!("Failed to prepare unmatched migration update: {}", e))?;
 
@@ -2710,6 +2801,11 @@ impl ProxyDatabase {
             .execute(params.as_slice())
             .map_err(|e| format!("Failed to delete records: {}", e))?;
 
+        if deleted > 0 {
+            if let Ok(local_db) = crate::local_usage::LocalUsageDatabase::get_global() {
+                let _ = local_db.clear_unified_materialization();
+            }
+        }
         eprintln!("[database] Deleted {} records for source", deleted);
         Ok(())
     }
