@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.3] - 2026-05-30
+
+### Added
+
+- **Unified Daily Materialization Layer**: Added materialized daily fact, summary, model-summary, and state tables so historical unified usage can be reused without recomputing every statistics view
+- **Performance Diagnostics**: Added merge/materialization performance logs and dependency snapshots to inspect history rebuilds, cache hits, and hot-day read costs
+
+### Changed
+
+- **Statistics Aggregation Path**: Statistics summary, month activity, and year activity now prefer cached historical summaries with a real-time hot-day overlay, significantly reducing CPU overhead during repeated refreshes and time-range switches
+- **Request Identity and Invalidation**: Unified facts now carry canonical request keys, and proxy record updates now participate in `updated_at`-aware invalidation for historical materialization caches
+
+### Fixed
+
+- **Partial Coverage Semantics**: Status and performance coverage are now marked partial only when proxy-backed and local-only data are mixed, preventing valid metrics from being blanked unnecessarily
+- **Local Day Boundary Calculation**: Local day epoch bounds now resolve against timezone-aware day boundaries instead of a fixed 24-hour span, avoiding DST-related day splits
+- **Activity Grid Hover Sync**: Month and year activity tooltips now stay synchronized when activity data refreshes while a day is hovered
+
+---
+
+### 新增
+
+- **统一每日物化聚合层**：新增每日事实表、汇总表、模型汇总表以及物化状态表，使历史统一用量数据可以直接复用，不必在每次统计视图中重复全量计算
+- **性能诊断信息**：新增合并/物化性能日志与依赖快照，便于观察历史重建、缓存命中以及热点日读取成本
+
+### 变更
+
+- **统计聚合路径**：统计摘要、月度活动和年度活动现在优先复用历史汇总数据，并叠加实时热点日数据，在重复刷新和切换时间范围时显著降低 CPU 开销
+- **请求标识与失效机制**：统一事实现在携带规范化请求键，代理记录更新也会参与基于 `updated_at` 的历史物化缓存失效判定
+
+### 修复
+
+- **部分覆盖语义**：状态和性能覆盖现在仅在代理数据与仅本地数据混合时标记为部分覆盖，避免本来有效的指标被不必要地清空
+- **本地日边界计算**：本地日期边界不再使用固定 24 小时跨度，而是按时区感知的自然日边界计算，避免夏令时场景下的跨天错算
+- **活动网格悬停同步**：当活动数据刷新时，月视图和年视图的 tooltip 悬停状态现在会保持同步
+
+---
+
 ## [0.6.2] - 2026-05-27
 
 ### Changed
@@ -497,7 +535,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.6.3]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.3
 [0.6.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.2
+[0.6.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.1
 [0.6.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.0
 [0.5.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.5.1
 [0.5.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.5.0
