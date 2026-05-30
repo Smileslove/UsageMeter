@@ -315,7 +315,13 @@ pub fn run() {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                    let settings = commands::load_settings().unwrap_or_default();
+                    let settings = match commands::load_settings() {
+                        Ok(settings) => settings,
+                        Err(e) => {
+                            eprintln!("[UsageMeter] Failed to load settings for update check: {e}");
+                            return;
+                        }
+                    };
                     if !settings.auto_check_update {
                         return;
                     }
@@ -329,7 +335,10 @@ pub fn run() {
 
                     match updater.check().await {
                         Ok(Some(update)) => {
-                            if update.version == settings.skipped_update_version {
+                            if commands::should_suppress_update(
+                                &update.version,
+                                &settings.skipped_update_version,
+                            ) {
                                 return;
                             }
                             let dto = commands::build_dto(&update);

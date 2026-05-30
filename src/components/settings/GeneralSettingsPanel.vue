@@ -78,6 +78,11 @@ const handleCheckUpdate = async () => {
     return
   }
 
+  if (updaterStore.hasUpdate) {
+    updaterStore.openDialog()
+    return
+  }
+
   await updaterStore.checkForUpdate()
   if (updaterStore.status === 'idle') {
     checkUpdateFlash.value = true
@@ -172,16 +177,25 @@ onUnmounted(() => {
       </div>
 
       <div class="flex items-center justify-between p-3 px-4 text-[13px]">
-        <span class="text-gray-500 dark:text-gray-400">
-          {{ t(store.settings.locale, 'settings.update.currentVersion') }}
-          <span v-if="appVersion" class="ml-1 font-mono text-[12px]">v{{ appVersion }}</span>
-        </span>
+        <div class="flex flex-col">
+          <span class="text-gray-500 dark:text-gray-400">
+            {{ t(store.settings.locale, 'settings.update.currentVersion') }}
+            <span v-if="appVersion" class="ml-1 font-mono text-[12px]">v{{ appVersion }}</span>
+          </span>
+          <span
+            v-if="updaterStore.hasUpdate && updaterStore.updateInfo"
+            class="mt-0.5 text-[10px] font-medium text-blue-500 dark:text-blue-400"
+          >
+            {{ t(store.settings.locale, 'settings.update.newVersionReady', { version: updaterStore.updateInfo.version }) }}
+          </span>
+        </div>
         <button
           class="h-7 rounded-lg border border-gray-200 px-3 text-[11px] text-gray-600 transition-colors hover:bg-gray-50 disabled:opacity-50 dark:border-neutral-700 dark:text-gray-400 dark:hover:bg-neutral-800"
           :disabled="updaterStore.status === 'checking'"
           @click="handleCheckUpdate"
         >
           <span v-if="updaterStore.status === 'checking'">{{ t(store.settings.locale, 'settings.update.checking') }}</span>
+          <span v-else-if="updaterStore.hasUpdate">{{ t(store.settings.locale, 'settings.update.viewUpdate') }}</span>
           <span v-else-if="checkUpdateFlash" class="text-green-500">✓ {{ t(store.settings.locale, 'settings.update.upToDate') }}</span>
           <span v-else-if="updaterStore.status === 'error'" class="text-red-400">{{ t(store.settings.locale, updaterStore.errorMessage === 'downloadFailed' ? 'settings.update.downloadFailed' : 'settings.update.checkFailed') }}</span>
           <span v-else>{{ t(store.settings.locale, 'settings.update.checkNow') }}</span>

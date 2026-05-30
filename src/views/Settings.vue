@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { useUpdaterStore } from '../stores/updater'
 import ModelPricingSettings from '../components/ModelPricingSettings.vue'
 import ApiSourceList from '../components/ApiSourceList.vue'
 import CurrencySettings from '../components/CurrencySettings.vue'
-import UpdateBanner from '../components/UpdateBanner.vue'
 import GeneralSettingsPanel from '../components/settings/GeneralSettingsPanel.vue'
 import DataNavigationPanel from '../components/settings/DataNavigationPanel.vue'
 import LocalCachePanel from '../components/settings/LocalCachePanel.vue'
@@ -15,7 +13,6 @@ import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 
 const store = useMonitorStore()
-const updaterStore = useUpdaterStore()
 
 const subView = ref<'main' | 'model-pricing' | 'api-sources' | 'currency'>('main')
 const modelPricingKey = ref(0)
@@ -62,8 +59,6 @@ const openCurrency = () => {
     />
 
     <div v-show="subView === 'main'" class="space-y-5 animate-in fade-in zoom-in-95 duration-300 pb-6">
-      <UpdateBanner v-if="updaterStore.hasUpdate" />
-
       <GeneralSettingsPanel />
       <ProxyControlPanel />
 

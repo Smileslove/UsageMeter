@@ -9,6 +9,7 @@ import Overview from './views/Overview.vue'
 import Statistics from './views/Statistics.vue'
 import Sessions from './views/Sessions.vue'
 import Settings from './views/Settings.vue'
+import UpdateDialog from './components/UpdateDialog.vue'
 import SourceSelector from './components/SourceSelector.vue'
 import ToolSelector from './components/ToolSelector.vue'
 import type { ThemeMode } from './types'
@@ -227,6 +228,8 @@ onUnmounted(() => {
   </main>
 
   <!-- 外部工具修改配置通知 Toast -->
+  <UpdateDialog />
+
   <Transition name="toast-slide">
     <div
       v-if="configChangedNotification"

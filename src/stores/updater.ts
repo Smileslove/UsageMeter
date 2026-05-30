@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
+import { useMonitorStore } from './monitor'
 
 export interface UpdateInfo {
   version: string
@@ -15,7 +16,7 @@ export const useUpdaterStore = defineStore('updater', {
     downloadedBytes: 0,
     totalBytes: null as number | null,
     errorMessage: null as string | null,
-    isExpanded: false,
+    isDialogOpen: false,
   }),
 
   getters: {
@@ -43,6 +44,7 @@ export const useUpdaterStore = defineStore('updater', {
         if (result) {
           this.updateInfo = result
           this.status = 'available'
+          this.isDialogOpen = true
         } else {
           this.status = 'idle'
         }
@@ -69,7 +71,10 @@ export const useUpdaterStore = defineStore('updater', {
     async skipVersion(): Promise<void> {
       if (!this.updateInfo) return
       try {
+        const skippedVersion = this.updateInfo.version
         await invoke('skip_update_version', { version: this.updateInfo.version })
+        const monitorStore = useMonitorStore()
+        monitorStore.settings.skippedUpdateVersion = skippedVersion
         this.reset()
       } catch {
         this.errorMessage = 'checkFailed'
@@ -79,6 +84,7 @@ export const useUpdaterStore = defineStore('updater', {
     onUpdateAvailable(info: UpdateInfo): void {
       this.updateInfo = info
       this.status = 'available'
+      this.isDialogOpen = true
     },
 
     onDownloadProgress(downloadedBytes: number, totalBytes: number | null): void {
@@ -88,8 +94,13 @@ export const useUpdaterStore = defineStore('updater', {
       }
     },
 
-    toggleExpanded(): void {
-      this.isExpanded = !this.isExpanded
+    openDialog(): void {
+      if (!this.updateInfo) return
+      this.isDialogOpen = true
+    },
+
+    closeDialog(): void {
+      this.isDialogOpen = false
     },
 
     reset(): void {
@@ -98,7 +109,7 @@ export const useUpdaterStore = defineStore('updater', {
       this.downloadedBytes = 0
       this.totalBytes = null
       this.errorMessage = null
-      this.isExpanded = false
+      this.isDialogOpen = false
     },
   },
 })

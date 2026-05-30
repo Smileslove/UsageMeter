@@ -3,6 +3,7 @@
 //! 通过 tauri-plugin-updater 检查 GitHub Releases，下载并安装更新。
 //! 使用 UpdaterState 在命令调用之间保存 Update 对象（Update 不可序列化，无法跨命令传递）。
 
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
@@ -44,6 +45,27 @@ pub struct UpdateDownloadProgressEvent {
     pub downloaded_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_bytes: Option<u64>,
+}
+
+fn normalize_version_string(version: &str) -> &str {
+    version.trim().trim_start_matches(['v', 'V'])
+}
+
+pub fn should_suppress_update(update_version: &str, skipped_version: &str) -> bool {
+    let skipped_version = normalize_version_string(skipped_version);
+    if skipped_version.is_empty() {
+        return false;
+    }
+
+    let update_version = normalize_version_string(update_version);
+
+    match (
+        Version::parse(update_version),
+        Version::parse(skipped_version),
+    ) {
+        (Ok(update), Ok(skipped)) => update <= skipped,
+        _ => update_version == skipped_version,
+    }
 }
 
 /// 构建带代理配置的 Updater 实例（供命令和后台检查共用）
@@ -90,7 +112,10 @@ pub async fn check_for_update(
                 *state.pending_update.lock().unwrap() = Some(update);
                 Ok(Some(dto))
             }
-            Ok(None) => Ok(None),
+            Ok(None) => {
+                *state.pending_update.lock().unwrap() = None;
+                Ok(None)
+            }
             Err(e) => Err(format!("ERR_UPDATE_CHECK: {e}")),
         }
     }
@@ -159,7 +184,7 @@ pub async fn download_and_install_update(
 /// 直接读写文件而不经过前端，避免覆盖用户在 UI 中未保存的其他改动。
 /// 使用 JSON patch 方式：只修改目标字段，保留其余内容原样。
 #[tauri::command]
-pub fn skip_update_version(version: String) -> Result<(), String> {
+pub fn skip_update_version(version: String, state: State<'_, UpdaterState>) -> Result<(), String> {
     use std::fs;
 
     let path = crate::models::AppSettings::settings_path()?;
@@ -189,6 +214,7 @@ pub fn skip_update_version(version: String) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| format!("ERR_CREATE_SETTINGS_DIR: {e}"))?;
     }
     fs::write(&path, content).map_err(|e| format!("ERR_WRITE_SETTINGS: {e}"))?;
+    *state.pending_update.lock().unwrap() = None;
 
     Ok(())
 }
@@ -202,5 +228,37 @@ pub fn build_dto(update: &tauri_plugin_updater::Update) -> UpdateInfoDto {
         body: update.body.clone(),
         // OffsetDateTime 的 Display 实现输出 ISO 8601 格式，直接转字符串
         date: update.date.map(|d| d.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_suppress_update;
+
+    #[test]
+    fn suppresses_same_skipped_version() {
+        assert!(should_suppress_update("0.6.4", "0.6.4"));
+    }
+
+    #[test]
+    fn suppresses_older_versions_when_newer_skip_exists() {
+        assert!(should_suppress_update("0.6.3", "0.6.4"));
+    }
+
+    #[test]
+    fn does_not_suppress_newer_versions() {
+        assert!(!should_suppress_update("0.6.5", "0.6.4"));
+    }
+
+    #[test]
+    fn handles_prefixed_versions() {
+        assert!(should_suppress_update("v0.6.4", "0.6.4"));
+        assert!(!should_suppress_update("v0.6.5", "v0.6.4"));
+    }
+
+    #[test]
+    fn falls_back_to_exact_match_for_non_semver_strings() {
+        assert!(should_suppress_update("build-123", "build-123"));
+        assert!(!should_suppress_update("build-124", "build-123"));
     }
 }
