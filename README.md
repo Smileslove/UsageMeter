@@ -278,7 +278,7 @@ The local-file usage database is stored at `~/.usagemeter/local_usage.db` (separ
 
 - **Frontend**: Vue 3 + TypeScript + Vite + Tailwind CSS + Pinia + ECharts / vue-echarts
 - **Backend**: Tauri 2.x (Rust) with tray icon, autostart, local proxy, and native window controls
-- **Data**: local Claude Code JSONL parsing, SQLite (`rusqlite`), and synced/custom model pricing
+- **Data**: local Claude Code and Codex session JSONL parsing, SQLite (`rusqlite`) persistence, optional proxy capture, and unified merged usage facts
 - **Proxy Runtime**: Tokio + Hyper + Reqwest for local Anthropic-compatible request forwarding
 
 ## Contributing

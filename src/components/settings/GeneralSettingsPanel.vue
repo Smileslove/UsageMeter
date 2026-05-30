@@ -4,7 +4,6 @@ import { invoke } from '@tauri-apps/api/core'
 import { useMonitorStore } from '../../stores/monitor'
 import { useUpdaterStore } from '../../stores/updater'
 import { t } from '../../i18n'
-import { type ThemeMode } from '../../types'
 import SettingsSwitch from './SettingsSwitch.vue'
 
 const store = useMonitorStore()
@@ -13,7 +12,6 @@ const updaterStore = useUpdaterStore()
 const appVersion = ref('')
 const localLocale = ref(store.settings.locale)
 const localRefreshInterval = ref(store.settings.refreshIntervalSeconds)
-const localTheme = ref<ThemeMode>(store.settings.theme || 'system')
 const autoStartEnabled = ref(store.settings.autoStart)
 const checkUpdateFlash = ref(false)
 let checkUpdateFlashTimer: ReturnType<typeof setTimeout> | null = null
@@ -26,10 +24,6 @@ watch(() => store.settings.refreshIntervalSeconds, (value) => {
   localRefreshInterval.value = value
 })
 
-watch(() => store.settings.theme, (value) => {
-  localTheme.value = value || 'system'
-})
-
 const handleLocaleChange = async () => {
   store.settings.locale = localLocale.value
   await store.saveSettings()
@@ -39,11 +33,6 @@ const handleRefreshIntervalChange = async () => {
   const value = Math.max(5, Math.min(300, Number(localRefreshInterval.value) || 30))
   localRefreshInterval.value = value
   store.settings.refreshIntervalSeconds = value
-  await store.saveSettings()
-}
-
-const handleThemeChange = async () => {
-  store.settings.theme = localTheme.value
   await store.saveSettings()
 }
 
@@ -124,15 +113,15 @@ onUnmounted(() => {
 
 <template>
   <div class="space-y-2">
-    <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+    <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">
       {{ t(store.settings.locale, 'settings.general') }}
     </h3>
-    <div class="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm divide-y divide-gray-50 dark:border-neutral-800 dark:bg-[#1C1C1E] dark:divide-neutral-800/50">
+    <div class="theme-settings-panel overflow-hidden rounded-xl border">
       <div class="flex items-center justify-between p-3 px-4 text-[13px]">
-        <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.locale') }}</span>
+        <span class="text-[var(--theme-text-primary)]">{{ t(store.settings.locale, 'settings.locale') }}</span>
         <select
           v-model="localLocale"
-          class="cursor-pointer appearance-none bg-transparent text-right text-sm tracking-tight text-gray-500 outline-none dark:text-gray-400"
+          class="cursor-pointer appearance-none bg-transparent text-right text-sm tracking-tight text-[var(--theme-text-secondary)] outline-none"
           @change="handleLocaleChange"
         >
           <option value="zh-CN">{{ t(store.settings.locale, 'settings.zhCN') }}</option>
@@ -142,55 +131,36 @@ onUnmounted(() => {
       </div>
 
       <div class="flex items-center justify-between p-3 px-4 text-[13px]">
-        <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.theme') }}</span>
-        <div class="flex gap-1.5">
-          <button
-            v-for="theme in ['light', 'dark', 'system'] as ThemeMode[]"
-            :key="theme"
-            :class="[
-              'rounded-md px-2.5 py-1 text-xs font-medium transition-all',
-              localTheme === theme
-                ? 'bg-blue-500 text-white'
-                : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-neutral-700 dark:text-gray-400 dark:hover:bg-neutral-600'
-            ]"
-            @click="localTheme = theme; handleThemeChange()"
-          >
-            {{ t(store.settings.locale, `settings.theme${theme.charAt(0).toUpperCase() + theme.slice(1)}`) }}
-          </button>
-        </div>
-      </div>
-
-      <div class="flex items-center justify-between p-3 px-4 text-[13px]">
         <div class="flex flex-col">
-          <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.autoStart') }}</span>
-          <span class="mt-0.5 text-[10px] text-gray-400">{{ t(store.settings.locale, 'settings.autoStartDesc') }}</span>
+          <span class="text-[var(--theme-text-primary)]">{{ t(store.settings.locale, 'settings.autoStart') }}</span>
+          <span class="mt-0.5 text-[10px] text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.autoStartDesc') }}</span>
         </div>
         <SettingsSwitch :checked="autoStartEnabled" @toggle="toggleAutoStart" />
       </div>
 
       <div class="flex items-center justify-between p-3 px-4 text-[13px]">
         <div class="flex flex-col">
-          <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.update.autoCheck') }}</span>
-          <span class="mt-0.5 text-[10px] text-gray-400">{{ t(store.settings.locale, 'settings.update.autoCheckDesc') }}</span>
+          <span class="text-[var(--theme-text-primary)]">{{ t(store.settings.locale, 'settings.update.autoCheck') }}</span>
+          <span class="mt-0.5 text-[10px] text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.update.autoCheckDesc') }}</span>
         </div>
         <SettingsSwitch :checked="store.settings.autoCheckUpdate" @toggle="toggleAutoCheckUpdate" />
       </div>
 
       <div class="flex items-center justify-between p-3 px-4 text-[13px]">
         <div class="flex flex-col">
-          <span class="text-gray-500 dark:text-gray-400">
+          <span class="text-[var(--theme-text-secondary)]">
             {{ t(store.settings.locale, 'settings.update.currentVersion') }}
             <span v-if="appVersion" class="ml-1 font-mono text-[12px]">v{{ appVersion }}</span>
           </span>
           <span
             v-if="updaterStore.hasUpdate && updaterStore.updateInfo"
-            class="mt-0.5 text-[10px] font-medium text-blue-500 dark:text-blue-400"
+            class="mt-0.5 text-[10px] font-medium text-[var(--theme-status-info-fg)]"
           >
             {{ t(store.settings.locale, 'settings.update.newVersionReady', { version: updaterStore.updateInfo.version }) }}
           </span>
         </div>
         <button
-          class="h-7 rounded-lg border border-gray-200 px-3 text-[11px] text-gray-600 transition-colors hover:bg-gray-50 disabled:opacity-50 dark:border-neutral-700 dark:text-gray-400 dark:hover:bg-neutral-800"
+          class="theme-action-button h-7 rounded-lg border px-3 text-[11px] transition-colors disabled:opacity-50"
           :disabled="updaterStore.status === 'checking'"
           @click="handleCheckUpdate"
         >
@@ -203,20 +173,42 @@ onUnmounted(() => {
       </div>
 
       <div class="flex items-center justify-between p-3 px-4 text-[13px]">
-        <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.refreshInterval') }}</span>
+        <span class="text-[var(--theme-text-primary)]">{{ t(store.settings.locale, 'settings.refreshInterval') }}</span>
         <div class="flex items-center gap-1">
           <input
             v-model.number="localRefreshInterval"
             type="number"
             min="5"
             max="300"
-            class="w-12 bg-transparent p-0 text-right text-sm font-mono text-gray-500 outline-none dark:text-gray-400"
+            class="w-12 bg-transparent p-0 text-right text-sm font-mono text-[var(--theme-text-secondary)] outline-none"
             @blur="handleRefreshIntervalChange"
             @keyup.enter="handleRefreshIntervalChange"
           />
-          <span class="text-xs text-gray-400">{{ t(store.settings.locale, 'common.seconds') }}</span>
+          <span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'common.seconds') }}</span>
         </div>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.theme-settings-panel {
+  background: var(--theme-surface-gradient);
+  border-color: var(--theme-border-default);
+  box-shadow: var(--theme-shadow-inline);
+}
+
+.theme-settings-panel > :not([hidden]) ~ :not([hidden]) {
+  border-top-width: 1px;
+  border-color: color-mix(in srgb, var(--theme-border-default) 52%, white 48%);
+}
+
+.theme-action-button {
+  border-color: var(--theme-border-default);
+  color: var(--theme-text-secondary);
+}
+
+.theme-action-button:hover {
+  background: var(--theme-surface-muted-gradient);
+}
+</style>

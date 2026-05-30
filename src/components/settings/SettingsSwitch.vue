@@ -22,16 +22,31 @@ const handleClick = () => {
     :disabled="disabled"
     :aria-pressed="checked"
     :class="[
-      'relative flex h-6 w-10 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-      checked ? 'bg-green-500' : 'bg-gray-300 dark:bg-neutral-600'
+      'theme-switch relative flex h-6 w-10 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+      checked ? 'theme-switch--checked' : 'theme-switch--unchecked'
     ]"
     @click="handleClick"
   >
     <span
       :class="[
-        'absolute h-[20px] w-[20px] rounded-full bg-white shadow shadow-black/10 transition-all',
+        'absolute h-[20px] w-[20px] rounded-full transition-all theme-switch__thumb',
         checked ? 'right-[2px]' : 'left-[2px]'
       ]"
     ></span>
   </button>
 </template>
+
+<style scoped>
+.theme-switch--checked {
+  background: var(--theme-status-success-fg);
+}
+
+.theme-switch--unchecked {
+  background: var(--theme-border-strong);
+}
+
+.theme-switch__thumb {
+  background: var(--theme-bg-elevated);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
+}
+</style>

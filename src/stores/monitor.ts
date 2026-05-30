@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SyncSettings, NetworkProxyConfig } from '../types'
+import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SyncSettings, NetworkProxyConfig, ThemeSettings } from '../types'
 
 const defaultModelPricing: ModelPricingSettings = {
   matchMode: 'fuzzy',
@@ -42,6 +42,12 @@ const defaultNetworkProxy: NetworkProxyConfig = {
   password: undefined
 }
 
+const defaultTheme: ThemeSettings = {
+  appearance: 'system',
+  lightPalette: 'cloud',
+  darkPalette: 'midnight'
+}
+
 const defaultClientTools: ClientToolSettings = {
   profiles: [
     { id: 'claude_code', tool: 'claude_code', displayName: 'Claude Code', pathPrefix: 'claude-code', enabled: true, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'claudecode' },
@@ -78,7 +84,7 @@ const defaultSettings: AppSettings = {
     requestTimeoutSeconds: 120,
     streamingIdleTimeoutSeconds: 0
   },
-  theme: 'system',
+  theme: defaultTheme,
   modelPricing: defaultModelPricing,
   autoStart: false,
   sourceAware: defaultSourceAware,

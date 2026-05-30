@@ -4,7 +4,23 @@ export type WindowName = '5h' | '24h' | 'today' | '7d' | '30d' | 'current_month'
 
 export const WINDOW_ORDER: WindowName[] = ['5h', '24h', 'today', '7d', '30d', 'current_month']
 
-export type ThemeMode = 'light' | 'dark' | 'system'
+export type ThemeAppearance = 'light' | 'dark' | 'system'
+export type ThemeLightPalette = 'dawn' | 'cloud' | 'mist' | 'moss' | 'parchment' | 'rose'
+export type ThemeDarkPalette = 'midnight' | 'graphite' | 'forest'
+export type ThemePalette = ThemeLightPalette | ThemeDarkPalette
+
+export interface ThemePaletteOption {
+  id: ThemePalette
+  key: string
+  preview: string[]
+  family: 'light' | 'nature' | 'warm' | 'dark'
+}
+
+export interface ThemeSettings {
+  appearance: ThemeAppearance
+  lightPalette: ThemeLightPalette
+  darkPalette: ThemeDarkPalette
+}
 
 export interface ProxyConfig {
   enabled: boolean
@@ -91,7 +107,7 @@ export interface AppSettings {
   refreshIntervalSeconds: number
   summaryWindow: WindowName  // 概览面板汇总展示区显示的窗口
   proxy: ProxyConfig         // 代理配置
-  theme: ThemeMode           // 主题模式：light/dark/system
+  theme: ThemeSettings       // 主题设置：外观模式 + 色板
   modelPricing: ModelPricingSettings  // 模型价格设置
   autoStart: boolean         // 开机自动启动
   sourceAware: SourceAwareSettings    // 来源识别设置

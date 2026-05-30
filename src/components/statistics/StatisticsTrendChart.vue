@@ -9,6 +9,7 @@ import { t } from '../../i18n'
 import { formatCost, formatRequestCount, formatTokenValue } from '../../utils/format'
 import type { AppLocale, StatisticsMetric, StatisticsTrendPoint } from '../../types'
 import { useMonitorStore } from '../../stores/monitor'
+import { themeColorVar } from '../../theme'
 
 const store = useMonitorStore()
 
@@ -25,9 +26,9 @@ const emit = defineEmits<{
 }>()
 
 const trendMetrics: Array<{ value: StatisticsMetric; color: string; key: string }> = [
-  { value: 'requests', color: '#10B981', key: 'statistics.metricRequests' },
-  { value: 'tokens', color: '#3B82F6', key: 'statistics.metricTokens' },
-  { value: 'cost', color: '#F59E0B', key: 'statistics.metricCost' }
+  { value: 'requests', color: themeColorVar('--theme-chart-requests'), key: 'statistics.metricRequests' },
+  { value: 'tokens', color: themeColorVar('--theme-chart-tokens'), key: 'statistics.metricTokens' },
+  { value: 'cost', color: themeColorVar('--theme-chart-cost'), key: 'statistics.metricCost' }
 ]
 
 const hoveredMetric = ref<StatisticsMetric | null>(null)
@@ -84,11 +85,11 @@ const chartOptions = computed(() => {
     grid: { left: 26, right: 8, top: 10, bottom: 18, containLabel: false },
     tooltip: {
       trigger: 'axis',
-      backgroundColor: '#ffffff',
-      borderColor: '#E5E7EB',
+      backgroundColor: themeColorVar('--theme-chart-tooltip-bg'),
+      borderColor: themeColorVar('--theme-chart-tooltip-border'),
       borderRadius: 8,
       padding: [7, 9],
-      textStyle: { color: '#374151', fontSize: 11 },
+      textStyle: { color: themeColorVar('--theme-chart-tooltip-text'), fontSize: 11 },
       formatter: (params: any) => {
         const point = props.points[params[0].dataIndex]
         const rows = trendMetrics.map(item => {
@@ -103,7 +104,7 @@ const chartOptions = computed(() => {
       data: props.points.map(p => p.label),
       axisLine: { show: false },
       axisTick: { show: false },
-      axisLabel: { color: '#9CA3AF', fontSize: 9, hideOverlap: true, margin: 8 }
+      axisLabel: { color: themeColorVar('--theme-chart-axis'), fontSize: 9, hideOverlap: true, margin: 8 }
     },
     yAxis: {
       type: 'value',
@@ -112,12 +113,12 @@ const chartOptions = computed(() => {
       axisLine: { show: false },
       axisTick: { show: false },
       axisLabel: {
-        color: '#9CA3AF',
+        color: themeColorVar('--theme-chart-axis'),
         fontSize: 9,
         formatter: yAxisLabel
       },
       splitNumber: 2,
-      splitLine: { lineStyle: { type: 'dashed', color: '#E5E7EB' } }
+      splitLine: { lineStyle: { type: 'dashed', color: themeColorVar('--theme-chart-grid') } }
     },
     series: trendMetrics.map(item => ({
       name: item.value,
@@ -131,7 +132,7 @@ const chartOptions = computed(() => {
         color: item.color,
         opacity: activeMetric.value === item.value ? 1 : 0.22
       },
-      itemStyle: { color: item.color, borderColor: '#FFFFFF', borderWidth: 1.5 },
+      itemStyle: { color: item.color, borderColor: themeColorVar('--theme-bg-elevated'), borderWidth: 1.5 },
       areaStyle: {
         color: {
           type: 'linear',
@@ -153,15 +154,15 @@ const chartOptions = computed(() => {
 </script>
 
 <template>
-  <section class="rounded-xl bg-gray-50 p-3 dark:bg-neutral-800/70">
+  <section class="trend-chart rounded-xl p-3">
     <div class="mb-2 flex items-center justify-between gap-2">
-      <p class="text-[11px] font-semibold text-gray-600 dark:text-gray-300">{{ t(locale, 'statistics.trend') }}</p>
+      <p class="text-[11px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'statistics.trend') }}</p>
       <div class="flex min-w-0 items-center gap-1">
         <div
           v-for="item in trendMetrics"
           :key="item.value"
-          class="flex min-w-0 items-center gap-1 rounded-full bg-white px-1.5 py-0.5 text-[9px] font-semibold text-gray-500 transition dark:bg-neutral-700/80 dark:text-gray-300"
-          :class="activeMetric === item.value ? 'ring-1 ring-gray-300 dark:ring-neutral-500' : 'opacity-45'"
+          class="trend-chart__chip flex min-w-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[9px] font-semibold transition"
+          :class="activeMetric === item.value ? 'trend-chart__chip--active' : 'trend-chart__chip--idle'"
           @mouseenter="hoveredMetric = item.value"
           @mouseleave="hoveredMetric = null"
           @click="emit('setMetric', item.value)"
@@ -174,8 +175,28 @@ const chartOptions = computed(() => {
     <div v-if="points.length" class="h-[138px]">
       <v-chart class="h-full w-full" :option="chartOptions" autoresize @mouseover="handleChartMouseover" @mouseout="handleChartMouseout" />
     </div>
-    <div v-else class="grid h-[138px] place-items-center text-[11px] text-gray-400 dark:text-gray-500">
+    <div v-else class="grid h-[138px] place-items-center text-[11px] text-[var(--theme-text-tertiary)]">
       {{ t(locale, 'statistics.noData') }}
     </div>
   </section>
 </template>
+
+<style scoped>
+.trend-chart {
+  background: var(--theme-surface-muted-gradient);
+}
+
+.trend-chart__chip {
+  background: var(--theme-overlay-gradient);
+  color: var(--theme-text-secondary);
+}
+
+.trend-chart__chip--active {
+  box-shadow: 0 0 0 1px var(--theme-border-strong);
+  opacity: 1;
+}
+
+.trend-chart__chip--idle {
+  opacity: 0.45;
+}
+</style>

@@ -1,5 +1,6 @@
 //! 设置和配置数据模型
 
+use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -457,6 +458,67 @@ impl Default for CurrencySettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeSettings {
+    #[serde(default = "default_theme_appearance")]
+    pub appearance: String,
+    #[serde(default = "default_light_palette")]
+    pub light_palette: String,
+    #[serde(default = "default_dark_palette")]
+    pub dark_palette: String,
+}
+
+impl Default for ThemeSettings {
+    fn default() -> Self {
+        Self {
+            appearance: default_theme_appearance(),
+            light_palette: default_light_palette(),
+            dark_palette: default_dark_palette(),
+        }
+    }
+}
+
+fn deserialize_theme_settings<'de, D>(deserializer: D) -> Result<ThemeSettings, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ThemeValue {
+        Legacy(String),
+        Structured(ThemeSettings),
+    }
+
+    match ThemeValue::deserialize(deserializer)? {
+        ThemeValue::Legacy(value) => Ok(match value.as_str() {
+            "light" => ThemeSettings {
+                appearance: "light".to_string(),
+                ..ThemeSettings::default()
+            },
+            "dark" => ThemeSettings {
+                appearance: "dark".to_string(),
+                ..ThemeSettings::default()
+            },
+            "system" => ThemeSettings::default(),
+            _ => ThemeSettings::default(),
+        }),
+        ThemeValue::Structured(value) => Ok(value),
+    }
+}
+
+pub fn default_theme_appearance() -> String {
+    "system".to_string()
+}
+
+pub fn default_light_palette() -> String {
+    "cloud".to_string()
+}
+
+pub fn default_dark_palette() -> String {
+    "midnight".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
@@ -470,8 +532,11 @@ pub struct AppSettings {
     pub summary_window: String,
     #[serde(default)]
     pub proxy: ProxyConfig,
-    #[serde(default = "default_theme")]
-    pub theme: String,
+    #[serde(
+        default = "default_theme",
+        deserialize_with = "deserialize_theme_settings"
+    )]
+    pub theme: ThemeSettings,
     #[serde(default)]
     pub model_pricing: ModelPricingSettings,
     #[serde(default)]
@@ -653,8 +718,8 @@ pub fn default_summary_window() -> String {
     "24h".to_string()
 }
 
-pub fn default_theme() -> String {
-    "system".to_string()
+pub fn default_theme() -> ThemeSettings {
+    ThemeSettings::default()
 }
 
 impl Default for AppSettings {

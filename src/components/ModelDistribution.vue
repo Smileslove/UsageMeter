@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import { formatRequestCount } from '../utils/format'
+import { themeColorVar } from '../theme'
 
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -19,12 +20,12 @@ const models = computed(() => store.snapshot?.modelDistribution ?? [])
 
 // 定义明亮的图表色彩（匹配参考图）
 const chartColors = [
-  '#F45B69', // 珊瑚红
-  '#2DD4BF', // 薄荷绿
-  '#818CF8', // 紫罗兰
-  '#FBBF24', // 琥珀橙
-  '#60A5FA', // 天空蓝
-  '#A78BFA'
+  themeColorVar('--theme-chart-series-1'),
+  themeColorVar('--theme-chart-series-2'),
+  themeColorVar('--theme-chart-series-3'),
+  themeColorVar('--theme-chart-series-4'),
+  themeColorVar('--theme-chart-series-5'),
+  themeColorVar('--theme-chart-series-6')
 ]
 
 // 构建 ECharts 选项的动态配置
@@ -47,9 +48,9 @@ const chartOptions = computed(() => {
       formatter: (params: any) => {
         const countLabel = t(store.settings.locale, 'metrics.requests') || '请求数'
         const percentLabel = t(store.settings.locale, 'metrics.percent') || '占比'
-        const textColor = store.settings.theme === 'dark' ? '#E5E7EB' : '#374151'
-        const secondaryColor = store.settings.theme === 'dark' ? '#9CA3AF' : '#6B7280'
-        const valueColor = store.settings.theme === 'dark' ? '#F3F4F6' : '#111827'
+        const textColor = themeColorVar('--theme-chart-tooltip-text')
+        const secondaryColor = themeColorVar('--theme-chart-tooltip-subtext')
+        const valueColor = themeColorVar('--theme-text-primary')
 
         return `
           <div style="display:flex;align-items:center;margin-bottom:8px;gap:6px;">
@@ -66,10 +67,10 @@ const chartOptions = computed(() => {
           </div>
         `
       },
-      backgroundColor: store.settings.theme === 'dark' ? '#2C2C2E' : '#FFFFFF',
-      borderColor: store.settings.theme === 'dark' ? '#3A3A3C' : '#E5E7EB',
+      backgroundColor: themeColorVar('--theme-chart-tooltip-bg'),
+      borderColor: themeColorVar('--theme-chart-tooltip-border'),
       textStyle: {
-        color: store.settings.theme === 'dark' ? '#E5E7EB' : '#374151',
+        color: themeColorVar('--theme-chart-tooltip-text'),
         fontSize: 12
       },
       padding: [8, 12],
@@ -91,12 +92,12 @@ const chartOptions = computed(() => {
       textStyle: {
         rich: {
           name: {
-            color: store.settings.theme === 'dark' ? '#D1D5DB' : '#4B5563', // gray-300 / gray-600
+            color: themeColorVar('--theme-text-secondary'),
             fontSize: 11,
             width: 80 // 固定名字宽度形成对齐
           },
           percent: {
-            color: store.settings.theme === 'dark' ? '#9CA3AF' : '#6B7280', // gray-400 / gray-500
+            color: themeColorVar('--theme-text-tertiary'),
             fontSize: 11,
             fontWeight: 'bold',
             align: 'right',
@@ -130,8 +131,8 @@ const chartOptions = computed(() => {
 </script>
 
 <template>
-  <div v-if="models.length > 0" class="bg-white dark:bg-[#1C1C1E] rounded-xl p-4 shadow-[0_2px_10px_rgba(0,0,0,0.02)] border border-gray-50 dark:border-neutral-800">
-    <div class="text-xs font-semibold text-gray-600 dark:text-gray-300 mb-3">
+  <div v-if="models.length > 0" class="theme-card rounded-xl border p-4">
+    <div class="mb-3 text-xs font-semibold text-[var(--theme-text-secondary)]">
       {{ t(store.settings.locale, 'metrics.modelDistribution') }}
     </div>
     <!-- 使用按需引入的 ECharts 显示模型占比圆环图 -->
@@ -140,8 +141,16 @@ const chartOptions = computed(() => {
       <v-chart class="w-full h-full" :option="chartOptions" autoresize />
       <!-- 中心空心部分可放置说明文本，相对图表位置做偏移 -->
       <div class="absolute left-[25%] top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
-        <span class="text-[9px] text-gray-400 dark:text-gray-500 uppercase tracking-widest opacity-50">Models</span>
+        <span class="text-[9px] uppercase tracking-widest text-[var(--theme-text-quaternary)] opacity-50">Models</span>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.theme-card {
+  background: var(--theme-surface-gradient);
+  border-color: var(--theme-border-default);
+  box-shadow: var(--theme-shadow-inline);
+}
+</style>
