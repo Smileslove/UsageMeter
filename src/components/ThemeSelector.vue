@@ -2,9 +2,9 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Check, Monitor, Moon, Sun } from 'lucide-vue-next'
 import { useMonitorStore } from '../stores/monitor'
-import { DARK_THEME_PALETTE_OPTIONS, THEME_PALETTE_OPTIONS } from '../theme'
+import { applyResolvedTheme, DARK_THEME_PALETTE_OPTIONS, THEME_PALETTE_OPTIONS } from '../theme'
 import { t } from '../i18n'
-import type { ThemeAppearance, ThemeLightPalette } from '../types'
+import type { ThemeAppearance, ThemeDarkPalette, ThemeLightPalette, ThemeSettings } from '../types'
 
 const store = useMonitorStore()
 
@@ -30,23 +30,38 @@ const currentAppearanceIcon = computed(() => {
 
 const systemPaletteHint = computed(() => {
   const lightLabel = t(store.settings.locale, `settings.palette${store.settings.theme.lightPalette.charAt(0).toUpperCase() + store.settings.theme.lightPalette.slice(1)}`)
-  const darkLabel = t(store.settings.locale, 'settings.paletteMidnight')
+  const darkLabel = t(store.settings.locale, `settings.palette${store.settings.theme.darkPalette.charAt(0).toUpperCase() + store.settings.theme.darkPalette.slice(1)}`)
   return t(store.settings.locale, 'settings.themePickerSystemHint', { light: lightLabel, dark: darkLabel })
 })
 
+async function updateTheme(mutator: (theme: ThemeSettings) => void) {
+  const previousTheme = { ...store.settings.theme }
+  mutator(store.settings.theme)
+
+  try {
+    await store.saveSettings()
+  } catch {
+    store.settings.theme = previousTheme
+    applyResolvedTheme(previousTheme)
+  }
+}
+
 async function setAppearance(appearance: ThemeAppearance) {
-  store.settings.theme.appearance = appearance
-  await store.saveSettings()
+  await updateTheme(theme => {
+    theme.appearance = appearance
+  })
 }
 
 async function setLightPalette(palette: ThemeLightPalette) {
-  store.settings.theme.lightPalette = palette
-  await store.saveSettings()
+  await updateTheme(theme => {
+    theme.lightPalette = palette
+  })
 }
 
-async function setDarkPalette() {
-  store.settings.theme.darkPalette = 'midnight'
-  await store.saveSettings()
+async function setDarkPalette(palette: ThemeDarkPalette) {
+  await updateTheme(theme => {
+    theme.darkPalette = palette
+  })
 }
 
 function toggleDropdown() {
@@ -211,7 +226,7 @@ onUnmounted(() => {
             :key="palette.id"
             class="theme-palette-option"
             :class="store.settings.theme.darkPalette === palette.id ? 'theme-palette-option--active' : 'theme-palette-option--idle'"
-            @click="setDarkPalette()"
+            @click="setDarkPalette(palette.id as ThemeDarkPalette)"
           >
             <div class="theme-palette-option__swatches">
               <span

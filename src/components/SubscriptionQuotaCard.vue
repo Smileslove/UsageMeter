@@ -176,15 +176,16 @@ async function refresh() {
 
 <style scoped>
 .metric-card {
-  --metric-separator-soft: rgba(17, 24, 39, 0.1);
-  --metric-separator-strong: rgba(17, 24, 39, 0.18);
+  --metric-separator-soft: color-mix(in srgb, var(--theme-text-primary) 8%, transparent);
+  --metric-separator-strong: color-mix(in srgb, var(--theme-text-primary) 16%, transparent);
   min-width: 0;
   overflow: hidden;
   min-height: 0;
   border-radius: 1rem;
   border-width: 1px;
-  background: rgb(255 255 255);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.025);
+  background: var(--theme-surface-gradient);
+  border-color: var(--theme-border-default);
+  box-shadow: var(--theme-shadow-inline);
 }
 
 .metric-rail {
@@ -236,22 +237,13 @@ async function refresh() {
   padding: 0.625rem 0.625rem 0.5rem;
 }
 
+.metric-card-codex {
+  --metric-separator-soft: color-mix(in srgb, var(--theme-chart-requests) 18%, transparent);
+  --metric-separator-strong: color-mix(in srgb, var(--theme-chart-requests) 34%, transparent);
+}
+
 .writing-vertical {
   writing-mode: vertical-rl;
   text-orientation: upright;
-}
-
-:global(html.dark) .metric-card {
-  background: rgb(28 28 30) !important;
-}
-
-.metric-card-codex {
-  --metric-separator-soft: rgba(6, 182, 212, 0.18);
-  --metric-separator-strong: rgba(6, 182, 212, 0.34);
-}
-
-:global(html.dark) .metric-card-codex {
-  --metric-separator-soft: rgba(34, 211, 238, 0.34);
-  --metric-separator-strong: rgba(34, 211, 238, 0.72);
 }
 </style>

@@ -192,22 +192,22 @@ defineProps<{
     <div class="flex items-center gap-2">
       <button
         @click="$props.onBack"
-        class="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-neutral-800 transition-colors"
+        class="rounded-lg p-1 text-[var(--theme-text-tertiary)] transition-colors hover:bg-gray-100 hover:text-[var(--theme-text-primary)]"
       >
         <ChevronLeft class="w-4 h-4" />
       </button>
-      <h3 class="text-sm font-semibold text-gray-800 dark:text-gray-100">
+      <h3 class="text-sm font-semibold text-[var(--theme-text-primary)]">
         {{ t(store.settings.locale, 'sources.title') }}
       </h3>
-      <span v-if="hasNewSources" class="px-1.5 py-0.5 text-xs font-medium bg-red-100 text-red-600 dark:bg-red-500/20 dark:text-red-400 rounded-full">
+      <span v-if="hasNewSources" class="theme-status-danger rounded-full border px-1.5 py-0.5 text-xs font-medium">
         {{ sources.filter(s => s.autoDetected && !s.displayName).length }}
       </span>
-      <span class="ml-auto text-xs text-gray-400">{{ sources.length }} {{ t(store.settings.locale, 'sources.sourcesCount') }}</span>
+      <span class="ml-auto text-xs text-[var(--theme-text-tertiary)]">{{ sources.length }} {{ t(store.settings.locale, 'sources.sourcesCount') }}</span>
     </div>
 
-    <div v-if="sources.length === 0" class="text-center py-8 bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800">
-      <Key class="w-7 h-7 mx-auto text-gray-300 dark:text-gray-600 mb-2" />
-      <p class="text-xs text-gray-400">
+    <div v-if="sources.length === 0" class="theme-surface rounded-xl border py-8 text-center">
+      <Key class="mx-auto mb-2 h-7 w-7 text-[var(--theme-text-quaternary)]" />
+      <p class="text-xs text-[var(--theme-text-tertiary)]">
         {{ t(store.settings.locale, 'sources.noSources') }}
       </p>
     </div>
@@ -216,7 +216,7 @@ defineProps<{
       <div
         v-for="source in sources"
         :key="source.id"
-        class="bg-white dark:bg-[#1C1C1E] rounded-xl border border-gray-100 dark:border-neutral-800 p-2 shadow-sm"
+        class="theme-surface rounded-xl border p-2"
       >
         <!-- Row 1: icon/dot + name + time + actions -->
         <div class="flex items-center gap-1.5">
@@ -243,20 +243,20 @@ defineProps<{
             <input
               v-model="editingName"
               :placeholder="t(store.settings.locale, 'sources.namePlaceholder')"
-              class="flex-1 min-w-0 px-1.5 py-0.5 text-xs bg-gray-50 dark:bg-neutral-800 rounded border border-gray-200 dark:border-neutral-700 focus:border-blue-400 outline-none"
+              class="theme-input min-w-0 flex-1 rounded px-1.5 py-0.5 text-xs"
               @keyup.enter="saveName"
               @keyup.esc="cancelEdit"
               autofocus
             />
             <button
               @click="saveName"
-              class="p-0.5 text-white bg-blue-500 rounded hover:bg-blue-600 transition-colors shrink-0"
+              class="theme-button-accent shrink-0 rounded p-0.5 transition-colors"
             >
               <Check class="w-3.5 h-3.5" />
             </button>
             <button
               @click="cancelEdit"
-              class="p-0.5 text-gray-400 bg-gray-100 dark:bg-neutral-800 rounded hover:bg-gray-200 dark:hover:bg-neutral-700 transition-colors shrink-0"
+              class="theme-button-secondary shrink-0 rounded p-0.5 transition-colors"
             >
               <X class="w-3.5 h-3.5" />
             </button>
@@ -264,18 +264,18 @@ defineProps<{
 
           <!-- Normal state -->
           <template v-else>
-            <span class="text-xs font-semibold text-gray-800 dark:text-gray-100 truncate flex-1 min-w-0">
+            <span class="min-w-0 flex-1 truncate text-xs font-semibold text-[var(--theme-text-primary)]">
               {{ getSourceName(source) }}
             </span>
 
-            <span class="flex items-center gap-0.5 text-xs text-gray-400 dark:text-gray-500 shrink-0">
+            <span class="flex shrink-0 items-center gap-0.5 text-xs text-[var(--theme-text-tertiary)]">
               <Clock class="w-3.5 h-3.5" />
               {{ formatTime(source.lastSeenMs) }}
             </span>
 
             <button
               @click="startEdit(source)"
-              class="p-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors shrink-0"
+              class="shrink-0 p-0.5 text-[var(--theme-text-tertiary)] transition-colors hover:text-[var(--theme-text-primary)]"
             >
               <Pencil class="w-3.5 h-3.5" />
             </button>
@@ -287,8 +287,8 @@ defineProps<{
               :class="[
                 'p-0.5 rounded transition-colors shrink-0',
                 sameBaseSourceCount(source) === 0
-                  ? 'text-gray-300 dark:text-gray-600 cursor-not-allowed'
-                  : 'text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+                  ? 'text-[var(--theme-text-quaternary)] cursor-not-allowed'
+                  : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'
               ]"
             >
               <Merge class="w-3.5 h-3.5" />
@@ -304,7 +304,7 @@ defineProps<{
         </div>
 
         <!-- Row 2: URL -->
-        <div class="mt-1 flex items-center gap-1 text-xs text-gray-400 dark:text-gray-500">
+        <div class="mt-1 flex items-center gap-1 text-xs text-[var(--theme-text-tertiary)]">
           <ExternalLink class="w-3.5 h-3.5 shrink-0" />
           <span class="font-mono truncate" :title="getSourceUrl(source)">{{ getSourceUrl(source) }}</span>
         </div>
@@ -323,7 +323,7 @@ defineProps<{
           <input
             :value="getKeyNote(source, prefix)"
             :placeholder="t(store.settings.locale, 'sources.keyNotePlaceholder')"
-            class="flex-1 min-w-0 px-1.5 py-0.5 text-xs bg-gray-50 dark:bg-neutral-900/60 text-gray-600 dark:text-gray-300 placeholder:text-gray-300 dark:placeholder:text-gray-600 rounded border border-gray-100 dark:border-neutral-800 focus:border-blue-300 outline-none"
+            class="theme-input min-w-0 flex-1 rounded px-1.5 py-0.5 text-xs text-[var(--theme-text-secondary)]"
             @input="updateKeyNoteDraft(source, prefix, $event)"
             @blur="saveKeyNote(source, prefix)"
             @keyup.enter="saveKeyNote(source, prefix)"
@@ -333,13 +333,13 @@ defineProps<{
         <!-- Icon picker -->
         <div
           v-if="iconPickerSourceId === source.id"
-          class="mt-1.5 p-2 bg-gray-50 dark:bg-neutral-800/80 rounded-lg border border-gray-100 dark:border-neutral-800"
+          class="theme-surface-muted mt-1.5 rounded-lg border p-2"
         >
           <input
             v-model="iconSearch"
             type="text"
             :placeholder="t(store.settings.locale, 'sources.searchIcon')"
-            class="w-full px-2 py-1 text-[11px] bg-white dark:bg-neutral-900 rounded border border-gray-200 dark:border-neutral-700 focus:border-blue-400 outline-none mb-2"
+            class="theme-input mb-2 w-full rounded px-2 py-1 text-[11px]"
             autofocus
           />
 
@@ -349,7 +349,7 @@ defineProps<{
             v-show="category.icons.length > 0"
             class="mb-2 last:mb-0"
           >
-            <p class="text-[10px] text-gray-400 mb-1 px-0.5">{{ category.label }} · {{ category.icons.length }}</p>
+            <p class="mb-1 px-0.5 text-[10px] text-[var(--theme-text-tertiary)]">{{ category.label }} · {{ category.icons.length }}</p>
             <div class="grid grid-cols-9 gap-0.5 max-h-[120px] overflow-y-auto">
               <button
                 v-for="icon in category.icons"
@@ -359,7 +359,7 @@ defineProps<{
                   'p-1 rounded-md transition-colors flex items-center justify-center',
                   source.icon === icon
                     ? 'bg-blue-100 dark:bg-blue-500/20 ring-1 ring-blue-300 dark:ring-blue-500/30'
-                    : 'hover:bg-gray-100 dark:hover:bg-neutral-700'
+                    : 'theme-surface hover:bg-gray-100'
                 ]"
                 :title="icon"
               >
@@ -371,7 +371,7 @@ defineProps<{
           <button
             v-if="source.icon"
             @click="setSourceIcon(source.id, null)"
-            class="mt-1 text-[10px] text-gray-400 hover:text-red-500 transition-colors"
+            class="mt-1 text-[10px] text-[var(--theme-text-tertiary)] transition-colors hover:text-red-500"
           >
             {{ t(store.settings.locale, 'sources.removeIcon') }}
           </button>
@@ -388,12 +388,12 @@ defineProps<{
         leave-from-class="opacity-100"
         leave-to-class="opacity-0"
       >
-        <div v-if="showMergeDialog" class="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div class="bg-white dark:bg-[#1C1C1E] rounded-2xl shadow-xl w-full max-w-xs p-5">
-            <h4 class="text-sm font-semibold text-gray-800 dark:text-gray-100 mb-1">
+        <div v-if="showMergeDialog" class="theme-backdrop fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div class="theme-modal-panel w-full max-w-xs rounded-2xl p-5">
+            <h4 class="mb-1 text-sm font-semibold text-[var(--theme-text-primary)]">
               {{ t(store.settings.locale, 'sources.mergeInto') }}
             </h4>
-            <p class="text-xs text-gray-400 dark:text-gray-500 mb-3">
+            <p class="mb-3 text-xs text-[var(--theme-text-tertiary)]">
               {{ t(store.settings.locale, 'sources.mergeConfirm') }}
             </p>
             <div class="space-y-1.5">
@@ -404,21 +404,21 @@ defineProps<{
                 :class="[
                   'w-full flex items-center gap-2 p-2.5 rounded-xl border transition-colors text-left',
                   mergeTargetId === target.id
-                    ? 'border-blue-400 bg-blue-50 dark:bg-blue-500/10'
-                    : 'border-gray-100 dark:border-neutral-800 hover:bg-gray-50 dark:hover:bg-neutral-800'
+                    ? 'theme-accent-soft theme-accent-border'
+                    : 'theme-surface hover:bg-gray-50'
                 ]"
               >
                 <span
                   class="w-2.5 h-2.5 rounded-full shrink-0"
                   :style="{ backgroundColor: target.color }"
                 ></span>
-                <span class="text-xs text-gray-700 dark:text-gray-200">{{ getSourceName(target) }}</span>
+                <span class="text-xs text-[var(--theme-text-primary)]">{{ getSourceName(target) }}</span>
               </button>
             </div>
             <div class="flex gap-2 mt-4">
               <button
                 @click="showMergeDialog = false"
-                class="flex-1 py-2 text-[12px] font-medium text-gray-500 bg-gray-100 dark:bg-neutral-800 rounded-xl hover:bg-gray-200 dark:hover:bg-neutral-700 transition-colors"
+                class="theme-button-secondary flex-1 rounded-xl py-2 text-[12px] font-medium transition-colors"
               >
                 {{ t(store.settings.locale, 'common.cancel') }}
               </button>
@@ -427,7 +427,7 @@ defineProps<{
                 :disabled="!mergeTargetId"
                 :class="[
                   'flex-1 py-2 text-[12px] font-medium text-white rounded-xl transition-colors',
-                  mergeTargetId ? 'bg-blue-500 hover:bg-blue-600' : 'bg-blue-300 dark:bg-blue-500/30 cursor-not-allowed'
+                  mergeTargetId ? 'theme-button-accent' : 'bg-blue-300 dark:bg-blue-500/30 cursor-not-allowed'
                 ]"
               >
                 {{ t(store.settings.locale, 'common.confirm') }}
@@ -447,35 +447,35 @@ defineProps<{
         leave-from-class="opacity-100"
         leave-to-class="opacity-0"
       >
-        <div v-if="showDeleteDialog" class="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-          <div class="bg-white dark:bg-[#1C1C1E] rounded-2xl shadow-xl w-full max-w-xs p-5">
+        <div v-if="showDeleteDialog" class="theme-backdrop fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div class="theme-modal-panel w-full max-w-xs rounded-2xl p-5">
             <div class="flex flex-col items-center text-center mb-4">
-              <div class="w-10 h-10 rounded-full bg-red-50 dark:bg-red-500/10 flex items-center justify-center mb-3">
+              <div class="theme-status-danger mb-3 flex h-10 w-10 items-center justify-center rounded-full border">
                 <AlertTriangle class="w-5 h-5 text-red-500" />
               </div>
-              <h4 class="text-sm font-semibold text-gray-800 dark:text-gray-100">
+              <h4 class="text-sm font-semibold text-[var(--theme-text-primary)]">
                 {{ t(store.settings.locale, 'sources.delete') }}
               </h4>
-              <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">
+              <p class="mt-1 text-xs text-[var(--theme-text-tertiary)]">
                 {{ t(store.settings.locale, 'sources.deleteConfirm') }}
               </p>
             </div>
 
-            <div v-if="deletingSource" class="flex items-center gap-2 p-2.5 bg-gray-50 dark:bg-neutral-800/80 rounded-xl mb-3">
+            <div v-if="deletingSource" class="theme-surface-muted mb-3 flex items-center gap-2 rounded-xl border p-2.5">
               <span
                 class="w-2.5 h-2.5 rounded-full shrink-0"
                 :style="{ backgroundColor: deletingSource.color }"
               ></span>
-              <span class="text-xs font-medium text-gray-700 dark:text-gray-200">{{ getSourceName(deletingSource) }}</span>
+              <span class="text-xs font-medium text-[var(--theme-text-primary)]">{{ getSourceName(deletingSource) }}</span>
             </div>
 
-            <label class="flex items-center gap-2.5 p-2.5 bg-red-50 dark:bg-red-500/10 rounded-xl cursor-pointer mb-4">
+            <label class="theme-status-danger mb-4 flex cursor-pointer items-center gap-2.5 rounded-xl border p-2.5">
               <input
                 type="checkbox"
                 v-model="deleteWithRecords"
                 class="w-4 h-4 rounded border-gray-300 text-red-500 focus:ring-red-500"
               />
-              <span class="text-xs text-red-600 dark:text-red-400">
+              <span class="text-xs">
                 {{ t(store.settings.locale, 'sources.deleteRecordsToo') }}
               </span>
             </label>
@@ -483,13 +483,13 @@ defineProps<{
             <div class="flex gap-2">
               <button
                 @click="showDeleteDialog = false"
-                class="flex-1 py-2 text-[12px] font-medium text-gray-500 bg-gray-100 dark:bg-neutral-800 rounded-xl hover:bg-gray-200 dark:hover:bg-neutral-700 transition-colors"
+                class="theme-button-secondary flex-1 rounded-xl py-2 text-[12px] font-medium transition-colors"
               >
                 {{ t(store.settings.locale, 'common.cancel') }}
               </button>
               <button
                 @click="doDelete"
-                class="flex-1 py-2 text-[12px] font-medium text-white bg-red-500 rounded-xl hover:bg-red-600 transition-colors"
+                class="theme-status-danger flex-1 rounded-xl border py-2 text-[12px] font-medium transition-colors"
               >
                 {{ t(store.settings.locale, 'common.confirm') }}
               </button>

@@ -304,13 +304,13 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
 }
 
 .overview-empty {
-  border: 1px solid rgb(243 244 246);
+  border: 1px solid var(--theme-border-default);
   border-radius: 1rem;
-  background: rgb(255 255 255);
+  background: var(--theme-surface-gradient);
   padding: 1rem;
   text-align: center;
   font-size: 12px;
-  color: rgb(156 163 175);
+  color: var(--theme-text-tertiary);
 }
 
 .sort-control {
@@ -318,9 +318,9 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   flex-shrink: 0;
   align-items: center;
   gap: 0.15rem;
-  border: 1px solid rgb(243 244 246);
+  border: 1px solid var(--theme-border-default);
   border-radius: 999px;
-  background: rgb(255 255 255);
+  background: var(--theme-overlay-gradient);
   padding: 0.12rem;
 }
 
@@ -333,21 +333,21 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   font-size: 10px;
   font-weight: 700;
   line-height: 1;
-  color: rgb(156 163 175);
+  color: var(--theme-text-tertiary);
   transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .sort-control button.active {
-  background: rgb(17 24 39);
-  color: rgb(255 255 255);
+  background: var(--theme-accent-primary);
+  color: var(--theme-accent-contrast);
 }
 
 .rank-card {
   overflow: hidden;
-  border: 1px solid rgb(243 244 246);
+  border: 1px solid var(--theme-border-default);
   border-radius: 1rem;
-  background: rgb(255 255 255);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.025);
+  background: var(--theme-surface-gradient);
+  box-shadow: var(--theme-shadow-inline);
 }
 
 .rank-card-header {
@@ -358,7 +358,7 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   padding: 0.55rem 0.7rem 0.35rem;
   font-size: 12px;
   font-weight: 700;
-  color: rgb(55 65 81);
+  color: var(--theme-text-secondary);
 }
 
 .rank-row {
@@ -366,7 +366,7 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   min-width: 0;
   align-items: center;
   gap: 0.55rem;
-  border-top: 1px solid rgb(249 250 251);
+  border-top: 1px solid color-mix(in srgb, var(--theme-border-default) 72%, transparent);
   padding: 0.48rem 0.7rem;
 }
 
@@ -379,10 +379,10 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   align-items: center;
   justify-content: center;
   border-radius: 0.55rem;
-  background: rgb(249 250 251);
+  background: var(--theme-surface-muted-gradient);
   font-size: 10px;
   font-weight: 700;
-  color: rgb(156 163 175);
+  color: var(--theme-text-tertiary);
 }
 
 .rank-main {
@@ -405,7 +405,7 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   white-space: nowrap;
   font-size: 12px;
   font-weight: 600;
-  color: rgb(31 41 55);
+  color: var(--theme-text-primary);
 }
 
 .rank-value {
@@ -413,7 +413,7 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   font-size: 11px;
   font-weight: 700;
-  color: rgb(17 24 39);
+  color: var(--theme-text-primary);
 }
 
 .rank-meta {
@@ -432,7 +432,7 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   align-items: baseline;
   gap: 0.18rem;
   overflow: hidden;
-  border-left: 1px solid rgb(243 244 246);
+  border-left: 1px solid color-mix(in srgb, var(--theme-border-default) 78%, transparent);
   padding: 0 0.38rem;
   text-align: left;
 }
@@ -458,7 +458,7 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   font-size: 9px;
   font-weight: 650;
   line-height: 1;
-  color: rgb(156 163 175);
+  color: var(--theme-text-tertiary);
 }
 
 .rank-meta-value {
@@ -466,16 +466,16 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   font-size: 10px;
   font-weight: 700;
   line-height: 1;
-  color: rgb(75 85 99);
+  color: var(--theme-text-secondary);
 }
 
 .rank-meta-pill-error .rank-meta-label,
 .rank-meta-pill-error .rank-meta-value {
-  color: rgb(194 65 12);
+  color: var(--theme-status-danger-fg);
 }
 
 .rank-meta-pill-muted .rank-meta-value {
-  color: rgb(209 213 219);
+  color: var(--theme-text-quaternary);
 }
 
 .rank-hint {
@@ -484,59 +484,7 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   gap: 0.5rem;
   padding: 0.75rem;
   font-size: 11px;
-  color: rgb(156 163 175);
-}
-
-:global(html.dark) .overview-empty,
-:global(html.dark) .rank-card {
-  border-color: rgb(38 38 38);
-  background: rgb(28 28 30);
-}
-
-:global(html.dark) .rank-card-header,
-:global(html.dark) .rank-label,
-:global(html.dark) .rank-value {
-  color: rgb(243 244 246);
-}
-
-:global(html.dark) .rank-row {
-  border-top-color: rgb(38 38 38 / 0.8);
-}
-
-:global(html.dark) .rank-icon,
-:global(html.dark) .rank-index {
-  background: rgb(38 38 38);
-}
-
-:global(html.dark) .rank-meta-pill {
-  border-color: rgb(38 38 38);
-}
-
-:global(html.dark) .rank-meta-label {
-  color: rgb(115 115 115);
-}
-
-:global(html.dark) .rank-meta-value {
-  color: rgb(212 212 212);
-}
-
-:global(html.dark) .rank-meta-pill-error .rank-meta-label,
-:global(html.dark) .rank-meta-pill-error .rank-meta-value {
-  color: rgb(253 186 116);
-}
-
-:global(html.dark) .rank-meta-pill-muted .rank-meta-value {
-  color: rgb(82 82 82);
-}
-
-:global(html.dark) .sort-control {
-  border-color: rgb(38 38 38);
-  background: rgb(28 28 30);
-}
-
-:global(html.dark) .sort-control button.active {
-  background: rgb(243 244 246);
-  color: rgb(17 24 39);
+  color: var(--theme-text-tertiary);
 }
 
 </style>

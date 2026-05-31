@@ -351,27 +351,18 @@ function detailPairSizeClass(first: string, second: string): string {
   flex-direction: column;
   gap: 0.375rem;
   padding: 0.5rem;
-  background: #fff;
+  background: var(--theme-surface-gradient);
   border-radius: 0.75rem;
-  border: 1px solid rgba(243, 244, 246, 1);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.025);
-}
-
-:global(html.dark) .summary-panel {
-  background: #1c1c1e !important;
-  border-color: rgba(38, 38, 38, 1);
+  border: 1px solid var(--theme-border-default);
+  box-shadow: var(--theme-shadow-inline);
 }
 
 .summary-window-tabs {
   display: flex;
   gap: 0.25rem;
   padding: 0.125rem;
-  background: rgba(243, 244, 246, 0.5);
+  background: var(--theme-surface-muted-gradient);
   border-radius: 0.5rem;
-}
-
-:global(html.dark) .summary-window-tabs {
-  background: rgba(55, 65, 81, 0.3);
 }
 
 .summary-window-tab {
@@ -379,7 +370,7 @@ function detailPairSizeClass(first: string, second: string): string {
   padding: 0.25rem 0.5rem;
   font-size: 11px;
   font-weight: 500;
-  color: #6b7280;
+  color: var(--theme-text-secondary);
   background: transparent;
   border: none;
   border-radius: 0.375rem;
@@ -390,26 +381,15 @@ function detailPairSizeClass(first: string, second: string): string {
 }
 
 .summary-window-tab:hover {
-  color: #374151;
-  background: rgba(255, 255, 255, 0.5);
-}
-
-:global(html.dark) .summary-window-tab:hover {
-  color: #d1d5db;
-  background: rgba(75, 85, 99, 0.3);
+  color: var(--theme-text-primary);
+  background: var(--theme-bg-hover);
 }
 
 .summary-window-tab.active {
-  color: #0f766e;
-  background: #fff;
+  color: var(--theme-accent-primary);
+  background: var(--theme-overlay-gradient);
   font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-}
-
-:global(html.dark) .summary-window-tab.active {
-  color: #5eead4;
-  background: rgba(30, 41, 59, 0.8);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--theme-shadow-inline);
 }
 
 .summary-grid {
@@ -422,35 +402,36 @@ function detailPairSizeClass(first: string, second: string): string {
 
 /* Metric card styles - aligned with StatisticsMetricCards */
 .metric-card {
-  --metric-separator-soft: rgba(17, 24, 39, 0.1);
-  --metric-separator-strong: rgba(17, 24, 39, 0.18);
+  --metric-separator-soft: color-mix(in srgb, var(--theme-text-primary) 8%, transparent);
+  --metric-separator-strong: color-mix(in srgb, var(--theme-text-primary) 16%, transparent);
   min-width: 0;
   overflow: hidden;
   min-height: 108px;
   border-radius: 1rem;
   border-width: 1px;
-  background: #fff;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.025);
+  background: var(--theme-surface-gradient);
+  border-color: var(--theme-border-default);
+  box-shadow: var(--theme-shadow-inline);
 }
 
 .metric-card-emerald {
-  --metric-separator-soft: rgba(16, 185, 129, 0.18);
-  --metric-separator-strong: rgba(16, 185, 129, 0.34);
+  --metric-separator-soft: color-mix(in srgb, var(--theme-chart-requests) 18%, transparent);
+  --metric-separator-strong: color-mix(in srgb, var(--theme-chart-requests) 34%, transparent);
 }
 
 .metric-card-sky {
-  --metric-separator-soft: rgba(14, 165, 233, 0.18);
-  --metric-separator-strong: rgba(14, 165, 233, 0.34);
+  --metric-separator-soft: color-mix(in srgb, var(--theme-chart-tokens) 18%, transparent);
+  --metric-separator-strong: color-mix(in srgb, var(--theme-chart-tokens) 34%, transparent);
 }
 
 .metric-card-amber {
-  --metric-separator-soft: rgba(245, 158, 11, 0.2);
-  --metric-separator-strong: rgba(245, 158, 11, 0.38);
+  --metric-separator-soft: color-mix(in srgb, var(--theme-chart-cost) 18%, transparent);
+  --metric-separator-strong: color-mix(in srgb, var(--theme-chart-cost) 36%, transparent);
 }
 
 .metric-card-violet {
-  --metric-separator-soft: rgba(139, 92, 246, 0.18);
-  --metric-separator-strong: rgba(139, 92, 246, 0.34);
+  --metric-separator-soft: color-mix(in srgb, var(--theme-chart-series-3) 18%, transparent);
+  --metric-separator-strong: color-mix(in srgb, var(--theme-chart-series-3) 34%, transparent);
 }
 
 .metric-card-toggle {
@@ -463,45 +444,14 @@ function detailPairSizeClass(first: string, second: string): string {
 }
 
 .metric-card-toggle:hover {
-  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.04);
+  box-shadow: var(--theme-shadow-card);
 }
 
 .metric-card-toggle:focus-visible {
+  outline: none;
   box-shadow:
-    0 0 0 2px rgba(255, 255, 255, 0.9),
-    0 0 0 4px var(--metric-separator-strong);
-}
-
-:global(html.dark) .metric-card {
-  background: #1c1c1e !important;
-}
-
-:global(html.dark) .metric-card-emerald {
-  --metric-separator-soft: rgba(52, 211, 153, 0.34);
-  --metric-separator-strong: rgba(52, 211, 153, 0.72);
-}
-
-:global(html.dark) .metric-card-sky {
-  --metric-separator-soft: rgba(56, 189, 248, 0.34);
-  --metric-separator-strong: rgba(56, 189, 248, 0.72);
-}
-
-:global(html.dark) .metric-card-amber {
-  --metric-separator-soft: rgba(251, 191, 36, 0.36);
-  --metric-separator-strong: rgba(251, 191, 36, 0.76);
-}
-
-:global(html.dark) .metric-card-violet {
-  --metric-separator-soft: rgba(167, 139, 250, 0.34);
-  --metric-separator-strong: rgba(167, 139, 250, 0.72);
-}
-
-:global(html.dark) .metric-value {
-  color: #f9fafb !important;
-}
-
-:global(html.dark) .metric-label {
-  color: #8b8b92;
+    0 0 0 2px var(--theme-bg-overlay),
+    0 0 0 4px var(--theme-ring-focus);
 }
 
 .metric-rail {
@@ -579,7 +529,7 @@ function detailPairSizeClass(first: string, second: string): string {
 
 .metric-label {
   overflow: hidden;
-  color: #9ca3af;
+  color: var(--theme-text-tertiary);
   font-size: 11px;
   font-weight: 600;
   line-height: 1rem;
@@ -591,7 +541,7 @@ function detailPairSizeClass(first: string, second: string): string {
   min-width: 0;
   height: 1.75rem;
   overflow: hidden;
-  color: #030712;
+  color: var(--theme-text-primary);
   font-family: var(--font-mono);
   font-size: 22px;
   font-weight: 700;

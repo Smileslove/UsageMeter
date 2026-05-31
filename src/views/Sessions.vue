@@ -526,7 +526,7 @@ onUnmounted(() => {
               </svg>
               <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.cost') }}</span>
             </div>
-            <span class="text-[#00E5FF] font-medium">{{ formatCost(session.estimatedCost) }}</span>
+            <span class="font-medium text-[var(--theme-chart-cost)]">{{ formatCost(session.estimatedCost) }}</span>
           </div>
         </div>
       </div>
@@ -614,7 +614,7 @@ onUnmounted(() => {
               <span>{{ t(store.settings.locale, 'common.totalTokens') }}</span>
             </span>
             <span class="flex items-center justify-center gap-1 leading-none">
-              <svg class="h-2.5 w-2.5 text-cyan-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              <svg class="h-2.5 w-2.5 text-[var(--theme-chart-cost)]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
               <span>{{ t(store.settings.locale, 'sessions.cost') }}</span>
             </span>
           </div>
@@ -631,7 +631,7 @@ onUnmounted(() => {
             <span class="text-center font-semibold leading-none text-gray-700 dark:text-gray-200">{{ formatTokens(project.totalInputTokens) }}</span>
             <span class="text-center font-semibold leading-none text-gray-700 dark:text-gray-200">{{ formatTokens(project.totalOutputTokens) }}</span>
             <span class="text-center font-semibold leading-none text-gray-700 dark:text-gray-200">{{ formatTokens(projectTotalTokens(project)) }}</span>
-            <span class="text-center font-semibold leading-none text-cyan-600 dark:text-cyan-300">{{ formatCost(project.totalCost) }}</span>
+            <span class="text-center font-semibold leading-none text-[var(--theme-chart-cost)]">{{ formatCost(project.totalCost) }}</span>
           </div>
           <div
             v-for="tool in projectToolRows(project)"
@@ -651,7 +651,7 @@ onUnmounted(() => {
             <span class="text-center font-medium leading-none text-gray-700 dark:text-gray-300">{{ formatTokens(tool.totalInputTokens) }}</span>
             <span class="text-center font-medium leading-none text-gray-700 dark:text-gray-300">{{ formatTokens(tool.totalOutputTokens) }}</span>
             <span class="text-center font-medium leading-none text-gray-700 dark:text-gray-300">{{ formatTokens(tool.totalInputTokens + tool.totalOutputTokens + tool.totalCacheCreateTokens + tool.totalCacheReadTokens) }}</span>
-            <span class="text-center font-medium leading-none text-cyan-600 dark:text-cyan-300">{{ formatCost(tool.totalCost) }}</span>
+            <span class="text-center font-medium leading-none text-[var(--theme-chart-cost)]">{{ formatCost(tool.totalCost) }}</span>
           </div>
         </div>
       </div>

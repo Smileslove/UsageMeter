@@ -205,7 +205,7 @@ onUnmounted(() => {
       <button
         @click="dismissConfigNotification"
         class="ml-1 shrink-0 text-[var(--theme-status-warning-fg)] opacity-60 transition-colors hover:opacity-100"
-        aria-label="close"
+        :aria-label="t(store.settings.locale, 'common.cancel')"
       >
         <svg class="h-3.5 w-3.5" viewBox="0 0 12 12" fill="none">
           <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>

@@ -67,7 +67,7 @@ const displayCurrencyRate = computed(() =>
   localCurrency.value.exchangeRates[localCurrency.value.displayCurrency] ?? 1
 )
 
-const rateInputClass = 'min-w-0 bg-transparent text-right font-mono font-semibold text-gray-700 dark:text-gray-200 outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
+const rateInputClass = 'min-w-0 bg-transparent text-right font-mono font-semibold text-[var(--theme-text-primary)] outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
 
 // 添加币种
 async function addCurrency(code: string) {
@@ -122,17 +122,17 @@ async function save() {
   <div class="flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-300">
     <!-- 头部 -->
     <div class="flex items-center justify-between gap-2 px-1">
-      <button @click="emit('back')" class="flex items-center gap-1 text-blue-500 text-[13px] hover:text-blue-600 transition-colors">
+      <button @click="emit('back')" class="flex items-center gap-1 text-[13px] text-[var(--theme-accent-primary)] transition-colors hover:opacity-85">
         <ChevronLeft class="w-4 h-4" :stroke-width="2.2" />
         {{ t(store.settings.locale, 'common.dashboard') }}
       </button>
-      <h2 class="text-sm font-semibold text-gray-800 dark:text-gray-100">
+      <h2 class="text-sm font-semibold text-[var(--theme-text-primary)]">
         {{ t(store.settings.locale, 'settings.currency') }}
       </h2>
       <button
         @click="syncRates"
         :disabled="syncing"
-        class="flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all bg-blue-500 text-white hover:bg-blue-600 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed shadow-[0_6px_14px_rgba(59,130,246,0.18)]"
+        class="theme-button-accent flex items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-all active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
       >
         <RefreshCcw :class="['w-3.5 h-3.5', syncing ? 'animate-spin' : '']" :stroke-width="2.4" />
         <span>{{ syncing ? t(store.settings.locale, 'common.syncing') : t(store.settings.locale, 'settings.currencySync') }}</span>
@@ -140,27 +140,27 @@ async function save() {
     </div>
 
     <!-- 同步成功/失败提示 -->
-    <div v-if="syncSuccess" class="flex items-center justify-center gap-1.5 rounded-full bg-emerald-50 py-1.5 text-xs font-medium text-emerald-600 dark:bg-emerald-500/10 dark:text-emerald-400">
+    <div v-if="syncSuccess" class="theme-status-success flex items-center justify-center gap-1.5 rounded-full border py-1.5 text-xs font-medium">
       <CheckCircle2 class="w-3.5 h-3.5" />
       <span>{{ t(store.settings.locale, 'settings.currencySyncSuccess') }}</span>
     </div>
-    <div v-if="syncError" class="flex items-center justify-center gap-1.5 rounded-full bg-red-50 py-1.5 text-xs font-medium text-red-500 dark:bg-red-500/10 dark:text-red-400">
+    <div v-if="syncError" class="theme-status-danger flex items-center justify-center gap-1.5 rounded-full border py-1.5 text-xs font-medium">
       <AlertCircle class="w-3.5 h-3.5" />
       <span>{{ syncError }}</span>
     </div>
 
-    <div class="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-gray-50 dark:border-neutral-800 shadow-[0_2px_10px_rgba(0,0,0,0.02)] overflow-hidden">
+    <div class="theme-surface rounded-2xl border overflow-hidden">
       <div class="p-3">
         <div class="flex items-center justify-between gap-3">
           <div class="flex items-center gap-3 min-w-0">
-            <div class="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-300 flex items-center justify-center shrink-0">
+            <div class="theme-accent-soft flex h-9 w-9 items-center justify-center rounded-xl shrink-0 border">
               <BadgeDollarSign class="w-[18px] h-[18px]" :stroke-width="2.1" />
             </div>
             <div class="min-w-0">
-              <p class="text-[11px] font-medium text-gray-400 dark:text-gray-500">{{ t(store.settings.locale, 'settings.currencyDisplay') }}</p>
+              <p class="text-[11px] font-medium text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.currencyDisplay') }}</p>
               <div class="flex items-baseline gap-1.5 min-w-0">
-                <span class="text-[20px] leading-none font-bold text-gray-900 dark:text-gray-50 tracking-tight">{{ localCurrency.displayCurrency }}</span>
-                <span class="text-xs text-gray-400 dark:text-gray-500 truncate">{{ displayCurrencyName }}</span>
+                <span class="text-[20px] leading-none font-bold tracking-tight text-[var(--theme-text-primary)]">{{ localCurrency.displayCurrency }}</span>
+                <span class="truncate text-xs text-[var(--theme-text-tertiary)]">{{ displayCurrencyName }}</span>
               </div>
             </div>
           </div>
@@ -168,21 +168,21 @@ async function save() {
             <select
               v-model="localCurrency.displayCurrency"
               @change="save"
-              class="h-8 pl-3 pr-7 rounded-full bg-gray-50 dark:bg-neutral-800 border border-gray-100 dark:border-neutral-700 text-xs font-semibold text-gray-700 dark:text-gray-200 outline-none cursor-pointer appearance-none focus:border-blue-300 dark:focus:border-blue-500"
+              class="theme-input h-8 cursor-pointer appearance-none rounded-full pl-3 pr-7 text-xs font-semibold"
             >
               <option v-for="code in displayOptions" :key="code" :value="code">{{ code }}</option>
             </select>
-            <ChevronDown class="w-3.5 h-3.5 text-gray-400 pointer-events-none absolute right-2 top-1/2 -translate-y-1/2" />
+            <ChevronDown class="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--theme-text-tertiary)]" />
           </div>
         </div>
-        <div class="mt-2 flex items-center gap-1.5 min-w-0 rounded-xl bg-gray-50 dark:bg-neutral-800/70 px-2.5 py-1.5">
-          <span class="text-[10px] font-medium text-gray-400 dark:text-gray-500 shrink-0">1 USD</span>
-          <span class="text-[10px] text-gray-300 dark:text-gray-600 shrink-0">=</span>
-          <span class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-[16px] leading-none font-mono font-bold text-gray-900 dark:text-gray-50">{{ displayCurrencyRate.toFixed(4) }}</span>
-          <span class="text-[10px] font-semibold text-gray-400 dark:text-gray-500 shrink-0">{{ localCurrency.displayCurrency }}</span>
+        <div class="theme-surface-muted mt-2 flex min-w-0 items-center gap-1.5 rounded-xl border px-2.5 py-1.5">
+          <span class="shrink-0 text-[10px] font-medium text-[var(--theme-text-tertiary)]">1 USD</span>
+          <span class="shrink-0 text-[10px] text-[var(--theme-text-quaternary)]">=</span>
+          <span class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-[16px] leading-none font-mono font-bold text-[var(--theme-text-primary)]">{{ displayCurrencyRate.toFixed(4) }}</span>
+          <span class="shrink-0 text-[10px] font-semibold text-[var(--theme-text-tertiary)]">{{ localCurrency.displayCurrency }}</span>
         </div>
       </div>
-      <div class="px-4 py-2.5 border-t border-gray-50 dark:border-neutral-800/70 text-[10px] text-gray-400 dark:text-gray-500 leading-relaxed">
+      <div class="border-t px-4 py-2.5 text-[10px] leading-relaxed text-[var(--theme-text-tertiary)] theme-divider">
         {{ t(store.settings.locale, 'settings.currencyDataSource') }}
       </div>
     </div>
@@ -192,21 +192,21 @@ async function save() {
       <div
         v-for="code in localCurrency.trackedCurrencies"
         :key="code"
-        class="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-gray-50 dark:border-neutral-800 shadow-[0_2px_10px_rgba(0,0,0,0.02)] px-3 py-2"
+        class="theme-surface rounded-2xl border px-3 py-2"
       >
         <div class="grid grid-cols-[2rem_2.75rem_minmax(0,1fr)_8.25rem_2rem] items-center gap-2 min-w-0">
           <div
-            class="w-8 h-8 rounded-xl flex items-center justify-center text-[12px] font-bold shrink-0"
-            :class="code === localCurrency.displayCurrency ? 'bg-blue-50 text-blue-600 dark:bg-blue-500/15 dark:text-blue-300' : 'bg-gray-50 text-gray-500 dark:bg-neutral-800 dark:text-gray-400'"
+            class="flex h-8 w-8 items-center justify-center rounded-xl text-[12px] font-bold shrink-0"
+            :class="code === localCurrency.displayCurrency ? 'theme-accent-soft border' : 'theme-surface-muted border text-[var(--theme-text-secondary)]'"
           >
             {{ getCurrencySymbol(code).trim().slice(0, 2) || code.slice(0, 1) }}
           </div>
-          <span class="font-mono text-sm font-semibold text-gray-800 dark:text-gray-100 leading-tight tabular-nums">{{ code }}</span>
-          <span class="min-w-0 text-[12px] font-medium text-gray-700 dark:text-gray-200 truncate">{{ getCurrencyName(code, store.settings.locale) }}</span>
-          <div class="min-w-0 flex items-center gap-1 rounded-lg bg-gray-50 dark:bg-neutral-800/75 border border-gray-50 dark:border-neutral-800 px-2 py-1.5">
+          <span class="font-mono text-sm font-semibold leading-tight tabular-nums text-[var(--theme-text-primary)]">{{ code }}</span>
+          <span class="min-w-0 truncate text-[12px] font-medium text-[var(--theme-text-primary)]">{{ getCurrencyName(code, store.settings.locale) }}</span>
+          <div class="theme-surface-muted min-w-0 flex items-center gap-1 rounded-lg border px-2 py-1.5">
             <span
               v-if="code === 'USD'"
-              class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-right font-mono text-[12px] font-semibold text-gray-600 dark:text-gray-300"
+              class="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-right font-mono text-[12px] font-semibold text-[var(--theme-text-secondary)]"
             >
               1.0000
             </span>
@@ -219,7 +219,7 @@ async function save() {
               min="0.0001"
               :class="['w-full text-[12px]', rateInputClass]"
             />
-            <span class="text-[10px] font-semibold text-gray-400 dark:text-gray-500 shrink-0">{{ code }}</span>
+            <span class="shrink-0 text-[10px] font-semibold text-[var(--theme-text-tertiary)]">{{ code }}</span>
           </div>
           <button
             @click.stop="removeCurrency(code)"
@@ -228,7 +228,7 @@ async function save() {
               'w-8 h-8 rounded-lg flex items-center justify-center transition-colors shrink-0',
               code === 'USD'
                 ? 'invisible pointer-events-none'
-                : 'text-gray-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10'
+                : 'text-[var(--theme-text-quaternary)] hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10'
             ]"
             :title="t(store.settings.locale, 'settings.currencyRemove')"
           >
@@ -239,30 +239,30 @@ async function save() {
     </div>
 
     <!-- 添加币种 -->
-    <div class="bg-white dark:bg-[#1C1C1E] rounded-2xl border border-gray-50 dark:border-neutral-800 overflow-hidden shadow-[0_2px_10px_rgba(0,0,0,0.02)]">
+    <div class="theme-surface rounded-2xl border overflow-hidden">
       <!-- 搜索和选择 -->
       <div class="p-3">
         <div class="flex items-center justify-between mb-2">
-          <div class="flex items-center gap-1.5 text-[12px] font-semibold text-gray-700 dark:text-gray-200">
+          <div class="flex items-center gap-1.5 text-[12px] font-semibold text-[var(--theme-text-primary)]">
             <Plus class="w-3.5 h-3.5 text-blue-500" :stroke-width="2.4" />
             <span>{{ t(store.settings.locale, 'settings.currencyAddRate') }}</span>
           </div>
-          <span class="text-[10px] text-gray-400 dark:text-gray-500">{{ availableCurrencies.length }}</span>
+          <span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ availableCurrencies.length }}</span>
         </div>
         <!-- 搜索框 -->
         <div class="relative mb-2">
-          <Search class="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+          <Search class="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--theme-text-tertiary)]" />
           <input
             v-model="searchQuery"
             type="text"
             :placeholder="t(store.settings.locale, 'settings.currencySearch')"
-            class="w-full pl-8 pr-2.5 py-2 bg-gray-50 dark:bg-neutral-800 border border-gray-100 dark:border-neutral-700 rounded-xl text-xs text-gray-700 dark:text-gray-200 outline-none focus:border-blue-300 dark:focus:border-blue-500 transition-colors"
+            class="theme-input w-full rounded-xl py-2 pl-8 pr-2.5 text-xs"
           />
         </div>
 
         <!-- 可用货币列表 -->
         <div class="max-h-44 overflow-y-auto pr-0.5">
-          <div v-if="availableCurrencies.length === 0" class="text-center text-xs text-gray-400 py-3">
+          <div v-if="availableCurrencies.length === 0" class="py-3 text-center text-xs text-[var(--theme-text-tertiary)]">
             {{ searchQuery ? t(store.settings.locale, 'settings.currencyNoResults') : t(store.settings.locale, 'settings.currencyAllAdded') }}
           </div>
           <div v-else class="space-y-1">
@@ -270,17 +270,17 @@ async function save() {
               v-for="code in availableCurrencies"
               :key="code"
               @click="addCurrency(code)"
-              class="group w-full min-w-0 px-2.5 py-2 rounded-xl text-left transition-all bg-gray-50 text-gray-600 hover:bg-blue-50 hover:text-blue-600 active:scale-[0.99] dark:bg-neutral-800 dark:text-gray-400 dark:hover:bg-blue-500/20"
+              class="theme-surface-muted group w-full min-w-0 rounded-xl px-2.5 py-2 text-left text-[var(--theme-text-secondary)] transition-all active:scale-[0.99] hover:bg-blue-50 hover:text-blue-600"
             >
               <span class="flex items-center gap-2 min-w-0">
-                <span class="w-7 h-7 rounded-lg bg-white dark:bg-[#1C1C1E] border border-gray-100 dark:border-neutral-700 flex items-center justify-center text-[11px] font-bold text-gray-500 dark:text-gray-400 shrink-0 group-hover:border-blue-100 group-hover:text-blue-600 dark:group-hover:border-blue-500/20 dark:group-hover:text-blue-300">
+                <span class="theme-surface flex h-7 w-7 items-center justify-center rounded-lg border text-[11px] font-bold text-[var(--theme-text-secondary)] shrink-0 group-hover:border-blue-100 group-hover:text-blue-600">
                   {{ getCurrencySymbol(code).trim().slice(0, 2) || code.slice(0, 1) }}
                 </span>
                 <span class="min-w-0 flex-1 flex items-center gap-1.5">
-                  <span class="text-xs font-semibold text-gray-700 dark:text-gray-200 group-hover:text-blue-600 dark:group-hover:text-blue-300 shrink-0">{{ code }}</span>
-                  <span class="text-[12px] font-medium text-gray-700 dark:text-gray-200 truncate group-hover:text-blue-600 dark:group-hover:text-blue-300">{{ getCurrencyName(code, store.settings.locale) }}</span>
+                  <span class="shrink-0 text-xs font-semibold text-[var(--theme-text-primary)] group-hover:text-blue-600">{{ code }}</span>
+                  <span class="truncate text-[12px] font-medium text-[var(--theme-text-primary)] group-hover:text-blue-600">{{ getCurrencyName(code, store.settings.locale) }}</span>
                 </span>
-                <span class="w-6 h-6 rounded-full flex items-center justify-center bg-white text-gray-300 border border-gray-100 group-hover:bg-blue-500 group-hover:text-white group-hover:border-blue-500 dark:bg-[#1C1C1E] dark:border-neutral-700 dark:group-hover:bg-blue-500 dark:group-hover:border-blue-500 shrink-0 transition-colors">
+                <span class="theme-surface flex h-6 w-6 items-center justify-center rounded-full border text-[var(--theme-text-quaternary)] shrink-0 transition-colors group-hover:bg-blue-500 group-hover:text-white group-hover:border-blue-500">
                   <Plus class="w-3.5 h-3.5" :stroke-width="2.4" />
                 </span>
               </span>
