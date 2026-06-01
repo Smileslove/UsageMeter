@@ -162,11 +162,13 @@ export interface ToolTakeoverStatus {
   tool: string
   enabled: boolean
   takeoverActive: boolean
+  conflictPaused: boolean
   configPath?: string
   authPath?: string
   authMode?: 'api_key' | 'chat_gpt'
   officialProvider: boolean
   activeSourceId?: string
+  conflictExternalBaseUrl?: string
   lastError?: string
 }
 

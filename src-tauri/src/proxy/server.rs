@@ -28,6 +28,8 @@ use tokio::net::TcpListener;
 use tokio::sync::{oneshot, RwLock};
 
 const CONFIG_MONITOR_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const TAKEOVER_CONFLICT_WINDOW_MS: i64 = 30_000;
+const TAKEOVER_CONFLICT_RECLAIM_THRESHOLD: usize = 3;
 
 struct ClientRoute {
     normalized_path: String,
@@ -36,6 +38,127 @@ struct ClientRoute {
     detection_method: String,
     target_base_url: Option<String>,
     source_id: Option<String>,
+}
+
+/// 外部配置管理器持续抢写时发送给前端的事件载荷。
+#[derive(serde::Serialize, Clone)]
+struct TakeoverConflictDetectedPayload {
+    tool: String,
+    config_path: String,
+    external_base_url: String,
+    reclaim_count: usize,
+    window_ms: i64,
+}
+
+fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+async fn mark_takeover_config_write(state: &Arc<ProxyState>, tool: &str) {
+    let mut conflicts = state.takeover_conflicts.write().await;
+    let tool_state = conflicts.tools.entry(tool.to_string()).or_default();
+    tool_state.last_usagemeter_write_ms = Some(now_ms());
+}
+
+async fn clear_takeover_conflict(state: &Arc<ProxyState>, tool: &str) {
+    let mut conflicts = state.takeover_conflicts.write().await;
+    let tool_state = conflicts.tools.entry(tool.to_string()).or_default();
+    tool_state.reclaim_events.clear();
+    tool_state.paused_conflict = false;
+    tool_state.paused_external_base_url = None;
+}
+
+async fn pause_takeover_conflict(
+    state: &Arc<ProxyState>,
+    tool: &str,
+    external_base_url: Option<String>,
+) {
+    let mut conflicts = state.takeover_conflicts.write().await;
+    let tool_state = conflicts.tools.entry(tool.to_string()).or_default();
+    tool_state.paused_conflict = true;
+    tool_state.paused_external_base_url = external_base_url;
+}
+
+async fn is_takeover_conflict_paused(state: &Arc<ProxyState>, tool: &str) -> bool {
+    state
+        .takeover_conflicts
+        .read()
+        .await
+        .tools
+        .get(tool)
+        .map(|tool_state| tool_state.paused_conflict)
+        .unwrap_or(false)
+}
+
+async fn takeover_conflict_external_base_url(
+    state: &Arc<ProxyState>,
+    tool: &str,
+) -> Option<String> {
+    state
+        .takeover_conflicts
+        .read()
+        .await
+        .tools
+        .get(tool)
+        .and_then(|tool_state| tool_state.paused_external_base_url.clone())
+}
+
+async fn should_reclaim_external_config(
+    state: &Arc<ProxyState>,
+    tool: &str,
+    config_path: String,
+    external_base_url: String,
+) -> bool {
+    let now = now_ms();
+    let mut emit_payload = None;
+    let should_reclaim = {
+        let mut conflicts = state.takeover_conflicts.write().await;
+        let tool_state = conflicts.tools.entry(tool.to_string()).or_default();
+        if tool_state.paused_conflict {
+            return false;
+        }
+
+        let recent_self_write = tool_state
+            .last_usagemeter_write_ms
+            .map(|last_write| now.saturating_sub(last_write) <= TAKEOVER_CONFLICT_WINDOW_MS)
+            .unwrap_or(false);
+        if !recent_self_write {
+            true
+        } else {
+            tool_state.reclaim_events.push_back(now);
+            while tool_state
+                .reclaim_events
+                .front()
+                .map(|event| now.saturating_sub(*event) > TAKEOVER_CONFLICT_WINDOW_MS)
+                .unwrap_or(false)
+            {
+                tool_state.reclaim_events.pop_front();
+            }
+
+            if tool_state.reclaim_events.len() >= TAKEOVER_CONFLICT_RECLAIM_THRESHOLD {
+                tool_state.paused_conflict = true;
+                tool_state.paused_external_base_url = Some(external_base_url.clone());
+                emit_payload = Some(TakeoverConflictDetectedPayload {
+                    tool: tool.to_string(),
+                    config_path,
+                    external_base_url,
+                    reclaim_count: tool_state.reclaim_events.len(),
+                    window_ms: TAKEOVER_CONFLICT_WINDOW_MS,
+                });
+                false
+            } else {
+                true
+            }
+        }
+    };
+
+    if let Some(payload) = emit_payload {
+        if let Some(ref app_handle) = *state.app_handle.read().await {
+            let _ = app_handle.emit("takeover_conflict_detected", payload);
+        }
+    }
+
+    should_reclaim
 }
 
 fn trim_path_prefix(prefix: &str) -> String {
@@ -268,6 +391,10 @@ struct ProxyConfigChangedPayload {
 }
 
 async fn sync_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
+    if is_takeover_conflict_paused(&state, "claude_code").await {
+        return;
+    }
+
     let config_manager = ClaudeConfigManager::new();
     let Ok(settings) = config_manager.read_settings() else {
         return;
@@ -289,6 +416,17 @@ async fn sync_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
     let registry = ProxySourceRegistry::new();
     match registry.upsert_from_settings(&settings) {
         Ok(Some(handle)) => {
+            if !should_reclaim_external_config(
+                &state,
+                "claude_code",
+                config_manager.settings_path().display().to_string(),
+                handle.real_base_url.clone(),
+            )
+            .await
+            {
+                return;
+            }
+
             *state.active_source_id.write().await = Some(handle.id.clone());
             if let Err(e) = config_manager.takeover_with_path_prefix_and_source(
                 proxy_port,
@@ -297,6 +435,7 @@ async fn sync_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
             ) {
                 eprintln!("[proxy] Failed to re-apply source-aware takeover: {}", e);
             } else {
+                mark_takeover_config_write(&state, "claude_code").await;
                 // 通知前端：外部工具修改了配置，代理已自动切换目标
                 if let Some(ref app_handle) = *state.app_handle.read().await {
                     let _ = app_handle.emit(
@@ -318,6 +457,10 @@ async fn sync_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
 }
 
 async fn sync_codex_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
+    if is_takeover_conflict_paused(&state, "codex").await {
+        return;
+    }
+
     let settings = get_settings_snapshot(&state).await;
     let codex_enabled = settings
         .client_tools
@@ -353,12 +496,28 @@ async fn sync_codex_external_config_change(proxy_port: u16, state: Arc<ProxyStat
             .or_else(|| registry.latest_for_provider(&snapshot.provider_id))
         {
             let _ = config_manager.takeover_with_source(proxy_port, &handle.id);
+            mark_takeover_config_write(&state, "codex").await;
         }
         return;
     }
 
     if let Ok(handle) = CodexSourceRegistry::new().upsert_from_snapshot(snapshot) {
-        let _ = config_manager.takeover_with_source(proxy_port, &handle.id);
+        if !should_reclaim_external_config(
+            &state,
+            "codex",
+            config_manager.config_path().display().to_string(),
+            handle.real_base_url.clone(),
+        )
+        .await
+        {
+            return;
+        }
+        if config_manager
+            .takeover_with_source(proxy_port, &handle.id)
+            .is_ok()
+        {
+            mark_takeover_config_write(&state, "codex").await;
+        }
     }
 }
 
@@ -417,6 +576,7 @@ impl ProxyServer {
             openai_forwarder: Arc::new(RwLock::new(None)),
             settings_snapshot: Arc::new(RwLock::new(initial_settings)),
             settings_file_mtime: Arc::new(RwLock::new(initial_settings_mtime)),
+            takeover_conflicts: Arc::new(RwLock::new(Default::default())),
         });
 
         Self {
@@ -468,6 +628,7 @@ impl ProxyServer {
                 Some("claude-code"),
                 source_id.as_deref(),
             )?;
+            mark_takeover_config_write(&self.state, "claude_code").await;
 
             (source_handle, target_base_url)
         } else {
@@ -688,6 +849,85 @@ impl ProxyServer {
     /// 获取使用量收集器
     pub fn get_collector(&self) -> Arc<UsageCollector> {
         self.state.usage_collector.clone()
+    }
+
+    /// 指定工具是否因外部配置管理器持续抢写而暂停自动接管。
+    pub async fn is_takeover_conflict_paused(&self, tool: &str) -> bool {
+        is_takeover_conflict_paused(&self.state, tool).await
+    }
+
+    /// 获取冲突暂停时观察到的真实上游地址。
+    pub async fn takeover_conflict_external_base_url(&self, tool: &str) -> Option<String> {
+        takeover_conflict_external_base_url(&self.state, tool).await
+    }
+
+    /// 将指定工具标记为冲突暂停。
+    pub async fn pause_takeover_conflict(&self, tool: &str) {
+        pause_takeover_conflict(&self.state, tool, None).await;
+    }
+
+    /// 清除冲突暂停并立即重新接管当前配置。
+    pub async fn force_reclaim_takeover(&self, tool: &str) -> Result<(), String> {
+        match tool {
+            "claude_code" | "claude" => self.force_reclaim_claude_takeover().await?,
+            "codex" => self.force_reclaim_codex_takeover().await?,
+            other => return Err(format!("Unsupported takeover tool: {}", other)),
+        };
+        clear_takeover_conflict(&self.state, tool).await;
+        Ok(())
+    }
+
+    async fn force_reclaim_claude_takeover(&self) -> Result<(), String> {
+        let config_manager = ClaudeConfigManager::new();
+        let registry = ProxySourceRegistry::new();
+        let settings = config_manager.read_settings()?;
+        let active_source_id = self.state.active_source_id.read().await.clone();
+        let source_handle = match settings.get_base_url() {
+            Some(base_url) if ClaudeConfigManager::is_usagemeter_proxy_url(&base_url) => {
+                ClaudeConfigManager::extract_source_id_from_proxy_url(&base_url)
+                    .and_then(|source_id| registry.get(&source_id))
+                    .or_else(|| {
+                        active_source_id
+                            .as_deref()
+                            .and_then(|source_id| registry.get(source_id))
+                    })
+            }
+            _ => registry.upsert_from_settings(&settings).ok().flatten(),
+        };
+        let Some(handle) = source_handle else {
+            return Err("Unable to resolve Claude takeover source".to_string());
+        };
+
+        *self.state.active_source_id.write().await = Some(handle.id.clone());
+        config_manager.takeover_with_path_prefix_and_source(
+            self.config.port,
+            Some("claude-code"),
+            Some(&handle.id),
+        )?;
+        mark_takeover_config_write(&self.state, "claude_code").await;
+        Ok(())
+    }
+
+    async fn force_reclaim_codex_takeover(&self) -> Result<(), String> {
+        let config_manager = CodexConfigManager::new();
+        let registry = CodexSourceRegistry::new();
+        let snapshot = config_manager.read_live_snapshot()?;
+        let handle = if CodexConfigManager::is_usagemeter_proxy_url_for_port(
+            &snapshot.real_base_url,
+            self.config.port,
+        ) {
+            config_manager
+                .active_source_id()
+                .and_then(|source_id| registry.get(&source_id))
+                .or_else(|| registry.latest_for_provider(&snapshot.provider_id))
+                .ok_or_else(|| "Unable to resolve Codex takeover source".to_string())?
+        } else {
+            registry.upsert_from_snapshot(snapshot)?
+        };
+
+        config_manager.takeover_with_source(self.config.port, &handle.id)?;
+        mark_takeover_config_write(&self.state, "codex").await;
+        Ok(())
     }
 
     /// 设置 Tauri 应用句柄（用于发送事件）

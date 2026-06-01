@@ -47,7 +47,15 @@ interface ConfigChangedPayload {
   new_real_base_url: string
   source_id: string
 }
+interface TakeoverConflictPayload {
+  tool: string
+  config_path: string
+  external_base_url: string
+  reclaim_count: number
+  window_ms: number
+}
 const configChangedNotification = ref<ConfigChangedPayload | null>(null)
+const takeoverConflictNotification = ref<TakeoverConflictPayload | null>(null)
 let configChangedTimer: ReturnType<typeof setTimeout> | null = null
 
 function dismissConfigNotification() {
@@ -58,10 +66,26 @@ function dismissConfigNotification() {
   }
 }
 
+function dismissTakeoverConflictNotification() {
+  takeoverConflictNotification.value = null
+}
+
+async function resolveTakeoverConflict(action: 'force_reclaim' | 'pause' | 'disable_takeover') {
+  const notification = takeoverConflictNotification.value
+  if (!notification) {
+    return
+  }
+  await invoke('resolve_takeover_conflict', { tool: notification.tool, action })
+  await store.loadSettings()
+  await store.getProxyStatus()
+  dismissTakeoverConflictNotification()
+}
+
 // 退出事件监听器
 let unlistenQuit: UnlistenFn | null = null
 let unlistenSourceDetected: UnlistenFn | null = null
 let unlistenConfigChanged: UnlistenFn | null = null
+let unlistenTakeoverConflict: UnlistenFn | null = null
 let unlistenUpdateAvailable: UnlistenFn | null = null
 let unlistenUpdateProgress: UnlistenFn | null = null
 
@@ -102,6 +126,13 @@ onMounted(async () => {
     configChangedTimer = setTimeout(dismissConfigNotification, 5000)
   })
 
+  unlistenTakeoverConflict = await listen<TakeoverConflictPayload>('takeover_conflict_detected', async (event) => {
+    dismissConfigNotification()
+    takeoverConflictNotification.value = event.payload
+    await store.loadSettings()
+    await store.getProxyStatus()
+  })
+
   // 监听后台检查到有新版本可用
   unlistenUpdateAvailable = await listen<UpdateInfo>('update-available', (event) => {
     updaterStore.onUpdateAvailable(event.payload)
@@ -124,6 +155,7 @@ onUnmounted(() => {
   if (unlistenQuit) unlistenQuit()
   if (unlistenSourceDetected) unlistenSourceDetected()
   if (unlistenConfigChanged) unlistenConfigChanged()
+  if (unlistenTakeoverConflict) unlistenTakeoverConflict()
   if (unlistenUpdateAvailable) unlistenUpdateAvailable()
   if (unlistenUpdateProgress) unlistenUpdateProgress()
   if (configChangedTimer) clearTimeout(configChangedTimer)
@@ -188,7 +220,49 @@ onUnmounted(() => {
 
   <Transition name="toast-slide">
     <div
-      v-if="configChangedNotification"
+      v-if="takeoverConflictNotification"
+      class="theme-toast theme-toast--warning fixed bottom-4 left-1/2 z-50 flex w-[calc(100%-32px)] max-w-[360px] -translate-x-1/2 items-start gap-2.5 rounded-2xl px-3.5 py-3 backdrop-blur-xl"
+    >
+      <div class="theme-toast__icon mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full">
+        <ArrowLeftRight class="h-3 w-3 text-[var(--theme-status-warning-fg)]" />
+      </div>
+      <div class="min-w-0 flex-1">
+        <p class="text-[11.5px] font-semibold leading-tight text-[var(--theme-status-warning-fg)]">
+          {{ t(store.settings.locale, 'settings.takeoverConflictDetected') }}
+        </p>
+        <p class="mt-0.5 text-[10.5px] leading-snug text-[var(--theme-status-warning-fg)] opacity-80">
+          {{ t(store.settings.locale, 'settings.takeoverConflictDetectedDesc') }}
+        </p>
+        <div class="mt-2 flex flex-wrap gap-1.5">
+          <button
+            class="rounded-lg bg-amber-600/15 px-2 py-1 text-[10px] font-semibold text-[var(--theme-status-warning-fg)] transition-colors hover:bg-amber-600/25"
+            @click="resolveTakeoverConflict('force_reclaim')"
+          >
+            {{ t(store.settings.locale, 'settings.takeoverConflictForce') }}
+          </button>
+          <button
+            class="rounded-lg bg-amber-600/10 px-2 py-1 text-[10px] font-semibold text-[var(--theme-status-warning-fg)] opacity-80 transition-colors hover:opacity-100"
+            @click="resolveTakeoverConflict('disable_takeover')"
+          >
+            {{ t(store.settings.locale, 'settings.takeoverConflictDisable') }}
+          </button>
+        </div>
+      </div>
+      <button
+        @click="dismissTakeoverConflictNotification"
+        class="ml-1 shrink-0 text-[var(--theme-status-warning-fg)] opacity-60 transition-colors hover:opacity-100"
+        :aria-label="t(store.settings.locale, 'common.cancel')"
+      >
+        <svg class="h-3.5 w-3.5" viewBox="0 0 12 12" fill="none">
+          <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+  </Transition>
+
+  <Transition name="toast-slide">
+    <div
+      v-if="configChangedNotification && !takeoverConflictNotification"
       class="theme-toast theme-toast--warning fixed bottom-4 left-1/2 z-50 flex w-[calc(100%-32px)] max-w-[360px] -translate-x-1/2 items-start gap-2.5 rounded-2xl px-3.5 py-3 backdrop-blur-xl"
     >
       <div class="theme-toast__icon mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full">

@@ -4,6 +4,7 @@ use super::collector::UsageCollector;
 use super::openai_forwarder::OpenAiForwarder;
 use crate::models::AppSettings;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::RwLock;
@@ -369,6 +370,23 @@ pub struct ProxyState {
     pub settings_snapshot: Arc<RwLock<AppSettings>>,
     /// 设置文件最后一次已知修改时间，用于轮询刷新快照。
     pub settings_file_mtime: Arc<RwLock<Option<SystemTime>>>,
+    /// 外部配置管理器与 UsageMeter 接管之间的运行期冲突状态。
+    pub takeover_conflicts: Arc<RwLock<TakeoverConflictRegistry>>,
+}
+
+/// 单个工具的接管冲突运行态。
+#[derive(Debug, Clone, Default)]
+pub struct TakeoverConflictState {
+    pub last_usagemeter_write_ms: Option<i64>,
+    pub reclaim_events: VecDeque<i64>,
+    pub paused_conflict: bool,
+    pub paused_external_base_url: Option<String>,
+}
+
+/// 接管冲突状态表，按工具 ID 存储。
+#[derive(Debug, Clone, Default)]
+pub struct TakeoverConflictRegistry {
+    pub tools: HashMap<String, TakeoverConflictState>,
 }
 
 /// Claude API 的 SSE 事件类型

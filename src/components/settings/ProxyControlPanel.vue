@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
 import { type ToolTakeoverStatus } from '../../types'
@@ -16,6 +17,7 @@ const takeoverStatuses = ref<ToolTakeoverStatus[]>([])
 const takeoverLoading = ref<Record<string, boolean>>({})
 const showOfficialApiWarning = ref(false)
 const pendingTakeoverTool = ref<string | null>(null)
+let unlistenTakeoverConflict: UnlistenFn | null = null
 
 watch(() => store.settings.proxy.includeErrorRequests, (value) => {
   localIncludeErrorRequests.value = value ?? true
@@ -69,6 +71,10 @@ const takeoverActiveFor = (tool: string) => {
   return takeoverStatusFor(tool)?.takeoverActive ?? false
 }
 
+const conflictPausedFor = (tool: string) => {
+  return takeoverStatusFor(tool)?.conflictPaused ?? false
+}
+
 const takeoverEnabledFor = (tool: string) => {
   return takeoverStatusFor(tool)?.enabled ?? managedToolProfiles.value.find(profile => profile.tool === tool)?.enabled ?? false
 }
@@ -111,6 +117,18 @@ const applyToolTakeover = async (tool: string, nextEnabled: boolean) => {
   }
 }
 
+const resolveTakeoverConflict = async (tool: string, action: 'force_reclaim' | 'pause' | 'disable_takeover') => {
+  takeoverLoading.value = { ...takeoverLoading.value, [tool]: true }
+  try {
+    await invoke('resolve_takeover_conflict', { tool, action })
+    await store.loadSettings()
+    await store.getProxyStatus()
+    await loadTakeoverStatuses()
+  } finally {
+    takeoverLoading.value = { ...takeoverLoading.value, [tool]: false }
+  }
+}
+
 const toggleToolTakeover = async (tool: string) => {
   const nextEnabled = !takeoverEnabledFor(tool)
   const status = nextEnabled ? await ensureTakeoverStatusFor(tool) : takeoverStatusFor(tool)
@@ -138,10 +156,12 @@ const handleGlobalKeydown = (event: KeyboardEvent) => {
 
 onMounted(async () => {
   await loadTakeoverStatuses()
+  unlistenTakeoverConflict = await listen('takeover_conflict_detected', loadTakeoverStatuses)
   window.addEventListener('keydown', handleGlobalKeydown)
 })
 
 onUnmounted(() => {
+  if (unlistenTakeoverConflict) unlistenTakeoverConflict()
   window.removeEventListener('keydown', handleGlobalKeydown)
 })
 
@@ -199,9 +219,11 @@ function formatUptime(seconds: number): string {
           </span>
         </div>
         <div class="grid grid-cols-2 gap-2">
-          <button
+          <div
             v-for="profile in managedToolProfiles"
             :key="profile.id"
+            role="button"
+            tabindex="0"
             :class="[
               'min-w-0 rounded-xl border p-2.5 text-left transition-all',
               takeoverEnabledFor(profile.tool)
@@ -210,6 +232,8 @@ function formatUptime(seconds: number): string {
               takeoverLoading[profile.tool] ? 'pointer-events-none opacity-60' : 'hover:border-blue-200 dark:hover:border-blue-500/40'
             ]"
             @click="toggleToolTakeover(profile.tool)"
+            @keydown.enter.prevent="toggleToolTakeover(profile.tool)"
+            @keydown.space.prevent="toggleToolTakeover(profile.tool)"
           >
             <div class="flex items-center justify-between gap-2">
               <div class="flex min-w-0 items-center gap-2">
@@ -239,13 +263,27 @@ function formatUptime(seconds: number): string {
               </span>
             </div>
             <div class="mt-2 truncate text-[10px] text-gray-400">
-              {{ takeoverActiveFor(profile.tool) ? t(store.settings.locale, 'settings.configTakenOver') : t(store.settings.locale, 'settings.configNotTakenOver') }}
+              {{ conflictPausedFor(profile.tool) ? t(store.settings.locale, 'settings.takeoverConflictPaused') : (takeoverActiveFor(profile.tool) ? t(store.settings.locale, 'settings.configTakenOver') : t(store.settings.locale, 'settings.configNotTakenOver')) }}
               <template v-if="takeoverStatusFor(profile.tool)?.activeSourceId"> · {{ takeoverStatusFor(profile.tool)?.activeSourceId }}</template>
+            </div>
+            <div v-if="conflictPausedFor(profile.tool)" class="mt-2 flex gap-1.5">
+              <button
+                class="rounded-lg bg-amber-500/10 px-2 py-1 text-[10px] font-medium text-amber-700 transition-colors hover:bg-amber-500/15 dark:text-amber-300"
+                @click.stop="resolveTakeoverConflict(profile.tool, 'force_reclaim')"
+              >
+                {{ t(store.settings.locale, 'settings.takeoverConflictForce') }}
+              </button>
+              <button
+                class="rounded-lg bg-gray-200/70 px-2 py-1 text-[10px] font-medium text-gray-600 transition-colors hover:bg-gray-200 dark:bg-neutral-800 dark:text-gray-300"
+                @click.stop="resolveTakeoverConflict(profile.tool, 'disable_takeover')"
+              >
+                {{ t(store.settings.locale, 'settings.takeoverConflictDisable') }}
+              </button>
             </div>
             <div v-if="takeoverStatusFor(profile.tool)?.lastError" class="mt-1 truncate text-[10px] text-red-500">
               {{ takeoverStatusFor(profile.tool)?.lastError }}
             </div>
-          </button>
+          </div>
         </div>
       </div>
 

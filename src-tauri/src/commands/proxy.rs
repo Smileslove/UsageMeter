@@ -318,18 +318,46 @@ pub struct ToolTakeoverStatus {
     pub tool: String,
     pub enabled: bool,
     pub takeover_active: bool,
+    pub conflict_paused: bool,
     pub config_path: Option<String>,
     pub auth_path: Option<String>,
     pub auth_mode: Option<String>,
     pub official_provider: bool,
     pub active_source_id: Option<String>,
+    pub conflict_external_base_url: Option<String>,
     pub last_error: Option<String>,
 }
 
 #[tauri::command]
-pub async fn get_takeover_statuses() -> Result<Vec<ToolTakeoverStatus>, String> {
+pub async fn get_takeover_statuses(
+    state: State<'_, ProxyState>,
+) -> Result<Vec<ToolTakeoverStatus>, String> {
     let settings = load_settings().unwrap_or_default();
     let port = settings.proxy.port;
+    let server_guard = state.server.read().await;
+    let server = server_guard.as_ref();
+    let claude_conflict_paused = match server {
+        Some(server) => server.is_takeover_conflict_paused("claude_code").await,
+        None => false,
+    };
+    let claude_conflict_external_base_url = match server {
+        Some(server) => {
+            server
+                .takeover_conflict_external_base_url("claude_code")
+                .await
+        }
+        None => None,
+    };
+    let codex_conflict_paused = match server {
+        Some(server) => server.is_takeover_conflict_paused("codex").await,
+        None => false,
+    };
+    let codex_conflict_external_base_url = match server {
+        Some(server) => server.takeover_conflict_external_base_url("codex").await,
+        None => None,
+    };
+    drop(server_guard);
+
     let codex_manager = CodexConfigManager::new();
     let codex_snapshot = codex_manager.read_live_snapshot().ok();
     let codex_auth_mode = codex_snapshot
@@ -367,25 +395,67 @@ pub async fn get_takeover_statuses() -> Result<Vec<ToolTakeoverStatus>, String> 
             tool: "claude_code".to_string(),
             enabled: claude_enabled,
             takeover_active: claude_manager.is_takeover_active(),
+            conflict_paused: claude_conflict_paused,
             config_path: Some(claude_manager.settings_path().display().to_string()),
             auth_path: None,
             auth_mode: None,
             official_provider: claude_manager.uses_official_provider(),
             active_source_id: None,
+            conflict_external_base_url: claude_conflict_external_base_url,
             last_error: None,
         },
         ToolTakeoverStatus {
             tool: "codex".to_string(),
             enabled: codex_enabled,
             takeover_active: codex_active,
+            conflict_paused: codex_conflict_paused,
             config_path: Some(codex_manager.config_path().display().to_string()),
             auth_path: Some(codex_manager.auth_path().display().to_string()),
             auth_mode: codex_auth_mode,
             official_provider: codex_official_provider,
             active_source_id: codex_source,
+            conflict_external_base_url: codex_conflict_external_base_url,
             last_error: codex_error,
         },
     ])
+}
+
+#[tauri::command]
+pub async fn resolve_takeover_conflict(
+    tool: String,
+    action: String,
+    state: State<'_, ProxyState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let tool = if tool == "claude" {
+        "claude_code".to_string()
+    } else {
+        tool
+    };
+
+    match action.as_str() {
+        "disable_takeover" => set_takeover_for_app(tool, false, state, app_handle).await,
+        "pause" => {
+            let server_guard = state.server.read().await;
+            let Some(server) = server_guard.as_ref() else {
+                return Ok(());
+            };
+            server.pause_takeover_conflict(&tool).await;
+            Ok(())
+        }
+        "force_reclaim" => {
+            {
+                let server_guard = state.server.read().await;
+                let Some(server) = server_guard.as_ref() else {
+                    return Err("Proxy server is not running".to_string());
+                };
+                server.force_reclaim_takeover(&tool).await?;
+            }
+            mark_client_tool_enabled(&tool, true)?;
+            Ok(())
+        }
+        other => Err(format!("Unsupported takeover conflict action: {}", other)),
+    }
 }
 
 /// 获取代理使用量统计
