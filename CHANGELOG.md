@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.4] - 2026-06-01
+
+### Added
+
+- **Theme Palette Selector**: Added a richer theme system with palette selection and gradient surfaces across the tray UI
+- **Transparent Proxy Takeover Safeguards**: Added conflict detection so proxy takeover pauses when external Claude/Codex configuration changes would clash with UsageMeter-managed settings
+
+### Changed
+
+- **Theme-aware Interface Refresh**: Updated overview, statistics, sessions, pricing, sync, currency, and update surfaces to use shared theme variables and more consistent semantic coloring
+- **Local Proxy Architecture**: Refactored the local proxy into a transparent forwarding path, simplifying request routing and reducing configuration-specific branching
+
+### Fixed
+
+- **Updater Interaction Flow**: Replaced the update banner with a dialog and refined skip-version behavior between automatic and manual update checks
+- **Codex Streaming Timeout**: Fixed Codex streaming requests failing immediately when `read_timeout(0)` was treated as an instant timeout
+- **Proxy Config Rewrite Noise**: Removed redundant config rewrites during external Codex config sync when proxy takeover was already active
+
+---
+
+### 新增
+
+- **主题调色板选择器**：新增更完整的主题系统，为托盘界面提供调色板切换与渐变表面样式
+- **透明代理接管保护**：新增外部配置冲突检测，当 Claude/Codex 配置与 UsageMeter 托管设置冲突时会暂停代理接管
+
+### 变更
+
+- **主题感知界面刷新**：统一概览、统计、会话、定价、同步、货币和更新相关界面的主题变量与语义色彩表现
+- **本地代理架构**：将本地代理重构为透明转发链路，简化请求路由并减少针对特定配置的分支处理
+
+### 修复
+
+- **更新交互流程**：将更新提示从横幅改为弹窗，并优化自动检查与手动检查之间的跳过版本逻辑
+- **Codex 流式超时问题**：修复 `read_timeout(0)` 被当成立即超时后导致 Codex 流式请求瞬时失败的问题
+- **代理配置重复回写**：移除代理接管已启用时外部 Codex 配置同步中的冗余配置回写
+
+---
+
 ## [0.6.3] - 2026-05-30
 
 ### Added
@@ -535,6 +573,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.6.4]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.4
 [0.6.3]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.3
 [0.6.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.2
 [0.6.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.1
