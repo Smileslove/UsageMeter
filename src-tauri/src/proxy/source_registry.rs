@@ -1,7 +1,7 @@
 //! Persistent source handles for proxy URLs.
 //!
 //! A handle lets UsageMeter encode the real upstream identity in the local
-//! proxy URL without exposing the upstream URL or API key in Claude settings.
+//! proxy URL without exposing the upstream URL or storing request-time secrets.
 
 use super::config_manager::ClaudeConfigManager;
 use super::source_detector::{compute_source_id, extract_key_prefix, normalize_base_url};
@@ -16,18 +16,15 @@ const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxySourceHandle {
-    /// Stable handle encoded into the local proxy URL. This identifies a
-    /// restorable Claude settings snapshot, not just an analytics source.
     pub id: String,
-    /// Analytics source ID based on API key prefix + base URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub analytics_source_id: Option<String>,
     pub real_base_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub api_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key_prefix: Option<String>,
-    pub original_settings_snapshot: ClaudeSettings,
+    pub had_base_url: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_base_url: Option<String>,
     pub created_at_ms: i64,
     pub last_seen_at_ms: i64,
     pub last_used_at_ms: i64,
@@ -95,16 +92,17 @@ impl ProxySourceRegistry {
 
         let mut data = self.read_data()?;
         let now = now_ms();
+        let original_base_url = settings.get_base_url();
         if let Some(existing) = data.handles.iter_mut().find(|handle| handle.id == id) {
             existing.analytics_source_id = Some(analytics_source_id);
             existing.real_base_url = real_base_url;
-            existing.api_key = api_key;
             existing.api_key_prefix = if key_prefix.is_empty() {
                 None
             } else {
                 Some(key_prefix)
             };
-            existing.original_settings_snapshot = settings.clone();
+            existing.had_base_url = original_base_url.is_some();
+            existing.original_base_url = original_base_url;
             existing.last_seen_at_ms = now;
             existing.last_used_at_ms = now;
             let handle = existing.clone();
@@ -115,13 +113,13 @@ impl ProxySourceRegistry {
                 id,
                 analytics_source_id: Some(analytics_source_id),
                 real_base_url,
-                api_key,
                 api_key_prefix: if key_prefix.is_empty() {
                     None
                 } else {
                     Some(key_prefix)
                 },
-                original_settings_snapshot: settings.clone(),
+                had_base_url: original_base_url.is_some(),
+                original_base_url,
                 created_at_ms: now,
                 last_seen_at_ms: now,
                 last_used_at_ms: now,
@@ -139,6 +137,7 @@ impl ProxySourceRegistry {
         let content = fs::read_to_string(&self.path)
             .map_err(|e| format!("Failed to read proxy source registry: {}", e))?;
         serde_json::from_str(&content)
+            .or_else(|_| migrate_legacy_registry_data(&content))
             .map_err(|e| format!("Failed to parse proxy source registry: {}", e))
     }
 
@@ -149,7 +148,6 @@ impl ProxySourceRegistry {
         }
         let content = serde_json::to_string_pretty(data)
             .map_err(|e| format!("Failed to serialize proxy source registry: {}", e))?;
-        // 直接写入目标文件，避免 Windows 上 rename 因文件锁定失败
         fs::write(&self.path, content)
             .map_err(|e| format!("Failed to save proxy source registry: {}", e))?;
         Ok(())
@@ -176,6 +174,52 @@ fn compute_handle_id(settings: &ClaudeSettings) -> Result<String, String> {
         "h_{}",
         u64::from_be_bytes(hash[..8].try_into().unwrap())
     ))
+}
+
+fn migrate_legacy_registry_data(
+    content: &str,
+) -> Result<ProxySourceRegistryData, serde_json::Error> {
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LegacyHandle {
+        id: String,
+        analytics_source_id: Option<String>,
+        real_base_url: String,
+        api_key_prefix: Option<String>,
+        original_settings_snapshot: ClaudeSettings,
+        created_at_ms: i64,
+        last_seen_at_ms: i64,
+        last_used_at_ms: i64,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LegacyData {
+        #[serde(default)]
+        handles: Vec<LegacyHandle>,
+    }
+
+    let legacy: LegacyData = serde_json::from_str(content)?;
+    Ok(ProxySourceRegistryData {
+        handles: legacy
+            .handles
+            .into_iter()
+            .map(|handle| {
+                let original_base_url = handle.original_settings_snapshot.get_base_url();
+                ProxySourceHandle {
+                    id: handle.id,
+                    analytics_source_id: handle.analytics_source_id,
+                    real_base_url: handle.real_base_url,
+                    api_key_prefix: handle.api_key_prefix,
+                    had_base_url: original_base_url.is_some(),
+                    original_base_url,
+                    created_at_ms: handle.created_at_ms,
+                    last_seen_at_ms: handle.last_seen_at_ms,
+                    last_used_at_ms: handle.last_used_at_ms,
+                }
+            })
+            .collect(),
+    })
 }
 
 #[cfg(test)]

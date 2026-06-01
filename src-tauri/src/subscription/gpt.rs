@@ -69,7 +69,10 @@ impl GptSubscriptionProvider {
             return Err(SubscriptionError::NoCredentials);
         }
 
-        let auth = snapshot.auth_json.ok_or(SubscriptionError::NoCredentials)?;
+        let auth_content = std::fs::read_to_string(manager.auth_path())
+            .map_err(|_e| SubscriptionError::NoCredentials)?;
+        let auth: serde_json::Value =
+            serde_json::from_str(&auth_content).map_err(|_e| SubscriptionError::NoCredentials)?;
         let tokens = auth.get("tokens").ok_or(SubscriptionError::NoCredentials)?;
 
         // Extract account ID from JWT if not present

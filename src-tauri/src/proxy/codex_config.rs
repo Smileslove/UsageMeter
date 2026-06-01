@@ -1,11 +1,9 @@
 //! Codex CLI configuration takeover support.
 //!
 //! Codex keeps live configuration in `~/.codex/config.toml` and auth material in
-//! `~/.codex/auth.json`. UsageMeter stores a source handle with the original
-//! snapshots, then rewrites the selected provider base URL to the local proxy.
-//! For ChatGPT/OAuth auth, Codex uses `chatgpt_base_url` and keeps refreshing
-//! tokens itself, so UsageMeter leaves `auth.json` intact and only proxies the
-//! backend base URL.
+//! `~/.codex/auth.json`. UsageMeter rewrites only routing-related base URL fields
+//! to point at the local proxy, and persists only the minimal route state needed
+//! to restore those fields later.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,18 +14,16 @@ use toml_edit::{DocumentMut, Item, Value};
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_CHATGPT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const ROOT_PROVIDER_ID: &str = "__root__";
-const USAGEMETER_CHATGPT_PROVIDER_ID: &str = "usagemeter_chatgpt";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CodexConfigSnapshot {
-    pub config_toml: String,
-    pub auth_json: Option<serde_json::Value>,
+pub struct CodexRouteState {
     pub provider_id: String,
     pub real_base_url: String,
-    pub api_key: Option<String>,
     #[serde(default)]
     pub auth_mode: CodexAuthMode,
+    #[serde(default)]
+    pub had_chatgpt_base_url: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -38,7 +34,7 @@ pub enum CodexAuthMode {
     ChatGpt,
 }
 
-pub fn codex_snapshot_uses_official_provider(snapshot: &CodexConfigSnapshot) -> bool {
+pub fn codex_snapshot_uses_official_provider(snapshot: &CodexRouteState) -> bool {
     snapshot.auth_mode == CodexAuthMode::ChatGpt
         || is_official_openai_base_url(&snapshot.real_base_url)
 }
@@ -48,12 +44,8 @@ pub fn codex_snapshot_uses_official_provider(snapshot: &CodexConfigSnapshot) -> 
 pub struct CodexSourceHandle {
     pub id: String,
     pub real_base_url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub api_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub api_key_prefix: Option<String>,
     pub provider_id: String,
-    pub original_snapshot: CodexConfigSnapshot,
+    pub route_state: CodexRouteState,
     pub created_at_ms: i64,
     pub last_seen_at_ms: i64,
     pub last_used_at_ms: i64,
@@ -113,7 +105,7 @@ impl CodexSourceRegistry {
 
     pub fn upsert_from_snapshot(
         &self,
-        snapshot: CodexConfigSnapshot,
+        snapshot: CodexRouteState,
     ) -> Result<CodexSourceHandle, String> {
         if CodexConfigManager::is_usagemeter_proxy_url(&snapshot.real_base_url) {
             return Err(
@@ -121,21 +113,14 @@ impl CodexSourceRegistry {
             );
         }
 
-        let storage_snapshot = sanitize_snapshot_for_storage(snapshot);
-        let id = compute_handle_id(&storage_snapshot)?;
-        let key_prefix = storage_snapshot
-            .api_key
-            .as_deref()
-            .map(|key| extract_key_prefix(key, 12));
+        let id = compute_handle_id(&snapshot)?;
         let now = now_ms();
         let mut data = self.read_data()?;
 
         if let Some(existing) = data.handles.iter_mut().find(|handle| handle.id == id) {
-            existing.real_base_url = storage_snapshot.real_base_url.clone();
-            existing.api_key = storage_snapshot.api_key.clone();
-            existing.api_key_prefix = key_prefix;
-            existing.provider_id = storage_snapshot.provider_id.clone();
-            existing.original_snapshot = storage_snapshot;
+            existing.real_base_url = snapshot.real_base_url.clone();
+            existing.provider_id = snapshot.provider_id.clone();
+            existing.route_state = snapshot;
             existing.last_seen_at_ms = now;
             existing.last_used_at_ms = now;
             let handle = existing.clone();
@@ -145,11 +130,9 @@ impl CodexSourceRegistry {
 
         let handle = CodexSourceHandle {
             id,
-            real_base_url: storage_snapshot.real_base_url.clone(),
-            api_key: storage_snapshot.api_key.clone(),
-            api_key_prefix: key_prefix,
-            provider_id: storage_snapshot.provider_id.clone(),
-            original_snapshot: storage_snapshot,
+            real_base_url: snapshot.real_base_url.clone(),
+            provider_id: snapshot.provider_id.clone(),
+            route_state: snapshot,
             created_at_ms: now,
             last_seen_at_ms: now,
             last_used_at_ms: now,
@@ -166,6 +149,7 @@ impl CodexSourceRegistry {
         let content = fs::read_to_string(&self.path)
             .map_err(|e| format!("Failed to read Codex source registry: {}", e))?;
         serde_json::from_str(&content)
+            .or_else(|_| migrate_legacy_registry_data(&content))
             .map_err(|e| format!("Failed to parse Codex source registry: {}", e))
     }
 
@@ -176,7 +160,6 @@ impl CodexSourceRegistry {
         }
         let content = serde_json::to_string_pretty(data)
             .map_err(|e| format!("Failed to serialize Codex source registry: {}", e))?;
-        // 直接写入目标文件，避免 Windows 上 rename 因文件锁定失败
         fs::write(&self.path, content)
             .map_err(|e| format!("Failed to save Codex source registry: {}", e))?;
         Ok(())
@@ -212,7 +195,7 @@ impl CodexConfigManager {
         &self.auth_path
     }
 
-    pub fn read_live_snapshot(&self) -> Result<CodexConfigSnapshot, String> {
+    pub fn read_live_snapshot(&self) -> Result<CodexRouteState, String> {
         let config_toml = fs::read_to_string(&self.config_path)
             .map_err(|e| format!("Failed to read Codex config.toml: {}", e))?;
         let doc = config_toml
@@ -221,6 +204,7 @@ impl CodexConfigManager {
         let auth_json = self.read_auth_json()?;
         let auth_mode = detect_auth_mode(auth_json.as_ref());
         let provider_id = detect_provider_id(&doc)?;
+        let had_chatgpt_base_url = chatgpt_base_url(&doc).is_some();
         let real_base_url = match auth_mode {
             CodexAuthMode::ChatGpt => {
                 chatgpt_base_url(&doc).unwrap_or_else(|| DEFAULT_CHATGPT_CODEX_BASE_URL.to_string())
@@ -228,28 +212,23 @@ impl CodexConfigManager {
             CodexAuthMode::ApiKey => provider_base_url(&doc, &provider_id)
                 .unwrap_or_else(|| DEFAULT_OPENAI_BASE_URL.to_string()),
         };
-        let api_key = extract_api_key(auth_json.as_ref(), &provider_id);
 
-        Ok(CodexConfigSnapshot {
-            config_toml,
-            auth_json,
+        Ok(CodexRouteState {
             provider_id,
             real_base_url,
-            api_key,
             auth_mode,
+            had_chatgpt_base_url,
         })
     }
 
     pub fn takeover_with_source(&self, proxy_port: u16, source_id: &str) -> Result<(), String> {
         let snapshot = self.read_live_snapshot()?;
-        let mut doc = snapshot
-            .config_toml
+        let config_toml = fs::read_to_string(&self.config_path)
+            .map_err(|e| format!("Failed to read Codex config.toml: {}", e))?;
+        let mut doc = config_toml
             .parse::<DocumentMut>()
             .map_err(|e| format!("Failed to parse Codex config.toml: {}", e))?;
 
-        // Keep the active source handle in the proxy URL. Once the base URL points
-        // at UsageMeter, requests do not otherwise carry enough stable information
-        // to recover the original upstream for the current configuration.
         let proxy_url = match snapshot.auth_mode {
             CodexAuthMode::ChatGpt => {
                 format!("http://127.0.0.1:{}/codex/source/{}", proxy_port, source_id)
@@ -262,10 +241,7 @@ impl CodexConfigManager {
             }
         };
         match snapshot.auth_mode {
-            CodexAuthMode::ChatGpt => {
-                set_chatgpt_base_url(&mut doc, &proxy_url);
-                configure_chatgpt_model_provider(&mut doc, &proxy_url);
-            }
+            CodexAuthMode::ChatGpt => set_chatgpt_base_url(&mut doc, &proxy_url),
             CodexAuthMode::ApiKey => {
                 set_provider_base_url(&mut doc, &snapshot.provider_id, &proxy_url)?
             }
@@ -280,13 +256,28 @@ impl CodexConfigManager {
         let Some(handle) = CodexSourceRegistry::new().get(source_id) else {
             return Ok(false);
         };
-        self.write_config_raw(&handle.original_snapshot.config_toml)?;
-        let should_restore_auth = handle.original_snapshot.auth_mode != CodexAuthMode::ChatGpt;
-        if should_restore_auth {
-            if let Some(auth) = handle.original_snapshot.auth_json {
-                self.write_auth_json(&auth)?;
+        let config_toml = fs::read_to_string(&self.config_path)
+            .map_err(|e| format!("Failed to read Codex config.toml: {}", e))?;
+        let mut doc = config_toml
+            .parse::<DocumentMut>()
+            .map_err(|e| format!("Failed to parse Codex config.toml: {}", e))?;
+        match handle.route_state.auth_mode {
+            CodexAuthMode::ChatGpt => {
+                if handle.route_state.had_chatgpt_base_url {
+                    set_chatgpt_base_url(&mut doc, &handle.route_state.real_base_url);
+                } else {
+                    doc.remove("chatgpt_base_url");
+                }
+            }
+            CodexAuthMode::ApiKey => {
+                set_provider_base_url(
+                    &mut doc,
+                    &handle.route_state.provider_id,
+                    &handle.route_state.real_base_url,
+                )?;
             }
         }
+        self.write_config_doc(&doc)?;
         Ok(true)
     }
 
@@ -299,19 +290,11 @@ impl CodexConfigManager {
         let auth_mode = detect_auth_mode(self.read_auth_json()?.as_ref());
 
         if auth_mode == CodexAuthMode::ChatGpt {
-            if chatgpt_base_url(&doc)
-                .map(|base_url| Self::is_usagemeter_proxy_url_for_port(&base_url, proxy_port))
-                .unwrap_or(false)
-            {
-                return Ok(true);
-            }
-
-            return Ok(chatgpt_http_provider_base_url(&doc)
+            return Ok(chatgpt_base_url(&doc)
                 .map(|base_url| Self::is_usagemeter_proxy_url_for_port(&base_url, proxy_port))
                 .unwrap_or(false));
         }
 
-        // 检查 base_url 字段（在 model_providers 中）
         let provider_id = detect_provider_id(&doc)?;
         if let Some(base_url) = provider_base_url(&doc, &provider_id) {
             if Self::is_usagemeter_proxy_url_for_port(&base_url, proxy_port) {
@@ -319,7 +302,6 @@ impl CodexConfigManager {
             }
         }
 
-        // 也检查顶层 base_url
         if let Some(base_url) = doc.get("base_url").and_then(|item| item.as_str()) {
             if Self::is_usagemeter_proxy_url_for_port(base_url, proxy_port) {
                 return Ok(true);
@@ -327,47 +309,6 @@ impl CodexConfigManager {
         }
 
         Ok(false)
-    }
-
-    pub fn is_chatgpt_http_provider_active(&self, proxy_port: u16) -> Result<bool, String> {
-        let config_toml = fs::read_to_string(&self.config_path)
-            .map_err(|e| format!("Failed to read Codex config.toml: {}", e))?;
-        let doc = config_toml
-            .parse::<DocumentMut>()
-            .map_err(|e| format!("Failed to parse Codex config.toml: {}", e))?;
-        let auth_mode = detect_auth_mode(self.read_auth_json()?.as_ref());
-        if auth_mode != CodexAuthMode::ChatGpt {
-            return Ok(true);
-        }
-
-        if doc.get("model_provider").and_then(Item::as_str) != Some(USAGEMETER_CHATGPT_PROVIDER_ID)
-        {
-            return Ok(false);
-        }
-
-        let Some(provider) = doc
-            .get("model_providers")
-            .and_then(Item::as_table)
-            .and_then(|providers| providers.get(USAGEMETER_CHATGPT_PROVIDER_ID))
-            .and_then(Item::as_table)
-        else {
-            return Ok(false);
-        };
-
-        let base_url_ok = provider
-            .get("base_url")
-            .and_then(Item::as_str)
-            .map(|base_url| Self::is_usagemeter_proxy_url_for_port(base_url, proxy_port))
-            .unwrap_or(false);
-        let wire_api_ok = provider.get("wire_api").and_then(Item::as_str) == Some("responses");
-        let auth_ok = provider
-            .get("requires_openai_auth")
-            .and_then(Item::as_bool)
-            .unwrap_or(false);
-        let websockets_disabled =
-            provider.get("supports_websockets").and_then(Item::as_bool) == Some(false);
-
-        Ok(base_url_ok && wire_api_ok && auth_ok && websockets_disabled)
     }
 
     pub fn active_source_id(&self) -> Option<String> {
@@ -463,22 +404,8 @@ impl CodexConfigManager {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create Codex config directory: {}", e))?;
         }
-        // 直接写入目标文件，避免 Windows 上 rename 因文件锁定失败
         fs::write(&self.config_path, content)
             .map_err(|e| format!("Failed to save Codex config.toml: {}", e))?;
-        Ok(())
-    }
-
-    fn write_auth_json(&self, auth: &serde_json::Value) -> Result<(), String> {
-        if let Some(parent) = self.auth_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create Codex auth directory: {}", e))?;
-        }
-        let content = serde_json::to_string_pretty(auth)
-            .map_err(|e| format!("Failed to serialize Codex auth.json: {}", e))?;
-        // 直接写入目标文件，避免 Windows 上 rename 因文件锁定失败
-        fs::write(&self.auth_path, content)
-            .map_err(|e| format!("Failed to save Codex auth.json: {}", e))?;
         Ok(())
     }
 }
@@ -545,32 +472,6 @@ fn set_chatgpt_base_url(doc: &mut DocumentMut, base_url: &str) {
     doc["chatgpt_base_url"] = Item::Value(Value::from(base_url));
 }
 
-fn configure_chatgpt_model_provider(doc: &mut DocumentMut, base_url: &str) {
-    doc["model_provider"] = Item::Value(Value::from(USAGEMETER_CHATGPT_PROVIDER_ID));
-
-    let providers = doc["model_providers"].or_insert(toml_edit::table());
-    let provider = providers[USAGEMETER_CHATGPT_PROVIDER_ID].or_insert(toml_edit::table());
-    provider["name"] = Item::Value(Value::from("UsageMeter ChatGPT"));
-    provider["base_url"] = Item::Value(Value::from(base_url));
-    provider["wire_api"] = Item::Value(Value::from("responses"));
-    provider["requires_openai_auth"] = Item::Value(Value::from(true));
-    provider["supports_websockets"] = Item::Value(Value::from(false));
-}
-
-fn chatgpt_http_provider_base_url(doc: &DocumentMut) -> Option<String> {
-    if doc.get("model_provider").and_then(Item::as_str) != Some(USAGEMETER_CHATGPT_PROVIDER_ID) {
-        return None;
-    }
-
-    doc.get("model_providers")?
-        .as_table()?
-        .get(USAGEMETER_CHATGPT_PROVIDER_ID)?
-        .as_table()?
-        .get("base_url")?
-        .as_str()
-        .map(str::to_string)
-}
-
 fn detect_auth_mode(auth: Option<&serde_json::Value>) -> CodexAuthMode {
     if auth
         .and_then(|auth| auth.get("auth_mode"))
@@ -617,102 +518,62 @@ fn set_provider_base_url(
     Ok(())
 }
 
-fn extract_api_key(auth: Option<&serde_json::Value>, provider_id: &str) -> Option<String> {
-    let auth = auth?;
-    for key in [
-        "OPENAI_API_KEY",
-        "api_key",
-        "apiKey",
-        "access_token",
-        "token",
-    ] {
-        if let Some(value) = auth.get(key).and_then(|v| v.as_str()) {
-            return Some(value.to_string());
-        }
-    }
-    auth.get("providers")
-        .and_then(|v| v.get(provider_id))
-        .and_then(|provider| {
-            [
-                "OPENAI_API_KEY",
-                "api_key",
-                "apiKey",
-                "access_token",
-                "token",
-            ]
-            .iter()
-            .find_map(|key| provider.get(key).and_then(|v| v.as_str()))
-        })
-        .or_else(|| {
-            auth.get("tokens")
-                .and_then(|tokens| tokens.get("access_token"))
-                .and_then(|v| v.as_str())
-        })
-        .map(str::to_string)
-}
-
-fn extract_key_prefix(key: &str, len: usize) -> String {
-    key.chars().take(len).collect()
-}
-
-fn sanitize_snapshot_for_storage(mut snapshot: CodexConfigSnapshot) -> CodexConfigSnapshot {
-    if snapshot.auth_mode != CodexAuthMode::ChatGpt {
-        return snapshot;
+fn migrate_legacy_registry_data(
+    content: &str,
+) -> Result<CodexSourceRegistryData, serde_json::Error> {
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LegacySnapshot {
+        provider_id: String,
+        real_base_url: String,
+        #[serde(default)]
+        auth_mode: CodexAuthMode,
     }
 
-    let account_id = extract_chatgpt_account_id_from_auth(snapshot.auth_json.as_ref());
-    snapshot.api_key = None;
-    snapshot.auth_json = Some(match account_id {
-        Some(account_id) => serde_json::json!({
-            "auth_mode": "chatgpt",
-            "tokens": {
-                "account_id": account_id
-            }
-        }),
-        None => serde_json::json!({
-            "auth_mode": "chatgpt"
-        }),
-    });
-    snapshot
-}
-
-fn extract_chatgpt_account_id_from_auth(auth: Option<&serde_json::Value>) -> Option<String> {
-    let auth = auth?;
-    auth.pointer("/tokens/account_id")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            auth.pointer("/tokens/access_token")
-                .and_then(|value| value.as_str())
-                .and_then(extract_chatgpt_account_id_from_jwt)
-        })
-        .or_else(|| {
-            auth.pointer("/tokens/id_token")
-                .and_then(|value| value.as_str())
-                .and_then(extract_chatgpt_account_id_from_jwt)
-        })
-}
-
-fn extract_chatgpt_account_id_from_jwt(token: &str) -> Option<String> {
-    use base64::Engine;
-
-    let payload = token.split('.').nth(1)?;
-    let mut value = payload.replace('-', "+").replace('_', "/");
-    while !value.len().is_multiple_of(4) {
-        value.push('=');
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LegacyHandle {
+        id: String,
+        real_base_url: String,
+        provider_id: String,
+        original_snapshot: LegacySnapshot,
+        created_at_ms: i64,
+        last_seen_at_ms: i64,
+        last_used_at_ms: i64,
     }
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(value.as_bytes())
-        .ok()?;
-    let json: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
-    json.pointer("/https://api.openai.com/auth/chatgpt_account_id")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string)
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LegacyData {
+        #[serde(default)]
+        handles: Vec<LegacyHandle>,
+    }
+
+    let legacy: LegacyData = serde_json::from_str(content)?;
+    Ok(CodexSourceRegistryData {
+        handles: legacy
+            .handles
+            .into_iter()
+            .map(|handle| CodexSourceHandle {
+                id: handle.id,
+                real_base_url: handle.real_base_url.clone(),
+                provider_id: handle.provider_id.clone(),
+                route_state: CodexRouteState {
+                    provider_id: handle.original_snapshot.provider_id,
+                    real_base_url: handle.original_snapshot.real_base_url,
+                    auth_mode: handle.original_snapshot.auth_mode,
+                    had_chatgpt_base_url: handle.original_snapshot.auth_mode
+                        == CodexAuthMode::ChatGpt,
+                },
+                created_at_ms: handle.created_at_ms,
+                last_seen_at_ms: handle.last_seen_at_ms,
+                last_used_at_ms: handle.last_used_at_ms,
+            })
+            .collect(),
+    })
 }
 
-fn compute_handle_id(snapshot: &CodexConfigSnapshot) -> Result<String, String> {
+fn compute_handle_id(snapshot: &CodexRouteState) -> Result<String, String> {
     let payload = serde_json::to_vec(snapshot)
         .map_err(|e| format!("Failed to serialize Codex source snapshot: {}", e))?;
     let mut hasher = Sha256::new();
@@ -793,14 +654,13 @@ base_url = "https://api.example.com/v1"
     }
 
     #[test]
-    fn chatgpt_takeover_sets_chatgpt_base_url() {
+    fn chatgpt_takeover_sets_chatgpt_base_url_only() {
         let mut doc = r#"
 base_url = "https://api.example.com/v1"
 "#
         .parse::<DocumentMut>()
         .unwrap();
         set_chatgpt_base_url(&mut doc, "http://127.0.0.1:18765/codex/source/h_1");
-        configure_chatgpt_model_provider(&mut doc, "http://127.0.0.1:18765/codex/source/h_1");
         assert_eq!(
             chatgpt_base_url(&doc).as_deref(),
             Some("http://127.0.0.1:18765/codex/source/h_1")
@@ -808,28 +668,6 @@ base_url = "https://api.example.com/v1"
         assert_eq!(
             doc.get("base_url").and_then(Item::as_str),
             Some("https://api.example.com/v1")
-        );
-        assert_eq!(
-            doc.get("model_provider").and_then(Item::as_str),
-            Some(USAGEMETER_CHATGPT_PROVIDER_ID)
-        );
-        let provider = doc
-            .get("model_providers")
-            .and_then(Item::as_table)
-            .and_then(|providers| providers.get(USAGEMETER_CHATGPT_PROVIDER_ID))
-            .and_then(Item::as_table)
-            .unwrap();
-        assert_eq!(
-            provider.get("base_url").and_then(Item::as_str),
-            Some("http://127.0.0.1:18765/codex/source/h_1")
-        );
-        assert_eq!(
-            provider.get("requires_openai_auth").and_then(Item::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            provider.get("supports_websockets").and_then(Item::as_bool),
-            Some(false)
         );
     }
 
@@ -850,50 +688,6 @@ chatgpt_base_url = "http://127.0.0.1:18765/codex/source/h_chatgpt"
     }
 
     #[test]
-    fn detects_chatgpt_http_provider_configuration() {
-        let mut doc = r#"
-chatgpt_base_url = "http://127.0.0.1:18765/codex/source/h_1"
-"#
-        .parse::<DocumentMut>()
-        .unwrap();
-        configure_chatgpt_model_provider(&mut doc, "http://127.0.0.1:18765/codex/source/h_1");
-        let provider = doc
-            .get("model_providers")
-            .and_then(Item::as_table)
-            .and_then(|providers| providers.get(USAGEMETER_CHATGPT_PROVIDER_ID))
-            .and_then(Item::as_table)
-            .unwrap();
-        assert_eq!(
-            provider.get("supports_websockets").and_then(Item::as_bool),
-            Some(false)
-        );
-        assert_eq!(
-            provider.get("requires_openai_auth").and_then(Item::as_bool),
-            Some(true)
-        );
-        assert_eq!(
-            provider.get("wire_api").and_then(Item::as_str),
-            Some("responses")
-        );
-    }
-
-    #[test]
-    fn detects_chatgpt_http_provider_base_url_without_top_level_base() {
-        let mut doc = r#"
-chatgpt_base_url = "https://chatgpt.com/backend-api/codex"
-"#
-        .parse::<DocumentMut>()
-        .unwrap();
-        configure_chatgpt_model_provider(&mut doc, "http://127.0.0.1:18765/codex/source/h_1");
-        doc.remove("chatgpt_base_url");
-
-        assert_eq!(
-            chatgpt_http_provider_base_url(&doc).as_deref(),
-            Some("http://127.0.0.1:18765/codex/source/h_1")
-        );
-    }
-
-    #[test]
     fn falls_back_to_root_provider_without_base_url_or_providers() {
         let doc = r#"
 [features]
@@ -906,7 +700,7 @@ codex_hooks = true
     }
 
     #[test]
-    fn extracts_chatgpt_login_access_token() {
+    fn detects_chatgpt_auth_mode() {
         let auth = serde_json::json!({
             "auth_mode": "chatgpt",
             "tokens": {
@@ -914,22 +708,16 @@ codex_hooks = true
                 "refresh_token": "refresh-token"
             }
         });
-        assert_eq!(
-            extract_api_key(Some(&auth), ROOT_PROVIDER_ID).as_deref(),
-            Some("chatgpt-access-token")
-        );
         assert_eq!(detect_auth_mode(Some(&auth)), CodexAuthMode::ChatGpt);
     }
 
     #[test]
     fn detects_official_openai_provider_from_default_base_url() {
-        let snapshot = CodexConfigSnapshot {
-            config_toml: String::new(),
-            auth_json: None,
+        let snapshot = CodexRouteState {
             provider_id: ROOT_PROVIDER_ID.to_string(),
             real_base_url: DEFAULT_OPENAI_BASE_URL.to_string(),
-            api_key: Some("sk-test".to_string()),
             auth_mode: CodexAuthMode::ApiKey,
+            had_chatgpt_base_url: false,
         };
 
         assert!(codex_snapshot_uses_official_provider(&snapshot));
@@ -937,51 +725,39 @@ codex_hooks = true
 
     #[test]
     fn does_not_mark_openai_compatible_provider_as_official() {
-        let snapshot = CodexConfigSnapshot {
-            config_toml: String::new(),
-            auth_json: None,
+        let snapshot = CodexRouteState {
             provider_id: "openai".to_string(),
             real_base_url: "https://api.example.com/v1".to_string(),
-            api_key: Some("sk-test".to_string()),
             auth_mode: CodexAuthMode::ApiKey,
+            had_chatgpt_base_url: false,
         };
 
         assert!(!codex_snapshot_uses_official_provider(&snapshot));
     }
 
     #[test]
-    fn sanitizes_chatgpt_snapshot_before_registry_storage() {
-        let snapshot = CodexConfigSnapshot {
-            config_toml: "chatgpt_base_url = \"https://chatgpt.com/backend-api/codex\"".to_string(),
-            auth_json: Some(serde_json::json!({
-                "auth_mode": "chatgpt",
-                "tokens": {
-                    "account_id": "acct_safe",
-                    "access_token": "access-secret",
-                    "refresh_token": "refresh-secret",
-                    "id_token": "id-secret"
-                }
-            })),
-            provider_id: ROOT_PROVIDER_ID.to_string(),
-            real_base_url: DEFAULT_CHATGPT_CODEX_BASE_URL.to_string(),
-            api_key: Some("access-secret".to_string()),
-            auth_mode: CodexAuthMode::ChatGpt,
-        };
-
-        let sanitized = sanitize_snapshot_for_storage(snapshot);
-        assert_eq!(sanitized.api_key, None);
+    fn migrates_legacy_registry_without_secrets() {
+        let legacy = serde_json::json!({
+            "handles": [{
+                "id": "h_1",
+                "realBaseUrl": "https://chatgpt.com/backend-api/codex",
+                "providerId": "__root__",
+                "originalSnapshot": {
+                    "providerId": "__root__",
+                    "realBaseUrl": "https://chatgpt.com/backend-api/codex",
+                    "authMode": "chat_gpt"
+                },
+                "createdAtMs": 1,
+                "lastSeenAtMs": 2,
+                "lastUsedAtMs": 3
+            }]
+        });
+        let migrated = migrate_legacy_registry_data(&legacy.to_string()).unwrap();
+        assert_eq!(migrated.handles.len(), 1);
         assert_eq!(
-            sanitized
-                .auth_json
-                .as_ref()
-                .and_then(|auth| auth.pointer("/tokens/account_id"))
-                .and_then(|value| value.as_str()),
-            Some("acct_safe")
+            migrated.handles[0].route_state.auth_mode,
+            CodexAuthMode::ChatGpt
         );
-        let serialized = serde_json::to_string(&sanitized).unwrap();
-        assert!(!serialized.contains("access-secret"));
-        assert!(!serialized.contains("refresh-secret"));
-        assert!(!serialized.contains("id-secret"));
     }
 
     #[test]

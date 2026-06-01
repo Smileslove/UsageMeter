@@ -1,6 +1,6 @@
 //! HTTP 代理服务器，用于拦截 Claude API 请求
 
-use super::codex_config::{CodexAuthMode, CodexConfigManager, CodexSourceRegistry};
+use super::codex_config::{CodexConfigManager, CodexSourceRegistry};
 use super::collector::UsageCollector;
 use super::config_manager::ClaudeConfigManager;
 use super::forwarder::{ForwardResult, RequestForwarder};
@@ -11,9 +11,7 @@ use super::source_detector::{
 use super::source_registry::{ProxySourceHandle, ProxySourceRegistry};
 use super::types::{ProxyConfig, ProxyState, ProxyStatus, RequestContext};
 use crate::commands::{load_settings, save_settings_internal};
-use crate::models::{
-    AppSettings, ClientToolProfile, DEFAULT_CLIENT_DETECTION_METHOD, DEFAULT_CLIENT_TOOL,
-};
+use crate::models::AppSettings;
 use crate::net::HttpClientFactory;
 use http_body_util::BodyExt;
 use hyper::server::conn::http1;
@@ -57,13 +55,6 @@ fn strip_prefix_path(path: &str, prefix: &str) -> Option<String> {
         .map(|rest| format!("/{rest}"))
 }
 
-fn default_profile_for_tool<'a>(
-    profiles: &'a [ClientToolProfile],
-    tool: &str,
-) -> Option<&'a ClientToolProfile> {
-    profiles.iter().find(|profile| profile.tool == tool)
-}
-
 fn settings_file_mtime() -> Option<SystemTime> {
     let path = AppSettings::settings_path().ok()?;
     fs::metadata(path).ok()?.modified().ok()
@@ -93,36 +84,11 @@ fn detect_client_route(path: &str, settings: &AppSettings) -> ClientRoute {
         }
     }
 
-    // CC Switch style Codex traffic may arrive without the configured /codex prefix.
-    if is_codex_api_path(path) {
-        // 找到 Codex profile
-        if let Some(codex_profile) = settings
-            .client_tools
-            .profiles
-            .iter()
-            .find(|p| p.tool == "codex" && p.enabled)
-        {
-            return ClientRoute {
-                normalized_path: path.to_string(),
-                client_tool: "codex".to_string(),
-                proxy_profile_id: Some(codex_profile.id.clone()),
-                detection_method: "endpoint_match".to_string(),
-                target_base_url: codex_profile.target_base_url.clone(),
-                source_id: None,
-            };
-        }
-    }
-
-    let default_profile =
-        default_profile_for_tool(&settings.client_tools.profiles, DEFAULT_CLIENT_TOOL)
-            .filter(|profile| profile.enabled);
     ClientRoute {
         normalized_path: path.to_string(),
-        client_tool: default_profile
-            .map(|profile| profile.tool.clone())
-            .unwrap_or_else(|| "unknown".to_string()),
-        proxy_profile_id: default_profile.map(|profile| profile.id.clone()),
-        detection_method: DEFAULT_CLIENT_DETECTION_METHOD.to_string(),
+        client_tool: "unknown".to_string(),
+        proxy_profile_id: None,
+        detection_method: "unmatched_path".to_string(),
         target_base_url: None,
         source_id: None,
     }
@@ -226,6 +192,21 @@ fn resolve_route_source(
     Ok(active_source_id.and_then(|id| registry.get(id)))
 }
 
+fn resolve_target_base_url(
+    source_base_url: Option<&str>,
+    route_target_base_url: Option<&str>,
+    tool: &str,
+) -> Result<String, String> {
+    source_base_url
+        .or(route_target_base_url)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            format!(
+                "{tool} proxy target base URL is not configured; refusing to guess an upstream target"
+            )
+        })
+}
+
 fn canonical_codex_api_path(path: &str) -> &str {
     let path = path.trim_start_matches('/');
     path.strip_prefix("v1/v1/").unwrap_or(path)
@@ -249,13 +230,6 @@ fn is_codex_endpoint(path: &str, method: &Method) -> bool {
 
 // 移除 is_codex_chatgpt_backend_endpoint 函数，因为新的代理实现不再拦截 ChatGPT 后端 API
 // 只拦截标准 OpenAI 端点
-
-fn is_codex_analytics_endpoint(path: &str) -> bool {
-    path == "/codex/analytics-events"
-        || path.starts_with("/codex/analytics-events/")
-        || path == "/analytics-events"
-        || path.starts_with("/analytics-events/")
-}
 
 fn append_query(path: &str, query: Option<&str>) -> String {
     match query {
@@ -359,13 +333,6 @@ async fn sync_codex_external_config_change(proxy_port: u16, state: Arc<ProxyStat
     // 检查 base_url 字段（在 model_providers 中），而不是 chatgpt_base_url
     if let Ok(is_active) = config_manager.is_takeover_active(proxy_port) {
         if is_active && config_manager.active_source_id().is_some() {
-            if config_manager
-                .is_chatgpt_http_provider_active(proxy_port)
-                .unwrap_or(true)
-            {
-                return;
-            }
-
             let registry = CodexSourceRegistry::new();
             if let Some(handle) = config_manager
                 .active_source_id()
@@ -474,7 +441,7 @@ impl ProxyServer {
         }
 
         let config_manager = ClaudeConfigManager::new();
-        let (source_handle, api_key, target_base_url) = if self.takeover_claude {
+        let (_source_handle, target_base_url) = if self.takeover_claude {
             // 从 Claude 配置获取 API 密钥和目标 URL
             let registry = ProxySourceRegistry::new();
             let current_settings = config_manager.read_settings()?;
@@ -491,10 +458,6 @@ impl ProxyServer {
                         .flatten()
                 });
 
-            let api_key = source_handle
-                .as_ref()
-                .and_then(|handle| handle.api_key.clone())
-                .or_else(|| config_manager.get_api_key());
             let target_base_url = source_handle
                 .as_ref()
                 .map(|handle| handle.real_base_url.clone())
@@ -511,10 +474,10 @@ impl ProxyServer {
                 source_id.as_deref(),
             )?;
 
-            (source_handle, api_key, target_base_url)
+            (source_handle, target_base_url)
         } else {
             *self.state.active_source_id.write().await = None;
-            (None, None, "https://api.anthropic.com".to_string())
+            (None, "https://api.anthropic.com".to_string())
         };
 
         // 创建转发器
@@ -522,7 +485,6 @@ impl ProxyServer {
             RequestForwarder::new(
                 self.state.usage_collector.clone(),
                 target_base_url,
-                api_key,
                 self.config.request_timeout,
                 self.config.streaming_idle_timeout,
             )
@@ -542,22 +504,6 @@ impl ProxyServer {
 
         // 代理启动时先登记当前有效来源。这样即使 Claude Code 的入站请求不带
         // x-api-key，设置页也能立即看到本次接管对应的 API 来源。
-        if self.takeover_claude {
-            if let Ok(api_key) = forwarder.get_api_key(
-                None,
-                source_handle.as_ref().and_then(|h| h.api_key.as_deref()),
-            ) {
-                let target_base_url = forwarder.get_target_base_url();
-                let result =
-                    register_source_for_runtime(&self.state, &api_key, &target_base_url).await;
-                if result.is_new {
-                    if let Some(ref app_handle) = *self.state.app_handle.read().await {
-                        let _ = app_handle.emit("source_detected", ());
-                    }
-                }
-            }
-        }
-
         // 绑定地址
         let addr: SocketAddr = format!("127.0.0.1:{}", self.config.port)
             .parse()
@@ -768,33 +714,6 @@ async fn handle_codex_request(
     req: Request<hyper::body::Incoming>,
     state: &Arc<ProxyState>,
 ) -> HandlerResult {
-    // Analytics 端点直接返回 204
-    if is_codex_analytics_endpoint(path) {
-        {
-            let mut status = state.status.write().await;
-            status.success_requests += 1;
-        }
-        return Ok(Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .body(full(bytes::Bytes::new()))
-            .unwrap());
-    }
-
-    let known_codex_api_path = is_codex_api_path(path);
-
-    // Only known Codex/OpenAI API paths can be handled without an explicit source
-    // handle. Source-scoped ChatGPT OAuth requests may still need passthrough for
-    // backend auxiliary endpoints.
-    if !known_codex_api_path && client_route.source_id.is_none() {
-        return Ok(Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .header("Content-Type", "application/json")
-            .body(full(
-                r#"{"error":{"type":"not_found","message":"Endpoint not found"}}"#,
-            ))
-            .unwrap());
-    }
-
     let capture_usage = is_codex_endpoint(path, &method);
     let request_start_time_ms = chrono::Utc::now().timestamp_millis();
     let request_start_instant = std::time::Instant::now();
@@ -848,39 +767,24 @@ async fn handle_codex_request(
     };
 
     // 解析目标 URL 和认证模式
-    let target_base_url = source_handle
-        .as_ref()
-        .map(|handle| handle.real_base_url.clone())
-        .or_else(|| client_route.target_base_url.clone())
-        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-    let source_auth_mode = source_handle
-        .as_ref()
-        .map(|handle| handle.original_snapshot.auth_mode);
-
-    // 解析 API Key：ChatGPT OAuth 优先使用请求中的 token，API Key 模式优先使用保存的 key
-    let target_api_key = if source_handle
-        .as_ref()
-        .map(|handle| handle.original_snapshot.auth_mode == CodexAuthMode::ChatGpt)
-        .unwrap_or(false)
-    {
-        auth_header.clone().or_else(|| {
-            source_handle
-                .as_ref()
-                .and_then(|handle| handle.api_key.clone())
-        })
-    } else {
+    let target_base_url = match resolve_target_base_url(
         source_handle
             .as_ref()
-            .and_then(|handle| handle.api_key.clone())
-            .or(auth_header.clone())
+            .map(|handle| handle.real_base_url.as_str()),
+        client_route.target_base_url.as_deref(),
+        "Codex",
+    ) {
+        Ok(url) => url,
+        Err(message) => {
+            return Ok(json_error_response(
+                StatusCode::BAD_GATEWAY,
+                "proxy_target_not_configured",
+                &message,
+            ));
+        }
     };
-    let chatgpt_account_id = source_handle
-        .as_ref()
-        .filter(|handle| handle.original_snapshot.auth_mode == CodexAuthMode::ChatGpt)
-        .and_then(|handle| extract_chatgpt_account_id(handle.original_snapshot.auth_json.as_ref()));
-
     // 来源检测
-    let key_for_source_detection = target_api_key.as_deref();
+    let key_for_source_detection = auth_header.as_deref();
     let (api_key_prefix, request_base_url) = if let Some(api_key) = key_for_source_detection {
         let result = register_source_for_runtime(state, api_key, &target_base_url).await;
         if result.is_new {
@@ -907,10 +811,7 @@ async fn handle_codex_request(
         client_tool: client_route.client_tool,
         proxy_profile_id: client_route.proxy_profile_id,
         client_detection_method: client_route.detection_method,
-        inbound_api_key: auth_header,
         target_base_url: Some(target_base_url.clone()),
-        target_api_key: target_api_key.clone(),
-        chatgpt_account_id,
         ..Default::default()
     };
 
@@ -927,20 +828,9 @@ async fn handle_codex_request(
         ));
     };
 
-    // Non-usage endpoints:
-    // - API-key providers may use Responses lifecycle endpoints such as
-    //   GET /v1/responses/{id}; pass known OpenAI-compatible paths through.
-    // - Source-scoped arbitrary backend paths remain limited to ChatGPT OAuth.
+    // Non-usage endpoints are still transparently proxied; they are only excluded
+    // from usage capture.
     if !capture_usage {
-        if !known_codex_api_path && source_auth_mode != Some(CodexAuthMode::ChatGpt) {
-            return Ok(Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .header("Content-Type", "application/json")
-                .body(full(
-                    r#"{"error":{"type":"not_found","message":"Endpoint not found"}}"#,
-                ))
-                .unwrap());
-        }
         return forward_codex_passthrough(
             &openai_forwarder,
             method,
@@ -980,25 +870,61 @@ async fn forward_codex_passthrough(
         .forward_passthrough(method, forward_path, request_headers, body_bytes, context)
         .await
     {
-        Ok(result) => {
+        Ok(OpenAiForwardResult::Streaming {
+            status_code,
+            headers,
+            body,
+        }) => {
             {
                 let mut status = state.status.write().await;
-                if result.status_code < 400 {
+                if status_code < 400 {
                     status.success_requests += 1;
                 } else {
                     status.failed_requests += 1;
                 }
             }
-            let mut builder = Response::builder().status(
-                StatusCode::from_u16(result.status_code).unwrap_or(StatusCode::BAD_GATEWAY),
-            );
-            for (name, value) in result.headers {
+            let mut builder = Response::builder()
+                .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::BAD_GATEWAY));
+            for (name, value) in headers {
                 builder = builder.header(name, value);
             }
-            if let Some(content_type) = result.content_type {
-                builder = builder.header("Content-Type", content_type);
+            Ok(builder.body(body).unwrap())
+        }
+        Ok(OpenAiForwardResult::NonStreaming {
+            status_code,
+            headers,
+            content,
+        }) => {
+            {
+                let mut status = state.status.write().await;
+                if status_code < 400 {
+                    status.success_requests += 1;
+                } else {
+                    status.failed_requests += 1;
+                }
             }
-            Ok(builder.body(full(result.content)).unwrap())
+            let mut builder = Response::builder()
+                .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::BAD_GATEWAY));
+            for (name, value) in headers {
+                builder = builder.header(name, value);
+            }
+            Ok(builder.body(full(content)).unwrap())
+        }
+        Ok(OpenAiForwardResult::UpstreamError {
+            status_code,
+            headers,
+            content,
+        }) => {
+            {
+                let mut status = state.status.write().await;
+                status.failed_requests += 1;
+            }
+            let mut builder = Response::builder()
+                .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::BAD_GATEWAY));
+            for (name, value) in headers {
+                builder = builder.header(name, value);
+            }
+            Ok(builder.body(full(content)).unwrap())
         }
         Err(e) => {
             {
@@ -1029,33 +955,48 @@ async fn forward_codex_with_usage(
         .await
     {
         Ok(result) => match result {
-            OpenAiForwardResult::Streaming { body } => {
+            OpenAiForwardResult::Streaming {
+                status_code,
+                headers,
+                body,
+            } => {
                 {
                     let mut status = state.status.write().await;
-                    status.success_requests += 1;
+                    if status_code < 400 {
+                        status.success_requests += 1;
+                    } else {
+                        status.failed_requests += 1;
+                    }
                 }
-                Ok(Response::builder()
-                    .status(StatusCode::OK)
-                    .header("Content-Type", "text/event-stream")
-                    .header("Cache-Control", "no-cache")
-                    .header("Connection", "keep-alive")
-                    .body(body)
-                    .unwrap())
+                let mut builder = Response::builder()
+                    .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::BAD_GATEWAY));
+                for (name, value) in headers {
+                    builder = builder.header(name, value);
+                }
+                Ok(builder.body(body).unwrap())
             }
-            OpenAiForwardResult::NonStreaming { content } => {
+            OpenAiForwardResult::NonStreaming {
+                status_code,
+                headers,
+                content,
+            } => {
                 {
                     let mut status = state.status.write().await;
-                    status.success_requests += 1;
+                    if status_code < 400 {
+                        status.success_requests += 1;
+                    } else {
+                        status.failed_requests += 1;
+                    }
                 }
-                Ok(Response::builder()
-                    .status(StatusCode::OK)
-                    .header("Content-Type", "application/json")
-                    .body(full(content))
-                    .unwrap())
+                let mut builder = Response::builder()
+                    .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::BAD_GATEWAY));
+                for (name, value) in headers {
+                    builder = builder.header(name, value);
+                }
+                Ok(builder.body(full(content)).unwrap())
             }
             OpenAiForwardResult::UpstreamError {
                 status_code,
-                content_type,
                 headers,
                 content,
             } => {
@@ -1067,9 +1008,6 @@ async fn forward_codex_with_usage(
                     .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::BAD_GATEWAY));
                 for (name, value) in headers {
                     builder = builder.header(name, value);
-                }
-                if let Some(content_type) = content_type {
-                    builder = builder.header("Content-Type", content_type);
                 }
                 Ok(builder.body(full(content)).unwrap())
             }
@@ -1084,6 +1022,148 @@ async fn forward_codex_with_usage(
                 "proxy_error",
                 &e,
             ))
+        }
+    }
+}
+
+async fn forward_claude_passthrough(
+    forwarder: &RequestForwarder,
+    method: Method,
+    forward_path: &str,
+    request_headers: hyper::HeaderMap,
+    body_bytes: bytes::Bytes,
+    context: RequestContext,
+    state: &Arc<ProxyState>,
+) -> HandlerResult {
+    match forwarder
+        .forward_passthrough(method, forward_path, body_bytes, context, request_headers)
+        .await
+    {
+        Ok(ForwardResult::Streaming {
+            status_code,
+            headers,
+            body,
+        }) => {
+            {
+                let mut status = state.status.write().await;
+                if status_code < 400 {
+                    status.success_requests += 1;
+                } else {
+                    status.failed_requests += 1;
+                }
+            }
+            let mut builder = Response::builder()
+                .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::BAD_GATEWAY));
+            for (name, value) in headers {
+                builder = builder.header(name, value);
+            }
+            Ok(builder.body(body).unwrap())
+        }
+        Ok(ForwardResult::NonStreaming {
+            status_code,
+            headers,
+            content,
+        }) => {
+            {
+                let mut status = state.status.write().await;
+                if status_code < 400 {
+                    status.success_requests += 1;
+                } else {
+                    status.failed_requests += 1;
+                }
+            }
+            let mut builder = Response::builder()
+                .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::BAD_GATEWAY));
+            for (name, value) in headers {
+                builder = builder.header(name, value);
+            }
+            Ok(builder.body(full(content)).unwrap())
+        }
+        Err(e) => {
+            {
+                let mut status = state.status.write().await;
+                status.failed_requests += 1;
+            }
+            Ok(json_error_response(
+                StatusCode::BAD_GATEWAY,
+                "proxy_error",
+                &e,
+            ))
+        }
+    }
+}
+
+async fn forward_claude_with_usage(
+    forwarder: &RequestForwarder,
+    method: Method,
+    forward_path: &str,
+    request_headers: hyper::HeaderMap,
+    body_bytes: bytes::Bytes,
+    context: RequestContext,
+    state: &Arc<ProxyState>,
+) -> HandlerResult {
+    match forwarder
+        .forward_with_usage(method, forward_path, body_bytes, context, request_headers)
+        .await
+    {
+        Ok(ForwardResult::Streaming {
+            status_code,
+            headers,
+            body,
+        }) => {
+            {
+                let mut status = state.status.write().await;
+                if status_code < 400 {
+                    status.success_requests += 1;
+                } else {
+                    status.failed_requests += 1;
+                }
+            }
+            let mut builder = Response::builder()
+                .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::BAD_GATEWAY));
+            for (name, value) in headers {
+                builder = builder.header(name, value);
+            }
+            Ok(builder.body(body).unwrap())
+        }
+        Ok(ForwardResult::NonStreaming {
+            status_code,
+            headers,
+            content,
+        }) => {
+            {
+                let mut status = state.status.write().await;
+                if status_code < 400 {
+                    status.success_requests += 1;
+                } else {
+                    status.failed_requests += 1;
+                }
+            }
+            let mut builder = Response::builder()
+                .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::BAD_GATEWAY));
+            for (name, value) in headers {
+                builder = builder.header(name, value);
+            }
+            Ok(builder.body(full(content)).unwrap())
+        }
+        Err(e) => {
+            {
+                let mut status = state.status.write().await;
+                status.failed_requests += 1;
+            }
+
+            let error_body = serde_json::json!({
+                "error": {
+                    "type": "proxy_error",
+                    "message": e
+                }
+            });
+
+            Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header("Content-Type", "application/json")
+                .body(full(serde_json::to_string(&error_body).unwrap_or_default()))
+                .unwrap())
         }
     }
 }
@@ -1149,24 +1229,24 @@ async fn handle_request(
             .status(StatusCode::NOT_FOUND)
             .header("Content-Type", "application/json")
             .body(full(
-                r#"{"error":{"type":"tool_not_enabled","message":"Client tool is not enabled for proxy takeover"}}"#,
+                r#"{"error":{"type":"proxy_route_not_matched","message":"Request path did not match any enabled proxy route"}}"#,
             ))
             .unwrap());
     }
 
-    // 处理 Claude Messages API
-    if path == "/v1/messages" && method == Method::POST {
+    if client_route.client_tool == "claude_code" {
         // 在收集请求体之前立即记录开始时间，确保端到端时间准确
         let request_start_time_ms = chrono::Utc::now().timestamp_millis();
         let request_start_instant = std::time::Instant::now();
 
-        // 提取 x-api-key 头用于来源识别。Claude Code 在被接管 base_url 后，
-        // 可能不会把 key 作为入站请求头带给本地代理，因此下面会回退到转发器解析到的 key。
+        // 提取 x-api-key 头用于来源识别。
         let api_key_header = req
             .headers()
             .get("x-api-key")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
+
+        let request_headers = req.headers().clone();
 
         // 收集请求体（这一步的耗时现在会被计入）
         let body_bytes = req.collect().await?.to_bytes();
@@ -1195,22 +1275,26 @@ async fn handle_request(
             let _ = ProxySourceRegistry::new().touch_used(&handle.id);
         }
 
-        // 获取目标 base_url（source 句柄优先，其次工具 profile，最后回退到启动默认值）
-        let target_base_url = source_handle
-            .as_ref()
-            .map(|handle| handle.real_base_url.clone())
-            .or_else(|| client_route.target_base_url.clone())
-            .unwrap_or_else(|| forwarder.get_target_base_url());
-
-        let source_api_key = source_handle
-            .as_ref()
-            .and_then(|handle| handle.api_key.as_deref());
-        let effective_api_key = forwarder
-            .get_api_key(api_key_header.as_deref(), source_api_key)
-            .ok();
+        // 获取目标 base_url（source 句柄优先，其次工具 profile；目标不明确时直接报错）
+        let target_base_url = match resolve_target_base_url(
+            source_handle
+                .as_ref()
+                .map(|handle| handle.real_base_url.as_str()),
+            client_route.target_base_url.as_deref(),
+            "Claude",
+        ) {
+            Ok(url) => url,
+            Err(message) => {
+                return Ok(json_error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "proxy_target_not_configured",
+                    &message,
+                ));
+            }
+        };
 
         // 检测并注册来源
-        let is_new_source = if let Some(ref api_key) = effective_api_key {
+        let is_new_source = if let Some(ref api_key) = api_key_header {
             let result = register_source_for_runtime(&state, api_key, &target_base_url).await;
             if result.is_new {
                 if let Some(ref app_handle) = *state.app_handle.read().await {
@@ -1223,7 +1307,7 @@ async fn handle_request(
         };
 
         // 获取来源信息用于 RequestContext
-        let (api_key_prefix, request_base_url) = if let Some(ref api_key) = effective_api_key {
+        let (api_key_prefix, request_base_url) = if let Some(ref api_key) = api_key_header {
             let settings = get_settings_snapshot(&state).await;
             let sources = settings.source_aware.sources;
             let (prefix, base_url, _) = detect_source_info(api_key, &target_base_url, &sources);
@@ -1245,72 +1329,44 @@ async fn handle_request(
             client_tool: client_route.client_tool,
             proxy_profile_id: client_route.proxy_profile_id,
             client_detection_method: client_route.detection_method,
-            inbound_api_key: api_key_header.clone(),
             target_base_url: Some(target_base_url),
-            target_api_key: source_handle.and_then(|handle| handle.api_key),
             ..Default::default()
         };
-
-        // 转发请求
-        match forwarder.forward_messages(body_bytes, context).await {
-            Ok(result) => {
-                // 增加成功请求数
-                {
-                    let mut status = state.status.write().await;
-                    status.success_requests += 1;
-                }
-
-                let _ = is_new_source;
-
-                match result {
-                    ForwardResult::Streaming { body } => {
-                        // 流式响应，实时透传
-                        Ok(Response::builder()
-                            .status(StatusCode::OK)
-                            .header("Content-Type", "text/event-stream")
-                            .header("Cache-Control", "no-cache")
-                            .header("Connection", "keep-alive")
-                            .body(body)
-                            .unwrap())
-                    }
-                    ForwardResult::NonStreaming { content } => Ok(Response::builder()
-                        .status(StatusCode::OK)
-                        .header("Content-Type", "application/json")
-                        .body(full(content))
-                        .unwrap()),
-                }
-            }
-            Err(e) => {
-                // 增加失败请求数
-                {
-                    let mut status = state.status.write().await;
-                    status.failed_requests += 1;
-                }
-
-                let error_body = serde_json::json!({
-                    "error": {
-                        "type": "proxy_error",
-                        "message": e
-                    }
-                });
-
-                Ok(Response::builder()
-                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .header("Content-Type", "application/json")
-                    .body(full(serde_json::to_string(&error_body).unwrap_or_default()))
-                    .unwrap())
-            }
+        let _ = is_new_source;
+        let capture_usage = path == "/v1/messages" && method == Method::POST;
+        if capture_usage {
+            return forward_claude_with_usage(
+                &forwarder,
+                method,
+                &forward_path,
+                request_headers,
+                body_bytes,
+                context,
+                &state,
+            )
+            .await;
         }
-    } else {
-        // 对于未知端点返回 404
-        Ok(Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .header("Content-Type", "application/json")
-            .body(full(
-                r#"{"error":{"type":"not_found","message":"Endpoint not found"}}"#,
-            ))
-            .unwrap())
+
+        return forward_claude_passthrough(
+            &forwarder,
+            method,
+            &forward_path,
+            request_headers,
+            body_bytes,
+            context,
+            &state,
+        )
+        .await;
     }
+
+    // 对于未知端点返回 404
+    Ok(Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header("Content-Type", "application/json")
+        .body(full(
+            r#"{"error":{"type":"not_found","message":"Endpoint not found"}}"#,
+        ))
+        .unwrap())
 }
 
 impl Default for ProxyServer {
@@ -1319,49 +1375,10 @@ impl Default for ProxyServer {
     }
 }
 
-fn extract_chatgpt_account_id(auth_json: Option<&Value>) -> Option<String> {
-    let auth = auth_json?;
-    auth.pointer("/tokens/account_id")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            auth.pointer("/tokens/access_token")
-                .and_then(|value| value.as_str())
-                .and_then(extract_chatgpt_account_id_from_jwt)
-        })
-        .or_else(|| {
-            auth.pointer("/tokens/id_token")
-                .and_then(|value| value.as_str())
-                .and_then(extract_chatgpt_account_id_from_jwt)
-        })
-}
-
-fn extract_chatgpt_account_id_from_jwt(token: &str) -> Option<String> {
-    let payload = token.split('.').nth(1)?;
-    let decoded = base64_url_decode(payload)?;
-    let json: Value = serde_json::from_slice(&decoded).ok()?;
-    json.pointer("/https://api.openai.com/auth/chatgpt_account_id")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string)
-}
-
-fn base64_url_decode(input: &str) -> Option<Vec<u8>> {
-    use base64::Engine;
-
-    let mut value = input.replace('-', "+").replace('_', "/");
-    while !value.len().is_multiple_of(4) {
-        value.push('=');
-    }
-    base64::engine::general_purpose::STANDARD
-        .decode(value.as_bytes())
-        .ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::AppSettings;
 
     #[test]
     fn test_resolve_route_source_rejects_missing_explicit_source() {
@@ -1381,17 +1398,6 @@ mod tests {
     }
 
     #[test]
-    fn test_codex_analytics_endpoint() {
-        assert!(is_codex_analytics_endpoint(
-            "/codex/analytics-events/events"
-        ));
-        assert!(is_codex_analytics_endpoint("/codex/analytics-events"));
-        assert!(is_codex_analytics_endpoint("/analytics-events"));
-        assert!(is_codex_analytics_endpoint("/analytics-events/events"));
-        assert!(!is_codex_analytics_endpoint("/v1/responses"));
-    }
-
-    #[test]
     fn codex_endpoint_detection_uses_shared_path_classifier() {
         assert!(is_codex_api_path("/v1/responses"));
         assert!(is_codex_api_path("/v1/v1/responses"));
@@ -1402,17 +1408,99 @@ mod tests {
     }
 
     #[test]
-    fn extracts_chatgpt_account_id_from_auth_json() {
-        let auth = serde_json::json!({
-            "auth_mode": "chatgpt",
-            "tokens": {
-                "account_id": "acct_test"
-            }
-        });
+    fn detect_client_route_keeps_prefixed_codex_unknown_paths() {
+        let mut settings = AppSettings::default();
+        let codex_profile = settings
+            .client_tools
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.tool == "codex")
+            .expect("codex profile");
+        codex_profile.enabled = true;
 
-        assert_eq!(
-            extract_chatgpt_account_id(Some(&auth)).as_deref(),
-            Some("acct_test")
-        );
+        let route = detect_client_route("/codex/connectors/directory/list", &settings);
+        assert_eq!(route.client_tool, "codex");
+        assert_eq!(route.normalized_path, "/connectors/directory/list");
+        assert_eq!(route.detection_method, "path_prefix");
+        assert!(route.source_id.is_none());
+    }
+
+    #[test]
+    fn detect_client_route_keeps_source_scoped_codex_unknown_paths() {
+        let mut settings = AppSettings::default();
+        let codex_profile = settings
+            .client_tools
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.tool == "codex")
+            .expect("codex profile");
+        codex_profile.enabled = true;
+
+        let route =
+            detect_client_route("/codex/source/src_123/connectors/directory/list", &settings);
+        assert_eq!(route.client_tool, "codex");
+        assert_eq!(route.normalized_path, "/connectors/directory/list");
+        assert_eq!(route.detection_method, "path_prefix_source");
+        assert_eq!(route.source_id.as_deref(), Some("src_123"));
+    }
+
+    #[test]
+    fn detect_client_route_does_not_guess_unprefixed_codex_paths() {
+        let mut settings = AppSettings::default();
+        let codex_profile = settings
+            .client_tools
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.tool == "codex")
+            .expect("codex profile");
+        codex_profile.enabled = true;
+
+        let route = detect_client_route("/v1/responses", &settings);
+        assert_eq!(route.client_tool, "unknown");
+        assert_eq!(route.normalized_path, "/v1/responses");
+        assert_eq!(route.detection_method, "unmatched_path");
+    }
+
+    #[test]
+    fn detect_client_route_keeps_prefixed_claude_unknown_paths() {
+        let settings = AppSettings::default();
+        let route = detect_client_route("/claude-code/foo/bar", &settings);
+        assert_eq!(route.client_tool, "claude_code");
+        assert_eq!(route.normalized_path, "/foo/bar");
+        assert_eq!(route.detection_method, "path_prefix");
+    }
+
+    #[test]
+    fn detect_client_route_does_not_guess_unprefixed_claude_paths() {
+        let settings = AppSettings::default();
+        let route = detect_client_route("/v1/messages", &settings);
+        assert_eq!(route.client_tool, "unknown");
+        assert_eq!(route.normalized_path, "/v1/messages");
+        assert_eq!(route.detection_method, "unmatched_path");
+        assert!(route.proxy_profile_id.is_none());
+    }
+
+    #[test]
+    fn resolve_target_base_url_prefers_source_over_route() {
+        let result = resolve_target_base_url(
+            Some("https://source.example/v1"),
+            Some("https://route.example/v1"),
+            "Codex",
+        )
+        .unwrap();
+        assert_eq!(result, "https://source.example/v1");
+    }
+
+    #[test]
+    fn resolve_target_base_url_uses_route_when_source_missing() {
+        let result =
+            resolve_target_base_url(None, Some("https://route.example/v1"), "Codex").unwrap();
+        assert_eq!(result, "https://route.example/v1");
+    }
+
+    #[test]
+    fn resolve_target_base_url_refuses_to_guess() {
+        let err = resolve_target_base_url(None, None, "Codex").unwrap_err();
+        assert!(err.contains("refusing to guess an upstream target"));
     }
 }

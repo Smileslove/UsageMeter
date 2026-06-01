@@ -10,12 +10,14 @@ use bytes::Bytes;
 use futures::TryStreamExt;
 use http_body_util::{BodyExt, StreamBody};
 use hyper::body::Frame;
+use hyper::Method;
 use reqwest::Client;
 use std::sync::Arc;
 
 /// UnsyncBoxBody 类型别名，用于响应体（不需要 Sync）
 /// 错误类型为 std::io::Error，实现了 Into<Box<dyn StdError + Send + Sync>>
 pub type BoxBody = http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Error>;
+const USAGE_MISSING_STATUS_CODE: u16 = 599;
 
 /// 请求转发器，将请求代理到 Anthropic API
 pub struct RequestForwarder {
@@ -27,25 +29,28 @@ pub struct RequestForwarder {
     usage_collector: Arc<UsageCollector>,
     /// 目标基础 URL
     target_base_url: String,
-    /// API 密钥（来自 Claude 设置）
-    api_key: Option<String>,
 }
 
 /// 转发请求的结果
 pub enum ForwardResult {
     /// 流式响应（SSE）- 返回 BoxBody 用于实时透传
-    Streaming { body: BoxBody },
+    Streaming {
+        status_code: u16,
+        headers: Vec<(String, String)>,
+        body: BoxBody,
+    },
     /// 非流式响应（JSON）
-    NonStreaming { content: Vec<u8> },
+    NonStreaming {
+        status_code: u16,
+        headers: Vec<(String, String)>,
+        content: Vec<u8>,
+    },
 }
 
-fn messages_endpoint_url(target_base_url: &str) -> String {
+fn anthropic_endpoint_url(target_base_url: &str, path: &str) -> String {
     let base = target_base_url.trim_end_matches('/');
-    if let Some(prefix) = base.strip_suffix("/v1") {
-        format!("{}/v1/messages", prefix)
-    } else {
-        format!("{}/v1/messages", base)
-    }
+    let raw_path = path.trim_start_matches('/');
+    format!("{}/{}", base, raw_path)
 }
 
 impl RequestForwarder {
@@ -53,7 +58,6 @@ impl RequestForwarder {
     pub fn new(
         usage_collector: Arc<UsageCollector>,
         target_base_url: String,
-        api_key: Option<String>,
         request_timeout_secs: u64,
         streaming_idle_timeout_secs: u64,
     ) -> Result<Self, String> {
@@ -66,85 +70,24 @@ impl RequestForwarder {
             streaming_client,
             usage_collector,
             target_base_url,
-            api_key,
         })
     }
 
-    /// 获取目标 base_url
-    pub fn get_target_base_url(&self) -> String {
-        self.target_base_url.clone()
-    }
-
-    /// 获取要使用的 API 密钥
-    pub(crate) fn get_api_key(
-        &self,
-        inbound_api_key: Option<&str>,
-        target_api_key: Option<&str>,
-    ) -> Result<String, String> {
-        inbound_api_key
-            .map(|key| key.to_string())
-            .or_else(|| target_api_key.map(|key| key.to_string()))
-            .or_else(|| self.api_key.clone())
-            .or_else(|| {
-                // 尝试从 Claude 设置获取
-                let manager = super::config_manager::ClaudeConfigManager::new();
-                manager.get_api_key()
-            })
-            .ok_or_else(|| {
-                "No API key found. Please configure ANTHROPIC_API_KEY in Claude settings."
-                    .to_string()
-            })
-    }
-
     /// 将请求转发到 Anthropic API
-    pub async fn forward_messages(
+    pub async fn forward_with_usage(
         &self,
+        method: Method,
+        path: &str,
         body: bytes::Bytes,
-        mut context: RequestContext,
+        context: RequestContext,
+        headers: hyper::HeaderMap,
     ) -> Result<ForwardResult, String> {
-        let api_key = match self.get_api_key(
-            context.inbound_api_key.as_deref(),
-            context.target_api_key.as_deref(),
-        ) {
-            Ok(key) => key,
-            Err(e) => {
-                // 记录无 key 的错误，确保请求被统计
-                let now = chrono::Utc::now().timestamp_millis();
-                let record = UsageRecord {
-                    timestamp: now,
-                    message_id: format!("no_key_{}", now),
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cache_create_tokens: 0,
-                    cache_read_tokens: 0,
-                    reasoning_tokens: 0,
-                    total_tokens: 0,
-                    model: context.model.clone().unwrap_or_default(),
-                    session_id: context.session_id.clone(),
-                    request_start_time: context.start_time_ms,
-                    request_end_time: now,
-                    duration_ms: 0,
-                    output_tokens_per_second: None,
-                    ttft_ms: None,
-                    status_code: 502,
-                    estimated_cost: 0.0,
-                    pricing_snapshot_id: None,
-                    cost_locked: false,
-                    api_key_prefix: context.api_key_prefix,
-                    request_base_url: context.request_base_url,
-                    client_tool: context.client_tool,
-                    proxy_profile_id: context.proxy_profile_id,
-                    client_detection_method: context.client_detection_method,
-                };
-                self.usage_collector.record(record).await;
-                return Err(e);
-            }
-        };
+        let mut context = context;
         let target_base_url = context
             .target_base_url
             .clone()
             .unwrap_or_else(|| self.target_base_url.clone());
-        let url = messages_endpoint_url(&target_base_url);
+        let url = anthropic_endpoint_url(&target_base_url, path);
 
         // 解析请求体以提取元数据
         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) {
@@ -181,15 +124,11 @@ impl RequestForwarder {
         };
 
         // 构建请求
-        let mut request = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("x-api-key", &api_key)
-            .header("anthropic-version", "2023-06-01")
-            .body(body);
-
-        // 添加 anthropic-dangerous-direct-browser-access 头，支持浏览器式访问
-        request = request.header("anthropic-dangerous-direct-browser-access", "true");
+        let method = reqwest::Method::from_bytes(method.as_str().as_bytes())
+            .unwrap_or(reqwest::Method::POST);
+        let mut request = client.request(method, &url);
+        request = apply_passthrough_headers(request, &headers);
+        request = request.body(body);
 
         // 发送请求
         let response = request
@@ -197,12 +136,21 @@ impl RequestForwarder {
             .await
             .map_err(|e| format!("Failed to send request: {}", e))?;
 
-        let status = response.status();
-        let is_streaming = context.stream;
-        let status_code = status.as_u16();
+        let status_code = response.status().as_u16();
+        let response_headers = collect_passthrough_response_headers(response.headers());
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let is_streaming = context.stream
+            || content_type
+                .as_deref()
+                .map(|value| value.contains("text/event-stream"))
+                .unwrap_or(false);
 
-        if !status.is_success() {
-            let error_body = response.text().await.unwrap_or_default();
+        if status_code >= 400 {
+            let error_body = response.bytes().await.unwrap_or_default();
 
             // 即使是错误响应，也记录请求（无 token 数据，但有状态码）
             let request_end_time = chrono::Utc::now().timestamp_millis();
@@ -246,15 +194,21 @@ impl RequestForwarder {
             };
             self.usage_collector.record(record).await;
 
-            return Err(format!("API error ({}): {}", status, error_body));
+            return Ok(ForwardResult::NonStreaming {
+                status_code,
+                headers: response_headers,
+                content: error_body.to_vec(),
+            });
         }
 
         if is_streaming {
             // 处理流式响应
-            self.handle_streaming_response(response, context).await
+            self.handle_streaming_response(response, context, status_code, response_headers)
+                .await
         } else {
             // 处理非流式响应
-            self.handle_non_streaming_response(response, context).await
+            self.handle_non_streaming_response(response, context, status_code, response_headers)
+                .await
         }
     }
 
@@ -267,10 +221,11 @@ impl RequestForwarder {
         &self,
         response: reqwest::Response,
         context: RequestContext,
+        status_code: u16,
+        headers: Vec<(String, String)>,
     ) -> Result<ForwardResult, String> {
         // TTFT 从收到上游响应头开始计时
         let ttft_start_time = std::time::Instant::now();
-        let status_code = response.status().as_u16();
 
         // 创建流上下文用于使用量收集
         let stream_context = StreamContext {
@@ -305,6 +260,8 @@ impl RequestForwarder {
         let stream_body = StreamBody::new(passthrough_stream.map_ok(Frame::data));
 
         Ok(ForwardResult::Streaming {
+            status_code,
+            headers,
             body: stream_body.boxed_unsync(),
         })
     }
@@ -318,100 +275,292 @@ impl RequestForwarder {
         &self,
         response: reqwest::Response,
         context: RequestContext,
+        status_code: u16,
+        headers: Vec<(String, String)>,
     ) -> Result<ForwardResult, String> {
         let request_end_time = chrono::Utc::now().timestamp_millis();
         let request_start_time = context.start_time_ms;
         let duration_ms = request_end_time - request_start_time;
-        let status_code = response.status().as_u16();
 
         let body = response
             .bytes()
             .await
             .map_err(|e| format!("Failed to read response body: {}", e))?;
 
-        // 解析响应以提取使用量
-        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) {
-            let message_id = json
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-
-            let model = json
-                .get("model")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-
-            // 从响应的 usage 中提取各项 Token
-            let input_tokens = json
-                .get("usage")
-                .and_then(|u| u.get("input_tokens"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-
-            let output_tokens = json
-                .get("usage")
-                .and_then(|u| u.get("output_tokens"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-
-            let cache_create = json
-                .get("usage")
-                .and_then(|u| u.get("cache_creation_input_tokens"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-
-            let cache_read = json
-                .get("usage")
-                .and_then(|u| u.get("cache_read_input_tokens"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-
-            // 计算总 Token：原始输入 + 缓存创建 + 缓存读取 + 输出
-            let total_tokens = input_tokens + cache_create + cache_read + output_tokens;
-
-            // 计算输出 Token 生成速率（tokens/s）
-            let output_tokens_per_second = if duration_ms > 0 {
-                Some((output_tokens as f64) / (duration_ms as f64 / 1000.0))
-            } else {
-                None
-            };
-
-            // 记录使用量
-            let record = UsageRecord {
-                timestamp: request_end_time,
-                message_id,
-                input_tokens,
-                output_tokens,
-                cache_create_tokens: cache_create,
-                cache_read_tokens: cache_read,
-                reasoning_tokens: 0,
-                total_tokens,
-                model,
-                session_id: context.session_id,
-                request_start_time,
-                request_end_time,
-                duration_ms: duration_ms as u64,
-                output_tokens_per_second,
-                ttft_ms: None, // 非流式请求无法计算 TTFT
-                status_code,
-                estimated_cost: 0.0,
-                pricing_snapshot_id: None,
-                cost_locked: false,
-                api_key_prefix: context.api_key_prefix,
-                request_base_url: context.request_base_url,
-                client_tool: context.client_tool,
-                proxy_profile_id: context.proxy_profile_id,
-                client_detection_method: context.client_detection_method,
-            };
-            self.usage_collector.record(record).await;
-        }
+        let parsed_usage = serde_json::from_slice::<serde_json::Value>(&body)
+            .ok()
+            .and_then(parse_anthropic_non_stream_usage);
+        self.record_non_streaming_usage_optional(
+            parsed_usage,
+            context,
+            request_start_time,
+            request_end_time,
+            duration_ms as u64,
+            status_code,
+        )
+        .await;
 
         Ok(ForwardResult::NonStreaming {
+            status_code,
+            headers,
             content: body.to_vec(),
         })
     }
+
+    async fn record_non_streaming_usage_optional(
+        &self,
+        usage: Option<AnthropicNonStreamUsage>,
+        context: RequestContext,
+        request_start_time: i64,
+        request_end_time: i64,
+        duration_ms: u64,
+        status_code: u16,
+    ) {
+        match usage {
+            Some(usage) => {
+                let output_tokens_per_second = if duration_ms > 0 {
+                    Some((usage.output_tokens as f64) / (duration_ms as f64 / 1000.0))
+                } else {
+                    None
+                };
+                let record = UsageRecord {
+                    timestamp: request_end_time,
+                    message_id: usage.message_id,
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    cache_create_tokens: usage.cache_create_tokens,
+                    cache_read_tokens: usage.cache_read_tokens,
+                    reasoning_tokens: 0,
+                    total_tokens: usage.total_tokens,
+                    model: usage.model,
+                    session_id: context.session_id,
+                    request_start_time,
+                    request_end_time,
+                    duration_ms,
+                    output_tokens_per_second,
+                    ttft_ms: None,
+                    status_code,
+                    estimated_cost: 0.0,
+                    pricing_snapshot_id: None,
+                    cost_locked: false,
+                    api_key_prefix: context.api_key_prefix,
+                    request_base_url: context.request_base_url,
+                    client_tool: context.client_tool,
+                    proxy_profile_id: context.proxy_profile_id,
+                    client_detection_method: context.client_detection_method,
+                };
+                self.usage_collector.record(record).await;
+            }
+            None => {
+                let record = UsageRecord {
+                    timestamp: request_end_time,
+                    message_id: format!(
+                        "claude_usage_missing_{}_{}",
+                        request_end_time, status_code
+                    ),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_create_tokens: 0,
+                    cache_read_tokens: 0,
+                    reasoning_tokens: 0,
+                    total_tokens: 0,
+                    model: context.model.unwrap_or_default(),
+                    session_id: context.session_id,
+                    request_start_time,
+                    request_end_time,
+                    duration_ms,
+                    output_tokens_per_second: None,
+                    ttft_ms: None,
+                    status_code: if (200..300).contains(&status_code) {
+                        USAGE_MISSING_STATUS_CODE
+                    } else {
+                        status_code
+                    },
+                    estimated_cost: 0.0,
+                    pricing_snapshot_id: None,
+                    cost_locked: false,
+                    api_key_prefix: context.api_key_prefix,
+                    request_base_url: context.request_base_url,
+                    client_tool: context.client_tool,
+                    proxy_profile_id: context.proxy_profile_id,
+                    client_detection_method: context.client_detection_method,
+                };
+                self.usage_collector.record(record).await;
+            }
+        }
+    }
+
+    pub async fn forward_passthrough(
+        &self,
+        method: Method,
+        path: &str,
+        body: bytes::Bytes,
+        context: RequestContext,
+        headers: hyper::HeaderMap,
+    ) -> Result<ForwardResult, String> {
+        let target_base_url = context
+            .target_base_url
+            .clone()
+            .unwrap_or_else(|| self.target_base_url.clone());
+        let url = anthropic_endpoint_url(&target_base_url, path);
+        let use_streaming_client = headers
+            .get(hyper::header::ACCEPT)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.contains("text/event-stream"))
+            .unwrap_or(false);
+        let method =
+            reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET);
+        let client = if use_streaming_client {
+            &self.streaming_client
+        } else {
+            &self.client
+        };
+        let mut request = client.request(method, &url);
+        request = apply_passthrough_headers(request, &headers);
+        request = request.body(body);
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| format!("Failed to send request: {}", e))?;
+        let status_code = response.status().as_u16();
+        let response_headers = collect_passthrough_response_headers(response.headers());
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let is_streaming = content_type
+            .as_deref()
+            .map(|value| value.contains("text/event-stream"))
+            .unwrap_or(false);
+
+        if is_streaming {
+            let stream = response
+                .bytes_stream()
+                .map_ok(Frame::data)
+                .map_err(|e| std::io::Error::other(e.to_string()));
+
+            return Ok(ForwardResult::Streaming {
+                status_code,
+                headers: response_headers,
+                body: StreamBody::new(stream).boxed_unsync(),
+            });
+        }
+
+        let content = response
+            .bytes()
+            .await
+            .map_err(|e| format!("Failed to read response body: {}", e))?;
+
+        Ok(ForwardResult::NonStreaming {
+            status_code,
+            headers: response_headers,
+            content: content.to_vec(),
+        })
+    }
+}
+
+struct AnthropicNonStreamUsage {
+    message_id: String,
+    model: String,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_create_tokens: u64,
+    cache_read_tokens: u64,
+    total_tokens: u64,
+}
+
+fn parse_anthropic_non_stream_usage(json: serde_json::Value) -> Option<AnthropicNonStreamUsage> {
+    let usage = json.get("usage")?;
+    let input_tokens = usage.get("input_tokens")?.as_u64()?;
+    let output_tokens = usage.get("output_tokens")?.as_u64()?;
+    let cache_create_tokens = usage
+        .get("cache_creation_input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let cache_read_tokens = usage
+        .get("cache_read_input_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    Some(AnthropicNonStreamUsage {
+        message_id: json
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        model: json
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        input_tokens,
+        output_tokens,
+        cache_create_tokens,
+        cache_read_tokens,
+        total_tokens: input_tokens + cache_create_tokens + cache_read_tokens + output_tokens,
+    })
+}
+
+fn apply_passthrough_headers(
+    mut request: reqwest::RequestBuilder,
+    headers: &hyper::HeaderMap,
+) -> reqwest::RequestBuilder {
+    for (name, value) in headers {
+        let name = name.as_str();
+        if matches!(
+            name.to_ascii_lowercase().as_str(),
+            "host"
+                | "content-length"
+                | "connection"
+                | "accept-encoding"
+                | "proxy-authorization"
+                | "transfer-encoding"
+                | "te"
+                | "trailer"
+                | "upgrade"
+        ) {
+            continue;
+        }
+        if let Ok(value) = value.to_str() {
+            request = request.header(name, value);
+        }
+    }
+    request
+}
+
+fn collect_passthrough_response_headers(
+    headers: &reqwest::header::HeaderMap,
+) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            let lower = name.as_str().to_ascii_lowercase();
+            if is_hop_by_hop_response_header(&lower) {
+                return None;
+            }
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_string(), value.to_string()))
+        })
+        .collect()
+}
+
+fn is_hop_by_hop_response_header(name: &str) -> bool {
+    matches!(
+        name,
+        "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+            | "content-length"
+    )
 }
 
 /// 从文本解析 SSE 事件
@@ -486,21 +635,71 @@ fn parse_sse_event(text: &str) -> Option<SseEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::header;
 
     #[test]
-    fn test_messages_endpoint_url_normalizes_v1_suffix() {
+    fn test_anthropic_endpoint_url_preserves_raw_request_path() {
         assert_eq!(
-            messages_endpoint_url("https://api.example.com"),
+            anthropic_endpoint_url("https://api.example.com", "/v1/messages"),
             "https://api.example.com/v1/messages"
         );
         assert_eq!(
-            messages_endpoint_url("https://api.example.com/v1"),
-            "https://api.example.com/v1/messages"
+            anthropic_endpoint_url("https://api.example.com/v1", "/v1/messages"),
+            "https://api.example.com/v1/v1/messages"
         );
         assert_eq!(
-            messages_endpoint_url("https://api.example.com/api/v1/"),
-            "https://api.example.com/api/v1/messages"
+            anthropic_endpoint_url("https://api.example.com/api/v1/", "/foo/bar"),
+            "https://api.example.com/api/v1/foo/bar"
         );
+    }
+
+    #[test]
+    fn passthrough_streaming_detection_uses_accept_header() {
+        let mut headers = hyper::HeaderMap::new();
+        assert!(!headers
+            .get(hyper::header::ACCEPT)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.contains("text/event-stream"))
+            .unwrap_or(false));
+
+        headers.insert(hyper::header::ACCEPT, "text/event-stream".parse().unwrap());
+        assert!(headers
+            .get(hyper::header::ACCEPT)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.contains("text/event-stream"))
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn parse_anthropic_non_stream_usage_requires_usage_fields() {
+        let parsed = parse_anthropic_non_stream_usage(serde_json::json!({
+            "id": "msg_123",
+            "model": "claude-sonnet-4"
+        }));
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn parse_anthropic_non_stream_usage_extracts_tokens() {
+        let parsed = parse_anthropic_non_stream_usage(serde_json::json!({
+            "id": "msg_123",
+            "model": "claude-sonnet-4",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "cache_creation_input_tokens": 3,
+                "cache_read_input_tokens": 4
+            }
+        }))
+        .expect("usage should parse");
+
+        assert_eq!(parsed.message_id, "msg_123");
+        assert_eq!(parsed.model, "claude-sonnet-4");
+        assert_eq!(parsed.input_tokens, 10);
+        assert_eq!(parsed.output_tokens, 20);
+        assert_eq!(parsed.cache_create_tokens, 3);
+        assert_eq!(parsed.cache_read_tokens, 4);
+        assert_eq!(parsed.total_tokens, 37);
     }
 
     #[test]
@@ -518,5 +717,29 @@ mod tests {
             result,
             Some(SseEvent::MessageDelta { output_tokens: 50 })
         ));
+    }
+
+    #[test]
+    fn collect_passthrough_response_headers_keeps_upstream_metadata() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+        headers.insert("retry-after", "120".parse().unwrap());
+        headers.insert("request-id", "req_123".parse().unwrap());
+        headers.insert(header::CONNECTION, "keep-alive".parse().unwrap());
+        headers.insert(header::CONTENT_LENGTH, "42".parse().unwrap());
+
+        let collected = collect_passthrough_response_headers(&headers);
+
+        assert!(collected
+            .iter()
+            .any(|(name, value)| name == "content-type" && value == "application/json"));
+        assert!(collected
+            .iter()
+            .any(|(name, value)| name == "retry-after" && value == "120"));
+        assert!(collected
+            .iter()
+            .any(|(name, value)| name == "request-id" && value == "req_123"));
+        assert!(!collected.iter().any(|(name, _)| name == "connection"));
+        assert!(!collected.iter().any(|(name, _)| name == "content-length"));
     }
 }

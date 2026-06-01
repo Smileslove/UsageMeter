@@ -429,14 +429,8 @@ pub struct RequestContext {
     pub proxy_profile_id: Option<String>,
     /// 工具识别方式
     pub client_detection_method: String,
-    /// 入站请求携带的 API Key。转发时优先使用它，避免多工具共享端口时串用其他工具的 key。
-    pub inbound_api_key: Option<String>,
     /// 当前请求的实际转发目标地址。None 时使用代理启动时的兼容默认目标。
     pub target_base_url: Option<String>,
-    /// 当前请求指定来源句柄中保存的 API Key。
-    pub target_api_key: Option<String>,
-    /// ChatGPT OAuth 账号 ID。仅用于 Codex OAuth 后端路由，不写入使用记录。
-    pub chatgpt_account_id: Option<String>,
 }
 
 impl Default for RequestContext {
@@ -456,10 +450,7 @@ impl Default for RequestContext {
             client_tool: default_client_tool(),
             proxy_profile_id: None,
             client_detection_method: default_client_detection_method(),
-            inbound_api_key: None,
             target_base_url: None,
-            target_api_key: None,
-            chatgpt_account_id: None,
         }
     }
 }

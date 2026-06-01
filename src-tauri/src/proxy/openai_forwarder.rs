@@ -6,7 +6,7 @@ use super::types::{RequestContext, UsageRecord};
 use crate::net::HttpClientFactory;
 use async_stream::stream;
 use bytes::Bytes;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt};
 use http_body_util::StreamBody;
 use hyper::body::Frame;
 use hyper::{header, HeaderMap, Method};
@@ -21,24 +21,20 @@ const USAGE_MISSING_STATUS_CODE: u16 = 599;
 
 pub enum OpenAiForwardResult {
     Streaming {
+        status_code: u16,
+        headers: Vec<(String, String)>,
         body: BoxBody,
     },
     NonStreaming {
+        status_code: u16,
+        headers: Vec<(String, String)>,
         content: Vec<u8>,
     },
     UpstreamError {
         status_code: u16,
-        content_type: Option<String>,
         headers: Vec<(String, String)>,
         content: Vec<u8>,
     },
-}
-
-pub struct OpenAiPassthroughResult {
-    pub status_code: u16,
-    pub content_type: Option<String>,
-    pub headers: Vec<(String, String)>,
-    pub content: Vec<u8>,
 }
 
 pub struct OpenAiForwarder {
@@ -104,11 +100,6 @@ impl OpenAiForwarder {
         body: bytes::Bytes,
         mut context: RequestContext,
     ) -> Result<OpenAiForwardResult, String> {
-        let api_key = context
-            .target_api_key
-            .clone()
-            .or_else(|| context.inbound_api_key.clone())
-            .ok_or_else(|| "No API key found for Codex provider".to_string())?;
         let target_base_url = context
             .target_base_url
             .clone()
@@ -137,12 +128,7 @@ impl OpenAiForwarder {
         };
         let mut request = client.request(method, &url);
         request = apply_passthrough_headers(request, &headers);
-        request = apply_chatgpt_account_header(request, context.chatgpt_account_id.as_deref());
-        if !body.is_empty() && !headers.contains_key("content-type") {
-            request = request.header("Content-Type", "application/json");
-        }
         let response = request
-            .bearer_auth(&api_key)
             .body(body)
             .send()
             .await
@@ -156,14 +142,9 @@ impl OpenAiForwarder {
             .and_then(|value| value.to_str().ok())
             .map(|value| value.contains("text/event-stream"))
             .unwrap_or(false);
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
+        let response_headers = collect_passthrough_response_headers(response.headers());
 
         if !status.is_success() {
-            let response_headers = collect_passthrough_response_headers(response.headers());
             let content = response
                 .bytes()
                 .await
@@ -172,7 +153,6 @@ impl OpenAiForwarder {
             self.record_error(&context, status_code).await;
             return Ok(OpenAiForwardResult::UpstreamError {
                 status_code,
-                content_type,
                 headers: response_headers,
                 content,
             });
@@ -180,6 +160,8 @@ impl OpenAiForwarder {
 
         if context.stream || upstream_is_sse {
             Ok(OpenAiForwardResult::Streaming {
+                status_code,
+                headers: response_headers,
                 body: self.handle_streaming(response, context).await?,
             })
         } else {
@@ -190,6 +172,8 @@ impl OpenAiForwarder {
             self.record_json_response(&bytes, context, status_code)
                 .await;
             Ok(OpenAiForwardResult::NonStreaming {
+                status_code,
+                headers: response_headers,
                 content: bytes.to_vec(),
             })
         }
@@ -202,49 +186,62 @@ impl OpenAiForwarder {
         headers: HeaderMap,
         body: bytes::Bytes,
         context: RequestContext,
-    ) -> Result<OpenAiPassthroughResult, String> {
-        let api_key = context
-            .target_api_key
-            .clone()
-            .or_else(|| context.inbound_api_key.clone())
-            .ok_or_else(|| "No API key found for Codex provider".to_string())?;
+    ) -> Result<OpenAiForwardResult, String> {
         let target_base_url = context
             .target_base_url
             .clone()
             .ok_or_else(|| "No target base URL found for Codex provider".to_string())?;
         let url = openai_endpoint_url(&target_base_url, path);
 
+        let prefer_streaming_client = headers
+            .get(header::ACCEPT)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.contains("text/event-stream"))
+            .unwrap_or(false);
         let method =
             reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET);
-        let mut request = self.client.request(method, &url);
+        let client = if prefer_streaming_client {
+            &self.streaming_client
+        } else {
+            &self.client
+        };
+        let mut request = client.request(method, &url);
         request = apply_passthrough_headers(request, &headers);
-        request = apply_chatgpt_account_header(request, context.chatgpt_account_id.as_deref());
-        if !body.is_empty() && !headers.contains_key("content-type") {
-            request = request.header("Content-Type", "application/json");
-        }
 
         let response = request
-            .bearer_auth(&api_key)
             .body(body)
             .send()
             .await
             .map_err(|e| format!("Failed to send Codex passthrough request: {}", e))?;
         let status_code = response.status().as_u16();
-        let content_type = response
+        let upstream_is_sse = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
+            .map(|value| value.contains("text/event-stream"))
+            .unwrap_or(false);
         let response_headers = collect_passthrough_response_headers(response.headers());
+
+        if upstream_is_sse {
+            let stream = response
+                .bytes_stream()
+                .map_ok(Frame::data)
+                .map_err(|e| std::io::Error::other(e.to_string()));
+            return Ok(OpenAiForwardResult::Streaming {
+                status_code,
+                headers: response_headers,
+                body: http_body_util::BodyExt::boxed_unsync(StreamBody::new(stream)),
+            });
+        }
+
         let content = response
             .bytes()
             .await
             .map_err(|e| format!("Failed to read Codex passthrough response: {}", e))?
             .to_vec();
 
-        Ok(OpenAiPassthroughResult {
+        Ok(OpenAiForwardResult::NonStreaming {
             status_code,
-            content_type,
             headers: response_headers,
             content,
         })
@@ -490,12 +487,7 @@ fn apply_passthrough_headers(
         let name = name.as_str();
         if matches!(
             name.to_ascii_lowercase().as_str(),
-            "host"
-                | "content-length"
-                | "connection"
-                | "accept-encoding"
-                | "authorization"
-                | "proxy-authorization"
+            "host" | "content-length" | "connection" | "accept-encoding" | "proxy-authorization"
         ) {
             continue;
         }
@@ -504,17 +496,6 @@ fn apply_passthrough_headers(
         }
     }
     request
-}
-
-fn apply_chatgpt_account_header(
-    request: reqwest::RequestBuilder,
-    account_id: Option<&str>,
-) -> reqwest::RequestBuilder {
-    let Some(account_id) = account_id.filter(|value| !value.trim().is_empty()) else {
-        return request;
-    };
-
-    request.header("ChatGPT-Account-Id", account_id)
 }
 
 fn collect_passthrough_response_headers(
@@ -552,49 +533,8 @@ fn is_hop_by_hop_response_header(name: &str) -> bool {
 
 fn openai_endpoint_url(target_base_url: &str, path: &str) -> String {
     let base = target_base_url.trim_end_matches('/');
-    let normalized_path = normalize_openai_path(path);
-
-    if is_chatgpt_codex_base(base) {
-        if is_codex_responses_path(&normalized_path) {
-            return format!("{}/{}", base, normalized_path.trim_start_matches("v1/"));
-        }
-
-        let backend_base = base.trim_end_matches("/codex");
-        if normalized_path == "api/codex/apps" {
-            return format!("{backend_base}/wham/apps");
-        }
-        return format!(
-            "{}/{}",
-            backend_base,
-            normalized_path.trim_start_matches("v1/")
-        );
-    }
-
-    if base.ends_with("/v1") && normalized_path.starts_with("v1/") {
-        format!("{}/{}", base.trim_end_matches("/v1"), normalized_path)
-    } else {
-        format!("{}/{}", base, normalized_path)
-    }
-}
-
-fn is_chatgpt_codex_base(base: &str) -> bool {
-    base.contains("chatgpt.com/backend-api/codex")
-}
-
-fn is_codex_responses_path(normalized_path: &str) -> bool {
-    let path = normalized_path.trim_start_matches("v1/");
-    path == "responses" || path == "responses/compact" || path.starts_with("responses/")
-}
-
-fn normalize_openai_path(path: &str) -> String {
-    let normalized = path.trim_start_matches('/');
-    // Defensive normalization for configs where the upstream base URL already
-    // ends in /v1 while the client also sends a /v1/... path. The proxy should
-    // forward a single OpenAI API version segment, not propagate /v1/v1.
-    normalized
-        .strip_prefix("v1/v1/")
-        .map(|rest| format!("v1/{rest}"))
-        .unwrap_or_else(|| normalized.to_string())
+    let raw_path = path.trim_start_matches('/');
+    format!("{}/{}", base, raw_path)
 }
 
 fn first_token_candidate(value: &Value) -> bool {
@@ -1107,15 +1047,14 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_duplicate_v1_paths() {
-        assert_eq!(normalize_openai_path("/v1/v1/responses"), "v1/responses");
+    fn preserves_raw_request_paths() {
         assert_eq!(
             openai_endpoint_url("https://api.openai.com/v1", "/v1/v1/responses"),
-            "https://api.openai.com/v1/responses"
+            "https://api.openai.com/v1/v1/v1/responses"
         );
         assert_eq!(
             openai_endpoint_url("https://chatgpt.com/backend-api/codex", "/v1/responses"),
-            "https://chatgpt.com/backend-api/codex/responses"
+            "https://chatgpt.com/backend-api/codex/v1/responses"
         );
         assert_eq!(
             openai_endpoint_url(
@@ -1126,14 +1065,14 @@ mod tests {
         );
         assert_eq!(
             openai_endpoint_url("https://chatgpt.com/backend-api/codex", "/api/codex/apps"),
-            "https://chatgpt.com/backend-api/wham/apps"
+            "https://chatgpt.com/backend-api/codex/api/codex/apps"
         );
         assert_eq!(
             openai_endpoint_url(
                 "https://chatgpt.com/backend-api/codex",
                 "/connectors/directory/list?external_logos=true"
             ),
-            "https://chatgpt.com/backend-api/connectors/directory/list?external_logos=true"
+            "https://chatgpt.com/backend-api/codex/connectors/directory/list?external_logos=true"
         );
     }
 
@@ -1148,5 +1087,49 @@ mod tests {
     fn does_not_require_streaming_client_for_plain_json_request() {
         let headers = HeaderMap::new();
         assert!(!should_use_streaming_client(&headers, false));
+    }
+
+    #[test]
+    fn passthrough_headers_keep_authorization() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::AUTHORIZATION, "Bearer test-token".parse().unwrap());
+        let request = reqwest::Client::new().get("https://example.com");
+        let request = apply_passthrough_headers(request, &headers)
+            .build()
+            .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("Bearer test-token")
+        );
+    }
+
+    #[test]
+    fn collect_passthrough_response_headers_keeps_upstream_metadata() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            "application/json".parse().unwrap(),
+        );
+        headers.insert("x-request-id", "req_123".parse().unwrap());
+        headers.insert("retry-after", "60".parse().unwrap());
+        headers.insert(reqwest::header::CONNECTION, "keep-alive".parse().unwrap());
+        headers.insert(reqwest::header::CONTENT_LENGTH, "42".parse().unwrap());
+
+        let collected = collect_passthrough_response_headers(&headers);
+
+        assert!(collected
+            .iter()
+            .any(|(name, value)| name == "content-type" && value == "application/json"));
+        assert!(collected
+            .iter()
+            .any(|(name, value)| name == "x-request-id" && value == "req_123"));
+        assert!(collected
+            .iter()
+            .any(|(name, value)| name == "retry-after" && value == "60"));
+        assert!(!collected.iter().any(|(name, _)| name == "connection"));
+        assert!(!collected.iter().any(|(name, _)| name == "content-length"));
     }
 }

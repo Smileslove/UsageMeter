@@ -4,8 +4,17 @@
 
 use super::source_registry::ProxySourceRegistry;
 use super::types::ClaudeSettings;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeRouteState {
+    had_base_url: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    base_url: Option<String>,
+}
 
 /// Claude Code 配置管理器
 pub struct ClaudeConfigManager {
@@ -119,6 +128,32 @@ impl ClaudeConfigManager {
         self.backup_path.exists()
     }
 
+    fn read_route_state(&self) -> Result<ClaudeRouteState, String> {
+        let backup_content = fs::read_to_string(&self.backup_path)
+            .map_err(|e| format!("Failed to read backup: {}", e))?;
+        serde_json::from_str::<ClaudeRouteState>(&backup_content)
+            .or_else(|_| {
+                serde_json::from_str::<ClaudeSettings>(&backup_content).map(|settings| {
+                    let base_url = settings.get_base_url();
+                    ClaudeRouteState {
+                        had_base_url: base_url.is_some(),
+                        base_url,
+                    }
+                })
+            })
+            .map_err(|e| format!("Failed to parse backup: {}", e))
+    }
+
+    fn write_route_state(&self, state: &ClaudeRouteState) -> Result<(), String> {
+        if let Some(parent) = self.backup_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create backup directory: {}", e))?;
+        }
+        let content = serde_json::to_string_pretty(state)
+            .map_err(|e| format!("Failed to serialize backup: {}", e))?;
+        fs::write(&self.backup_path, content).map_err(|e| format!("Failed to write backup: {}", e))
+    }
+
     /// 读取当前 Claude 设置
     pub fn read_settings(&self) -> Result<ClaudeSettings, String> {
         if !self.settings_path.exists() {
@@ -176,19 +211,13 @@ impl ClaudeConfigManager {
         // 读取当前设置
         let mut settings = self.read_settings()?;
 
-        // 如果备份不存在则创建备份
+        // 如果备份不存在则创建恢复所需的最小路由状态
         if !self.has_backup() {
-            let backup_content = serde_json::to_string_pretty(&settings)
-                .map_err(|e| format!("Failed to serialize backup: {}", e))?;
-
-            // 确保备份目录存在
-            if let Some(parent) = self.backup_path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create backup directory: {}", e))?;
-            }
-
-            fs::write(&self.backup_path, backup_content)
-                .map_err(|e| format!("Failed to write backup: {}", e))?;
+            let base_url = settings.get_base_url();
+            self.write_route_state(&ClaudeRouteState {
+                had_base_url: base_url.is_some(),
+                base_url,
+            })?;
         }
 
         // 修改设置指向代理
@@ -230,7 +259,17 @@ impl ClaudeConfigManager {
             return Ok(false);
         };
 
-        self.write_settings(&handle.original_settings_snapshot)?;
+        let mut settings = self.read_settings()?;
+        if handle.had_base_url {
+            if let Some(base_url) = handle.original_base_url.as_deref() {
+                settings.set_base_url(base_url);
+            } else {
+                settings.env.remove("ANTHROPIC_BASE_URL");
+            }
+        } else {
+            settings.env.remove("ANTHROPIC_BASE_URL");
+        }
+        self.write_settings(&settings)?;
         self.clear_backup()?;
         Ok(true)
     }
@@ -242,14 +281,14 @@ impl ClaudeConfigManager {
             return Ok(());
         }
 
-        // 读取备份
-        let backup_content = fs::read_to_string(&self.backup_path)
-            .map_err(|e| format!("Failed to read backup: {}", e))?;
-
-        let settings: ClaudeSettings = serde_json::from_str(&backup_content)
-            .map_err(|e| format!("Failed to parse backup: {}", e))?;
-
-        // 恢复设置
+        let route_state = self.read_route_state()?;
+        let mut settings = self.read_settings()?;
+        match (route_state.had_base_url, route_state.base_url) {
+            (true, Some(base_url)) => settings.set_base_url(&base_url),
+            _ => {
+                settings.env.remove("ANTHROPIC_BASE_URL");
+            }
+        }
         self.write_settings(&settings)?;
 
         // 删除备份文件
@@ -259,18 +298,12 @@ impl ClaudeConfigManager {
         Ok(())
     }
 
-    /// 从 Claude 设置获取 API 密钥
-    pub fn get_api_key(&self) -> Option<String> {
-        self.read_settings().ok()?.get_api_key()
-    }
-
     /// 获取原始基础 URL（如果备份存在则从备份获取，否则从当前设置获取）
     pub fn get_original_base_url(&self) -> Option<String> {
         if self.has_backup() {
-            let backup_content = fs::read_to_string(&self.backup_path).ok()?;
-            let settings: ClaudeSettings = serde_json::from_str(&backup_content).ok()?;
-            settings
-                .get_base_url()
+            self.read_route_state()
+                .ok()?
+                .base_url
                 .or_else(|| Some("https://api.anthropic.com".to_string()))
         } else {
             self.read_settings()
