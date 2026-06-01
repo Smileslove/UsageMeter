@@ -330,16 +330,11 @@ async fn sync_codex_external_config_change(proxy_port: u16, state: Arc<ProxyStat
 
     let config_manager = CodexConfigManager::new();
 
-    // 检查 base_url 字段（在 model_providers 中），而不是 chatgpt_base_url
+    // config.toml 已正确指向代理且携带有效 source ID，无需重写。
+    // 过去此处会无条件调用 takeover_with_source，每 5 秒覆写一次文件，
+    // 与 Codex 读取配置产生竞争，导致 experimental_bearer_token 短暂丢失。
     if let Ok(is_active) = config_manager.is_takeover_active(proxy_port) {
         if is_active && config_manager.active_source_id().is_some() {
-            let registry = CodexSourceRegistry::new();
-            if let Some(handle) = config_manager
-                .active_source_id()
-                .and_then(|source_id| registry.get(&source_id))
-            {
-                let _ = config_manager.takeover_with_source(proxy_port, &handle.id);
-            }
             return;
         }
     }

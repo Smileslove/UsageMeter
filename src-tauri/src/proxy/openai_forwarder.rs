@@ -74,13 +74,17 @@ impl OpenAiForwarder {
             .map_err(|e| format!("Failed to create OpenAI HTTP client: {}", e))?;
         let streaming_builder = Client::builder()
             .connect_timeout(Duration::from_secs(request_timeout_secs))
-            .read_timeout(Duration::from_secs(streaming_idle_timeout_secs))
             .http1_only()
             .http1_title_case_headers()
             .pool_max_idle_per_host(0)
             .no_gzip()
             .no_brotli()
             .no_deflate();
+        let streaming_builder = if streaming_idle_timeout_secs > 0 {
+            streaming_builder.read_timeout(Duration::from_secs(streaming_idle_timeout_secs))
+        } else {
+            streaming_builder
+        };
         let streaming_client = HttpClientFactory::global()
             .apply_proxy_to_builder(streaming_builder)
             .build()
