@@ -108,7 +108,14 @@ function costMeta(item: OverviewBreakdownItem): RankMetaItem {
 }
 
 function statusMeta(item: OverviewBreakdownItem): RankMetaItem {
-  const errors = item.errorRequests ?? 0
+  const errors = item.errorRequests
+  if (errors == null) {
+    return {
+      label: t(locale.value, 'overview.errorsShort'),
+      value: '—',
+      tone: 'muted'
+    }
+  }
   if (errors > 0) {
     return {
       label: t(locale.value, 'overview.errorsShort'),

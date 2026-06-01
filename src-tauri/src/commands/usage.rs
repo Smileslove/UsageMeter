@@ -5,9 +5,7 @@ use crate::models::{
     UsageSnapshot, WindowRateSummary, WindowUsage,
 };
 use crate::proxy::{compute_source_id, ProxyServer, SessionStats};
-use crate::unified_usage::{
-    has_partial_coverage, CoverageOrigin, MergedCoverage, MergedRequestFact,
-};
+use crate::unified_usage::{has_partial_coverage, CoverageOrigin, MergedRequestFact};
 use chrono::{Local, NaiveDate, TimeZone};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -105,6 +103,7 @@ pub struct StatisticsTrendPoint {
 pub struct StatisticsModelBreakdown {
     pub model_name: String,
     pub request_count: u64,
+    pub local_request_count: u64,
     pub total_tokens: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -379,12 +378,8 @@ async fn prepare_usage_refresh_data(
     })
 }
 
-fn merged_stat_capability_from_facts(
-    facts: &[MergedRequestFact],
-    coverage: &MergedCoverage,
-) -> StatisticsCapability {
-    let has_status_codes = !coverage.has_partial_status_coverage
-        && facts.iter().any(|fact| fact.status_code.is_some());
+fn merged_stat_capability_from_facts(facts: &[MergedRequestFact]) -> StatisticsCapability {
+    let has_status_codes = facts.iter().any(|fact| fact.status_code.is_some());
     let has_performance = facts
         .iter()
         .any(|fact| fact.output_tokens_per_second.is_some() || fact.ttft_ms.is_some());
@@ -440,7 +435,6 @@ fn add_fact_to_stat_acc(acc: &mut StatAccumulator, fact: &MergedRequestFact) {
 
 fn build_merged_statistics(
     facts: Vec<MergedRequestFact>,
-    coverage: &MergedCoverage,
     query: &StatisticsQuery,
 ) -> StatisticsSummary {
     let started_at = std::time::Instant::now();
@@ -482,6 +476,7 @@ fn build_merged_statistics(
             StatisticsModelBreakdown {
                 model_name: model_name.clone(),
                 request_count: acc.request_count,
+                local_request_count: acc.local_request_count,
                 total_tokens: acc.total_tokens,
                 input_tokens: acc.input_tokens,
                 output_tokens: acc.output_tokens,
@@ -542,7 +537,7 @@ fn build_merged_statistics(
             .unwrap_or_else(|| make_empty_trend(start_epoch, end_epoch, &query.bucket));
     }
 
-    let capability = merged_stat_capability_from_facts(&facts, coverage);
+    let capability = merged_stat_capability_from_facts(&facts);
     if !capability.has_performance {
         for point in &mut trend {
             point.avg_tokens_per_second = None;
@@ -662,7 +657,6 @@ fn build_merged_statistics(
 fn collect_day_activity_from_facts(
     facts: Vec<MergedRequestFact>,
     day_map: &mut HashMap<String, (StatAccumulator, std::collections::HashSet<String>)>,
-    partial_status_days: &mut std::collections::HashSet<String>,
 ) {
     for fact in facts {
         let date = Local
@@ -671,9 +665,6 @@ fn collect_day_activity_from_facts(
             .unwrap_or_else(Local::now)
             .format("%Y-%m-%d")
             .to_string();
-        if matches!(fact.coverage_origin, CoverageOrigin::LocalOnly) {
-            partial_status_days.insert(date.clone());
-        }
         let entry = day_map.entry(date).or_default();
         add_fact_to_stat_acc(&mut entry.0, &fact);
         if !fact.model.is_empty() {
@@ -700,7 +691,6 @@ fn day_activity_from_summary_row(
     row: &crate::local_usage::UnifiedDailySummaryRow,
     include_errors: bool,
 ) -> DayActivity {
-    let status_available = !row.has_partial_status_coverage;
     if include_errors {
         DayActivity {
             date: row.local_date.clone(),
@@ -712,9 +702,8 @@ fn day_activity_from_summary_row(
             cache_read_tokens: row.cache_read_tokens,
             cost: row.total_cost,
             model_count: row.model_count,
-            success_requests: status_available.then_some(row.success_request_count),
-            error_requests: status_available
-                .then_some(row.client_error_requests + row.server_error_requests),
+            success_requests: Some(row.success_request_count),
+            error_requests: Some(row.client_error_requests + row.server_error_requests),
         }
     } else {
         DayActivity {
@@ -727,9 +716,8 @@ fn day_activity_from_summary_row(
             cache_read_tokens: row.visible_cache_read_tokens,
             cost: row.visible_cost,
             model_count: row.model_count,
-            success_requests: status_available.then_some(row.success_request_count),
-            error_requests: status_available
-                .then_some(row.client_error_requests + row.server_error_requests),
+            success_requests: Some(row.success_request_count),
+            error_requests: Some(row.client_error_requests + row.server_error_requests),
         }
     }
 }
@@ -790,11 +778,9 @@ async fn load_day_activity_from_summary_with_hot_overlay(
             .await?;
             let mut day_map: HashMap<String, (StatAccumulator, std::collections::HashSet<String>)> =
                 HashMap::new();
-            let mut partial_status_days = std::collections::HashSet::new();
-            collect_day_activity_from_facts(facts, &mut day_map, &mut partial_status_days);
+            collect_day_activity_from_facts(facts, &mut day_map);
             for (date, (acc, models)) in day_map {
                 let error_requests = acc.client_error_requests + acc.server_error_requests;
-                let status_available = !partial_status_days.contains(&date);
                 by_date.insert(
                     date.clone(),
                     DayActivity {
@@ -807,8 +793,8 @@ async fn load_day_activity_from_summary_with_hot_overlay(
                         cache_read_tokens: acc.cache_read_tokens,
                         cost: acc.cost,
                         model_count: models.len() as u64,
-                        success_requests: status_available.then_some(acc.success_requests),
-                        error_requests: status_available.then_some(error_requests),
+                        success_requests: Some(acc.success_requests),
+                        error_requests: Some(error_requests),
                     },
                 );
             }
@@ -882,7 +868,9 @@ fn build_daily_summary_from_facts(
     summary.success_model_count = success_models.len() as u64;
     let has_partial =
         has_partial_coverage(summary.proxy_backed_requests, summary.local_only_requests);
-    summary.has_partial_status_coverage = has_partial;
+    // Local-only requests carry a synthetic Some(200); status suppression is no longer needed.
+    // Keep parity with the DB-persisted path in database.rs.
+    summary.has_partial_status_coverage = false;
     summary.has_partial_performance_coverage = has_partial;
     summary
 }
@@ -936,6 +924,9 @@ fn build_daily_model_summaries_from_facts(
                 entry.ttft_sum += ttft_ms as f64;
                 entry.ttft_count += 1;
             }
+        }
+        if matches!(fact.coverage_origin, CoverageOrigin::LocalOnly) {
+            entry.local_only_requests += 1;
         }
         if let Some(status_code) = fact.status_code {
             *entry.status_code_counts.entry(status_code).or_insert(0) += 1;
@@ -1034,9 +1025,6 @@ async fn try_build_statistics_summary_from_daily_summary(
     let mut total_success_requests = 0_u64;
     let mut total_client_error_requests = 0_u64;
     let mut total_server_error_requests = 0_u64;
-    let mut has_partial_status = false;
-    let mut has_partial_performance = false;
-
     for point in &mut trend {
         let date_key = Local
             .timestamp_opt(point.start_epoch, 0)
@@ -1098,13 +1086,12 @@ async fn try_build_statistics_summary_from_daily_summary(
         total_success_requests += row.success_request_count;
         total_client_error_requests += row.client_error_requests;
         total_server_error_requests += row.server_error_requests;
-        has_partial_status |= row.has_partial_status_coverage;
-        has_partial_performance |= row.has_partial_performance_coverage;
     }
 
     #[derive(Default)]
     struct ModelAgg {
         request_count: u64,
+        local_request_count: u64,
         total_tokens: u64,
         input_tokens: u64,
         output_tokens: u64,
@@ -1131,6 +1118,7 @@ async fn try_build_statistics_summary_from_daily_summary(
         } else {
             row.request_count
         };
+        agg.local_request_count += row.local_only_requests;
         agg.total_tokens += if use_visible_only {
             row.visible_total_tokens
         } else {
@@ -1248,6 +1236,7 @@ async fn try_build_statistics_summary_from_daily_summary(
             StatisticsModelBreakdown {
                 model_name,
                 request_count: agg.request_count,
+                local_request_count: agg.local_request_count,
                 total_tokens: agg.total_tokens,
                 input_tokens: agg.input_tokens,
                 output_tokens: agg.output_tokens,
@@ -1276,13 +1265,13 @@ async fn try_build_statistics_summary_from_daily_summary(
     totals.model_count = models.len() as u64;
     let capability = StatisticsCapability {
         has_basic_usage: true,
-        has_performance: !has_partial_performance
-            && models
-                .iter()
-                .any(|model| model.avg_tokens_per_second.is_some() || model.avg_ttft_ms.is_some()),
-        has_status_codes: !has_partial_status
-            && (total_success_requests + total_client_error_requests + total_server_error_requests
-                > 0),
+        has_performance: models
+            .iter()
+            .any(|model| model.avg_tokens_per_second.is_some() || model.avg_ttft_ms.is_some()),
+        has_status_codes: total_success_requests
+            + total_client_error_requests
+            + total_server_error_requests
+            > 0,
     };
     if !capability.has_status_codes {
         for model in &mut models {
@@ -1399,7 +1388,6 @@ fn empty_window_rate_summary(window: String) -> WindowRateSummary {
 fn build_window_rate_summary_from_facts(
     window: String,
     facts: Vec<MergedRequestFact>,
-    _coverage: &MergedCoverage,
 ) -> WindowRateSummary {
     #[derive(Default)]
     struct PerfAccumulator {
@@ -1545,7 +1533,6 @@ fn build_window_rate_summary_from_facts(
 fn build_window_usage_from_facts(
     window: &str,
     facts: &[MergedRequestFact],
-    coverage: &MergedCoverage,
 ) -> (WindowUsage, HashMap<String, ModelTokenTotals>) {
     let mut model_stats: HashMap<String, ModelTokenTotals> = HashMap::new();
     let mut token_used = 0_u64;
@@ -1596,21 +1583,9 @@ fn build_window_usage_from_facts(
             cache_read_tokens,
             request_used,
             cost,
-            success_requests: if coverage.has_partial_status_coverage {
-                0
-            } else {
-                success_requests
-            },
-            client_error_requests: if coverage.has_partial_status_coverage {
-                0
-            } else {
-                client_error_requests
-            },
-            server_error_requests: if coverage.has_partial_status_coverage {
-                0
-            } else {
-                server_error_requests
-            },
+            success_requests,
+            client_error_requests,
+            server_error_requests,
         },
         model_stats,
     )
@@ -1621,7 +1596,6 @@ fn build_overview_breakdown_from_facts(
     window: String,
     generated_at_epoch: i64,
     facts: &[MergedRequestFact],
-    coverage: &MergedCoverage,
 ) -> OverviewBreakdown {
     let mut source_map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)> = HashMap::new();
     let mut tool_map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)> = HashMap::new();
@@ -1637,12 +1611,10 @@ fn build_overview_breakdown_from_facts(
         has_source: !source_map.is_empty(),
         has_tool: !tool_map.is_empty(),
         has_cost: facts.iter().any(|fact| fact.estimated_cost > 0.0),
-        has_status: !coverage.has_partial_status_coverage
-            && facts.iter().any(|fact| fact.status_code.is_some()),
-        has_performance: !coverage.has_partial_performance_coverage
-            && facts
-                .iter()
-                .any(|fact| fact.output_tokens_per_second.is_some() || fact.ttft_ms.is_some()),
+        has_status: facts.iter().any(|fact| fact.status_code.is_some()),
+        has_performance: facts
+            .iter()
+            .any(|fact| fact.output_tokens_per_second.is_some() || fact.ttft_ms.is_some()),
     };
 
     OverviewBreakdown {
@@ -1669,7 +1641,7 @@ fn build_usage_refresh_bundle_from_prepared(
         has_partial_snapshot_coverage |=
             coverage.has_partial_status_coverage || coverage.has_partial_performance_coverage;
         let (window_usage, model_stats) =
-            build_window_usage_from_facts(window_name, facts, &coverage);
+            build_window_usage_from_facts(window_name, facts);
         if *window_name == settings.summary_window {
             summary_model_stats = Some(model_stats.clone());
         }
@@ -1679,7 +1651,7 @@ fn build_usage_refresh_bundle_from_prepared(
     let summary_facts = facts_slice_for_window(prepared, &settings.summary_window);
     let summary_coverage = crate::unified_usage::build_coverage(summary_facts);
     let (summary_window_usage, summary_window_model_stats) =
-        build_window_usage_from_facts(&settings.summary_window, summary_facts, &summary_coverage);
+        build_window_usage_from_facts(&settings.summary_window, summary_facts);
     if summary_model_stats.is_none() {
         summary_model_stats = Some(summary_window_model_stats);
     }
@@ -1709,29 +1681,15 @@ fn build_usage_refresh_bundle_from_prepared(
 
     let summary = build_usage_summary_from_usage(
         &summary_window_usage,
-        if summary_coverage.has_partial_status_coverage {
-            0
-        } else {
-            summary_success_requests
-        },
-        if summary_coverage.has_partial_status_coverage {
-            0
-        } else {
-            summary_client_error_requests
-        },
-        if summary_coverage.has_partial_status_coverage {
-            0
-        } else {
-            summary_server_error_requests
-        },
+        summary_success_requests,
+        summary_client_error_requests,
+        summary_server_error_requests,
     );
     let snapshot = UsageSnapshot {
         generated_at_epoch: prepared.generated_at_epoch,
         windows,
         source: MERGED_SOURCE.to_string(),
-        note: (has_partial_snapshot_coverage
-            || summary_coverage.has_partial_status_coverage
-            || summary_coverage.has_partial_performance_coverage)
+        note: (has_partial_snapshot_coverage || summary_coverage.has_partial_performance_coverage)
             .then_some("NOTE_PARTIAL_PROXY_COVERAGE".to_string()),
         summary,
         model_distribution: summary_model_distribution,
@@ -1740,14 +1698,12 @@ fn build_usage_refresh_bundle_from_prepared(
     let rate_summary = build_window_rate_summary_from_facts(
         settings.summary_window.clone(),
         summary_facts.to_vec(),
-        &summary_coverage,
     );
     let overview_breakdown = build_overview_breakdown_from_facts(
         settings,
         settings.summary_window.clone(),
         epoch_u64_to_i64_saturating(prepared.generated_at_epoch),
         summary_facts,
-        &summary_coverage,
     );
 
     UsageRefreshBundle {
@@ -2026,16 +1982,14 @@ pub async fn get_overview_breakdown(
     let now = chrono::Utc::now().timestamp();
     let include_errors = settings.proxy.include_error_requests;
     let cutoff_ms = crate::proxy::UsageCollector::calculate_window_cutoff_public(&window);
-    let (facts, coverage) = crate::unified_usage::get_merged_request_facts(
+    let (facts, _) = crate::unified_usage::get_merged_request_facts(
         &settings,
         Some(cutoff_ms / 1000),
         Some(now + 1),
         include_errors,
     )
     .await?;
-    Ok(build_overview_breakdown_from_facts(
-        &settings, window, now, &facts, &coverage,
-    ))
+    Ok(build_overview_breakdown_from_facts(&settings, window, now, &facts))
 }
 
 #[derive(Default, Clone)]
@@ -2378,7 +2332,7 @@ pub async fn get_statistics_summary(
     }
     let (start_epoch, end_epoch) = normalize_range(&query);
     let include_errors = settings.proxy.include_error_requests;
-    let (facts, coverage) = crate::unified_usage::get_merged_request_facts(
+    let (facts, _) = crate::unified_usage::get_merged_request_facts(
         &settings,
         Some(start_epoch),
         Some(end_epoch),
@@ -2387,7 +2341,7 @@ pub async fn get_statistics_summary(
     .await?;
     let facts_count = facts.len();
     let build_started_at = std::time::Instant::now();
-    let summary = build_merged_statistics(facts, &coverage, &query);
+    let summary = build_merged_statistics(facts, &query);
     perf_log(
         "get_statistics_summary",
         format!(
@@ -2457,7 +2411,6 @@ pub async fn get_month_activity(
     } else {
         let mut day_map: HashMap<String, (StatAccumulator, std::collections::HashSet<String>)> =
             HashMap::new();
-        let mut partial_status_days = std::collections::HashSet::new();
         let (facts, _coverage) = crate::unified_usage::get_merged_request_facts(
             &settings,
             Some(month_start),
@@ -2466,11 +2419,10 @@ pub async fn get_month_activity(
         )
         .await?;
         let facts_count = facts.len();
-        collect_day_activity_from_facts(facts, &mut day_map, &mut partial_status_days);
+        collect_day_activity_from_facts(facts, &mut day_map);
         let mut days_by_date = HashMap::new();
         for (date, (acc, models)) in day_map {
             let error_requests = acc.client_error_requests + acc.server_error_requests;
-            let status_available = !partial_status_days.contains(&date);
             days_by_date.insert(
                 date.clone(),
                 DayActivity {
@@ -2483,8 +2435,8 @@ pub async fn get_month_activity(
                     cache_read_tokens: acc.cache_read_tokens,
                     cost: acc.cost,
                     model_count: models.len() as u64,
-                    success_requests: status_available.then_some(acc.success_requests),
-                    error_requests: status_available.then_some(error_requests),
+                    success_requests: Some(acc.success_requests),
+                    error_requests: Some(error_requests),
                 },
             );
         }
@@ -2571,7 +2523,6 @@ pub async fn get_year_activity(
     } else {
         let mut day_map: HashMap<String, (StatAccumulator, std::collections::HashSet<String>)> =
             HashMap::new();
-        let mut partial_status_days = std::collections::HashSet::new();
         let (facts, _coverage) = crate::unified_usage::get_merged_request_facts(
             &settings,
             Some(year_start),
@@ -2580,11 +2531,10 @@ pub async fn get_year_activity(
         )
         .await?;
         let facts_count = facts.len();
-        collect_day_activity_from_facts(facts, &mut day_map, &mut partial_status_days);
+        collect_day_activity_from_facts(facts, &mut day_map);
         let mut days_by_date = HashMap::new();
         for (date, (acc, models)) in day_map {
             let error_requests = acc.client_error_requests + acc.server_error_requests;
-            let status_available = !partial_status_days.contains(&date);
             days_by_date.insert(
                 date.clone(),
                 DayActivity {
@@ -2597,8 +2547,8 @@ pub async fn get_year_activity(
                     cache_read_tokens: acc.cache_read_tokens,
                     cost: acc.cost,
                     model_count: models.len() as u64,
-                    success_requests: status_available.then_some(acc.success_requests),
-                    error_requests: status_available.then_some(error_requests),
+                    success_requests: Some(acc.success_requests),
+                    error_requests: Some(error_requests),
                 },
             );
         }
@@ -2674,7 +2624,7 @@ pub async fn get_window_rate_summary(
     let settings = crate::commands::load_settings()?;
     let cutoff_ms = crate::proxy::UsageCollector::calculate_window_cutoff_public(&window);
     let include_errors = settings.proxy.include_error_requests;
-    let (facts, coverage) = crate::unified_usage::get_merged_request_facts(
+    let (facts, _) = crate::unified_usage::get_merged_request_facts(
         &settings,
         Some(cutoff_ms / 1000),
         None,
@@ -2682,9 +2632,7 @@ pub async fn get_window_rate_summary(
     )
     .await?;
 
-    Ok(build_window_rate_summary_from_facts(
-        window, facts, &coverage,
-    ))
+    Ok(build_window_rate_summary_from_facts(window, facts))
 }
 
 /// 获取会话列表（按最后修改时间倒序，支持分页）
@@ -2867,6 +2815,7 @@ mod tests {
         cache_create_tokens: u64,
         cache_read_tokens: u64,
         coverage_origin: CoverageOrigin,
+        status_code: Option<u16>,
     ) -> MergedRequestFact {
         MergedRequestFact {
             canonical_request_key: format!("claude_code:{}:{timestamp_sec}:{model}", session_id),
@@ -2886,7 +2835,7 @@ mod tests {
             total_tokens: input_tokens + output_tokens + cache_create_tokens + cache_read_tokens,
             estimated_cost: 0.0,
             coverage_origin,
-            status_code: Some(200),
+            status_code,
             duration_ms: None,
             output_tokens_per_second: None,
             ttft_ms: None,
@@ -2906,6 +2855,7 @@ mod tests {
                 10,
                 0,
                 CoverageOrigin::LocalOnly,
+                None,
             ),
             test_fact(
                 "session-2",
@@ -2916,6 +2866,7 @@ mod tests {
                 0,
                 0,
                 CoverageOrigin::ProxyOnly,
+                Some(200),
             ),
         ];
 
@@ -2946,6 +2897,7 @@ mod tests {
                 10,
                 0,
                 CoverageOrigin::LocalOnly,
+                None,
             ),
             test_fact(
                 "session-2",
@@ -2956,10 +2908,10 @@ mod tests {
                 0,
                 0,
                 CoverageOrigin::ProxyOnly,
+                Some(200),
             ),
         ];
-        let coverage = crate::unified_usage::build_coverage(&facts);
-        let (summary_usage, _) = build_window_usage_from_facts("custom", &facts, &coverage);
+        let (summary_usage, _) = build_window_usage_from_facts("custom", &facts);
 
         let summary = build_usage_summary_from_usage(&summary_usage, 1, 0, 0);
 
@@ -2970,5 +2922,42 @@ mod tests {
         assert_eq!(summary.total_cache_create_tokens, 10);
         assert_eq!(summary.total_cache_read_tokens, 0);
         assert_eq!(summary.total_success_requests, 1);
+    }
+
+    #[test]
+    fn build_window_usage_local_synthetic_200_counts_as_success() {
+        // Local transcript facts carry a synthetic Some(200) (from from_local); both local and
+        // proxy-backed requests should appear in success_requests. The local_only badge in the UI
+        // communicates which requests lack verified status codes.
+        let facts = vec![
+            test_fact(
+                "session-1",
+                1,
+                "model-a",
+                100,
+                50,
+                10,
+                0,
+                CoverageOrigin::LocalOnly,
+                Some(200),
+            ),
+            test_fact(
+                "session-2",
+                2,
+                "model-b",
+                20,
+                20,
+                0,
+                0,
+                CoverageOrigin::ProxyOnly,
+                Some(200),
+            ),
+        ];
+        let (summary_usage, _) = build_window_usage_from_facts("custom", &facts);
+
+        assert_eq!(summary_usage.request_used, 2);
+        assert_eq!(summary_usage.success_requests, 2);
+        assert_eq!(summary_usage.client_error_requests, 0);
+        assert_eq!(summary_usage.server_error_requests, 0);
     }
 }

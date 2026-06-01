@@ -193,6 +193,7 @@ pub struct UnifiedDailyModelSummaryRow {
     pub success_cost: f64,
     pub client_error_requests: u64,
     pub server_error_requests: u64,
+    pub local_only_requests: u64,
     pub rate_sum: f64,
     pub rate_count: u64,
     pub ttft_sum: f64,
@@ -349,7 +350,10 @@ impl LocalUsageDatabase {
         summary.success_model_count = success_models.len() as u64;
         let has_partial =
             has_partial_coverage(summary.proxy_backed_requests, summary.local_only_requests);
-        summary.has_partial_status_coverage = has_partial;
+        // Local-only requests carry a synthetic Some(200), so every request now has a status
+        // code and partial-status suppression is no longer needed. The UI uses local_only_requests
+        // to show a "Local" badge instead.
+        summary.has_partial_status_coverage = false;
         summary.has_partial_performance_coverage = has_partial;
         summary
     }
@@ -570,6 +574,7 @@ impl LocalUsageDatabase {
                 success_cost REAL NOT NULL DEFAULT 0,
                 client_error_requests INTEGER NOT NULL DEFAULT 0,
                 server_error_requests INTEGER NOT NULL DEFAULT 0,
+                local_only_requests INTEGER NOT NULL DEFAULT 0,
                 rate_sum REAL NOT NULL DEFAULT 0,
                 rate_count INTEGER NOT NULL DEFAULT 0,
                 ttft_sum REAL NOT NULL DEFAULT 0,
@@ -852,7 +857,7 @@ impl LocalUsageDatabase {
 
     fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 10 {
+        if schema_version >= 11 {
             return Ok(());
         }
 
@@ -1189,6 +1194,32 @@ impl LocalUsageDatabase {
 
             tx.commit()
                 .map_err(|e| format!("Failed to commit v10 schema migration: {}", e))?;
+        }
+
+        if schema_version < 11 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v11 schema migration: {}", e))?;
+
+            Self::add_column_if_missing(
+                &tx,
+                "unified_daily_model_summary",
+                "local_only_requests",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            tx.execute("DELETE FROM unified_daily_model_summary", [])
+                .map_err(|e| format!("Failed to clear v11 model summary: {}", e))?;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '11', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v11 schema version: {}", e))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v11 schema migration: {}", e))?;
         }
         Ok(())
     }
@@ -3149,7 +3180,7 @@ impl LocalUsageDatabase {
                         success_request_count, success_total_tokens, success_input_tokens,
                         success_output_tokens, success_cache_create_tokens,
                         success_cache_read_tokens, success_cost, client_error_requests,
-                        server_error_requests, rate_sum, rate_count, ttft_sum, ttft_count,
+                        server_error_requests, local_only_requests, rate_sum, rate_count, ttft_sum, ttft_count,
                         status_counts_json, materialized_at
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5, ?6, ?7,
@@ -3158,7 +3189,7 @@ impl LocalUsageDatabase {
                         ?17, ?18, ?19,
                         ?20, ?21, ?22, ?23, ?24,
                         ?25, ?26, ?27, ?28, ?29,
-                        ?30, ?31
+                        ?30, ?31, ?32
                     )
                     "#,
                 )
@@ -3194,6 +3225,7 @@ impl LocalUsageDatabase {
                     row.success_cost,
                     row.client_error_requests as i64,
                     row.server_error_requests as i64,
+                    row.local_only_requests as i64,
                     row.rate_sum,
                     row.rate_count as i64,
                     row.ttft_sum,
@@ -3374,7 +3406,7 @@ impl LocalUsageDatabase {
                     success_request_count, success_total_tokens, success_input_tokens,
                     success_output_tokens, success_cache_create_tokens,
                     success_cache_read_tokens, success_cost, client_error_requests,
-                    server_error_requests, rate_sum, rate_count, ttft_sum, ttft_count,
+                    server_error_requests, local_only_requests, rate_sum, rate_count, ttft_sum, ttft_count,
                     status_counts_json, materialized_at
                 FROM unified_daily_model_summary
                 WHERE local_date >= ?1 AND local_date < ?2
@@ -3384,7 +3416,7 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to prepare unified daily model summary query: {}", e))?;
         let rows = stmt
             .query_map([start_date_inclusive, end_date_exclusive], |row| {
-                let status_counts_json: String = row.get(29)?;
+                let status_counts_json: String = row.get(30)?;
                 let status_code_counts: HashMap<u16, u64> =
                     serde_json::from_str(&status_counts_json).unwrap_or_default();
                 Ok(UnifiedDailyModelSummaryRow {
@@ -3413,12 +3445,13 @@ impl LocalUsageDatabase {
                     success_cost: row.get(22)?,
                     client_error_requests: row.get::<_, i64>(23)?.max(0) as u64,
                     server_error_requests: row.get::<_, i64>(24)?.max(0) as u64,
-                    rate_sum: row.get(25)?,
-                    rate_count: row.get::<_, i64>(26)?.max(0) as u64,
-                    ttft_sum: row.get(27)?,
-                    ttft_count: row.get::<_, i64>(28)?.max(0) as u64,
+                    local_only_requests: row.get::<_, i64>(25)?.max(0) as u64,
+                    rate_sum: row.get(26)?,
+                    rate_count: row.get::<_, i64>(27)?.max(0) as u64,
+                    ttft_sum: row.get(28)?,
+                    ttft_count: row.get::<_, i64>(29)?.max(0) as u64,
                     status_code_counts,
-                    materialized_at: row.get(30)?,
+                    materialized_at: row.get(31)?,
                 })
             })
             .map_err(|e| format!("Failed to query unified daily model summaries: {}", e))?;
@@ -4215,7 +4248,7 @@ mod tests {
             total_tokens: 30,
             estimated_cost: 1.0,
             coverage_origin: CoverageOrigin::LocalOnly,
-            status_code: None,
+            status_code: Some(200),
             duration_ms: None,
             output_tokens_per_second: None,
             ttft_ms: None,
@@ -4493,7 +4526,7 @@ mod tests {
             .get_unified_daily_summaries_between("2026-05-26", "2026-05-27")
             .unwrap();
         assert_eq!(summaries.len(), 1);
-        assert!(summaries[0].has_partial_status_coverage);
+        assert!(!summaries[0].has_partial_status_coverage);
         assert!(summaries[0].has_partial_performance_coverage);
     }
 }

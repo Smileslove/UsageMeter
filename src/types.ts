@@ -478,6 +478,7 @@ export interface StatisticsTrendPoint {
 export interface StatisticsModelBreakdown {
   modelName: string
   requestCount: number
+  localRequestCount: number
   totalTokens: number
   inputTokens: number
   outputTokens: number

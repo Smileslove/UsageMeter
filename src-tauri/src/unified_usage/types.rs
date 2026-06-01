@@ -189,7 +189,8 @@ impl MergedRequestFact {
             total_tokens: record.total_tokens,
             estimated_cost: cost,
             coverage_origin: CoverageOrigin::LocalOnly,
-            status_code: None,
+            // Local transcript requests are treated as successful; no proxy performance fields available.
+            status_code: Some(200),
             duration_ms: None,
             output_tokens_per_second: None,
             ttft_ms: None,
@@ -518,12 +519,13 @@ mod tests {
     }
 
     #[test]
-    fn local_only_has_no_status_code_or_performance() {
-        // 验证 from_local 不伪造 proxy 独有的能力字段——这是诚实表达覆盖的底线
+    fn local_only_is_treated_as_success_without_performance() {
+        // Local transcript requests are treated as successful 200s, but proxy-only performance
+        // fields must remain absent.
         let local = local_with(100, 200, 50, 60, "sess", 1_700_000_000);
         let fact = MergedRequestFact::from_local(&local, None, 0.05);
         assert!(matches!(fact.coverage_origin, CoverageOrigin::LocalOnly));
-        assert_eq!(fact.status_code, None);
+        assert_eq!(fact.status_code, Some(200));
         assert_eq!(fact.duration_ms, None);
         assert_eq!(fact.ttft_ms, None);
         assert_eq!(fact.output_tokens_per_second, None);

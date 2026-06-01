@@ -40,13 +40,20 @@ async function selectWindow(window: WindowName) {
 
 // 速率摘要数据
 const rateSummary = computed(() => store.rateSummary)
-
 // 是否有速率数据（窗口匹配且有实际请求时展示速率）
 const hasRateData = computed(() => {
   if (!rateSummary.value) return false
   if (rateSummary.value.window !== store.settings.summaryWindow) return false
   // 必须有实际请求才算有数据，避免错误时返回的空统计显示为 0.00
   return rateSummary.value.overall.requestCount > 0
+})
+
+const avgResponseDisplay = computed(() => {
+  if (!hasRateData.value || !rateSummary.value) return '--'
+  const value = rateSummary.value.ttft.avgTtftMs
+  if (!value || value <= 0) return '--'
+  if (value >= 1000) return `${(value / 1000).toFixed(2)}s`
+  return `${Math.round(value)}ms`
 })
 
 // 格式化速率显示（保留两位小数）
@@ -213,10 +220,15 @@ function detailPairSizeClass(first: string, second: string): string {
             </div>
             <div class="metric-details">
               <!-- 有速率数据时显示速率，无速率数据时显示占位 -->
-              <div v-if="hasRateData" class="metric-detail-row text-cyan-600 dark:text-cyan-300">
-                <span class="metric-dot bg-cyan-400/70"></span>
+              <div v-if="hasRateData" class="metric-detail-row text-emerald-600 dark:text-emerald-300">
+                <span class="metric-dot bg-emerald-400/70"></span>
+                <span class="metric-detail-label">{{ t(store.settings.locale, 'overview.responseShort') }}</span>
+                <span class="metric-detail-value ml-auto text-right">{{ avgResponseDisplay }}</span>
+              </div>
+              <div v-if="hasRateData" class="metric-detail-row text-emerald-600 dark:text-emerald-300">
+                <span class="metric-dot bg-emerald-400/70"></span>
                 <span class="metric-detail-label">{{ t(store.settings.locale, 'common.avgRate') }}</span>
-                <span class="metric-detail-value">{{ formatRate(rateSummary!.overall.avgTokensPerSecond) }} t/s</span>
+                <span class="metric-detail-value ml-auto text-right">{{ formatRate(rateSummary!.overall.avgTokensPerSecond) }} t/s</span>
               </div>
               <div v-else class="metric-detail-row text-gray-400 dark:text-gray-500">
                 <span class="metric-dot bg-gray-300/70"></span>

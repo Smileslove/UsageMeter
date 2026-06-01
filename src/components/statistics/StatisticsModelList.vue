@@ -68,8 +68,24 @@ const selectedStatusCodes = computed(() => {
   return [...(selectedModel.value?.statusCodes ?? [])].sort((a, b) => a.statusCode - b.statusCode)
 })
 
+const localRequestCount = computed(() => selectedModel.value?.localRequestCount ?? 0)
+
 const successRequests = computed(() => selectedModel.value?.successRequests ?? 0)
 const failedRequests = computed(() => selectedModel.value?.errorRequests ?? 0)
+const hasPerformanceTag = computed(() => displayModels.value.length > 0)
+const hasPartialPerformanceCoverage = computed(() => store.snapshot?.note?.includes('NOTE_PARTIAL_PROXY_COVERAGE') ?? false)
+const performanceTagTitle = computed(() => (
+  hasPartialPerformanceCoverage.value
+    ? t(props.locale, 'overview.proxyStatusPartial')
+    : t(props.locale, 'overview.proxyStatusHint')
+))
+
+function metricValueSizeClass(text: string): string {
+  const length = text.length
+  if (length >= 12) return 'text-[9px]'
+  if (length >= 10) return 'text-[10px]'
+  return 'text-[11px]'
+}
 
 function trendValue(point: StatisticsTrendPoint, metric: 'requests' | 'tokens' | 'cost' | 'rate'): number {
   if (metric === 'requests') return point.requestCount
@@ -329,19 +345,47 @@ watch(
               <p class="font-mono text-[11px] font-bold text-gray-800 dark:text-gray-100">{{ formatTokenValue(selectedModel.totalTokens) }}</p>
             </div>
             <div class="rounded-lg bg-gray-50 p-1.5 dark:bg-neutral-800/80">
-              <p class="text-[9px] text-gray-400 dark:text-gray-500">{{ t(locale, 'statistics.avgTtft') }}</p>
+              <p class="flex items-center gap-1 text-[9px] text-gray-400 dark:text-gray-500">
+                <span>{{ t(locale, 'statistics.avgTtft') }}</span>
+                <span
+                  v-if="hasPerformanceTag && hasPartialPerformanceCoverage"
+                  class="inline-flex shrink-0 items-center rounded-full bg-indigo-50 px-1 py-px text-[7px] font-medium leading-none text-indigo-400 dark:bg-indigo-900/30 dark:text-indigo-400"
+                  :title="performanceTagTitle"
+                >{{ t(locale, 'overview.proxyPerformanceTag') }}</span>
+              </p>
               <p class="font-mono text-[11px] font-bold text-gray-800 dark:text-gray-100">{{ avgTtft }}</p>
             </div>
             <div class="rounded-lg bg-gray-50 p-1.5 dark:bg-neutral-800/80">
-              <p class="text-[9px] text-gray-400 dark:text-gray-500">{{ t(locale, 'statistics.avgSpeed') }}</p>
-              <p class="truncate font-mono text-[11px] font-bold text-gray-800 dark:text-gray-100">{{ avgSpeed }}</p>
+              <p class="flex items-center gap-1 text-[9px] text-gray-400 dark:text-gray-500">
+                <span>{{ t(locale, 'statistics.avgSpeed') }}</span>
+                <span
+                  v-if="hasPerformanceTag && hasPartialPerformanceCoverage"
+                  class="inline-flex shrink-0 items-center rounded-full bg-indigo-50 px-1 py-px text-[7px] font-medium leading-none text-indigo-400 dark:bg-indigo-900/30 dark:text-indigo-400"
+                  :title="performanceTagTitle"
+                >{{ t(locale, 'overview.proxyPerformanceTag') }}</span>
+              </p>
+              <p :class="['font-mono font-bold text-gray-800 dark:text-gray-100', metricValueSizeClass(avgSpeed)]">{{ avgSpeed }}</p>
             </div>
             <div class="rounded-lg bg-gray-50 p-1.5 dark:bg-neutral-800/80">
-              <p class="text-[9px] text-gray-400 dark:text-gray-500">{{ t(locale, 'statistics.successRequests') }}</p>
+              <p class="flex items-center gap-1 text-[9px] text-gray-400 dark:text-gray-500">
+                <span>{{ t(locale, 'statistics.successRequests') }}</span>
+                <span
+                  v-if="hasPerformanceTag && hasPartialPerformanceCoverage"
+                  class="inline-flex shrink-0 items-center rounded-full bg-indigo-50 px-1 py-px text-[7px] font-medium leading-none text-indigo-400 dark:bg-indigo-900/30 dark:text-indigo-400"
+                  :title="performanceTagTitle"
+                >{{ t(locale, 'overview.proxyPerformanceTag') }}</span>
+              </p>
               <p class="truncate font-mono text-[11px] font-semibold text-emerald-600 dark:text-emerald-300">{{ formatRequestCount(successRequests) }}</p>
             </div>
             <div class="rounded-lg bg-gray-50 p-1.5 dark:bg-neutral-800/80">
-              <p class="text-[9px] text-gray-400 dark:text-gray-500">{{ t(locale, 'statistics.errorRequests') }}</p>
+              <p class="flex items-center gap-1 text-[9px] text-gray-400 dark:text-gray-500">
+                <span>{{ t(locale, 'statistics.errorRequests') }}</span>
+                <span
+                  v-if="hasPerformanceTag && hasPartialPerformanceCoverage"
+                  class="inline-flex shrink-0 items-center rounded-full bg-indigo-50 px-1 py-px text-[7px] font-medium leading-none text-indigo-400 dark:bg-indigo-900/30 dark:text-indigo-400"
+                  :title="performanceTagTitle"
+                >{{ t(locale, 'overview.proxyPerformanceTag') }}</span>
+              </p>
               <p class="truncate font-mono text-[11px] font-semibold text-rose-600 dark:text-rose-300">{{ formatRequestCount(failedRequests) }}</p>
             </div>
           </div>
@@ -384,7 +428,7 @@ watch(
               <p class="text-[10px] font-semibold text-gray-500 dark:text-gray-300">{{ t(locale, 'statistics.statusCodeDetail') }}</p>
               <p class="font-mono text-[10px] text-gray-400 dark:text-gray-500">{{ formatRequestCount(selectedModel.requestCount) }}</p>
             </div>
-            <div v-if="selectedStatusCodes.length" class="flex flex-wrap gap-1">
+            <div v-if="selectedStatusCodes.length || localRequestCount > 0" class="flex flex-wrap gap-1">
               <span
                 v-for="item in selectedStatusCodes"
                 :key="item.statusCode"
@@ -399,6 +443,11 @@ watch(
               >
                 {{ item.statusCode }} · {{ formatRequestCount(item.count) }}
               </span>
+              <span
+                v-if="localRequestCount > 0"
+                class="rounded-full bg-gray-200 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-gray-600 dark:bg-neutral-600 dark:text-gray-300"
+                :title="t(locale, 'overview.localRequestTagTitle')"
+              >{{ t(locale, 'overview.localRequestTag') }} · {{ formatRequestCount(localRequestCount) }}</span>
             </div>
             <div v-else class="text-[10px] text-gray-400 dark:text-gray-500">
               {{ t(locale, 'statistics.noStatusCodeData') }}

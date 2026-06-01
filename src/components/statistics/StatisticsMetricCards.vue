@@ -59,8 +59,6 @@ const proxyCount  = computed(() => props.totals?.proxyRequestCount  ?? 0)
 const hasMixedSources = computed(() => localCount.value > 0 && proxyCount.value > 0)
 const hasProxyRequests = computed(() => proxyCount.value > 0)
 
-// 是否有状态码数据（代理请求才有）
-const hasStatusData = computed(() => props.totals?.successRequests != null)
 
 function requestCountDisplay(count: number): string {
   return isDetailMode.value
@@ -185,23 +183,15 @@ function detailPairSizeClass(first: string, second: string): string {
             <!-- 混合来源：分别展示本地 / 代理行 -->
             <template v-if="hasMixedSources">
               <!-- 本地行 -->
-              <div class="metric-detail-row text-slate-500 dark:text-slate-400">
-                <span class="metric-dot bg-slate-400/70"></span>
+              <div class="metric-detail-row text-emerald-600 dark:text-emerald-300">
+                <span class="metric-dot bg-emerald-400/70"></span>
                 <span class="metric-detail-label">{{ t(locale, 'statistics.localRequests') }}</span>
                 <span :class="['metric-detail-value', detailPairSizeClass(requestCountDisplay(localCount), requestCountDisplay(proxyCount))]">{{ requestCountDisplay(localCount) }}</span>
               </div>
-              <!-- 代理行（含成功/失败子级） -->
+              <!-- 代理行 -->
               <div class="metric-detail-row text-emerald-600 dark:text-emerald-300">
                 <span class="metric-dot bg-emerald-400/70"></span>
-                <span class="metric-detail-label">
-                  {{ t(locale, 'statistics.proxyRequests') }}
-                  <template v-if="hasStatusData">
-                    <span class="opacity-60 inline-flex items-center gap-0.5">
-                      (<CheckCircle2 class="inline w-2.5 h-2.5" />{{ requestStatusValue(props.totals?.successRequests) }}
-                      <CircleX class="inline w-2.5 h-2.5 text-rose-400" />{{ requestStatusValue(props.totals?.errorRequests) }})
-                    </span>
-                  </template>
-                </span>
+                <span class="metric-detail-label">{{ t(locale, 'statistics.proxyRequests') }}</span>
                 <span :class="['metric-detail-value', detailPairSizeClass(requestCountDisplay(localCount), requestCountDisplay(proxyCount))]">{{ requestCountDisplay(proxyCount) }}</span>
               </div>
             </template>
@@ -220,14 +210,15 @@ function detailPairSizeClass(first: string, second: string): string {
             </template>
             <!-- 纯本地文件：无代理数据 -->
             <template v-else>
-              <div class="metric-detail-row text-slate-500 dark:text-slate-400">
-                <span class="metric-dot bg-slate-400/70"></span>
+              <div class="metric-detail-row text-emerald-600 dark:text-emerald-300">
+                <span class="metric-dot bg-emerald-400/70"></span>
                 <span class="metric-detail-label">{{ t(locale, 'statistics.localRequests') }}</span>
                 <span class="metric-detail-value">{{ requestCountDisplay(localCount) }}</span>
               </div>
               <div class="metric-detail-row text-gray-400 dark:text-gray-500">
                 <span class="metric-dot bg-gray-300/70 dark:bg-gray-600/70"></span>
                 <span class="metric-detail-label">{{ t(locale, 'statistics.statusNotAvailable') }}</span>
+                <span class="metric-detail-value">--</span>
               </div>
             </template>
           </div>
