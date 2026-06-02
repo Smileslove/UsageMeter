@@ -323,19 +323,35 @@ onUnmounted(() => {
   box-shadow: var(--theme-shadow-inline);
 }
 .segmented-control {
-  border: 1px solid var(--theme-border-default);
-  background: var(--theme-surface-muted-gradient);
-  box-shadow: var(--theme-effect-segmented-shadow);
+  border: 1px solid color-mix(in srgb, var(--theme-text-primary) 7%, transparent);
+  background: color-mix(in srgb, var(--theme-text-primary) 10%, transparent);
+  box-shadow: inset 0 0.5px 0 color-mix(in srgb, var(--theme-text-primary) 5%, transparent);
 }
 .segmented-control__item--active {
-  background: var(--theme-overlay-gradient);
-  color: var(--theme-text-primary);
-  box-shadow: var(--theme-shadow-inline);
+  background: var(--theme-accent-primary);
+  color: var(--theme-accent-contrast);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--theme-accent-primary) 30%, transparent);
 }
 .segmented-control__item--idle {
-  color: var(--theme-text-secondary);
+  color: var(--theme-text-tertiary);
 }
 .segmented-control__item--idle:hover {
+  color: var(--theme-text-primary);
+}
+:root[data-appearance='dark'] .segmented-control {
+  border: 1px solid var(--theme-border-default);
+  background: var(--theme-dark-track-fill);
+  box-shadow: none;
+}
+:root[data-appearance='dark'] .segmented-control__item--active {
+  background: var(--theme-accent-primary);
+  color: var(--theme-accent-contrast);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--theme-accent-primary) 35%, transparent);
+}
+:root[data-appearance='dark'] .segmented-control__item--idle {
+  color: var(--theme-dark-idle-label);
+}
+:root[data-appearance='dark'] .segmented-control__item--idle:hover {
   color: var(--theme-text-primary);
 }
 .theme-toast {

@@ -43,28 +43,28 @@ const periodLabel = computed(() => {
         <p class="font-mono text-sm font-bold text-gray-900 dark:text-gray-100">{{ periodLabel }}</p>
       </div>
       <div class="flex min-w-0 flex-wrap items-center justify-end gap-1.5">
-        <div class="grid grid-cols-2 gap-0.5 rounded-full bg-gray-50 p-0.5 dark:bg-neutral-800/70">
+        <div class="grid grid-cols-2 gap-0.5 rounded-full bg-black/[0.08] p-0.5 dark:bg-white/[0.16]">
           <button
             class="h-6 rounded-full px-2 text-[10px] font-semibold transition"
-            :class="viewMode === 'month' ? 'bg-white text-emerald-600 shadow-[0_1px_4px_rgba(0,0,0,0.04)] dark:bg-neutral-700 dark:text-emerald-300' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100'"
+            :class="viewMode === 'month' ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)] shadow-[0_2px_6px_color-mix(in_srgb,var(--theme-accent-primary)_30%,transparent)]' : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'"
             @click="emit('setView', 'month')"
           >
             {{ t(locale, 'statistics.monthView') }}
           </button>
           <button
             class="h-6 rounded-full px-2 text-[10px] font-semibold transition"
-            :class="viewMode === 'year' ? 'bg-white text-emerald-600 shadow-[0_1px_4px_rgba(0,0,0,0.04)] dark:bg-neutral-700 dark:text-emerald-300' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100'"
+            :class="viewMode === 'year' ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)] shadow-[0_2px_6px_color-mix(in_srgb,var(--theme-accent-primary)_30%,transparent)]' : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'"
             @click="emit('setView', 'year')"
           >
             {{ t(locale, 'statistics.yearView') }}
           </button>
         </div>
-        <div class="grid grid-cols-3 gap-0.5 rounded-full bg-gray-50 p-0.5 dark:bg-neutral-800/70">
+        <div class="grid grid-cols-3 gap-0.5 rounded-full bg-black/[0.08] p-0.5 dark:bg-white/[0.16]">
           <button
             v-for="item in METRICS"
             :key="item.value"
             class="h-6 rounded-full px-2 text-[10px] font-semibold transition"
-            :class="metric === item.value ? 'bg-white text-emerald-600 shadow-[0_1px_4px_rgba(0,0,0,0.04)] dark:bg-neutral-700 dark:text-emerald-300' : 'text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100'"
+            :class="metric === item.value ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)] shadow-[0_2px_6px_color-mix(in_srgb,var(--theme-accent-primary)_30%,transparent)]' : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'"
             @click="emit('setMetric', item.value)"
           >
             {{ t(locale, item.key) }}

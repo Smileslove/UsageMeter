@@ -38,7 +38,7 @@ const handleClick = () => {
 
 <style scoped>
 .theme-switch--checked {
-  background: var(--theme-status-success-fg);
+  background: var(--theme-accent-primary);
 }
 
 .theme-switch--unchecked {

@@ -97,13 +97,12 @@ onBeforeUnmount(() => {
 
     <div ref="pickerRef" class="relative min-w-0 shrink-0" :class="isCustomRange ? 'max-w-[300px]' : 'w-auto'">
       <button
-        class="flex h-8 w-full items-center justify-center gap-1 rounded-full border border-gray-100 bg-gray-50 px-2 font-semibold text-gray-700 transition hover:bg-gray-100 dark:border-neutral-700 dark:bg-neutral-800 dark:text-gray-100 dark:hover:bg-neutral-700"
-        :class="isCustomRange ? 'text-[11px]' : 'text-[11px]'"
+        class="flex h-8 w-full items-center justify-center gap-1 rounded-full border border-[var(--theme-accent-primary)] bg-[var(--theme-accent-primary)] px-2 text-[11px] font-semibold text-[var(--theme-accent-contrast)] transition hover:opacity-90"
         :title="rangeButtonLabel"
         @click.stop="togglePicker"
       >
         <span class="flex min-w-0 items-center gap-1">
-          <CalendarDays class="h-3 w-3 shrink-0 text-gray-400 dark:text-gray-300" />
+          <CalendarDays class="h-3 w-3 shrink-0 opacity-70" />
           <span class="truncate">{{ rangeButtonLabel }}</span>
         </span>
       </button>
@@ -118,7 +117,7 @@ onBeforeUnmount(() => {
             v-for="item in presets"
             :key="item.value"
             class="flex h-6 min-w-0 items-center justify-center gap-0.5 rounded-lg border px-1 text-[10px] font-semibold transition"
-            :class="preset === item.value ? 'border-blue-200 bg-blue-50 text-blue-600 dark:border-blue-400/30 dark:bg-blue-500/15 dark:text-blue-300' : 'border-gray-100 bg-gray-50 text-gray-500 hover:border-gray-200 hover:bg-white hover:text-gray-800 dark:border-neutral-700 dark:bg-neutral-800/80 dark:text-gray-400 dark:hover:border-neutral-600 dark:hover:bg-neutral-700/80 dark:hover:text-gray-100'"
+            :class="preset === item.value ? 'border-[var(--theme-accent-primary)] bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'border-black/[0.07] bg-black/[0.04] text-[var(--theme-text-tertiary)] hover:bg-black/[0.08] hover:text-[var(--theme-text-primary)] dark:border-white/[0.1] dark:bg-white/[0.06] dark:hover:bg-white/[0.1] dark:hover:text-white'"
             @click="selectPreset(item.value)"
           >
             <Check v-if="preset === item.value" class="h-3 w-3 shrink-0" />

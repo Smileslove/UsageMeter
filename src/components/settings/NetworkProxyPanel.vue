@@ -238,12 +238,12 @@ function networkProxyTestLabel(state: TestState) {
           v-model="npUrl"
           type="text"
           :placeholder="t(store.settings.locale, 'settings.networkProxyUrlPlaceholder')"
-          class="h-8 min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 text-[12px] text-gray-700 placeholder:text-gray-300 focus:outline-none focus:ring-1 focus:ring-emerald-300 dark:border-neutral-700 dark:bg-neutral-800 dark:text-gray-200 dark:placeholder:text-neutral-600"
+          class="h-8 min-w-0 flex-1 rounded-lg border border-gray-200 bg-white px-3 text-[12px] text-gray-700 placeholder:text-gray-300 focus:outline-none focus:ring-1 focus:ring-[var(--theme-ring-focus)] dark:border-neutral-700 dark:bg-neutral-800 dark:text-gray-200 dark:placeholder:text-neutral-600"
           @input="npError = ''"
         />
         <button
           type="button"
-          class="h-8 shrink-0 rounded-lg bg-emerald-500 px-3 text-[12px] text-white transition-colors hover:bg-emerald-600 disabled:opacity-40 disabled:hover:bg-emerald-500"
+          class="h-8 shrink-0 rounded-lg bg-[var(--theme-accent-primary)] px-3 text-[12px] text-[var(--theme-accent-contrast)] transition-opacity hover:opacity-90 disabled:opacity-40 disabled:hover:opacity-40"
           :disabled="!networkProxyDirty"
           @click="saveNetworkProxy"
         >

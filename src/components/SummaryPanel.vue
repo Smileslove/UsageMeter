@@ -179,15 +179,13 @@ function detailPairSizeClass(first: string, second: string): string {
 <template>
   <div v-if="summaryWindowData" class="summary-panel dark:!border-white/10 dark:!bg-[#0F1013]">
     <!-- 时间范围选择器 -->
-    <div class="summary-window-tabs dark:!bg-white/[0.04]">
+    <div class="summary-window-tabs">
       <button
         v-for="window in WINDOW_ORDER"
         :key="window"
         :class="[
-          'summary-window-tab dark:hover:!bg-white/[0.06] dark:hover:!text-gray-200',
-          store.settings.summaryWindow === window
-            ? 'active dark:!bg-white/[0.1] dark:!text-teal-300'
-            : 'dark:!text-gray-400'
+          'summary-window-tab',
+          store.settings.summaryWindow === window ? 'active' : ''
         ]"
         @click="selectWindow(window)"
       >
@@ -373,8 +371,12 @@ function detailPairSizeClass(first: string, second: string): string {
   display: flex;
   gap: 0.25rem;
   padding: 0.125rem;
-  background: var(--theme-surface-muted-gradient);
+  background: color-mix(in srgb, var(--theme-text-primary) 10%, transparent);
   border-radius: 0.5rem;
+}
+
+:root[data-appearance='dark'] .summary-window-tabs {
+  background: var(--theme-dark-track-fill);
 }
 
 .summary-window-tab {
@@ -382,7 +384,7 @@ function detailPairSizeClass(first: string, second: string): string {
   padding: 0.25rem 0.5rem;
   font-size: 11px;
   font-weight: 500;
-  color: var(--theme-text-secondary);
+  color: var(--theme-text-tertiary);
   background: transparent;
   border: none;
   border-radius: 0.375rem;
@@ -398,10 +400,10 @@ function detailPairSizeClass(first: string, second: string): string {
 }
 
 .summary-window-tab.active {
-  color: var(--theme-accent-primary);
-  background: var(--theme-overlay-gradient);
+  color: var(--theme-accent-contrast);
+  background: var(--theme-accent-primary);
   font-weight: 600;
-  box-shadow: var(--theme-shadow-inline);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--theme-accent-primary) 28%, transparent);
 }
 
 .summary-grid {

@@ -740,6 +740,14 @@ body {
   color: var(--theme-status-info-fg);
 }
 
+/* iOS-vibrancy values shared by all dark-mode segmented controls and pill tracks.
+   These are Apple HIG constants, not derived from palette accent colors. */
+:root[data-appearance='dark'] {
+  --theme-dark-track-fill: rgba(118, 118, 128, 0.24);
+  --theme-dark-item-bg: rgba(118, 118, 128, 0.16);
+  --theme-dark-idle-label: rgba(235, 235, 245, 0.6);
+}
+
 /* High-frequency utility remaps so existing components inherit palette changes without layout edits. */
 :root[data-appearance='light'] .bg-white,
 :root[data-appearance='light'] .\!bg-white {
@@ -1035,4 +1043,84 @@ body {
 .border-indigo-100,
 .dark\:border-indigo-500\/30:where(.dark, .dark *) {
   border-color: color-mix(in srgb, var(--theme-chart-series-3) 20%, var(--theme-border-default)) !important;
+}
+
+/* Shared segmented control used by StatisticsTrendChart and StatisticsModelList.
+   Active segment is accent-filled; track uses color-mix so it adapts to any palette.
+   Dark overrides use iOS-style vibrancy values (not resolvable via CSS variables). */
+.trend-seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px;
+  border-radius: 9999px;
+  border: 1px solid color-mix(in srgb, var(--theme-text-primary) 7%, transparent);
+  background: color-mix(in srgb, var(--theme-text-primary) 10%, transparent);
+  box-shadow: inset 0 0.5px 0 color-mix(in srgb, var(--theme-text-primary) 5%, transparent);
+}
+
+.trend-seg__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border-radius: 9999px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--theme-text-tertiary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  outline: none;
+  transition: color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.trend-seg__item:hover:not(.trend-seg__item--on) {
+  color: var(--theme-text-primary);
+}
+
+.trend-seg__item--on {
+  color: var(--theme-accent-contrast);
+  font-weight: 700;
+  background: var(--theme-accent-primary);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--theme-accent-primary) 30%, transparent);
+}
+
+.trend-seg__dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  opacity: 0.7;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.trend-seg__item--on .trend-seg__dot {
+  background-color: var(--theme-accent-contrast) !important;
+  opacity: 1;
+  transform: scale(1.1);
+}
+
+.trend-seg__label {
+  flex-shrink: 0;
+}
+
+:root[data-appearance='dark'] .trend-seg {
+  border: 1px solid var(--theme-border-default);
+  background: var(--theme-dark-track-fill);
+  box-shadow: none;
+}
+
+:root[data-appearance='dark'] .trend-seg__item:not(.trend-seg__item--on) {
+  color: var(--theme-dark-idle-label);
+}
+
+:root[data-appearance='dark'] .trend-seg__item:hover:not(.trend-seg__item--on) {
+  color: var(--theme-text-primary);
+}
+
+:root[data-appearance='dark'] .trend-seg__item--on {
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--theme-accent-primary) 35%, transparent);
 }

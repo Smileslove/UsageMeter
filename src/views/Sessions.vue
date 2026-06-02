@@ -390,30 +390,37 @@ onUnmounted(() => {
 <template>
   <div class="space-y-2 animate-in fade-in zoom-in-95 duration-300 pb-4 min-h-full">
     <!-- 顶部视图切换 Tabs -->
-    <div class="flex p-0.5 bg-gray-100/80 dark:bg-[#1E2024]/80 rounded-lg backdrop-blur-md sticky top-0 z-10 mb-2">
-      <button @click="activeTab = 'recent'" :class="['flex-1 py-1.5 text-[12px] font-medium rounded-md transition-all', activeTab === 'recent' ? 'bg-white dark:bg-[#2A2D32] shadow-sm text-gray-800 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300']">
+    <div class="session-tabs sticky top-0 z-10 mb-2 backdrop-blur-md">
+      <button
+        type="button"
+        class="session-tabs__item"
+        :class="{ 'session-tabs__item--on': activeTab === 'recent' }"
+        @click="activeTab = 'recent'"
+      >
         {{ t(store.settings.locale, 'sessions.tabs.recent') }}
       </button>
-      <button @click="activeTab = 'projects'" :class="['flex-1 py-1.5 text-[12px] font-medium rounded-md transition-all', activeTab === 'projects' ? 'bg-white dark:bg-[#2A2D32] shadow-sm text-gray-800 dark:text-gray-100' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300']">
+      <button
+        type="button"
+        class="session-tabs__item"
+        :class="{ 'session-tabs__item--on': activeTab === 'projects' }"
+        @click="activeTab = 'projects'"
+      >
         {{ t(store.settings.locale, 'sessions.tabs.projects') }}
       </button>
     </div>
 
-    <div v-if="activeTab === 'recent'" class="flex items-center gap-1.5 overflow-x-auto px-0.5 pb-0.5">
+    <div v-if="activeTab === 'recent'" class="tool-filter">
       <button
         v-for="option in sourceOptions"
         :key="option.key"
+        type="button"
+        class="tool-filter__item"
+        :class="{ 'tool-filter__item--on': selectedTool === option.tool }"
         @click="selectedTool = option.tool"
-        :class="[
-          'inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors',
-          selectedTool === option.tool
-            ? 'border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/15 dark:text-sky-300'
-            : 'border-gray-200 bg-white text-gray-500 dark:border-white/8 dark:bg-[#1E2024] dark:text-gray-400'
-        ]"
       >
         <LayoutGrid
           v-if="!option.icon"
-          class="h-3.5 w-3.5"
+          class="h-3.5 w-3.5 shrink-0"
         />
         <LobeIcon
           v-else
@@ -421,7 +428,7 @@ onUnmounted(() => {
           :size="14"
           @error="() => {}"
         />
-        <span>{{ option.label }}</span>
+        <span class="min-w-0 truncate">{{ option.label }}</span>
       </button>
     </div>
 
@@ -662,3 +669,94 @@ onUnmounted(() => {
     <SessionDetailModal :visible="showModal" :session="selectedSession" @close="closeModal" />
   </div>
 </template>
+
+<style scoped>
+/* Recent / Projects switcher — theme-adaptive segmented control, accent-filled
+   active segment (consistent with the main nav). Opaque track for sticky use. */
+.session-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 10px;
+  background: var(--theme-bg-surface);
+  border: 1px solid var(--theme-border-subtle);
+}
+
+.session-tabs__item {
+  flex: 1;
+  padding: 6px 0;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--theme-text-tertiary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.session-tabs__item:hover:not(.session-tabs__item--on) {
+  color: var(--theme-text-primary);
+}
+
+.session-tabs__item--on {
+  color: var(--theme-accent-contrast);
+  background: var(--theme-accent-primary);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--theme-accent-primary) 30%, transparent);
+}
+
+/* Tool filter — theme-adaptive pills that wrap instead of scrolling,
+   so it scales as more tools are added. Mirrors the app's segmented controls. */
+.tool-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 2px 4px;
+}
+
+.tool-filter__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.1;
+  cursor: pointer;
+  border: 1px solid var(--theme-border-default);
+  background: var(--theme-bg-elevated);
+  color: var(--theme-text-tertiary);
+  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.tool-filter__item:hover:not(.tool-filter__item--on) {
+  color: var(--theme-text-primary);
+  border-color: var(--theme-border-strong);
+}
+
+.tool-filter__item--on {
+  color: var(--theme-accent-contrast);
+  background: var(--theme-accent-primary);
+  border-color: transparent;
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--theme-accent-primary) 30%, transparent);
+}
+
+:root[data-appearance='dark'] .tool-filter__item {
+  background: var(--theme-dark-item-bg);
+  border-color: var(--theme-divider-default);
+  color: var(--theme-dark-idle-label);
+}
+
+:root[data-appearance='dark'] .tool-filter__item:hover:not(.tool-filter__item--on) {
+  color: var(--theme-text-primary);
+}
+
+:root[data-appearance='dark'] .tool-filter__item--on {
+  background: var(--theme-accent-primary);
+  color: var(--theme-accent-contrast);
+  border-color: transparent;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--theme-accent-primary) 35%, transparent);
+}
+</style>

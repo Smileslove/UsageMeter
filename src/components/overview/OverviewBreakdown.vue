@@ -161,16 +161,12 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
           {{ t(locale, 'overview.attribution') }}
         </h3>
       </div>
-      <div class="sort-control dark:!border-white/10 dark:!bg-white/[0.06]" :aria-label="t(locale, 'overview.sortBy')">
+      <div class="sort-control" :aria-label="t(locale, 'overview.sortBy')">
         <button
           v-for="option in sortOptions"
           :key="option.value"
           type="button"
-          :class="[
-            effectiveSortMetric === option.value
-              ? 'active dark:!bg-white/[0.14] dark:!text-gray-100'
-              : 'dark:!text-gray-400 dark:hover:!text-gray-200'
-          ]"
+          :class="effectiveSortMetric === option.value ? 'active' : ''"
           @click="selectedSortMetric = option.value"
         >
           {{ option.label }}
@@ -325,10 +321,15 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   flex-shrink: 0;
   align-items: center;
   gap: 0.15rem;
-  border: 1px solid var(--theme-border-default);
+  border: 1px solid color-mix(in srgb, var(--theme-text-primary) 7%, transparent);
   border-radius: 999px;
-  background: var(--theme-overlay-gradient);
+  background: color-mix(in srgb, var(--theme-text-primary) 9%, transparent);
   padding: 0.12rem;
+}
+
+:root[data-appearance='dark'] .sort-control {
+  border-color: var(--theme-border-default);
+  background: var(--theme-dark-item-bg);
 }
 
 .sort-control button {
@@ -342,6 +343,10 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   line-height: 1;
   color: var(--theme-text-tertiary);
   transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.sort-control button:hover {
+  color: var(--theme-text-primary);
 }
 
 .sort-control button.active {

@@ -136,7 +136,7 @@ onMounted(() => {
         </select>
         <button
           type="button"
-          class="rounded-lg bg-amber-500 px-2.5 py-1.5 text-[11px] font-medium text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
+          class="rounded-lg bg-[var(--theme-accent-primary)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--theme-accent-contrast)] transition-opacity hover:opacity-90 disabled:opacity-50"
           :disabled="localCacheBusy || localCacheStats.orphanLocalFacts === 0"
           @click="openLocalCachePurgeConfirm"
         >
@@ -154,7 +154,7 @@ onMounted(() => {
       </div>
       <button
         type="button"
-        class="shrink-0 rounded-lg bg-gray-100 px-2.5 py-1.5 text-[11px] font-medium text-gray-700 transition-colors hover:bg-gray-200 disabled:opacity-50 dark:bg-neutral-800 dark:text-gray-200 dark:hover:bg-neutral-700"
+        class="shrink-0 rounded-lg bg-[var(--theme-accent-primary)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--theme-accent-contrast)] transition-opacity hover:opacity-90 disabled:opacity-50"
         :disabled="localCacheBusy"
         @click="openLocalCacheRebuildConfirm"
       >

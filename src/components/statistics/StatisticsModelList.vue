@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart, PieChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent } from 'echarts/components'
 import VChart from 'vue-echarts'
+import { Check, ChevronDown } from 'lucide-vue-next'
 import { t } from '../../i18n'
 import { formatCost, formatDurationMs, formatRate, formatRequestCount, formatTokenValue } from '../../utils/format'
 import type { AppLocale, StatisticsModelBreakdown, StatisticsTrendPoint } from '../../types'
@@ -19,7 +20,9 @@ const props = defineProps<{
   models: StatisticsModelBreakdown[]
 }>()
 
-const selectedModelIndex = ref(0)
+const selectedModelName = ref<string | null>(null)
+const menuOpen = ref(false)
+const selectRef = ref<HTMLElement | null>(null)
 const focusedTrendMetric = ref<'requests' | 'tokens' | 'cost' | 'rate' | null>(null)
 
 const chartColors = ['#2DD4BF', '#818CF8', '#FBBF24', '#F45B69', '#60A5FA', '#A78BFA']
@@ -37,12 +40,20 @@ const rankedModels = computed(() => {
 const displayModels = computed(() => rankedModels.value.slice(0, 6))
 
 const selectedModel = computed(() => {
-  return displayModels.value[selectedModelIndex.value] ?? displayModels.value[0] ?? null
+  if (!rankedModels.value.length) return null
+  return rankedModels.value.find(model => model.modelName === selectedModelName.value) ?? rankedModels.value[0]
 })
 
-const selectedIndex = computed(() => {
-  return selectedModel.value ? Math.max(0, Math.min(selectedModelIndex.value, displayModels.value.length - 1)) : -1
+// Index of the selected model within the donut's top-N slice (-1 if not charted).
+const selectedDisplayIndex = computed(() => {
+  if (!selectedModel.value) return -1
+  return displayModels.value.findIndex(model => model.modelName === selectedModel.value!.modelName)
 })
+
+function modelColor(modelName: string): string {
+  const index = displayModels.value.findIndex(model => model.modelName === modelName)
+  return index >= 0 ? chartColors[index % chartColors.length] : 'var(--theme-text-quaternary)'
+}
 
 const tokenPair = computed(() => {
   if (!selectedModel.value) return { input: '-', output: '-' }
@@ -125,13 +136,6 @@ function yAxisLabel(value: number): string {
   return formatTrendValue(focusedTrendMetric.value, maxTrendValue(focusedTrendMetric.value) * (value / 100))
 }
 
-function handleTrendMouseover(params: any) {
-  const metric = params?.seriesName as 'requests' | 'tokens' | 'cost' | 'rate' | undefined
-  if (metric === 'requests' || metric === 'tokens' || metric === 'cost' || metric === 'rate') {
-    focusedTrendMetric.value = metric
-  }
-}
-
 const chartOptions = computed(() => {
   const data = displayModels.value.map((model, index) => ({
     name: model.modelName,
@@ -140,7 +144,7 @@ const chartOptions = computed(() => {
     cost: model.cost,
     itemStyle: {
       color: chartColors[index % chartColors.length],
-      opacity: selectedIndex.value < 0 || index === selectedIndex.value ? 1 : 0.32
+      opacity: selectedDisplayIndex.value < 0 || index === selectedDisplayIndex.value ? 1 : 0.32
     }
   }))
 
@@ -245,7 +249,7 @@ const trendOptions = computed(() => {
       type: 'line',
       data: normalizedTrend(metric),
       smooth: true,
-      showSymbol: true,
+      showSymbol: focusedTrendMetric.value === metric,
       symbolSize: 4,
       lineStyle: {
         width: focusedTrendMetric.value === metric ? 2.8 : 1.7,
@@ -266,35 +270,55 @@ const trendOptions = computed(() => {
           ]
         },
         opacity: !focusedTrendMetric.value || focusedTrendMetric.value === metric ? 1 : 0.16
-      },
-      emphasis: { focus: 'series' }
+      }
     }))
   }
 })
 
-function selectModel(index: number) {
-  selectedModelIndex.value = index
+function selectModel(modelName: string) {
+  selectedModelName.value = modelName
+  menuOpen.value = false
 }
 
 function handleChartClick(params: any) {
-  if (typeof params?.dataIndex === 'number' && displayModels.value[params.dataIndex]) {
-    selectModel(params.dataIndex)
-  }
+  const model = typeof params?.dataIndex === 'number' ? displayModels.value[params.dataIndex] : null
+  if (model) selectModel(model.modelName)
 }
 
 watch(
-  displayModels,
+  rankedModels,
   models => {
     if (!models.length) {
-      selectedModelIndex.value = 0
+      selectedModelName.value = null
       return
     }
-    if (selectedModelIndex.value >= models.length) {
-      selectedModelIndex.value = 0
+    if (!models.some(model => model.modelName === selectedModelName.value)) {
+      selectedModelName.value = models[0].modelName
     }
   },
   { immediate: true }
 )
+
+function handleOutsidePointer(event: MouseEvent) {
+  if (!menuOpen.value) return
+  if (selectRef.value && !selectRef.value.contains(event.target as Node)) {
+    menuOpen.value = false
+  }
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') menuOpen.value = false
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', handleOutsidePointer)
+  document.addEventListener('keydown', handleKeydown)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', handleOutsidePointer)
+  document.removeEventListener('keydown', handleKeydown)
+})
 </script>
 
 <template>
@@ -305,31 +329,36 @@ watch(
     </div>
 
     <div v-if="displayModels.length && selectedModel" class="space-y-2">
-      <div class="flex max-w-full gap-1.5 overflow-x-auto overscroll-x-contain pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div ref="selectRef" class="model-select">
         <button
-          v-for="(model, index) in displayModels"
-          :key="`${index}-${model.modelName}`"
           type="button"
-          class="flex w-[124px] shrink-0 items-center gap-1.5 rounded-full border px-2 py-1.5 text-left transition focus:outline-none"
-          :aria-pressed="selectedModelIndex === index"
-          :class="
-            selectedModelIndex === index
-              ? 'border-gray-300 bg-white shadow-[0_2px_8px_rgba(15,23,42,0.10)] ring-1 ring-gray-200 dark:border-neutral-500 dark:bg-neutral-700 dark:ring-neutral-600'
-              : 'border-transparent bg-white/50 opacity-65 shadow-none ring-0 hover:opacity-90 dark:bg-neutral-700/30'
-          "
-          @click="selectModel(index)"
+          class="model-select__trigger"
+          :aria-expanded="menuOpen"
+          @click="menuOpen = !menuOpen"
         >
-          <span class="h-2 w-2 shrink-0 rounded-full" :style="{ backgroundColor: chartColors[index % chartColors.length] }" />
-          <span class="min-w-0 flex-1">
-            <span
-              class="block truncate text-[10px] font-semibold leading-tight"
-              :class="selectedModelIndex === index ? 'text-gray-700 dark:text-gray-100' : 'text-gray-500 dark:text-gray-400'"
-            >
-              {{ model.modelName }}
-            </span>
-            <span class="block font-mono text-[9px] leading-tight text-gray-400 dark:text-gray-500">{{ formatRequestCount(model.requestCount) }} {{ t(locale, 'statistics.requests') }}</span>
-          </span>
+          <span class="model-select__dot" :style="{ backgroundColor: modelColor(selectedModel.modelName) }" />
+          <span class="model-select__name">{{ selectedModel.modelName }}</span>
+          <span class="model-select__meta">{{ formatRequestCount(selectedModel.requestCount) }} {{ t(locale, 'statistics.requests') }} · {{ selectedModel.percent.toFixed(1) }}%</span>
+          <ChevronDown class="model-select__chevron" :class="{ 'model-select__chevron--open': menuOpen }" />
         </button>
+
+        <transition name="model-menu">
+          <div v-if="menuOpen" class="model-select__menu no-scrollbar">
+            <button
+              v-for="model in rankedModels"
+              :key="model.modelName"
+              type="button"
+              class="model-select__option"
+              :class="{ 'model-select__option--on': model.modelName === selectedModel.modelName }"
+              @click="selectModel(model.modelName)"
+            >
+              <span class="model-select__dot" :style="{ backgroundColor: modelColor(model.modelName) }" />
+              <span class="model-select__name">{{ model.modelName }}</span>
+              <span class="model-select__meta">{{ formatRequestCount(model.requestCount) }} {{ t(locale, 'statistics.requests') }} · {{ model.percent.toFixed(1) }}%</span>
+              <Check v-if="model.modelName === selectedModel.modelName" class="model-select__check" />
+            </button>
+          </div>
+        </transition>
       </div>
 
       <div class="rounded-xl bg-white p-2.5 dark:bg-neutral-700/80">
@@ -458,24 +487,22 @@ watch(
       <div class="rounded-xl bg-white p-2 dark:bg-neutral-700/80">
         <div class="mb-1.5 flex items-center justify-between">
           <p class="text-[10px] font-semibold text-gray-500 dark:text-gray-300">{{ t(locale, 'statistics.modelTrend') }}</p>
-          <div class="flex items-center gap-1">
+          <div class="trend-seg">
             <button
               v-for="metric in (['requests', 'tokens', 'cost', 'rate'] as const)"
               :key="metric"
               type="button"
-              class="flex items-center gap-0.5 rounded-full px-1 py-0.5 text-[9px] font-semibold transition focus:outline-none"
-              :class="focusedTrendMetric === metric ? 'bg-gray-100 text-gray-700 dark:bg-neutral-800 dark:text-gray-200' : focusedTrendMetric ? 'text-gray-300 dark:text-gray-600' : 'text-gray-400 dark:text-gray-500'"
-              @mouseenter="focusedTrendMetric = metric"
-              @focus="focusedTrendMetric = metric"
+              class="trend-seg__item"
+              :class="{ 'trend-seg__item--on': focusedTrendMetric === metric }"
               @click="focusedTrendMetric = focusedTrendMetric === metric ? null : metric"
             >
-              <span class="h-1.5 w-1.5 rounded-full" :style="{ backgroundColor: trendColors[metric] }" />
-              {{ trendMetricLabel(metric) }}
+              <span class="trend-seg__dot" :style="{ backgroundColor: trendColors[metric] }" />
+              <span class="trend-seg__label">{{ trendMetricLabel(metric) }}</span>
             </button>
           </div>
         </div>
         <div v-if="selectedModel.trend.length" class="h-[116px]">
-          <v-chart class="h-full w-full" :option="trendOptions" autoresize @mouseover="handleTrendMouseover" />
+          <v-chart class="h-full w-full" :option="trendOptions" autoresize />
         </div>
         <div v-else class="grid h-[116px] place-items-center text-[11px] text-gray-400 dark:text-gray-500">
           {{ t(locale, 'statistics.noData') }}
@@ -488,3 +515,137 @@ watch(
     </div>
   </section>
 </template>
+
+<style scoped>
+/* Model picker — theme-adaptive dropdown (replaces horizontal-scroll chips).
+   Scales to any number of models; the menu scrolls vertically. */
+.model-select {
+  position: relative;
+}
+
+.model-select__trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--theme-border-default);
+  background: var(--theme-bg-elevated);
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.model-select__trigger:hover {
+  border-color: var(--theme-border-strong);
+}
+
+.model-select__trigger:focus-visible {
+  border-color: var(--theme-accent-primary);
+  box-shadow: 0 0 0 3px var(--theme-ring-focus);
+}
+
+.model-select__dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 9999px;
+}
+
+.model-select__name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--theme-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-select__meta {
+  flex-shrink: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 9px;
+  line-height: 1.3;
+  color: var(--theme-text-tertiary);
+  white-space: nowrap;
+}
+
+.model-select__chevron {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--theme-text-tertiary);
+  transition: transform 0.2s ease;
+}
+
+.model-select__chevron--open {
+  transform: rotate(180deg);
+}
+
+.model-select__menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  max-height: 216px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid var(--theme-border-default);
+  background: var(--theme-bg-overlay);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(14px);
+}
+
+.model-select__option {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.model-select__option:hover {
+  background: var(--theme-bg-hover);
+}
+
+.model-select__option--on {
+  background: var(--theme-accent-soft);
+}
+
+.model-select__option--on .model-select__name {
+  color: var(--theme-accent-primary);
+}
+
+.model-select__check {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--theme-accent-primary);
+}
+
+.model-menu-enter-active,
+.model-menu-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.model-menu-enter-from,
+.model-menu-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+</style>

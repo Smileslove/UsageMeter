@@ -358,7 +358,7 @@ defineProps<{
                 :class="[
                   'p-1 rounded-md transition-colors flex items-center justify-center',
                   source.icon === icon
-                    ? 'bg-blue-100 dark:bg-blue-500/20 ring-1 ring-blue-300 dark:ring-blue-500/30'
+                    ? 'bg-[var(--theme-accent-soft)] ring-1 ring-[var(--theme-accent-primary)]'
                     : 'theme-surface hover:bg-gray-100'
                 ]"
                 :title="icon"
@@ -427,7 +427,7 @@ defineProps<{
                 :disabled="!mergeTargetId"
                 :class="[
                   'flex-1 py-2 text-[12px] font-medium text-white rounded-xl transition-colors',
-                  mergeTargetId ? 'theme-button-accent' : 'bg-blue-300 dark:bg-blue-500/30 cursor-not-allowed'
+                  mergeTargetId ? 'theme-button-accent' : 'bg-[var(--theme-accent-primary)] opacity-40 cursor-not-allowed'
                 ]"
               >
                 {{ t(store.settings.locale, 'common.confirm') }}

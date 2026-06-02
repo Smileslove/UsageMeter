@@ -227,9 +227,9 @@ function formatUptime(seconds: number): string {
             :class="[
               'min-w-0 rounded-xl border p-2.5 text-left transition-all',
               takeoverEnabledFor(profile.tool)
-                ? 'border-green-200 bg-green-50/80 dark:border-green-500/30 dark:bg-green-500/10'
+                ? 'border-[var(--theme-accent-primary)] bg-[var(--theme-accent-soft)]'
                 : 'border-gray-100 bg-gray-50/70 dark:border-neutral-800 dark:bg-neutral-900/60',
-              takeoverLoading[profile.tool] ? 'pointer-events-none opacity-60' : 'hover:border-blue-200 dark:hover:border-blue-500/40'
+              takeoverLoading[profile.tool] ? 'pointer-events-none opacity-60' : 'hover:border-[var(--theme-accent-primary)]'
             ]"
             @click="toggleToolTakeover(profile.tool)"
             @keydown.enter.prevent="toggleToolTakeover(profile.tool)"
@@ -251,7 +251,7 @@ function formatUptime(seconds: number): string {
               <span
                 :class="[
                   'relative flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-                  takeoverEnabledFor(profile.tool) ? 'bg-green-500' : 'bg-gray-300 dark:bg-neutral-600'
+                  takeoverEnabledFor(profile.tool) ? 'bg-[var(--theme-accent-primary)]' : 'bg-[var(--theme-border-strong)]'
                 ]"
               >
                 <span
