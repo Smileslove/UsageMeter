@@ -63,6 +63,19 @@ const tokenPair = computed(() => {
   }
 })
 
+const cacheHitRate = computed(() => {
+  const m = selectedModel.value
+  if (!m) return null
+  const total = m.inputTokens + m.cacheCreateTokens + m.cacheReadTokens
+  if (total === 0) return null
+  return (m.cacheReadTokens / total) * 100
+})
+
+const cacheHitRateDisplay = computed(() => {
+  if (cacheHitRate.value === null) return '—'
+  return `${cacheHitRate.value.toFixed(1)}%`
+})
+
 const avgSpeed = computed(() => {
   const value = selectedModel.value?.avgTokensPerSecond
   if (!value) return '-'
@@ -451,6 +464,19 @@ onBeforeUnmount(() => {
               <p class="truncate font-mono font-semibold text-gray-700 dark:text-gray-200">{{ formatTokenValue(selectedModel.cacheReadTokens) }}</p>
             </div>
           </div>
+
+        <div class="mt-1.5 rounded-lg bg-gray-50 px-2 py-1.5 dark:bg-neutral-800/80">
+          <div class="mb-1 flex items-center justify-between">
+            <p class="text-[9px] font-medium text-violet-500 dark:text-violet-400">{{ t(locale, 'statistics.cacheHitRate') }}</p>
+            <p class="font-mono text-[11px] font-bold text-violet-600 dark:text-violet-300">{{ cacheHitRateDisplay }}</p>
+          </div>
+          <div v-if="cacheHitRate !== null" class="h-1 w-full overflow-hidden rounded-full bg-violet-100 dark:bg-violet-900/40">
+            <div
+              class="h-full rounded-full bg-violet-400 transition-all duration-500 dark:bg-violet-500"
+              :style="{ width: `${Math.min(cacheHitRate, 100).toFixed(1)}%` }"
+            />
+          </div>
+        </div>
 
         <div class="mt-2 rounded-lg bg-gray-50 p-1.5 dark:bg-neutral-800/80">
             <div class="mb-1 flex items-center justify-between">

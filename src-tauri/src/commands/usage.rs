@@ -1640,8 +1640,7 @@ fn build_usage_refresh_bundle_from_prepared(
         let coverage = crate::unified_usage::build_coverage(facts);
         has_partial_snapshot_coverage |=
             coverage.has_partial_status_coverage || coverage.has_partial_performance_coverage;
-        let (window_usage, model_stats) =
-            build_window_usage_from_facts(window_name, facts);
+        let (window_usage, model_stats) = build_window_usage_from_facts(window_name, facts);
         if *window_name == settings.summary_window {
             summary_model_stats = Some(model_stats.clone());
         }
@@ -1989,7 +1988,9 @@ pub async fn get_overview_breakdown(
         include_errors,
     )
     .await?;
-    Ok(build_overview_breakdown_from_facts(&settings, window, now, &facts))
+    Ok(build_overview_breakdown_from_facts(
+        &settings, window, now, &facts,
+    ))
 }
 
 #[derive(Default, Clone)]
