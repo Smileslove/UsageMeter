@@ -341,6 +341,7 @@ pub fn create_database_collector(
             client_tool: client_tool.clone(),
             proxy_profile_id: proxy_profile_id.clone(),
             client_detection_method: client_detection_method.clone(),
+            ..Default::default()
         };
 
         let collector = usage_collector.clone();

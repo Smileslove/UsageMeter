@@ -2,7 +2,8 @@
 
 use crate::proxy::{
     codex_snapshot_uses_official_provider, ClaudeConfigManager, CodexConfigManager,
-    CodexSourceRegistry, ProxyConfig, ProxyServer, ProxyStatus,
+    CodexSourceRegistry, OpenCodeConfigManager, OpenCodeSourceRegistry, ProxyConfig, ProxyServer,
+    ProxyStatus,
 };
 use tauri::State;
 
@@ -99,6 +100,7 @@ pub async fn stop_proxy_runtime_only_inner(state: &State<'_, ProxyState>) -> Res
     }
 
     restore_codex_takeover_if_active(port)?;
+    restore_opencode_takeover_if_active(port)?;
 
     Ok(())
 }
@@ -131,6 +133,7 @@ pub async fn is_proxy_running(state: State<'_, ProxyState>) -> Result<bool, Stri
 ///
 /// 当前支持：
 /// - `codex`: 修改 `~/.codex/config.toml` 和 `~/.codex/auth.json`
+/// - `opencode`: 修改 `~/.config/opencode/opencode.jsonc`（provider.anthropic.options.baseURL）
 #[tauri::command]
 pub async fn set_takeover_for_app(
     app: String,
@@ -141,6 +144,7 @@ pub async fn set_takeover_for_app(
     match app.as_str() {
         "codex" => set_codex_takeover(enabled, state, app_handle).await,
         "claude_code" | "claude" => set_claude_takeover(enabled, state, app_handle).await,
+        "opencode" => set_opencode_takeover(enabled, state, app_handle).await,
         other => Err(format!("Unsupported takeover app: {}", other)),
     }
 }
@@ -263,6 +267,121 @@ async fn set_codex_takeover(
     Ok(())
 }
 
+fn restore_opencode_takeover_if_active(port: u16) -> Result<(), String> {
+    let manager = OpenCodeConfigManager::new();
+    if !manager.is_takeover_active(port).unwrap_or(false) {
+        return Ok(());
+    }
+
+    let registry = OpenCodeSourceRegistry::new();
+    let active_source_ids: Vec<String> = manager
+        .active_routes()
+        .into_iter()
+        .map(|route| route.source_id)
+        .collect();
+    let source_ids = if !active_source_ids.is_empty() {
+        active_source_ids
+    } else {
+        registry
+            .list_handles()
+            .into_iter()
+            .map(|handle| handle.id)
+            .collect()
+    };
+
+    if source_ids.is_empty() {
+        return Err(
+            "OpenCode is pointed at UsageMeter, but no restorable source handle was found. \
+             Restore ~/.config/opencode/opencode.jsonc manually or re-enable takeover."
+                .to_string(),
+        );
+    }
+
+    let _ = manager.restore_from_sources(&source_ids)?;
+    Ok(())
+}
+
+async fn set_opencode_takeover(
+    enabled: bool,
+    state: State<'_, ProxyState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let settings = load_settings().unwrap_or_default();
+    let port = settings.proxy.port;
+    let manager = OpenCodeConfigManager::new();
+
+    if enabled {
+        manager.ensure_config_exists()?;
+        let registry = OpenCodeSourceRegistry::new();
+        let mut route_state = manager.read_live_snapshot()?;
+        if route_state.providers.is_empty() {
+            return Err(
+                "No OpenCode providers with explicit baseURL were found. Configure a provider baseURL first, then enable takeover."
+                    .to_string(),
+            );
+        }
+
+        if route_state.providers.iter().any(|provider| {
+            OpenCodeConfigManager::is_usagemeter_proxy_url_for_port(
+                &provider.original_base_url,
+                port,
+            )
+        }) {
+            let active_source_ids: Vec<String> = manager
+                .active_routes()
+                .into_iter()
+                .map(|route| route.source_id)
+                .collect();
+            if active_source_ids.is_empty() {
+                return Err(
+                    "OpenCode is already pointed at UsageMeter, but no original source handle was found. \
+                     Disable takeover once or restore the config manually."
+                        .to_string(),
+                );
+            }
+            let _ = manager.restore_from_sources(&active_source_ids)?;
+            route_state = manager.read_live_snapshot()?;
+        }
+
+        let handles = registry.upsert_from_state(&route_state)?;
+        if handles.is_empty() {
+            return Err(
+                "No OpenCode providers with explicit baseURL were found. Configure a provider baseURL first, then enable takeover."
+                    .to_string(),
+            );
+        }
+
+        {
+            let server_guard = state.server.read().await;
+            if server_guard.is_none() {
+                drop(server_guard);
+                start_proxy(port, state.clone(), app_handle).await?;
+            }
+        }
+
+        manager.takeover_with_handles(port, &handles)?;
+        mark_client_tool_enabled("opencode", true)?;
+    } else {
+        restore_opencode_takeover_if_active(port)?;
+        mark_client_tool_enabled("opencode", false)?;
+
+        let settings = load_settings().unwrap_or_default();
+        let any_tool_enabled = settings
+            .client_tools
+            .profiles
+            .iter()
+            .any(|profile| profile.enabled);
+        if !any_tool_enabled {
+            let mut server_guard = state.server.write().await;
+            if let Some(server) = server_guard.take() {
+                server.stop().await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn proxy_config_from_settings(port: u16, settings: &crate::models::AppSettings) -> ProxyConfig {
     ProxyConfig {
         enabled: true,
@@ -324,7 +443,9 @@ pub struct ToolTakeoverStatus {
     pub auth_mode: Option<String>,
     pub official_provider: bool,
     pub active_source_id: Option<String>,
+    pub managed_provider_ids: Option<Vec<String>>,
     pub conflict_external_base_url: Option<String>,
+    pub scope_warning_key: Option<String>,
     pub last_error: Option<String>,
 }
 
@@ -354,6 +475,14 @@ pub async fn get_takeover_statuses(
     };
     let codex_conflict_external_base_url = match server {
         Some(server) => server.takeover_conflict_external_base_url("codex").await,
+        None => None,
+    };
+    let opencode_conflict_paused = match server {
+        Some(server) => server.is_takeover_conflict_paused("opencode").await,
+        None => false,
+    };
+    let opencode_conflict_external_base_url = match server {
+        Some(server) => server.takeover_conflict_external_base_url("opencode").await,
         None => None,
     };
     drop(server_guard);
@@ -390,6 +519,30 @@ pub async fn get_takeover_statuses(
         .map(|profile| profile.enabled)
         .unwrap_or(false);
 
+    let opencode_manager = OpenCodeConfigManager::new();
+    let opencode_snapshot = opencode_manager.read_live_snapshot().unwrap_or_default();
+    let opencode_managed_provider_ids: Vec<String> = opencode_snapshot
+        .providers
+        .iter()
+        .map(|provider| provider.provider_id.clone())
+        .collect();
+    let opencode_official_provider = opencode_snapshot
+        .providers
+        .iter()
+        .any(|provider| matches!(provider.provider_id.as_str(), "anthropic" | "openai"));
+    let opencode_enabled = settings
+        .client_tools
+        .profiles
+        .iter()
+        .find(|profile| profile.tool == "opencode")
+        .map(|profile| profile.enabled)
+        .unwrap_or(false);
+    let (opencode_active, opencode_source, opencode_error) =
+        match opencode_manager.is_takeover_active(port) {
+            Ok(active) => (active, opencode_manager.active_source_id(), None),
+            Err(e) => (false, None, Some(e)),
+        };
+
     Ok(vec![
         ToolTakeoverStatus {
             tool: "claude_code".to_string(),
@@ -401,7 +554,9 @@ pub async fn get_takeover_statuses(
             auth_mode: None,
             official_provider: claude_manager.uses_official_provider(),
             active_source_id: None,
+            managed_provider_ids: None,
             conflict_external_base_url: claude_conflict_external_base_url,
+            scope_warning_key: None,
             last_error: None,
         },
         ToolTakeoverStatus {
@@ -414,8 +569,25 @@ pub async fn get_takeover_statuses(
             auth_mode: codex_auth_mode,
             official_provider: codex_official_provider,
             active_source_id: codex_source,
+            managed_provider_ids: None,
             conflict_external_base_url: codex_conflict_external_base_url,
+            scope_warning_key: None,
             last_error: codex_error,
+        },
+        ToolTakeoverStatus {
+            tool: "opencode".to_string(),
+            enabled: opencode_enabled,
+            takeover_active: opencode_active,
+            conflict_paused: opencode_conflict_paused,
+            config_path: Some(opencode_manager.config_path().display().to_string()),
+            auth_path: None,
+            auth_mode: Some("api_key".to_string()),
+            official_provider: opencode_official_provider,
+            active_source_id: opencode_source,
+            managed_provider_ids: Some(opencode_managed_provider_ids),
+            conflict_external_base_url: opencode_conflict_external_base_url,
+            scope_warning_key: Some("settings.opencodeConfigScopeWarning".to_string()),
+            last_error: opencode_error,
         },
     ])
 }

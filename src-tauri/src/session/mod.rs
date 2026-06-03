@@ -1,8 +1,9 @@
-//! 会话模块 - JSONL 会话元数据提取
+//! 会话模块 - JSONL 会话元数据提取（Claude Code / Codex / OpenCode）
 //!
-//! 本模块提供扫描和提取 Claude Code 会话 JSONL 文件元数据的功能。
+//! 本模块提供扫描和提取本地会话数据的功能。
 
 mod meta;
+pub(crate) mod opencode_reader;
 mod scanner;
 
 #[allow(unused_imports)]

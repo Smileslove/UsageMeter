@@ -349,10 +349,10 @@ impl OpenAiForwarder {
             }
 
             let usage = usage_candidate.lock().await.take();
-            let ttft_ms = first_token_time
-                .lock()
-                .await
-                .map(|instant| instant.duration_since(ttft_start).as_millis() as u64);
+            let ttft_ms = first_token_time.lock().await.map(|instant| {
+                let elapsed_ms = instant.duration_since(ttft_start).as_millis() as u64;
+                elapsed_ms.max(1)
+            });
             record_usage_with_collector_optional(
                 collector,
                 usage,
@@ -425,6 +425,7 @@ async fn record_usage_with_collector(
         client_tool: context.client_tool.clone(),
         proxy_profile_id: context.proxy_profile_id.clone(),
         client_detection_method: context.client_detection_method.clone(),
+        ..Default::default()
     };
     collector.record(record).await;
 }
@@ -477,6 +478,7 @@ async fn record_usage_with_collector_optional(
                 client_tool: context.client_tool.clone(),
                 proxy_profile_id: context.proxy_profile_id.clone(),
                 client_detection_method: context.client_detection_method.clone(),
+                ..Default::default()
             };
             collector.record(record).await;
         }
@@ -542,12 +544,95 @@ fn openai_endpoint_url(target_base_url: &str, path: &str) -> String {
 }
 
 fn first_token_candidate(value: &Value) -> bool {
-    value.get("choices").is_some()
-        || value
-            .get("type")
-            .and_then(|v| v.as_str())
-            .map(|t| t.contains("delta") || t.contains("output"))
+    if let Some(choices) = value.get("choices").and_then(|v| v.as_array()) {
+        return choices.iter().any(choice_has_output_payload);
+    }
+
+    if let Some(event_type) = value.get("type").and_then(|v| v.as_str()) {
+        match event_type {
+            "response.output_text.delta"
+            | "response.function_call_arguments.delta"
+            | "response.reasoning.delta" => {
+                return non_empty_json_string(value.get("delta"));
+            }
+            "response.output_item.added"
+            | "response.output_item.delta"
+            | "response.output_item.done" => {
+                return value
+                    .get("item")
+                    .map(value_has_output_payload)
+                    .unwrap_or(false);
+            }
+            _ => {}
+        }
+    }
+
+    value_has_output_payload(value)
+}
+
+fn choice_has_output_payload(choice: &Value) -> bool {
+    choice
+        .get("delta")
+        .map(value_has_output_payload)
+        .unwrap_or(false)
+        || choice
+            .get("message")
+            .map(value_has_output_payload)
             .unwrap_or(false)
+        || non_empty_json_string(choice.get("text"))
+}
+
+fn value_has_output_payload(value: &Value) -> bool {
+    if non_empty_json_string(Some(value)) {
+        return true;
+    }
+
+    if let Some(object) = value.as_object() {
+        for key in [
+            "content",
+            "text",
+            "delta",
+            "output_text",
+            "reasoning_content",
+            "reasoning",
+            "arguments",
+        ] {
+            if object
+                .get(key)
+                .map(value_has_output_payload)
+                .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+
+        if let Some(tool_calls) = object.get("tool_calls").and_then(|v| v.as_array()) {
+            if tool_calls.iter().any(value_has_output_payload) {
+                return true;
+            }
+        }
+
+        if let Some(function) = object.get("function") {
+            if value_has_output_payload(function) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    if let Some(array) = value.as_array() {
+        return array.iter().any(value_has_output_payload);
+    }
+
+    false
+}
+
+fn non_empty_json_string(value: Option<&Value>) -> bool {
+    value
+        .and_then(|v| v.as_str())
+        .map(|text| !text.trim().is_empty())
+        .unwrap_or(false)
 }
 
 fn should_use_streaming_client(headers: &HeaderMap, request_stream_flag: bool) -> bool {
@@ -884,6 +969,61 @@ mod tests {
         assert_eq!(usage.message_id, "resp_event");
         assert_eq!(usage.input_tokens, 20);
         assert_eq!(usage.output_tokens, 7);
+    }
+
+    #[test]
+    fn first_token_candidate_ignores_role_only_chat_chunk() {
+        let role_only = serde_json::json!({
+            "id": "chatcmpl-role",
+            "choices": [{
+                "delta": {
+                    "role": "assistant"
+                }
+            }]
+        });
+
+        assert!(!first_token_candidate(&role_only));
+    }
+
+    #[test]
+    fn first_token_candidate_accepts_chat_content_delta() {
+        let content = serde_json::json!({
+            "id": "chatcmpl-content",
+            "choices": [{
+                "delta": {
+                    "content": "Hello"
+                }
+            }]
+        });
+
+        assert!(first_token_candidate(&content));
+    }
+
+    #[test]
+    fn first_token_candidate_accepts_reasoning_and_tool_call_deltas() {
+        let reasoning = serde_json::json!({
+            "id": "chatcmpl-reasoning",
+            "choices": [{
+                "delta": {
+                    "reasoning_content": "Thinking"
+                }
+            }]
+        });
+        let tool_call = serde_json::json!({
+            "id": "chatcmpl-tool",
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "function": {
+                            "arguments": "{\"city\":\"beijing\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        assert!(first_token_candidate(&reasoning));
+        assert!(first_token_candidate(&tool_call));
     }
 
     #[test]

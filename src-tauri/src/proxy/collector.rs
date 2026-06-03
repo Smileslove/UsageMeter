@@ -18,6 +18,47 @@ pub struct UsageCollector {
 }
 
 impl UsageCollector {
+    fn recent_dedupe_key(record: &UsageRecord) -> String {
+        if let Some(key) = record.storage_dedupe_key.as_ref() {
+            let trimmed = key.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+        if let Some(key) = record.canonical_request_key.as_ref() {
+            let trimmed = key.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+        if record.client_tool == "opencode" && !record.message_id.trim().is_empty() {
+            let stable_time = if record.request_start_time > 0 {
+                record.request_start_time
+            } else {
+                record.timestamp
+            };
+            return format!(
+                "{}:{}:{}",
+                record.client_tool, record.message_id, stable_time
+            );
+        }
+        if !record.message_id.trim().is_empty() {
+            return format!("{}:{}", record.client_tool, record.message_id);
+        }
+        format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            record.client_tool,
+            record.session_id.clone().unwrap_or_default(),
+            record.timestamp / 1000,
+            record.model,
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_create_tokens,
+            record.cache_read_tokens,
+            record.total_tokens
+        )
+    }
+
     /// 创建新的使用量收集器（带数据库持久化）
     pub fn new() -> Self {
         Self {
@@ -42,13 +83,17 @@ impl UsageCollector {
         // 检查最近缓存中是否有重复
         let is_duplicate = {
             let mut recent = self.recent_records.write().await;
-            if !record.message_id.is_empty() {
-                if let Some(existing) = recent.iter().find(|r| r.message_id == record.message_id) {
+            let record_key = Self::recent_dedupe_key(&record);
+            if !record_key.is_empty() {
+                if let Some(existing) = recent
+                    .iter()
+                    .find(|r| Self::recent_dedupe_key(r) == record_key)
+                {
                     // 如果新记录有更多 token，则更新现有记录
                     if record.total_tokens > existing.total_tokens {
                         if let Some(idx) = recent
                             .iter()
-                            .position(|r| r.message_id == record.message_id)
+                            .position(|r| Self::recent_dedupe_key(r) == record_key)
                         {
                             recent[idx] = record.clone();
                         }
@@ -499,6 +544,7 @@ mod tests {
             client_tool: crate::models::DEFAULT_CLIENT_TOOL.to_string(),
             proxy_profile_id: None,
             client_detection_method: crate::models::DEFAULT_CLIENT_DETECTION_METHOD.to_string(),
+            ..Default::default()
         };
 
         assert_eq!(record.message_id, "test-msg");

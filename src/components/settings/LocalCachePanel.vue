@@ -10,6 +10,20 @@ interface LocalCacheStats {
   orphanLocalFacts: number
 }
 
+interface OpenCodeSchemaStatus {
+  dbFound: boolean
+  dbPath: string | null
+  schemaCompatible: boolean
+  compatibilityMode?: 'full' | 'message_only' | 'incompatible'
+  persistedCompatibilityMode?: 'full' | 'message_only' | 'incompatible' | 'unknown' | null
+  incompatibilityReason: string | null
+  messageIdConflict?: {
+    hasConflict: boolean
+    conflictCount: number
+    sampleIds: string[]
+  }
+}
+
 const store = useMonitorStore()
 
 const localCacheStats = ref<LocalCacheStats>({ totalLocalFacts: 0, orphanLocalFacts: 0 })
@@ -18,6 +32,7 @@ const localCacheMessage = ref('')
 const localCacheMessageIsError = ref(false)
 const localCachePurgeDays = ref<0 | 30 | 90 | 180>(90)
 const localCacheConfirmMode = ref<'purge-orphan' | 'rebuild-cache' | null>(null)
+const opencodeSchema = ref<OpenCodeSchemaStatus | null>(null)
 
 const loadLocalCacheStats = async () => {
   try {
@@ -25,6 +40,14 @@ const loadLocalCacheStats = async () => {
   } catch (error) {
     localCacheMessage.value = `${t(store.settings.locale, 'settings.localCacheLoadFailed')}: ${error}`
     localCacheMessageIsError.value = true
+  }
+}
+
+const loadOpenCodeSchemaStatus = async () => {
+  try {
+    opencodeSchema.value = await invoke<OpenCodeSchemaStatus>('get_opencode_schema_status')
+  } catch {
+    // 静默失败，不影响其他功能
   }
 }
 
@@ -75,11 +98,107 @@ const confirmLocalCacheAction = async () => {
 
 onMounted(() => {
   loadLocalCacheStats()
+  loadOpenCodeSchemaStatus()
 })
 </script>
 
 <template>
   <div class="p-3 px-4">
+    <!-- 数据来源告知区域 -->
+    <div class="mb-3">
+      <div class="mb-1.5 text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.localScanTitle') }}</div>
+      <div class="mb-2 text-[10px] leading-relaxed text-gray-400">{{ t(store.settings.locale, 'settings.localScanDesc') }}</div>
+      <div class="space-y-1">
+        <!-- Claude Code -->
+        <div class="flex items-start gap-2 rounded-lg border border-gray-100 bg-white px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
+          <div class="mt-px h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--theme-accent-primary)]"></div>
+          <div class="min-w-0">
+            <div class="text-[11px] font-medium text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.localScanClaudeCode') }}</div>
+            <div class="mt-0.5 break-all font-mono text-[9.5px] text-gray-400 dark:text-gray-500">{{ t(store.settings.locale, 'settings.localScanClaudeCodePath') }}</div>
+          </div>
+        </div>
+        <!-- Codex -->
+        <div class="flex items-start gap-2 rounded-lg border border-gray-100 bg-white px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
+          <div class="mt-px h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--theme-accent-primary)]"></div>
+          <div class="min-w-0">
+            <div class="text-[11px] font-medium text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.localScanCodex') }}</div>
+            <div class="mt-0.5 break-all font-mono text-[9.5px] text-gray-400 dark:text-gray-500">{{ t(store.settings.locale, 'settings.localScanCodexPath') }}</div>
+          </div>
+        </div>
+        <!-- OpenCode -->
+        <div
+          class="flex items-start gap-2 rounded-lg border px-2.5 py-1.5"
+          :class="opencodeSchema?.dbFound && !opencodeSchema.schemaCompatible
+            ? 'border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30'
+            : 'border-gray-100 bg-white dark:border-neutral-800 dark:bg-neutral-950'"
+        >
+          <div
+            class="mt-px h-1.5 w-1.5 shrink-0 rounded-full"
+            :class="opencodeSchema?.dbFound && !opencodeSchema.schemaCompatible
+              ? 'bg-amber-400'
+              : 'bg-[var(--theme-accent-primary)]'"
+          ></div>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-1.5">
+              <span class="text-[11px] font-medium text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.localScanOpenCode') }}</span>
+              <!-- 兼容性状态徽章 -->
+              <span
+                v-if="opencodeSchema?.dbFound && !opencodeSchema.schemaCompatible"
+                class="rounded px-1 py-px text-[9px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300"
+              >{{ t(store.settings.locale, 'settings.localScanSchemaIncompatibleBadge') }}</span>
+              <span
+                v-else-if="opencodeSchema?.dbFound && opencodeSchema.compatibilityMode === 'message_only'"
+                class="rounded px-1 py-px text-[9px] font-medium bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300"
+              >{{ t(store.settings.locale, 'settings.localScanMessageOnlyBadge') }}</span>
+              <span
+                v-else-if="opencodeSchema?.dbFound"
+                class="rounded px-1 py-px text-[9px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300"
+              >{{ t(store.settings.locale, 'settings.localScanDetectedBadge') }}</span>
+            </div>
+            <div class="mt-0.5 break-all font-mono text-[9.5px] text-gray-400 dark:text-gray-500">
+              {{ opencodeSchema?.dbPath || t(store.settings.locale, 'settings.localScanOpenCodePath') }}
+            </div>
+            <!-- OpenCode 特殊说明 -->
+            <div class="mt-1 text-[9.5px] leading-relaxed text-gray-400 dark:text-gray-500">
+              {{ t(store.settings.locale, 'settings.localScanOpenCodeNote') }}
+            </div>
+            <div
+              v-if="opencodeSchema?.persistedCompatibilityMode && opencodeSchema.persistedCompatibilityMode !== opencodeSchema.compatibilityMode"
+              class="mt-1 text-[9.5px] leading-relaxed text-gray-400 dark:text-gray-500"
+            >
+              {{ t(store.settings.locale, 'settings.localScanSchemaRefreshing') }}
+            </div>
+            <div
+              v-if="opencodeSchema?.dbFound && opencodeSchema.compatibilityMode === 'message_only'"
+              class="mt-1 text-[9.5px] leading-relaxed text-sky-600 dark:text-sky-400"
+            >
+              {{ t(store.settings.locale, 'settings.localScanMessageOnlyWarning') }}
+            </div>
+            <div
+              v-if="opencodeSchema?.messageIdConflict?.hasConflict"
+              class="mt-1 text-[9.5px] leading-relaxed text-amber-600 dark:text-amber-400"
+            >
+              {{ t(store.settings.locale, 'settings.localScanMessageIdConflictWarning') }}
+              <template v-if="opencodeSchema.messageIdConflict.conflictCount > 0">
+                {{ t(store.settings.locale, 'settings.localScanMessageIdConflictCount').replace('{count}', String(opencodeSchema.messageIdConflict.conflictCount)) }}
+              </template>
+            </div>
+            <!-- schema 不兼容警告 -->
+            <div
+              v-if="opencodeSchema?.dbFound && !opencodeSchema.schemaCompatible"
+              class="mt-1 text-[9.5px] leading-relaxed text-amber-600 dark:text-amber-400"
+            >
+              {{ t(store.settings.locale, 'settings.localScanSchemaWarning') }}
+              <template v-if="opencodeSchema.incompatibilityReason">
+                <br>
+                <span class="opacity-75">{{ opencodeSchema.incompatibilityReason }}</span>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div class="mb-3 flex items-start justify-between gap-3">
       <div class="min-w-0">
         <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.localCacheTitle') }}</div>

@@ -2,10 +2,12 @@
 
 use super::types::{SessionStats, UsageRecord};
 use crate::models::{ModelPricingConfig, SourceFilter, ToolFilter, UsageQueryFilter};
+use crate::session::LocalRequestRecord;
 use chrono::{Local, TimeZone};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,6 +38,108 @@ pub struct ProxyDayDependencySnapshot {
 /// 使用线程安全的 SQLite 连接包装器
 pub struct ProxyDatabase {
     conn: Arc<std::sync::Mutex<Connection>>,
+}
+
+struct OpenCodeLocalMatcher<'a> {
+    candidates: &'a [&'a LocalRequestRecord],
+    used_request_keys: HashSet<String>,
+}
+
+impl<'a> OpenCodeLocalMatcher<'a> {
+    fn new(candidates: &'a [&'a LocalRequestRecord]) -> Self {
+        Self {
+            candidates,
+            used_request_keys: HashSet::new(),
+        }
+    }
+
+    fn match_record(&mut self, proxy_record: &UsageRecord) -> Option<&'a LocalRequestRecord> {
+        let compatible = self.compatible_candidates(proxy_record);
+        if compatible.is_empty() {
+            return None;
+        }
+        if compatible.len() == 1 {
+            let matched = compatible[0];
+            self.mark_used(matched);
+            return Some(matched);
+        }
+
+        let mut scored: Vec<(&LocalRequestRecord, i64)> = compatible
+            .into_iter()
+            .map(|candidate| (candidate, self.time_delta_secs(proxy_record, candidate)))
+            .collect();
+        scored.sort_by_key(|(_, delta)| *delta);
+
+        let best = scored[0];
+        let second = scored.get(1).copied();
+        let clearly_better = second
+            .map(|(_, delta)| delta.saturating_sub(best.1) >= 10)
+            .unwrap_or(true);
+        if best.1 <= 5 && clearly_better {
+            self.mark_used(best.0);
+            return Some(best.0);
+        }
+
+        None
+    }
+
+    fn compatible_candidate_count(&self, proxy_record: &UsageRecord) -> usize {
+        self.compatible_candidates(proxy_record).len()
+    }
+
+    fn compatible_candidates(&self, proxy_record: &UsageRecord) -> Vec<&'a LocalRequestRecord> {
+        let proxy_model_key = normalize_opencode_model_key(&proxy_record.model);
+        self.candidates
+            .iter()
+            .copied()
+            .filter(|candidate| {
+                candidate.input_tokens == proxy_record.input_tokens
+                    && candidate.output_tokens == proxy_record.output_tokens
+                    && candidate.cache_create_tokens == proxy_record.cache_create_tokens
+                    && candidate.cache_read_tokens == proxy_record.cache_read_tokens
+                    && candidate.total_tokens == proxy_record.total_tokens
+                    && normalize_opencode_model_key(&candidate.model) == proxy_model_key
+                    && self.time_delta_secs(proxy_record, candidate) <= 30
+                    && !self.is_used(candidate)
+            })
+            .collect()
+    }
+
+    fn time_delta_secs(&self, proxy_record: &UsageRecord, candidate: &LocalRequestRecord) -> i64 {
+        let proxy_ts_sec = if proxy_record.request_end_time > 0 {
+            proxy_record.request_end_time / 1000
+        } else {
+            proxy_record.timestamp / 1000
+        };
+        (proxy_ts_sec - candidate.timestamp).abs()
+    }
+
+    fn is_used(&self, candidate: &LocalRequestRecord) -> bool {
+        candidate
+            .request_key
+            .as_ref()
+            .map(|key| self.used_request_keys.contains(key))
+            .unwrap_or(false)
+    }
+
+    fn mark_used(&mut self, candidate: &LocalRequestRecord) {
+        if let Some(key) = candidate.request_key.as_ref() {
+            self.used_request_keys.insert(key.clone());
+        }
+    }
+}
+
+fn normalize_opencode_model_key(model: &str) -> String {
+    let trimmed = model.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    trimmed
+        .rsplit('/')
+        .next()
+        .unwrap_or(trimmed)
+        .trim()
+        .to_ascii_lowercase()
 }
 
 impl ProxyDatabase {
@@ -122,20 +226,32 @@ impl ProxyDatabase {
             CREATE TABLE IF NOT EXISTS usage_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp INTEGER NOT NULL,
-                message_id TEXT NOT NULL UNIQUE,
+                message_id TEXT NOT NULL,
+                storage_dedupe_key TEXT NOT NULL UNIQUE,
+                canonical_request_key TEXT,
                 input_tokens INTEGER NOT NULL DEFAULT 0,
                 output_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_create_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
                 model TEXT NOT NULL DEFAULT '',
                 session_id TEXT,
+                session_resolution_state TEXT NOT NULL DEFAULT 'unknown',
+                message_id_conflicted INTEGER NOT NULL DEFAULT 0,
                 request_start_time INTEGER,
                 request_end_time INTEGER,
                 duration_ms INTEGER NOT NULL DEFAULT 0,
                 output_tokens_per_second REAL,
+                ttft_ms INTEGER,
+                status_code INTEGER NOT NULL DEFAULT 200,
+                migration_attempted_at INTEGER,
                 estimated_cost REAL NOT NULL DEFAULT 0,
                 pricing_snapshot_id TEXT,
                 cost_locked INTEGER NOT NULL DEFAULT 0,
+                api_key_prefix TEXT,
+                request_base_url TEXT,
+                client_tool TEXT NOT NULL DEFAULT 'claude_code',
+                proxy_profile_id TEXT,
+                client_detection_method TEXT NOT NULL DEFAULT 'legacy_path',
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
                 updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
             );
@@ -260,6 +376,41 @@ impl ProxyDatabase {
         false
     }
 
+    fn usage_records_has_storage_dedupe_unique(conn: &Connection) -> bool {
+        let mut stmt = match conn.prepare("PRAGMA index_list('usage_records')") {
+            Ok(stmt) => stmt,
+            Err(_) => return false,
+        };
+        let rows = match stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2).unwrap_or(0) != 0,
+            ))
+        }) {
+            Ok(rows) => rows,
+            Err(_) => return false,
+        };
+
+        for row in rows.flatten() {
+            if !row.1 {
+                continue;
+            }
+            let mut info_stmt = match conn.prepare(&format!("PRAGMA index_info('{}')", row.0)) {
+                Ok(stmt) => stmt,
+                Err(_) => continue,
+            };
+            let cols = match info_stmt.query_map([], |info_row| info_row.get::<_, String>(2)) {
+                Ok(cols) => cols,
+                Err(_) => continue,
+            };
+            let col_names: Vec<String> = cols.flatten().collect();
+            if col_names.len() == 1 && col_names[0] == "storage_dedupe_key" {
+                return true;
+            }
+        }
+        false
+    }
+
     /// 创建模型价格表（静态方法）
     fn create_model_pricing_table_static(conn: &Connection) -> Result<(), String> {
         conn.execute_batch(
@@ -288,6 +439,8 @@ impl ProxyDatabase {
     fn migrate_schema(conn: &Connection) -> Result<(), String> {
         // 尝试添加新字段（如果不存在则添加）
         let migrations = [
+            "ALTER TABLE usage_records ADD COLUMN storage_dedupe_key TEXT",
+            "ALTER TABLE usage_records ADD COLUMN canonical_request_key TEXT",
             "ALTER TABLE usage_records ADD COLUMN request_start_time INTEGER",
             "ALTER TABLE usage_records ADD COLUMN request_end_time INTEGER",
             "ALTER TABLE usage_records ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0",
@@ -295,6 +448,8 @@ impl ProxyDatabase {
             "ALTER TABLE usage_records ADD COLUMN status_code INTEGER NOT NULL DEFAULT 200",
             "ALTER TABLE usage_records ADD COLUMN ttft_ms INTEGER",
             "ALTER TABLE usage_records ADD COLUMN migration_attempted_at INTEGER",
+            "ALTER TABLE usage_records ADD COLUMN session_resolution_state TEXT NOT NULL DEFAULT 'unknown'",
+            "ALTER TABLE usage_records ADD COLUMN message_id_conflicted INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE usage_records ADD COLUMN estimated_cost REAL NOT NULL DEFAULT 0",
             "ALTER TABLE usage_records ADD COLUMN pricing_snapshot_id TEXT",
             "ALTER TABLE usage_records ADD COLUMN cost_locked INTEGER NOT NULL DEFAULT 0",
@@ -343,8 +498,129 @@ impl ProxyDatabase {
             "CREATE INDEX IF NOT EXISTS idx_usage_tool_time ON usage_records(client_tool, timestamp)",
             [],
         );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_usage_canonical_key ON usage_records(canonical_request_key)",
+            [],
+        );
+
+        if !Self::usage_records_has_storage_dedupe_unique(conn) {
+            Self::rebuild_usage_records_table(conn)?;
+        }
 
         Ok(())
+    }
+
+    fn rebuild_usage_records_table(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(
+            r#"
+            BEGIN IMMEDIATE;
+            CREATE TABLE IF NOT EXISTS usage_records_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                message_id TEXT NOT NULL,
+                storage_dedupe_key TEXT NOT NULL UNIQUE,
+                canonical_request_key TEXT,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                model TEXT NOT NULL DEFAULT '',
+                session_id TEXT,
+                session_resolution_state TEXT NOT NULL DEFAULT 'unknown',
+                message_id_conflicted INTEGER NOT NULL DEFAULT 0,
+                request_start_time INTEGER,
+                request_end_time INTEGER,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                output_tokens_per_second REAL,
+                ttft_ms INTEGER,
+                status_code INTEGER NOT NULL DEFAULT 200,
+                migration_attempted_at INTEGER,
+                estimated_cost REAL NOT NULL DEFAULT 0,
+                pricing_snapshot_id TEXT,
+                cost_locked INTEGER NOT NULL DEFAULT 0,
+                api_key_prefix TEXT,
+                request_base_url TEXT,
+                client_tool TEXT NOT NULL DEFAULT 'claude_code',
+                proxy_profile_id TEXT,
+                client_detection_method TEXT NOT NULL DEFAULT 'legacy_path',
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+                updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            );
+            INSERT INTO usage_records_v2 (
+                id, timestamp, message_id, storage_dedupe_key, canonical_request_key,
+                input_tokens, output_tokens, cache_create_tokens, cache_read_tokens, model,
+                session_id, session_resolution_state, message_id_conflicted,
+                request_start_time, request_end_time, duration_ms, output_tokens_per_second,
+                ttft_ms, status_code, migration_attempted_at, estimated_cost, pricing_snapshot_id,
+                cost_locked, api_key_prefix, request_base_url, client_tool, proxy_profile_id,
+                client_detection_method, created_at, updated_at
+            )
+            SELECT
+                id,
+                timestamp,
+                message_id,
+                CASE
+                    WHEN COALESCE(storage_dedupe_key, '') != '' THEN storage_dedupe_key
+                    WHEN COALESCE(client_tool, 'claude_code') = 'opencode' AND COALESCE(message_id, '') != ''
+                        THEN COALESCE(client_tool, 'claude_code') || ':' || message_id || ':' || COALESCE(NULLIF(request_start_time, 0), timestamp)
+                    WHEN COALESCE(message_id, '') != ''
+                        THEN COALESCE(client_tool, 'claude_code') || ':' || message_id
+                    ELSE COALESCE(client_tool, 'claude_code') || ':' || COALESCE(session_id, '') || ':' || timestamp || ':' || model || ':' ||
+                         input_tokens || ':' || output_tokens || ':' || cache_create_tokens || ':' || cache_read_tokens
+                END,
+                CASE
+                    WHEN COALESCE(canonical_request_key, '') != '' THEN canonical_request_key
+                    WHEN COALESCE(message_id, '') != ''
+                        THEN COALESCE(client_tool, 'claude_code') || ':' || message_id
+                    ELSE COALESCE(client_tool, 'claude_code') || ':' || COALESCE(session_id, '') || ':' || timestamp || ':' || model || ':' ||
+                         input_tokens || ':' || output_tokens || ':' || cache_create_tokens || ':' || cache_read_tokens
+                END,
+                input_tokens,
+                output_tokens,
+                cache_create_tokens,
+                cache_read_tokens,
+                model,
+                session_id,
+                CASE
+                    WHEN COALESCE(session_resolution_state, '') != '' THEN session_resolution_state
+                    WHEN COALESCE(client_tool, 'claude_code') = 'opencode' AND (session_id IS NULL OR session_id = '') THEN 'unknown'
+                    WHEN session_id IS NULL OR session_id = '' THEN 'unknown'
+                    ELSE 'known'
+                END,
+                COALESCE(message_id_conflicted, 0),
+                request_start_time,
+                request_end_time,
+                duration_ms,
+                output_tokens_per_second,
+                ttft_ms,
+                status_code,
+                migration_attempted_at,
+                estimated_cost,
+                pricing_snapshot_id,
+                cost_locked,
+                api_key_prefix,
+                request_base_url,
+                COALESCE(client_tool, 'claude_code'),
+                proxy_profile_id,
+                COALESCE(client_detection_method, 'legacy_path'),
+                created_at,
+                updated_at
+            FROM usage_records;
+            DROP TABLE usage_records;
+            ALTER TABLE usage_records_v2 RENAME TO usage_records;
+            CREATE INDEX IF NOT EXISTS idx_timestamp ON usage_records(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_message_id ON usage_records(message_id);
+            CREATE INDEX IF NOT EXISTS idx_usage_storage_key ON usage_records(storage_dedupe_key);
+            CREATE INDEX IF NOT EXISTS idx_usage_canonical_key ON usage_records(canonical_request_key);
+            CREATE INDEX IF NOT EXISTS idx_session_id ON usage_records(session_id);
+            CREATE INDEX IF NOT EXISTS idx_model_timestamp ON usage_records(model, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_source_lookup ON usage_records(api_key_prefix, request_base_url);
+            CREATE INDEX IF NOT EXISTS idx_usage_tool_source ON usage_records(client_tool, api_key_prefix, request_base_url);
+            CREATE INDEX IF NOT EXISTS idx_usage_tool_time ON usage_records(client_tool, timestamp);
+            COMMIT;
+            "#,
+        )
+        .map_err(|e| format!("Failed to rebuild usage_records table: {}", e))
     }
 
     fn pricing_snapshot_id(pricings: &[ModelPricingConfig], match_mode: &str) -> String {
@@ -412,6 +688,8 @@ impl ProxyDatabase {
         Ok(UsageRecord {
             timestamp: row.get::<_, i64>(0)?,
             message_id: row.get(1)?,
+            storage_dedupe_key: row.get(22)?,
+            canonical_request_key: row.get(23)?,
             input_tokens: input,
             output_tokens: output,
             cache_create_tokens: cache_create,
@@ -420,6 +698,8 @@ impl ProxyDatabase {
             total_tokens: input + cache_create + cache_read + output,
             model: row.get(6)?,
             session_id: row.get(7)?,
+            session_resolution_state: row.get(24)?,
+            message_id_conflicted: row.get::<_, Option<i64>>(25)?.unwrap_or(0) != 0,
             request_start_time: row.get::<_, Option<i64>>(8)?.unwrap_or(0),
             request_end_time: row.get::<_, Option<i64>>(9)?.unwrap_or(0),
             duration_ms: row.get::<_, i64>(10)? as u64,
@@ -441,6 +721,77 @@ impl ProxyDatabase {
         })
     }
 
+    fn fallback_request_identity(record: &UsageRecord) -> String {
+        format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            record.client_tool,
+            record.session_id.clone().unwrap_or_default(),
+            record.timestamp / 1000,
+            record.model,
+            record.input_tokens,
+            record.output_tokens,
+            record.cache_create_tokens,
+            record.cache_read_tokens,
+            record.total_tokens
+        )
+    }
+
+    fn computed_canonical_request_key(record: &UsageRecord) -> String {
+        if let Some(key) = record.canonical_request_key.as_ref() {
+            let trimmed = key.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+        if record.message_id.trim().is_empty() {
+            Self::fallback_request_identity(record)
+        } else {
+            format!("{}:{}", record.client_tool, record.message_id)
+        }
+    }
+
+    fn computed_storage_dedupe_key(record: &UsageRecord) -> String {
+        if let Some(key) = record.storage_dedupe_key.as_ref() {
+            let trimmed = key.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+        if record.client_tool == "opencode" && !record.message_id.trim().is_empty() {
+            let stable_time = if record.request_start_time > 0 {
+                record.request_start_time
+            } else {
+                record.timestamp
+            };
+            format!(
+                "{}:{}:{}",
+                record.client_tool, record.message_id, stable_time
+            )
+        } else {
+            Self::computed_canonical_request_key(record)
+        }
+    }
+
+    fn computed_session_resolution_state(record: &UsageRecord) -> String {
+        if let Some(state) = record.session_resolution_state.as_ref() {
+            let trimmed = state.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+        if record
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .is_some()
+        {
+            "known".to_string()
+        } else {
+            "unknown".to_string()
+        }
+    }
+
     /// 插入使用记录
     pub async fn insert_record(&self, record: &UsageRecord) -> Result<i64, String> {
         let (pricings, match_mode, snapshot_id) = self.current_pricing_context();
@@ -453,6 +804,9 @@ impl ProxyDatabase {
             .pricing_snapshot_id
             .clone()
             .unwrap_or_else(|| snapshot_id.clone());
+        let storage_dedupe_key = Self::computed_storage_dedupe_key(record);
+        let canonical_request_key = Self::computed_canonical_request_key(record);
+        let session_resolution_state = Self::computed_session_resolution_state(record);
         let now = chrono::Utc::now().timestamp();
         let conn = self
             .conn
@@ -462,22 +816,26 @@ impl ProxyDatabase {
         conn.execute(
             r#"
             INSERT OR REPLACE INTO usage_records
-            (timestamp, message_id, input_tokens, output_tokens, cache_create_tokens,
-             cache_read_tokens, model, session_id, request_start_time,
+            (timestamp, message_id, storage_dedupe_key, canonical_request_key, input_tokens, output_tokens, cache_create_tokens,
+             cache_read_tokens, model, session_id, session_resolution_state, message_id_conflicted, request_start_time,
              request_end_time, duration_ms, output_tokens_per_second, ttft_ms, status_code,
-             estimated_cost, pricing_snapshot_id, cost_locked, api_key_prefix, request_base_url,
+             migration_attempted_at, estimated_cost, pricing_snapshot_id, cost_locked, api_key_prefix, request_base_url,
              client_tool, proxy_profile_id, client_detection_method, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 1, ?17, ?18, ?19, ?20, ?21, ?22)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, ?19, ?20, 1, ?21, ?22, ?23, ?24, ?25, ?26)
             "#,
             rusqlite::params![
                 record.timestamp,
                 &record.message_id,
+                &storage_dedupe_key,
+                &canonical_request_key,
                 record.input_tokens as i64,
                 record.output_tokens as i64,
                 record.cache_create_tokens as i64,
                 record.cache_read_tokens as i64,
                 &record.model,
                 &record.session_id,
+                &session_resolution_state,
+                if record.message_id_conflicted { 1 } else { 0 },
                 record.request_start_time,
                 record.request_end_time,
                 record.duration_ms as i64,
@@ -1036,7 +1394,8 @@ impl ProxyDatabase {
                        request_start_time, request_end_time, duration_ms, output_tokens_per_second,
                        ttft_ms, status_code, estimated_cost, pricing_snapshot_id, cost_locked,
                        api_key_prefix, request_base_url, client_tool, proxy_profile_id,
-                       client_detection_method
+                       client_detection_method, storage_dedupe_key, canonical_request_key,
+                       session_resolution_state, message_id_conflicted
                 FROM usage_records
                 WHERE timestamp >= ?1
                 ORDER BY timestamp DESC
@@ -1083,7 +1442,8 @@ impl ProxyDatabase {
                    request_start_time, request_end_time, duration_ms, output_tokens_per_second,
                    ttft_ms, status_code, estimated_cost, pricing_snapshot_id, cost_locked,
                    api_key_prefix, request_base_url, client_tool, proxy_profile_id,
-                   client_detection_method
+                   client_detection_method, storage_dedupe_key, canonical_request_key,
+                   session_resolution_state, message_id_conflicted
             FROM usage_records
             WHERE timestamp >= ?1 AND timestamp < ?2
               {status_filter}
@@ -2250,46 +2610,22 @@ impl ProxyDatabase {
 
     // ========== session_stats 表操作 ==========
 
-    /// 增量更新会话统计（新请求产生时调用）
-    ///
-    /// 如果会话不存在则创建新记录，否则增量更新
-    pub async fn update_session_stats_incremental(
-        &self,
+    fn upsert_session_stats_for_record(
+        conn: &Connection,
+        session_id: &str,
         record: &UsageRecord,
     ) -> Result<(), String> {
-        // 如果没有 session_id，尝试从 JSONL 获取；无匹配时使用请求时间窗口作为回退
-        let session_id = match &record.session_id {
-            Some(id) if !id.is_empty() => id.clone(),
-            _ => {
-                match self.find_session_id_by_message_id(&record.message_id).await {
-                    Some(id) => id,
-                    None => {
-                        // 无法匹配 JSONL 的请求也保留在 session_stats 中，
-                        // 后续 JSONL 重新扫描时可通过 message_id 回填正确值
-                        LEGACY_UNMATCHED_SESSION_ID.to_string()
-                    }
-                }
-            }
-        };
-
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| format!("Failed to lock connection: {}", e))?;
-
         let now = chrono::Utc::now().timestamp_millis();
 
-        // 检查是否已存在
         let exists: bool = conn
             .query_row(
                 "SELECT 1 FROM session_stats WHERE session_id = ?1",
-                [&session_id],
+                [session_id],
                 |row| row.get::<_, i64>(0),
             )
             .is_ok();
 
         if exists {
-            // 增量更新
             conn.execute(
                 r#"
                 UPDATE session_stats SET
@@ -2321,7 +2657,6 @@ impl ProxyDatabase {
             )
             .map_err(|e| format!("Failed to update session stats: {}", e))?;
 
-            // 重新计算平均速率
             conn.execute(
                 r#"
                 UPDATE session_stats SET
@@ -2331,11 +2666,10 @@ impl ProxyDatabase {
                     END
                 WHERE session_id = ?1
                 "#,
-                [&session_id],
+                [session_id],
             )
             .map_err(|e| format!("Failed to update avg rate: {}", e))?;
         } else {
-            // 插入新记录
             conn.execute(
                 r#"
                 INSERT INTO session_stats (
@@ -2372,11 +2706,181 @@ impl ProxyDatabase {
         Ok(())
     }
 
+    /// 增量更新会话统计（新请求产生时调用）
+    ///
+    /// 如果会话不存在则创建新记录，否则增量更新
+    pub async fn update_session_stats_incremental(
+        &self,
+        record: &UsageRecord,
+    ) -> Result<(), String> {
+        if record.client_tool == "opencode"
+            && Self::computed_session_resolution_state(record) != "known"
+        {
+            return Ok(());
+        }
+
+        // 如果没有 session_id，尝试从 JSONL 获取；无匹配时使用请求时间窗口作为回退
+        let session_id = match &record.session_id {
+            Some(id) if !id.is_empty() => id.clone(),
+            _ => {
+                match self.find_session_id_by_message_id(&record.message_id).await {
+                    Some(id) => id,
+                    None => {
+                        // 无法匹配 JSONL 的请求也保留在 session_stats 中，
+                        // 后续 JSONL 重新扫描时可通过 message_id 回填正确值
+                        LEGACY_UNMATCHED_SESSION_ID.to_string()
+                    }
+                }
+            }
+        };
+
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+        Self::upsert_session_stats_for_record(&conn, &session_id, record)
+    }
+
     /// 通过 message_id 查找对应的 session_id（从 JSONL 文件）
     async fn find_session_id_by_message_id(&self, message_id: &str) -> Option<String> {
         // 使用 session 模块的缓存索引查找（O(1) 时间复杂度）
         crate::session::find_session_id_by_message_id(message_id)
     }
+
+    pub fn reconcile_opencode_records(
+        &self,
+        local_records: &[LocalRequestRecord],
+    ) -> Result<usize, String> {
+        let local_candidates: Vec<&LocalRequestRecord> = local_records
+            .iter()
+            .filter(|record| record.tool == "opencode")
+            .collect();
+        if local_candidates.is_empty() {
+            return Ok(0);
+        }
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+        let unresolved_records: Vec<(i64, UsageRecord)> = {
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                    SELECT timestamp, message_id, input_tokens, output_tokens,
+                           cache_create_tokens, cache_read_tokens, model, session_id,
+                           request_start_time, request_end_time, duration_ms, output_tokens_per_second,
+                           ttft_ms, status_code, estimated_cost, pricing_snapshot_id, cost_locked,
+                           api_key_prefix, request_base_url, client_tool, proxy_profile_id,
+                           client_detection_method, storage_dedupe_key, canonical_request_key,
+                           session_resolution_state, message_id_conflicted, id
+                    FROM usage_records
+                    WHERE client_tool = 'opencode'
+                      AND (session_resolution_state IS NULL OR session_resolution_state != 'known')
+                    ORDER BY timestamp ASC
+                    "#,
+                )
+                .map_err(|e| format!("Failed to prepare unresolved OpenCode query: {}", e))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(26)?, Self::usage_record_from_row(row)?))
+                })
+                .map_err(|e| format!("Failed to query unresolved OpenCode records: {}", e))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to collect unresolved OpenCode records: {}", e))?
+        };
+
+        if unresolved_records.is_empty() {
+            return Ok(0);
+        }
+
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Failed to start OpenCode reconciliation transaction: {}", e))?;
+        let mut updated = 0usize;
+        let mut local_matcher = OpenCodeLocalMatcher::new(&local_candidates);
+
+        for (row_id, record) in unresolved_records {
+            let mut resolved_record = record.clone();
+            let resolution_state;
+
+            match local_matcher.match_record(&record) {
+                Some(local_match) => {
+                    let conflicted = local_match
+                        .request_key
+                        .as_deref()
+                        .map(|key| key.contains('|'))
+                        .unwrap_or(false);
+                    resolution_state = "known".to_string();
+                    resolved_record.session_id = Some(local_match.session_id.clone());
+                    resolved_record.canonical_request_key = Some(
+                        crate::unified_usage::canonical_request_key_for_local(local_match),
+                    );
+                    resolved_record.session_resolution_state = Some(resolution_state.clone());
+                    resolved_record.message_id_conflicted = conflicted;
+                    resolved_record.model = local_match.model.clone();
+                }
+                None if local_matcher.compatible_candidate_count(&record) == 0 => {
+                    resolution_state = "unmatched".to_string();
+                }
+                None => {
+                    resolution_state = "ambiguous".to_string();
+                }
+            }
+
+            if resolved_record.session_resolution_state.as_deref() != Some(&resolution_state) {
+                resolved_record.session_resolution_state = Some(resolution_state.clone());
+            }
+
+            tx.execute(
+                "UPDATE usage_records
+                 SET session_id = ?1,
+                     model = ?2,
+                     canonical_request_key = ?3,
+                     session_resolution_state = ?4,
+                     message_id_conflicted = ?5,
+                     migration_attempted_at = ?6,
+                     updated_at = ?6
+                 WHERE id = ?7",
+                rusqlite::params![
+                    &resolved_record.session_id,
+                    &resolved_record.model,
+                    &resolved_record
+                        .canonical_request_key
+                        .clone()
+                        .unwrap_or_else(|| Self::computed_canonical_request_key(&resolved_record)),
+                    &resolution_state,
+                    if resolved_record.message_id_conflicted {
+                        1
+                    } else {
+                        0
+                    },
+                    now,
+                    row_id
+                ],
+            )
+            .map_err(|e| format!("Failed to update OpenCode proxy reconciliation row: {}", e))?;
+
+            // 仅统计成功解析的记录（unmatched/ambiguous 不计入）
+            if resolution_state == "known" {
+                updated += 1;
+                // 在同一事务内更新 session_stats，保证与 usage_records 原子提交：
+                // Transaction 实现了 Deref<Target = Connection>，可直接传入 &tx。
+                if let Some(session_id) = resolved_record.session_id.as_deref() {
+                    Self::upsert_session_stats_for_record(&tx, session_id, &resolved_record)?;
+                }
+            }
+        }
+
+        // tx.commit() 消耗 tx，conn 上的可变借用随之释放；
+        // conn（MutexGuard）在函数末尾的作用域结束时自动 drop，无需手动释放。
+        tx.commit()
+            .map_err(|e| format!("Failed to commit OpenCode reconciliation: {}", e))?;
+
+        Ok(updated)
+    }
+
     pub async fn migrate_to_session_stats(&self) -> Result<usize, String> {
         // 类型别名：简化复杂类型定义
         // UsageRecordRow: 从数据库查询的 usage_record 行（用于迁移）

@@ -82,6 +82,12 @@ pub(crate) fn canonical_request_key_for_local(record: &LocalRequestRecord) -> St
 }
 
 pub(crate) fn canonical_request_key_for_proxy(record: &UsageRecord) -> String {
+    if let Some(key) = record.canonical_request_key.as_ref() {
+        let trimmed = key.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
     if record.message_id.trim().is_empty() {
         format!(
             "{}:{}:{}:{}:{}:{}:{}:{}:{}",
@@ -606,6 +612,29 @@ mod tests {
 
         let proxy_only = MergedRequestFact::from_proxy(&proxy, None);
         assert_eq!(proxy_only.canonical_request_key, "claude_code:msg-1");
+    }
+
+    #[test]
+    fn opencode_local_and_proxy_keys_share_single_tool_prefix() {
+        let proxy = UsageRecord {
+            client_tool: "opencode".to_string(),
+            message_id: "msg-opencode-1".to_string(),
+            ..proxy_with(100, 200, 0, 0, 0.0, false)
+        };
+        let local = LocalRequestRecord {
+            tool: "opencode".to_string(),
+            message_id: "msg-opencode-1".to_string(),
+            ..local_with(100, 200, 0, 0, "opencode::sess", 1_700_000_000)
+        };
+
+        assert_eq!(
+            canonical_request_key_for_local(&local),
+            "opencode:msg-opencode-1"
+        );
+        assert_eq!(
+            canonical_request_key_for_proxy(&proxy),
+            "opencode:msg-opencode-1"
+        );
     }
 
     #[test]

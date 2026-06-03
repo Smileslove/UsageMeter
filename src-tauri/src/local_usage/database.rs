@@ -1,5 +1,5 @@
 use crate::models::ToolFilter;
-use crate::session::{parse_session_file_for_storage, SessionFile};
+use crate::session::parse_session_file_for_storage;
 use crate::session::{scan_session_files, LocalRequestRecord, SessionMeta};
 use crate::unified_usage::{has_partial_coverage, CoverageOrigin, MergedRequestFact};
 use chrono::{Local, LocalResult, NaiveDate, TimeZone};
@@ -11,10 +11,18 @@ use std::time::{Duration, Instant};
 
 static GLOBAL_LOCAL_USAGE_DB: OnceLock<Arc<LocalUsageDatabase>> = OnceLock::new();
 const LOCAL_SYNC_THROTTLE_INTERVAL: Duration = Duration::from_secs(3);
+const OPENCODE_DB_SYNC_STATE_PREFIX: &str = "opencode_db_";
+const OPENCODE_MESSAGE_ID_CONFLICT_PREFIX: &str = "opencode_message_id_conflict_";
 
 #[derive(Debug, Clone)]
 struct DirtySessionSync {
-    session: SessionFile,
+    session_id: String,
+    tool: String,
+    file_path: String,
+    file_role: String,
+    file_size: u64,
+    last_modified: i64,
+    fingerprint: String,
     meta: SessionMeta,
     requests: Vec<LocalRequestRecord>,
     project_key: String,
@@ -665,6 +673,7 @@ impl LocalUsageDatabase {
                 model TEXT NOT NULL DEFAULT '',
                 input_tokens INTEGER NOT NULL DEFAULT 0,
                 output_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_create_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
                 total_tokens INTEGER NOT NULL DEFAULT 0,
@@ -857,7 +866,7 @@ impl LocalUsageDatabase {
 
     fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 11 {
+        if schema_version >= 12 {
             return Ok(());
         }
 
@@ -1221,6 +1230,31 @@ impl LocalUsageDatabase {
             tx.commit()
                 .map_err(|e| format!("Failed to commit v11 schema migration: {}", e))?;
         }
+
+        if schema_version < 12 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v12 schema migration: {}", e))?;
+
+            Self::add_column_if_missing(
+                &tx,
+                "local_request_facts",
+                "reasoning_tokens",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '12', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v12 schema version: {}", e))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v12 schema migration: {}", e))?;
+        }
+
         Ok(())
     }
 
@@ -1263,6 +1297,169 @@ impl LocalUsageDatabase {
             params![state_key, state_value, updated_at],
         )
         .map_err(|e| format!("Failed to upsert local sync state `{state_key}`: {}", e))?;
+        Ok(())
+    }
+
+    pub(crate) fn get_local_sync_state(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT state_value FROM local_sync_state WHERE state_key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read local sync state `{}`: {}", key, e))
+    }
+
+    fn load_opencode_db_scan_state(
+        &self,
+    ) -> Result<crate::session::opencode_reader::OpenCodeDbScanState, String> {
+        Ok(crate::session::opencode_reader::OpenCodeDbScanState {
+            storage_signature_hash: self
+                .get_local_sync_state(&format!(
+                    "{}storage_signature_hash",
+                    OPENCODE_DB_SYNC_STATE_PREFIX
+                ))?
+                .and_then(|value| value.parse::<u64>().ok())
+                .or_else(|| {
+                    self.get_local_sync_state(&format!(
+                        "{}fingerprint",
+                        OPENCODE_DB_SYNC_STATE_PREFIX
+                    ))
+                    .ok()
+                    .flatten()
+                    .and_then(|value| value.parse::<u64>().ok())
+                })
+                .unwrap_or(0),
+            file_size: self
+                .get_local_sync_state(&format!("{}file_size", OPENCODE_DB_SYNC_STATE_PREFIX))?
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0),
+            schema_fingerprint: self
+                .get_local_sync_state(&format!(
+                    "{}schema_fingerprint",
+                    OPENCODE_DB_SYNC_STATE_PREFIX
+                ))?
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0),
+            assistant_row_count: self
+                .get_local_sync_state(&format!(
+                    "{}assistant_row_count",
+                    OPENCODE_DB_SYNC_STATE_PREFIX
+                ))?
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0),
+            last_time_updated_ms: self
+                .get_local_sync_state(&format!(
+                    "{}last_time_updated_ms",
+                    OPENCODE_DB_SYNC_STATE_PREFIX
+                ))?
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0),
+            last_rowid: self
+                .get_local_sync_state(&format!("{}last_rowid", OPENCODE_DB_SYNC_STATE_PREFIX))?
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0),
+            last_full_reconcile_at_ms: self
+                .get_local_sync_state(&format!(
+                    "{}last_full_reconcile_at_ms",
+                    OPENCODE_DB_SYNC_STATE_PREFIX
+                ))?
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(0),
+            schema_mode: self
+                .get_local_sync_state(&format!("{}schema_mode", OPENCODE_DB_SYNC_STATE_PREFIX))?
+                .unwrap_or_else(|| "unknown".to_string()),
+        })
+    }
+
+    fn persist_opencode_db_scan_state_tx(
+        tx: &rusqlite::Transaction<'_>,
+        state: &crate::session::opencode_reader::OpenCodeDbScanState,
+        now: i64,
+    ) -> Result<(), String> {
+        Self::upsert_sync_state(
+            tx,
+            &format!("{}storage_signature_hash", OPENCODE_DB_SYNC_STATE_PREFIX),
+            &state.storage_signature_hash.to_string(),
+            now,
+        )?;
+        Self::upsert_sync_state(
+            tx,
+            &format!("{}file_size", OPENCODE_DB_SYNC_STATE_PREFIX),
+            &state.file_size.to_string(),
+            now,
+        )?;
+        Self::upsert_sync_state(
+            tx,
+            &format!("{}schema_fingerprint", OPENCODE_DB_SYNC_STATE_PREFIX),
+            &state.schema_fingerprint.to_string(),
+            now,
+        )?;
+        Self::upsert_sync_state(
+            tx,
+            &format!("{}assistant_row_count", OPENCODE_DB_SYNC_STATE_PREFIX),
+            &state.assistant_row_count.to_string(),
+            now,
+        )?;
+        Self::upsert_sync_state(
+            tx,
+            &format!("{}last_time_updated_ms", OPENCODE_DB_SYNC_STATE_PREFIX),
+            &state.last_time_updated_ms.to_string(),
+            now,
+        )?;
+        Self::upsert_sync_state(
+            tx,
+            &format!("{}last_rowid", OPENCODE_DB_SYNC_STATE_PREFIX),
+            &state.last_rowid.to_string(),
+            now,
+        )?;
+        Self::upsert_sync_state(
+            tx,
+            &format!("{}last_full_reconcile_at_ms", OPENCODE_DB_SYNC_STATE_PREFIX),
+            &state.last_full_reconcile_at_ms.to_string(),
+            now,
+        )?;
+        Self::upsert_sync_state(
+            tx,
+            &format!("{}schema_mode", OPENCODE_DB_SYNC_STATE_PREFIX),
+            &state.schema_mode,
+            now,
+        )?;
+        Ok(())
+    }
+
+    fn persist_opencode_message_id_conflict_tx(
+        tx: &rusqlite::Transaction<'_>,
+        status: &crate::session::opencode_reader::OpenCodeMessageIdConflictStatus,
+        now: i64,
+    ) -> Result<(), String> {
+        Self::upsert_sync_state(
+            tx,
+            &format!("{}has_conflict", OPENCODE_MESSAGE_ID_CONFLICT_PREFIX),
+            if status.has_conflict { "1" } else { "0" },
+            now,
+        )?;
+        Self::upsert_sync_state(
+            tx,
+            &format!("{}count", OPENCODE_MESSAGE_ID_CONFLICT_PREFIX),
+            &status.conflict_count.to_string(),
+            now,
+        )?;
+        let sample_json = serde_json::to_string(&status.sample_ids)
+            .map_err(|e| format!("Failed to serialize OpenCode conflict sample ids: {}", e))?;
+        Self::upsert_sync_state(
+            tx,
+            &format!("{}sample_ids", OPENCODE_MESSAGE_ID_CONFLICT_PREFIX),
+            &sample_json,
+            now,
+        )?;
+        Self::upsert_sync_state(
+            tx,
+            &format!("{}seen_at", OPENCODE_MESSAGE_ID_CONFLICT_PREFIX),
+            &now.to_string(),
+            now,
+        )?;
         Ok(())
     }
 
@@ -1362,50 +1559,166 @@ impl LocalUsageDatabase {
         Ok(())
     }
 
-    fn load_session_fingerprints(&self) -> Result<HashMap<String, String>, String> {
+    fn load_source_fingerprints(
+        &self,
+        file_role: &str,
+        tool: Option<&str>,
+    ) -> Result<HashMap<String, String>, String> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
+        let (sql, params_vec): (&str, Vec<&str>) = if let Some(tool) = tool {
+            (
                 "SELECT session_id, fingerprint
                  FROM local_source_files
-                 WHERE file_role = 'session_group' AND deleted_at IS NULL",
+                 WHERE file_role = ?1 AND tool = ?2 AND deleted_at IS NULL",
+                vec![file_role, tool],
             )
-            .map_err(|e| format!("Failed to prepare load_session_fingerprints: {}", e))?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(|e| format!("Failed to query session fingerprints: {}", e))?;
-
+        } else {
+            (
+                "SELECT session_id, fingerprint
+                 FROM local_source_files
+                 WHERE file_role = ?1 AND deleted_at IS NULL",
+                vec![file_role],
+            )
+        };
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| format!("Failed to prepare load_source_fingerprints: {}", e))?;
         let mut result = HashMap::new();
-        for row in rows {
-            let (session_id, fingerprint) =
-                row.map_err(|e| format!("Failed to read session fingerprint row: {}", e))?;
-            result.insert(session_id, fingerprint);
+        if params_vec.len() == 2 {
+            let rows = stmt
+                .query_map(params![params_vec[0], params_vec[1]], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| format!("Failed to query source fingerprints: {}", e))?;
+            for row in rows {
+                let (session_id, fingerprint) =
+                    row.map_err(|e| format!("Failed to read source fingerprint row: {}", e))?;
+                result.insert(session_id, fingerprint);
+            }
+        } else {
+            let rows = stmt
+                .query_map(params![params_vec[0]], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| format!("Failed to query source fingerprints: {}", e))?;
+            for row in rows {
+                let (session_id, fingerprint) =
+                    row.map_err(|e| format!("Failed to read source fingerprint row: {}", e))?;
+                result.insert(session_id, fingerprint);
+            }
         }
         Ok(result)
     }
 
     pub fn sync_from_scanner(&self) -> Result<(), String> {
+        let persisted_opencode_state = self.load_opencode_db_scan_state()?;
+        crate::session::opencode_reader::hydrate_opencode_db_scan_state(&persisted_opencode_state);
+
         let scanned = scan_session_files();
-        let scanned_map: HashMap<String, SessionFile> = scanned
+        let transcript_map: HashMap<String, DirtySessionSync> = scanned
             .into_iter()
-            .map(|session| (session.session_id.clone(), session))
+            .map(|session| {
+                let (meta, requests) = parse_session_file_for_storage(&session);
+                let project_key = meta
+                    .project_name
+                    .clone()
+                    .or(meta.cwd.clone())
+                    .unwrap_or_else(|| "unknown_project".to_string());
+                let key = session.session_id.clone();
+                (
+                    key.clone(),
+                    DirtySessionSync {
+                        session_id: key,
+                        tool: session.tool.clone(),
+                        file_path: session.file_path.clone(),
+                        file_role: "session_group".to_string(),
+                        file_size: session.file_size,
+                        last_modified: session.last_modified,
+                        fingerprint: session.fingerprint.to_string(),
+                        meta,
+                        requests,
+                        project_key,
+                    },
+                )
+            })
             .collect();
+        self.sync_dirty_session_map(transcript_map, "session_group", None)?;
+
+        let opencode_sessions = crate::session::opencode_reader::scan_opencode_sessions();
+        let opencode_local_records: Vec<crate::session::LocalRequestRecord> = opencode_sessions
+            .iter()
+            .flat_map(|session| session.requests.iter().cloned())
+            .collect();
+        let opencode_map: HashMap<String, DirtySessionSync> = opencode_sessions
+            .into_iter()
+            .map(|session| {
+                let project_key = session
+                    .meta
+                    .project_name
+                    .clone()
+                    .or(session.meta.cwd.clone())
+                    .unwrap_or_else(|| "unknown_project".to_string());
+                let key = session.meta.session_id.clone();
+                (
+                    key.clone(),
+                    DirtySessionSync {
+                        session_id: key,
+                        tool: session.meta.tool.clone(),
+                        file_path: session.source_locator.clone(),
+                        file_role: "opencode_session".to_string(),
+                        file_size: 0,
+                        last_modified: session.meta.last_modified,
+                        fingerprint: session.fingerprint.to_string(),
+                        meta: session.meta,
+                        requests: session.requests,
+                        project_key,
+                    },
+                )
+            })
+            .collect();
+        self.sync_dirty_session_map(opencode_map, "opencode_session", Some("opencode"))?;
+        if let Some(proxy_db) = crate::proxy::ProxyDatabase::get_global() {
+            let _ = proxy_db.reconcile_opencode_records(&opencode_local_records);
+        }
+
+        let opencode_state = crate::session::opencode_reader::get_opencode_db_scan_state();
+        let opencode_schema_status = crate::session::opencode_reader::check_opencode_schema();
+        let now = chrono::Utc::now().timestamp();
+        let conn = self.conn.lock().unwrap();
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to start OpenCode DB sync state transaction: {}", e))?;
+        Self::persist_opencode_db_scan_state_tx(&tx, &opencode_state, now)?;
+        Self::persist_opencode_message_id_conflict_tx(
+            &tx,
+            &opencode_schema_status.message_id_conflict,
+            now,
+        )?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit OpenCode DB sync state: {}", e))?;
+
+        Ok(())
+    }
+
+    fn sync_dirty_session_map(
+        &self,
+        scanned_map: HashMap<String, DirtySessionSync>,
+        file_role: &str,
+        tool: Option<&str>,
+    ) -> Result<(), String> {
         let current_ids: HashSet<String> = scanned_map.keys().cloned().collect();
-        let cached_fingerprints = self.load_session_fingerprints()?;
+        let cached_fingerprints = self.load_source_fingerprints(file_role, tool)?;
         let cached_ids: HashSet<String> = cached_fingerprints.keys().cloned().collect();
 
         let removed_ids: Vec<String> = cached_ids.difference(&current_ids).cloned().collect();
         let mut dirty_ids: Vec<String> = scanned_map
             .iter()
-            .filter_map(|(session_id, session)| {
-                let fingerprint = session.fingerprint.to_string();
-                match cached_fingerprints.get(session_id) {
-                    Some(existing) if existing == &fingerprint => None,
+            .filter_map(
+                |(session_id, session)| match cached_fingerprints.get(session_id) {
+                    Some(existing) if existing == &session.fingerprint => None,
                     _ => Some(session_id.clone()),
-                }
-            })
+                },
+            )
             .collect();
         dirty_ids.sort();
 
@@ -1416,21 +1729,6 @@ impl LocalUsageDatabase {
         let dirty_sessions: Vec<DirtySessionSync> = dirty_ids
             .into_iter()
             .filter_map(|session_id| scanned_map.get(&session_id).cloned())
-            .map(|session| {
-                let (meta, requests) = parse_session_file_for_storage(&session);
-                let project_key = meta
-                    .project_name
-                    .clone()
-                    .or(meta.cwd.clone())
-                    .unwrap_or_else(|| "unknown_project".to_string());
-
-                DirtySessionSync {
-                    session,
-                    meta,
-                    requests,
-                    project_key,
-                }
-            })
             .collect();
         let dirty_session_count = dirty_sessions.len();
         let removed_session_count = removed_ids.len();
@@ -1490,12 +1788,17 @@ impl LocalUsageDatabase {
 
         for dirty_session in dirty_sessions {
             let DirtySessionSync {
-                session,
+                session_id,
+                tool,
+                file_path,
+                file_role,
+                file_size,
+                last_modified,
+                fingerprint,
                 meta,
                 requests,
                 project_key,
             } = dirty_session;
-            let fingerprint = session.fingerprint.to_string();
 
             // 抓取本会话历史 dedupe_key 集合，便于：
             // 1. 走 upsert 路径而不 delete-then-insert，保留 created_at（孤立清理的依据）
@@ -1505,9 +1808,7 @@ impl LocalUsageDatabase {
                     .prepare("SELECT dedupe_key FROM local_request_facts WHERE session_id = ?1")
                     .map_err(|e| format!("Failed to prepare existing dedupe_key query: {}", e))?;
                 let rows = stmt
-                    .query_map(params![session.session_id.as_str()], |row| {
-                        row.get::<_, String>(0)
-                    })
+                    .query_map(params![session_id.as_str()], |row| row.get::<_, String>(0))
                     .map_err(|e| format!("Failed to query existing dedupe_keys: {}", e))?;
                 let mut keys = HashSet::new();
                 for row in rows {
@@ -1526,9 +1827,7 @@ impl LocalUsageDatabase {
                     )
                     .map_err(|e| format!("Failed to prepare dirty session day query: {}", e))?;
                 let rows = stmt
-                    .query_map(params![session.session_id.as_str()], |row| {
-                        row.get::<_, String>(0)
-                    })
+                    .query_map(params![session_id.as_str()], |row| row.get::<_, String>(0))
                     .map_err(|e| format!("Failed to query dirty session days: {}", e))?;
                 for row in rows {
                     let date =
@@ -1552,7 +1851,7 @@ impl LocalUsageDatabase {
             // local_sessions：摘要可以直接覆盖
             tx.execute(
                 "DELETE FROM local_sessions WHERE session_id = ?1",
-                params![session.session_id.as_str()],
+                params![session_id.as_str()],
             )
             .map_err(|e| format!("Failed to clear stale local session row: {}", e))?;
 
@@ -1563,11 +1862,12 @@ impl LocalUsageDatabase {
                     tool, session_id, project_key, file_path, file_role, file_size,
                     mtime_epoch, fingerprint, last_scanned_at, last_synced_at, sync_status,
                     deleted_at, deletion_reason
-                ) VALUES (?1, ?2, ?3, ?4, 'session_group', ?5, ?6, ?7, ?8, ?9, 'ready', NULL, NULL)
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'ready', NULL, NULL)
                 ON CONFLICT(file_path) DO UPDATE SET
                     tool = excluded.tool,
                     session_id = excluded.session_id,
                     project_key = excluded.project_key,
+                    file_role = excluded.file_role,
                     file_size = excluded.file_size,
                     mtime_epoch = excluded.mtime_epoch,
                     fingerprint = excluded.fingerprint,
@@ -1577,12 +1877,13 @@ impl LocalUsageDatabase {
                     deleted_at = NULL,
                     deletion_reason = NULL",
                 params![
-                    session.tool.as_str(),
-                    session.session_id.as_str(),
+                    tool.as_str(),
+                    session_id.as_str(),
                     project_key.as_str(),
-                    session.file_path.as_str(),
-                    session.file_size as i64,
-                    session.last_modified,
+                    file_path.as_str(),
+                    file_role.as_str(),
+                    file_size as i64,
+                    last_modified,
                     fingerprint,
                     now,
                     now
@@ -1700,7 +2001,14 @@ impl LocalUsageDatabase {
                 let request_id = format!("{}:{}", request.tool, dedupe_key);
                 // request_key：与合并层一致的全局键，落库一列；
                 // 规则必须与 unified_usage::service::request_key_for_local 保持同步。
-                let request_key = if request.message_id.trim().is_empty() {
+                let request_key = if let Some(key) = request
+                    .request_key
+                    .as_ref()
+                    .map(|value| value.trim())
+                    .filter(|value| !value.is_empty())
+                {
+                    key.to_string()
+                } else if request.message_id.trim().is_empty() {
                     format!(
                         "{}:{}:{}:{}:{}:{}:{}:{}:{}",
                         request.tool,
@@ -1720,12 +2028,12 @@ impl LocalUsageDatabase {
                 tx.execute(
                     "INSERT INTO local_request_facts (
                         request_id, session_id, tool, project_key, timestamp, message_id, dedupe_key,
-                        request_key, model, input_tokens, output_tokens, cache_create_tokens,
-                        cache_read_tokens, total_tokens, source_offset, event_index, is_subagent,
-                        raw_event_kind, sync_version, created_at, source_file_path,
-                        source_file_present
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                              NULL, ?15, ?16, 'request', 1, ?17, ?18, 1)
+                        request_key, model, input_tokens, output_tokens, reasoning_tokens,
+                        cache_create_tokens, cache_read_tokens, total_tokens, source_offset,
+                        event_index, is_subagent, raw_event_kind, sync_version, created_at,
+                        source_file_path, source_file_present
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+                              NULL, ?16, ?17, 'request', 1, ?18, ?19, 1)
                     ON CONFLICT(tool, dedupe_key) DO UPDATE SET
                         session_id = excluded.session_id,
                         project_key = excluded.project_key,
@@ -1735,6 +2043,7 @@ impl LocalUsageDatabase {
                         model = excluded.model,
                         input_tokens = excluded.input_tokens,
                         output_tokens = excluded.output_tokens,
+                        reasoning_tokens = excluded.reasoning_tokens,
                         cache_create_tokens = excluded.cache_create_tokens,
                         cache_read_tokens = excluded.cache_read_tokens,
                         total_tokens = excluded.total_tokens,
@@ -1755,13 +2064,14 @@ impl LocalUsageDatabase {
                         request.model.as_str(),
                         request.input_tokens as i64,
                         request.output_tokens as i64,
+                        request.reasoning_tokens as i64,
                         request.cache_create_tokens as i64,
                         request.cache_read_tokens as i64,
                         request.total_tokens as i64,
                         idx as i64,
                         if request.is_subagent { 1 } else { 0 },
                         now,
-                        session.file_path.as_str()
+                        file_path.as_str()
                     ],
                 )
                 .map_err(|e| format!("Failed to upsert local request fact: {}", e))?;
@@ -1829,7 +2139,7 @@ impl LocalUsageDatabase {
                     "UPDATE local_request_facts
                      SET source_file_present = 0
                      WHERE tool = ?1 AND dedupe_key = ?2",
-                    params![session.tool.as_str(), stale_key],
+                    params![tool.as_str(), stale_key],
                 )
                 .map_err(|e| format!("Failed to soft-mark stale local request fact: {}", e))?;
             }
@@ -2186,7 +2496,8 @@ impl LocalUsageDatabase {
             ToolFilter::All => (
                 "SELECT session_id, tool, timestamp, message_id,
                         input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-                        total_tokens, model, is_subagent, request_key, source_file_present
+                        total_tokens, model, is_subagent, request_key, source_file_present,
+                        COALESCE(reasoning_tokens, 0)
                  FROM local_request_facts
                  WHERE timestamp >= ?1 AND timestamp < ?2
                  ORDER BY timestamp ASC"
@@ -2196,7 +2507,8 @@ impl LocalUsageDatabase {
             ToolFilter::Tool(tool) => (
                 "SELECT session_id, tool, timestamp, message_id,
                         input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-                        total_tokens, model, is_subagent, request_key, source_file_present
+                        total_tokens, model, is_subagent, request_key, source_file_present,
+                        COALESCE(reasoning_tokens, 0)
                  FROM local_request_facts
                  WHERE timestamp >= ?1 AND timestamp < ?2 AND tool = ?3
                  ORDER BY timestamp ASC"
@@ -2224,6 +2536,7 @@ impl LocalUsageDatabase {
                 is_subagent: row.get::<_, i64>(10)? != 0,
                 request_key: request_key.filter(|v| !v.trim().is_empty()),
                 source_file_present: source_file_present.map(|v| v != 0),
+                reasoning_tokens: row.get::<_, i64>(13)? as u64,
             })
         };
 
@@ -2629,6 +2942,7 @@ impl LocalUsageDatabase {
                 is_subagent: row.get::<_, i64>(10)? != 0,
                 request_key: request_key.filter(|v| !v.trim().is_empty()),
                 source_file_present: None,
+                reasoning_tokens: 0,
             })
         };
         let rows = match param {
@@ -3727,6 +4041,7 @@ pub fn ensure_local_usage_synced() -> Result<Arc<LocalUsageDatabase>, String> {
 mod tests {
     use super::*;
     use rusqlite::params;
+    use std::fs;
 
     fn temp_db() -> (tempfile::TempDir, LocalUsageDatabase) {
         let tmpdir = tempfile::tempdir().expect("create temp dir");
@@ -3793,6 +4108,491 @@ mod tests {
             ],
         )
         .expect("insert source file");
+    }
+
+    #[test]
+    fn opencode_db_checkpoint_persists_across_reopen() {
+        let tmpdir = tempfile::tempdir().expect("create temp dir");
+        let data_home = tmpdir.path().join(".local").join("share");
+        let opencode_home = data_home.join("opencode");
+        fs::create_dir_all(&opencode_home).expect("create opencode home");
+
+        let db_path = opencode_home.join("opencode.db");
+        let conn = Connection::open(&db_path).expect("open opencode db");
+        conn.execute_batch(
+            "
+            CREATE TABLE session (
+              id TEXT PRIMARY KEY,
+              directory TEXT,
+              title TEXT,
+              model TEXT,
+              tokens_input INTEGER,
+              tokens_output INTEGER,
+              tokens_reasoning INTEGER,
+              tokens_cache_read INTEGER,
+              tokens_cache_write INTEGER,
+              time_created INTEGER,
+              time_updated INTEGER,
+              time_archived INTEGER
+            );
+            CREATE TABLE message (
+              id TEXT,
+              session_id TEXT,
+              time_updated INTEGER,
+              data TEXT
+            );
+            INSERT INTO session (
+              id, directory, title, model, tokens_input, tokens_output, tokens_reasoning,
+              tokens_cache_read, tokens_cache_write, time_created, time_updated, time_archived
+            ) VALUES (
+              'sess_1', '/tmp/project', 'OpenCode', '{\"id\":\"gpt-4o\"}', 0, 0, 0, 0, 0, 1700000000000, 1700000005000, NULL
+            );
+            ",
+        )
+        .expect("create schema");
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_updated, data) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "msg_1",
+                "sess_1",
+                1700000005000_i64,
+                serde_json::json!({
+                    "id": "msg_1",
+                    "sessionID": "sess_1",
+                    "modelID": "gpt-4o",
+                    "path": { "cwd": "/tmp/project" },
+                    "role": "assistant",
+                    "time": { "created": 1700000000000_i64, "completed": 1700000005000_i64 },
+                    "tokens": { "input": 10, "output": 2, "reasoning": 1, "cache": { "read": 0, "write": 0 } }
+                })
+                .to_string()
+            ],
+        )
+        .expect("insert first message");
+        drop(conn);
+
+        let old_xdg_data_home = std::env::var_os("XDG_DATA_HOME");
+        std::env::set_var("XDG_DATA_HOME", &data_home);
+
+        let local_usage_path = tmpdir.path().join("local_usage.db");
+        let db = LocalUsageDatabase::new_with_path(&local_usage_path).expect("open local usage db");
+        db.sync_from_scanner().expect("sync once");
+
+        let first_state = db.load_opencode_db_scan_state().expect("load scan state");
+        assert!(first_state.last_rowid > 0);
+
+        let conn = Connection::open(&db_path).expect("reopen opencode db");
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_updated, data) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "msg_2",
+                "sess_1",
+                1700000010000_i64,
+                serde_json::json!({
+                    "id": "msg_2",
+                    "sessionID": "sess_1",
+                    "model": "gpt-4o-mini",
+                    "path": { "cwd": "/tmp/project" },
+                    "role": "assistant",
+                    "time": { "created": 1700000009000_i64, "completed": 1700000010000_i64 },
+                    "tokens": { "input": 3, "output": 1, "reasoning": 0, "cache": { "read": 0, "write": 0 } }
+                })
+                .to_string()
+            ],
+        )
+        .expect("insert second message");
+        drop(conn);
+
+        let reopened =
+            LocalUsageDatabase::new_with_path(&local_usage_path).expect("reopen local usage db");
+        reopened.sync_from_scanner().expect("sync twice");
+
+        let second_state = reopened
+            .load_opencode_db_scan_state()
+            .expect("load scan state");
+        assert!(second_state.last_rowid > first_state.last_rowid);
+
+        let records = reopened
+            .get_request_records_in_range(0, i64::MAX, &ToolFilter::Tool("opencode".to_string()))
+            .expect("load opencode facts");
+        assert_eq!(records.len(), 2);
+
+        match old_xdg_data_home {
+            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+    }
+
+    #[test]
+    fn opencode_message_id_conflict_persists_conflict_state_and_composite_request_keys() {
+        let tmpdir = tempfile::tempdir().expect("create temp dir");
+        let data_home = tmpdir.path().join(".local").join("share");
+        let opencode_home = data_home.join("opencode");
+        fs::create_dir_all(&opencode_home).expect("create opencode home");
+
+        let db_path = opencode_home.join("opencode.db");
+        let conn = Connection::open(&db_path).expect("open opencode db");
+        conn.execute_batch(
+            "
+            CREATE TABLE message (
+              id TEXT,
+              session_id TEXT,
+              time_updated INTEGER,
+              data TEXT
+            );
+            ",
+        )
+        .expect("create message schema");
+        for session_id in ["sess_a", "sess_b"] {
+            conn.execute(
+                "INSERT INTO message (id, session_id, time_updated, data) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    "msg_dup",
+                    session_id,
+                    1700000010000_i64,
+                    serde_json::json!({
+                        "id": "msg_dup",
+                        "sessionID": session_id,
+                        "modelID": "gpt-4o",
+                        "path": { "cwd": format!("/tmp/{}", session_id) },
+                        "role": "assistant",
+                        "time": { "created": 1700000009000_i64, "completed": 1700000010000_i64 },
+                        "tokens": { "input": 3, "output": 1, "reasoning": 0, "cache": { "read": 0, "write": 0 } }
+                    })
+                    .to_string()
+                ],
+            )
+            .expect("insert duplicate message");
+        }
+        drop(conn);
+
+        let old_xdg_data_home = std::env::var_os("XDG_DATA_HOME");
+        std::env::set_var("XDG_DATA_HOME", &data_home);
+
+        let local_usage_path = tmpdir.path().join("local_usage.db");
+        let db = LocalUsageDatabase::new_with_path(&local_usage_path).expect("open local usage db");
+        db.sync_from_scanner().expect("sync");
+
+        let has_conflict = db
+            .get_local_sync_state("opencode_message_id_conflict_has_conflict")
+            .expect("read conflict state")
+            .unwrap_or_default();
+        assert_eq!(has_conflict, "1");
+
+        let records = db
+            .get_request_records_in_range(0, i64::MAX, &ToolFilter::Tool("opencode".to_string()))
+            .expect("load opencode facts");
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|record| {
+            record
+                .request_key
+                .as_deref()
+                .map(|key| key.contains("|msg_dup"))
+                .unwrap_or(false)
+        }));
+
+        match old_xdg_data_home {
+            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+    }
+
+    #[test]
+    fn opencode_db_message_rewrite_updates_existing_fact() {
+        let tmpdir = tempfile::tempdir().expect("create temp dir");
+        let data_home = tmpdir.path().join(".local").join("share");
+        let opencode_home = data_home.join("opencode");
+        fs::create_dir_all(&opencode_home).expect("create opencode home");
+
+        let db_path = opencode_home.join("opencode.db");
+        let conn = Connection::open(&db_path).expect("open opencode db");
+        conn.execute_batch(
+            "
+            CREATE TABLE message (
+              id TEXT,
+              session_id TEXT,
+              time_updated INTEGER,
+              data TEXT
+            );
+            ",
+        )
+        .expect("create message schema");
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_updated, data) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "msg_rewrite",
+                "sess_rewrite",
+                1700000005000_i64,
+                serde_json::json!({
+                    "id": "msg_rewrite",
+                    "sessionID": "sess_rewrite",
+                    "modelID": "gpt-4o",
+                    "path": { "cwd": "/tmp/project" },
+                    "role": "assistant",
+                    "time": { "created": 1700000000000_i64, "completed": 1700000005000_i64 },
+                    "tokens": { "input": 4, "output": 1, "reasoning": 0, "cache": { "read": 0, "write": 0 } }
+                })
+                .to_string()
+            ],
+        )
+        .expect("insert first version");
+        drop(conn);
+
+        let old_xdg_data_home = std::env::var_os("XDG_DATA_HOME");
+        std::env::set_var("XDG_DATA_HOME", &data_home);
+
+        let local_usage_path = tmpdir.path().join("local_usage.db");
+        let db = LocalUsageDatabase::new_with_path(&local_usage_path).expect("open local usage db");
+        db.sync_from_scanner().expect("sync once");
+
+        let conn = Connection::open(&db_path).expect("reopen opencode db");
+        conn.execute(
+            "UPDATE message SET time_updated = ?1, data = ?2 WHERE id = 'msg_rewrite'",
+            params![
+                1700000015000_i64,
+                serde_json::json!({
+                    "id": "msg_rewrite",
+                    "sessionID": "sess_rewrite",
+                    "modelID": "gpt-4o",
+                    "path": { "cwd": "/tmp/project" },
+                    "role": "assistant",
+                    "time": { "created": 1700000000000_i64, "completed": 1700000015000_i64 },
+                    "tokens": { "input": 9, "output": 2, "reasoning": 1, "cache": { "read": 0, "write": 0 } }
+                })
+                .to_string()
+            ],
+        )
+        .expect("rewrite message");
+        drop(conn);
+
+        let reopened =
+            LocalUsageDatabase::new_with_path(&local_usage_path).expect("reopen local usage db");
+        reopened.sync_from_scanner().expect("sync twice");
+
+        let records = reopened
+            .get_request_records_in_range(0, i64::MAX, &ToolFilter::Tool("opencode".to_string()))
+            .expect("load opencode facts");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].input_tokens, 9);
+        assert_eq!(records[0].output_tokens, 3);
+        assert_eq!(records[0].total_tokens, 12);
+
+        match old_xdg_data_home {
+            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+    }
+
+    #[test]
+    fn opencode_schema_mode_transition_persists_message_only_and_recovers_to_full() {
+        let tmpdir = tempfile::tempdir().expect("create temp dir");
+        let data_home = tmpdir.path().join(".local").join("share");
+        let opencode_home = data_home.join("opencode");
+        fs::create_dir_all(&opencode_home).expect("create opencode home");
+
+        let db_path = opencode_home.join("opencode.db");
+        let conn = Connection::open(&db_path).expect("open opencode db");
+        conn.execute_batch(
+            "
+            CREATE TABLE message (
+              id TEXT,
+              session_id TEXT,
+              time_updated INTEGER,
+              data TEXT
+            );
+            ",
+        )
+        .expect("create message schema");
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_updated, data) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "msg_mode",
+                "sess_mode",
+                1700000005000_i64,
+                serde_json::json!({
+                    "id": "msg_mode",
+                    "sessionID": "sess_mode",
+                    "modelID": "gpt-4o",
+                    "path": { "cwd": "/tmp/project" },
+                    "role": "assistant",
+                    "time": { "created": 1700000000000_i64, "completed": 1700000005000_i64 },
+                    "tokens": { "input": 4, "output": 1, "reasoning": 0, "cache": { "read": 0, "write": 0 } }
+                })
+                .to_string()
+            ],
+        )
+        .expect("insert message");
+        drop(conn);
+
+        let old_xdg_data_home = std::env::var_os("XDG_DATA_HOME");
+        std::env::set_var("XDG_DATA_HOME", &data_home);
+
+        let local_usage_path = tmpdir.path().join("local_usage.db");
+        let db = LocalUsageDatabase::new_with_path(&local_usage_path).expect("open local usage db");
+        db.sync_from_scanner().expect("sync once");
+        assert_eq!(
+            db.get_local_sync_state("opencode_db_schema_mode")
+                .expect("read schema mode"),
+            Some("message_only".to_string())
+        );
+
+        let conn = Connection::open(&db_path).expect("reopen opencode db");
+        conn.execute_batch(
+            "
+            CREATE TABLE session (
+              id TEXT PRIMARY KEY,
+              directory TEXT,
+              title TEXT,
+              model TEXT,
+              tokens_input INTEGER,
+              tokens_output INTEGER,
+              tokens_reasoning INTEGER,
+              tokens_cache_read INTEGER,
+              tokens_cache_write INTEGER,
+              time_created INTEGER,
+              time_updated INTEGER,
+              time_archived INTEGER
+            );
+            INSERT INTO session (
+              id, directory, title, model, tokens_input, tokens_output, tokens_reasoning,
+              tokens_cache_read, tokens_cache_write, time_created, time_updated, time_archived
+            ) VALUES (
+              'sess_mode', '/tmp/project', 'Recovered Session', '{\"id\":\"gpt-4o\"}', 0, 0, 0, 0, 0, 1700000000000, 1700000005000, NULL
+            );
+            UPDATE message SET time_updated = 1700000010000;
+            ",
+        )
+        .expect("add session table");
+        drop(conn);
+
+        let reopened =
+            LocalUsageDatabase::new_with_path(&local_usage_path).expect("reopen local usage db");
+        reopened.sync_from_scanner().expect("sync twice");
+        assert_eq!(
+            reopened
+                .get_local_sync_state("opencode_db_schema_mode")
+                .expect("read schema mode"),
+            Some("full".to_string())
+        );
+
+        match old_xdg_data_home {
+            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
+    }
+
+    #[test]
+    fn opencode_schema_mode_transition_persists_full_to_message_only() {
+        let tmpdir = tempfile::tempdir().expect("create temp dir");
+        let data_home = tmpdir.path().join(".local").join("share");
+        let opencode_home = data_home.join("opencode");
+        fs::create_dir_all(&opencode_home).expect("create opencode home");
+
+        let db_path = opencode_home.join("opencode.db");
+        let conn = Connection::open(&db_path).expect("open opencode db");
+        conn.execute_batch(
+            "
+            CREATE TABLE session (
+              id TEXT PRIMARY KEY,
+              directory TEXT,
+              title TEXT,
+              model TEXT,
+              tokens_input INTEGER,
+              tokens_output INTEGER,
+              tokens_reasoning INTEGER,
+              tokens_cache_read INTEGER,
+              tokens_cache_write INTEGER,
+              time_created INTEGER,
+              time_updated INTEGER,
+              time_archived INTEGER
+            );
+            CREATE TABLE message (
+              id TEXT,
+              session_id TEXT,
+              time_updated INTEGER,
+              data TEXT
+            );
+            INSERT INTO session (
+              id, directory, title, model, tokens_input, tokens_output, tokens_reasoning,
+              tokens_cache_read, tokens_cache_write, time_created, time_updated, time_archived
+            ) VALUES (
+              'sess_mode', '/tmp/project', 'Full Session', '{\"id\":\"gpt-4o\"}', 0, 0, 0, 0, 0, 1700000000000, 1700000005000, NULL
+            );
+            ",
+        )
+        .expect("create schema");
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_updated, data) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                "msg_mode",
+                "sess_mode",
+                1700000005000_i64,
+                serde_json::json!({
+                    "id": "msg_mode",
+                    "sessionID": "sess_mode",
+                    "modelID": "gpt-4o",
+                    "path": { "cwd": "/tmp/project" },
+                    "role": "assistant",
+                    "time": { "created": 1700000000000_i64, "completed": 1700000005000_i64 },
+                    "tokens": { "input": 4, "output": 1, "reasoning": 0, "cache": { "read": 0, "write": 0 } }
+                })
+                .to_string()
+            ],
+        )
+        .expect("insert message");
+        drop(conn);
+
+        let old_xdg_data_home = std::env::var_os("XDG_DATA_HOME");
+        std::env::set_var("XDG_DATA_HOME", &data_home);
+
+        let local_usage_path = tmpdir.path().join("local_usage.db");
+        let db = LocalUsageDatabase::new_with_path(&local_usage_path).expect("open local usage db");
+        db.sync_from_scanner().expect("sync once");
+        assert_eq!(
+            db.get_local_sync_state("opencode_db_schema_mode")
+                .expect("read schema mode"),
+            Some("full".to_string())
+        );
+
+        let conn = Connection::open(&db_path).expect("reopen opencode db");
+        conn.execute_batch(
+            "
+            ALTER TABLE session RENAME TO session_old;
+            CREATE TABLE session (
+              id TEXT PRIMARY KEY,
+              directory TEXT,
+              title TEXT,
+              tokens_input INTEGER,
+              tokens_output INTEGER,
+              tokens_cache_read INTEGER,
+              tokens_cache_write INTEGER,
+              time_created INTEGER,
+              time_updated INTEGER
+            );
+            INSERT INTO session (id, directory, title, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, time_created, time_updated)
+            SELECT id, directory, title, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, time_created, time_updated
+            FROM session_old;
+            DROP TABLE session_old;
+            UPDATE message SET time_updated = 1700000010000;
+            ",
+        )
+        .expect("degrade schema");
+        drop(conn);
+
+        let reopened =
+            LocalUsageDatabase::new_with_path(&local_usage_path).expect("reopen local usage db");
+        reopened.sync_from_scanner().expect("sync twice");
+        assert_eq!(
+            reopened
+                .get_local_sync_state("opencode_db_schema_mode")
+                .expect("read schema mode"),
+            Some("message_only".to_string())
+        );
+
+        match old_xdg_data_home {
+            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
     }
 
     #[test]

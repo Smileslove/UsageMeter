@@ -10,7 +10,7 @@ import { TOOL_LOBE_ICONS } from '../iconConfig'
 import { formatCost as formatCostUtil, formatTokenValue, formatRequestCount } from '../utils/format'
 
 const store = useMonitorStore()
-const SESSION_SOURCE_TOOLS = new Set(['claude_code', 'codex'])
+const SESSION_SOURCE_TOOLS = new Set(['claude_code', 'codex', 'opencode'])
 const normalizeSessionTool = (tool: string | null | undefined) => (
   tool && SESSION_SOURCE_TOOLS.has(tool) ? tool : null
 )

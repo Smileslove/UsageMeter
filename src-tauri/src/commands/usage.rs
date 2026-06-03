@@ -2692,6 +2692,42 @@ pub async fn get_local_usage_maintenance_stats() -> Result<LocalUsageMaintenance
     .map_err(|e| format!("join error: {e}"))?
 }
 
+/// 检查 OpenCode 数据库 schema 兼容性（用于设置页告知用户）。
+#[tauri::command]
+pub async fn get_opencode_schema_status(
+) -> Result<crate::session::opencode_reader::OpenCodeSchemaStatus, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let mut status = crate::session::opencode_reader::check_opencode_schema();
+        if let Ok(db) = crate::local_usage::ensure_local_usage_synced() {
+            status.persisted_compatibility_mode = db
+                .get_local_sync_state("opencode_db_schema_mode")
+                .ok()
+                .flatten();
+            status.message_id_conflict.has_conflict = db
+                .get_local_sync_state("opencode_message_id_conflict_has_conflict")
+                .ok()
+                .flatten()
+                .map(|value| value == "1")
+                .unwrap_or(status.message_id_conflict.has_conflict);
+            status.message_id_conflict.conflict_count = db
+                .get_local_sync_state("opencode_message_id_conflict_count")
+                .ok()
+                .flatten()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(status.message_id_conflict.conflict_count);
+            status.message_id_conflict.sample_ids = db
+                .get_local_sync_state("opencode_message_id_conflict_sample_ids")
+                .ok()
+                .flatten()
+                .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
+                .unwrap_or_else(|| status.message_id_conflict.sample_ids.clone());
+        }
+        Ok(status)
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
+}
+
 /// 清理孤立的本地事实（来源文件已消失的请求记录）。
 ///
 /// `older_than_days`：仅清理 `created_at` 早于该天数的孤立行；传 0 表示全部清理。

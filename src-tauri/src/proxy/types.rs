@@ -97,6 +97,12 @@ pub struct UsageRecord {
     pub timestamp: i64,
     /// 消息 ID（用于去重）
     pub message_id: String,
+    /// 物理存储去重键。对 OpenCode 不再等同于裸 message_id。
+    #[serde(default)]
+    pub storage_dedupe_key: Option<String>,
+    /// 统一合并层使用的规范请求键。
+    #[serde(default)]
+    pub canonical_request_key: Option<String>,
     /// 输入 Token（不含缓存）
     pub input_tokens: u64,
     /// 输出 Token
@@ -114,6 +120,12 @@ pub struct UsageRecord {
     pub model: String,
     /// 会话 ID（如果可用）
     pub session_id: Option<String>,
+    /// 会话归属解析状态：unknown / known / ambiguous / unmatched
+    #[serde(default)]
+    pub session_resolution_state: Option<String>,
+    /// message_id 是否已知跨会话冲突
+    #[serde(default)]
+    pub message_id_conflicted: bool,
     /// 请求开始时间（Unix 毫秒）
     pub request_start_time: i64,
     /// 请求结束时间（Unix 毫秒）
@@ -160,6 +172,8 @@ impl Default for UsageRecord {
         Self {
             timestamp: now,
             message_id: String::new(),
+            storage_dedupe_key: None,
+            canonical_request_key: None,
             input_tokens: 0,
             output_tokens: 0,
             cache_create_tokens: 0,
@@ -168,6 +182,8 @@ impl Default for UsageRecord {
             total_tokens: 0,
             model: String::new(),
             session_id: None,
+            session_resolution_state: None,
+            message_id_conflicted: false,
             request_start_time: now,
             request_end_time: now,
             duration_ms: 0,

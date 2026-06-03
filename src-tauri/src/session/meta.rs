@@ -83,9 +83,12 @@ pub struct LocalRequestRecord {
     /// 输入 Token（不含缓存）
     #[serde(default)]
     pub input_tokens: u64,
-    /// 输出 Token
+    /// 输出 Token（含 reasoning，与代理路径的 output_tokens 语义对齐）
     #[serde(default)]
     pub output_tokens: u64,
+    /// 推理 Token（output_tokens 的细分项，仅供展示；不参与 total_tokens 计算）
+    #[serde(default)]
+    pub reasoning_tokens: u64,
     /// 缓存创建 Token
     #[serde(default)]
     pub cache_create_tokens: u64,

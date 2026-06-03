@@ -6,6 +6,7 @@ mod config_manager;
 mod database;
 mod forwarder;
 mod openai_forwarder;
+mod opencode_config;
 mod server;
 mod source_detector;
 mod source_registry;
@@ -22,6 +23,7 @@ pub use database::{
     PreviewPricingApplyResult, PricingMatchFilter, ProxyDatabase, ProxyDayDependencySnapshot,
     ProxyMergeCacheSignature,
 };
+pub use opencode_config::{OpenCodeConfigManager, OpenCodeSourceRegistry};
 pub use server::ProxyServer;
 pub use source_detector::compute_source_id;
 pub use types::*;

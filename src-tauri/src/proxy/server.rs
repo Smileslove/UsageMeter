@@ -5,6 +5,7 @@ use super::collector::UsageCollector;
 use super::config_manager::ClaudeConfigManager;
 use super::forwarder::{ForwardResult, RequestForwarder};
 use super::openai_forwarder::{OpenAiForwardResult, OpenAiForwarder};
+use super::opencode_config::{OpenCodeConfigManager, OpenCodeSourceRegistry};
 use super::source_detector::{
     detect_source_info, normalize_base_url, register_source_to_settings, SourceRegistrationResult,
 };
@@ -30,6 +31,7 @@ use tokio::sync::{oneshot, RwLock};
 const CONFIG_MONITOR_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const TAKEOVER_CONFLICT_WINDOW_MS: i64 = 30_000;
 const TAKEOVER_CONFLICT_RECLAIM_THRESHOLD: usize = 3;
+const OPENCODE_SESSION_DEBUG_ENV: &str = "USAGEMETER_DEBUG_OPENCODE_SESSION";
 
 struct ClientRoute {
     normalized_path: String,
@@ -37,7 +39,16 @@ struct ClientRoute {
     proxy_profile_id: Option<String>,
     detection_method: String,
     target_base_url: Option<String>,
+    provider_id: Option<String>,
     source_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenCodeProviderProtocol {
+    Anthropic,
+    OpenAiCompatible,
+    OpenAi,
+    Unknown,
 }
 
 /// 外部配置管理器持续抢写时发送给前端的事件载荷。
@@ -161,6 +172,28 @@ async fn should_reclaim_external_config(
     should_reclaim
 }
 
+async fn emit_takeover_conflict_detected(
+    state: &Arc<ProxyState>,
+    tool: &str,
+    config_path: String,
+    external_base_url: String,
+    reclaim_count: usize,
+    window_ms: i64,
+) {
+    if let Some(ref app_handle) = *state.app_handle.read().await {
+        let _ = app_handle.emit(
+            "takeover_conflict_detected",
+            TakeoverConflictDetectedPayload {
+                tool: tool.to_string(),
+                config_path,
+                external_base_url,
+                reclaim_count,
+                window_ms,
+            },
+        );
+    }
+}
+
 fn trim_path_prefix(prefix: &str) -> String {
     prefix.trim().trim_matches('/').to_string()
 }
@@ -191,17 +224,34 @@ fn detect_client_route(path: &str, settings: &AppSettings) -> ClientRoute {
         .filter(|profile| profile.enabled)
     {
         if let Some(normalized_path) = strip_prefix_path(path, &profile.path_prefix) {
-            let (normalized_path, source_id) = strip_source_handle_path(&normalized_path);
+            let (normalized_path, provider_id, source_id, detection_method) =
+                if profile.tool == "opencode" {
+                    let (normalized_path, provider_id, source_id) =
+                        strip_opencode_provider_source_path(&normalized_path);
+                    let detection_method = if provider_id.is_some() && source_id.is_some() {
+                        "path_prefix_provider_source".to_string()
+                    } else if source_id.is_some() {
+                        "path_prefix_source".to_string()
+                    } else {
+                        "path_prefix".to_string()
+                    };
+                    (normalized_path, provider_id, source_id, detection_method)
+                } else {
+                    let (normalized_path, source_id) = strip_source_handle_path(&normalized_path);
+                    let detection_method = if source_id.is_some() {
+                        "path_prefix_source".to_string()
+                    } else {
+                        "path_prefix".to_string()
+                    };
+                    (normalized_path, None, source_id, detection_method)
+                };
             return ClientRoute {
                 normalized_path,
                 client_tool: profile.tool.clone(),
                 proxy_profile_id: Some(profile.id.clone()),
-                detection_method: if source_id.is_some() {
-                    "path_prefix_source".to_string()
-                } else {
-                    "path_prefix".to_string()
-                },
+                detection_method,
                 target_base_url: profile.target_base_url.clone(),
+                provider_id,
                 source_id,
             };
         }
@@ -213,6 +263,7 @@ fn detect_client_route(path: &str, settings: &AppSettings) -> ClientRoute {
         proxy_profile_id: None,
         detection_method: "unmatched_path".to_string(),
         target_base_url: None,
+        provider_id: None,
         source_id: None,
     }
 }
@@ -300,6 +351,31 @@ fn strip_source_handle_path(path: &str) -> (String, Option<String>) {
     (normalized_path, Some(source_id.to_string()))
 }
 
+fn strip_opencode_provider_source_path(path: &str) -> (String, Option<String>, Option<String>) {
+    let clean_path = path.trim();
+    if let Some(rest) = clean_path.strip_prefix("/provider/") {
+        let mut parts = rest.splitn(4, '/');
+        let provider_id = parts.next().unwrap_or_default().trim();
+        let marker = parts.next().unwrap_or_default().trim();
+        let source_id = parts.next().unwrap_or_default().trim();
+        if provider_id.is_empty() || marker != "source" || source_id.is_empty() {
+            return (path.to_string(), None, None);
+        }
+        let normalized_path = parts
+            .next()
+            .map(|tail| format!("/{tail}"))
+            .unwrap_or_else(|| "/".to_string());
+        return (
+            normalized_path,
+            Some(provider_id.to_string()),
+            Some(source_id.to_string()),
+        );
+    }
+
+    let (normalized_path, source_id) = strip_source_handle_path(clean_path);
+    (normalized_path, None, source_id)
+}
+
 fn resolve_route_source(
     client_route_source_id: Option<&str>,
     active_source_id: Option<&str>,
@@ -351,6 +427,58 @@ fn is_codex_endpoint(path: &str, method: &Method) -> bool {
     *method == Method::POST && is_codex_api_path(path)
 }
 
+fn is_openai_usage_endpoint(path: &str, method: &Method) -> bool {
+    is_codex_endpoint(path, method)
+}
+
+fn is_opencode_messages_endpoint(path: &str, method: &Method) -> bool {
+    if *method != Method::POST {
+        return false;
+    }
+
+    matches!(path.trim_start_matches('/'), "messages" | "v1/messages")
+}
+
+fn opencode_provider_protocol(
+    provider_id: Option<&str>,
+    provider_npm: Option<&str>,
+) -> OpenCodeProviderProtocol {
+    match provider_npm {
+        Some("@ai-sdk/anthropic") => OpenCodeProviderProtocol::Anthropic,
+        Some("@ai-sdk/openai-compatible") => OpenCodeProviderProtocol::OpenAiCompatible,
+        Some("@ai-sdk/openai") => OpenCodeProviderProtocol::OpenAi,
+        Some(_) => OpenCodeProviderProtocol::Unknown,
+        None => match provider_id {
+            Some("anthropic") => OpenCodeProviderProtocol::Anthropic,
+            Some("openai") => OpenCodeProviderProtocol::OpenAi,
+            _ => OpenCodeProviderProtocol::Unknown,
+        },
+    }
+}
+
+fn extract_opencode_auth_token(
+    protocol: OpenCodeProviderProtocol,
+    headers: &hyper::HeaderMap,
+) -> Option<String> {
+    match protocol {
+        OpenCodeProviderProtocol::Anthropic => headers
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string()),
+        _ => headers
+            .get(hyper::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                headers
+                    .get("x-api-key")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string())
+            }),
+    }
+}
+
 // 移除 is_codex_chatgpt_backend_endpoint 函数，因为新的代理实现不再拦截 ChatGPT 后端 API
 // 只拦截标准 OpenAI 端点
 
@@ -358,6 +486,126 @@ fn append_query(path: &str, query: Option<&str>) -> String {
     match query {
         Some(query) if !query.is_empty() => format!("{path}?{query}"),
         _ => path.to_string(),
+    }
+}
+
+fn is_opencode_session_debug_enabled() -> bool {
+    matches!(
+        std::env::var(OPENCODE_SESSION_DEBUG_ENV).ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("on")
+    )
+}
+
+fn observe_opencode_request_shape(method: &Method, path: &str, body_bytes: &bytes::Bytes) {
+    if !is_opencode_session_debug_enabled() {
+        return;
+    }
+
+    let body_len = body_bytes.len();
+    let parsed = serde_json::from_slice::<Value>(body_bytes);
+    let json = match parsed {
+        Ok(json) => json,
+        Err(err) => {
+            eprintln!(
+                "[opencode-observe] method={} path={} body_len={} parse_error={}",
+                method, path, body_len, err
+            );
+            return;
+        }
+    };
+
+    let top_level_keys = json
+        .as_object()
+        .map(|obj| {
+            let mut keys: Vec<String> = obj.keys().cloned().collect();
+            keys.sort();
+            keys
+        })
+        .unwrap_or_default();
+    let metadata_keys = json
+        .get("metadata")
+        .and_then(|value| value.as_object())
+        .map(|obj| {
+            let mut keys: Vec<String> = obj.keys().cloned().collect();
+            keys.sort();
+            keys
+        })
+        .unwrap_or_default();
+
+    let mut session_hits = Vec::new();
+    collect_session_field_hits("$", &json, &mut session_hits, 24);
+
+    eprintln!(
+        "[opencode-observe] method={} path={} body_len={} top_level_keys={:?} metadata_keys={:?} session_hits={:?}",
+        method,
+        path,
+        body_len,
+        top_level_keys,
+        metadata_keys,
+        session_hits
+    );
+}
+
+fn collect_session_field_hits(path: &str, value: &Value, hits: &mut Vec<String>, max_hits: usize) {
+    if hits.len() >= max_hits {
+        return;
+    }
+
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                if hits.len() >= max_hits {
+                    break;
+                }
+                let child_path = format!("{path}.{key}");
+                if matches!(key.as_str(), "session_id" | "sessionId" | "sessionID") {
+                    hits.push(format!(
+                        "{}={}",
+                        child_path,
+                        summarize_session_debug_value(child)
+                    ));
+                }
+                collect_session_field_hits(&child_path, child, hits, max_hits);
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                if hits.len() >= max_hits {
+                    break;
+                }
+                let child_path = format!("{path}[{index}]");
+                collect_session_field_hits(&child_path, child, hits, max_hits);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn summarize_session_debug_value(value: &Value) -> String {
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(v) => v.to_string(),
+        Value::Number(v) => v.to_string(),
+        Value::String(v) => {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                "\"\"".to_string()
+            } else if trimmed.chars().count() <= 96 {
+                format!("{trimmed:?}")
+            } else {
+                let prefix: String = trimmed.chars().take(96).collect();
+                format!("{prefix:?}…")
+            }
+        }
+        Value::Array(items) => format!("[array:{}]", items.len()),
+        Value::Object(map) => {
+            let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+            keys.sort();
+            if keys.len() > 8 {
+                keys.truncate(8);
+            }
+            format!("{{keys:{keys:?}}}")
+        }
     }
 }
 
@@ -519,6 +767,68 @@ async fn sync_codex_external_config_change(proxy_port: u16, state: Arc<ProxyStat
             mark_takeover_config_write(&state, "codex").await;
         }
     }
+}
+
+async fn sync_opencode_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
+    if is_takeover_conflict_paused(&state, "opencode").await {
+        return;
+    }
+
+    let settings = get_settings_snapshot(&state).await;
+    let opencode_enabled = settings
+        .client_tools
+        .profiles
+        .iter()
+        .any(|profile| profile.tool == "opencode" && profile.enabled);
+    if !opencode_enabled {
+        return;
+    }
+
+    let config_manager = OpenCodeConfigManager::new();
+    if config_manager.ensure_config_exists().is_err() {
+        return;
+    }
+
+    let route_state = match config_manager.read_live_snapshot() {
+        Ok(state) => state,
+        Err(_) => return,
+    };
+
+    if route_state.providers.is_empty() {
+        return;
+    }
+
+    if route_state.providers.iter().all(|provider| {
+        OpenCodeConfigManager::is_usagemeter_proxy_url_for_port(
+            &provider.original_base_url,
+            proxy_port,
+        )
+    }) {
+        return;
+    }
+
+    let external_base_url = route_state
+        .providers
+        .iter()
+        .find(|provider| {
+            !OpenCodeConfigManager::is_usagemeter_proxy_url_for_port(
+                &provider.original_base_url,
+                proxy_port,
+            )
+        })
+        .map(|provider| format!("{}: {}", provider.provider_id, provider.original_base_url))
+        .unwrap_or_else(|| "external override detected".to_string());
+
+    pause_takeover_conflict(&state, "opencode", Some(external_base_url.clone())).await;
+    emit_takeover_conflict_detected(
+        &state,
+        "opencode",
+        config_manager.config_path().display().to_string(),
+        external_base_url,
+        1,
+        0,
+    )
+    .await;
 }
 
 /// 辅助函数：创建完整响应体
@@ -685,6 +995,7 @@ impl ProxyServer {
         }
 
         sync_codex_external_config_change(self.config.port, self.state.clone()).await;
+        sync_opencode_external_config_change(self.config.port, self.state.clone()).await;
 
         // 创建关闭通道
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
@@ -716,6 +1027,7 @@ impl ProxyServer {
                             sync_external_config_change(proxy_port, state.clone()).await;
                         }
                         sync_codex_external_config_change(proxy_port, state.clone()).await;
+                        sync_opencode_external_config_change(proxy_port, state.clone()).await;
                         None
                     }
                     _ = &mut shutdown_rx => {
@@ -871,6 +1183,7 @@ impl ProxyServer {
         match tool {
             "claude_code" | "claude" => self.force_reclaim_claude_takeover().await?,
             "codex" => self.force_reclaim_codex_takeover().await?,
+            "opencode" => self.force_reclaim_opencode_takeover().await?,
             other => return Err(format!("Unsupported takeover tool: {}", other)),
         };
         clear_takeover_conflict(&self.state, tool).await;
@@ -930,6 +1243,40 @@ impl ProxyServer {
         Ok(())
     }
 
+    async fn force_reclaim_opencode_takeover(&self) -> Result<(), String> {
+        let config_manager = OpenCodeConfigManager::new();
+        config_manager.ensure_config_exists()?;
+
+        let registry = OpenCodeSourceRegistry::new();
+        let route_state = config_manager.read_live_snapshot()?;
+        let handles = if route_state.providers.iter().any(|provider| {
+            OpenCodeConfigManager::is_usagemeter_proxy_url(&provider.original_base_url)
+        }) {
+            let mut handles = Vec::new();
+            for route in config_manager.active_routes() {
+                let handle = registry
+                    .get(&route.source_id)
+                    .or_else(|| registry.latest_for_provider(&route.provider_id))
+                    .ok_or_else(|| "Unable to resolve OpenCode takeover source".to_string())?;
+                handles.push(handle);
+            }
+            handles
+        } else {
+            registry.upsert_from_state(&route_state)?
+        };
+
+        if handles.is_empty() {
+            return Err(
+                "No OpenCode providers with explicit baseURL were found. Configure a provider baseURL first, then enable takeover."
+                    .to_string(),
+            );
+        }
+
+        config_manager.takeover_with_handles(self.config.port, &handles)?;
+        mark_takeover_config_write(&self.state, "opencode").await;
+        Ok(())
+    }
+
     /// 设置 Tauri 应用句柄（用于发送事件）
     #[allow(dead_code)]
     pub async fn set_app_handle(&self, handle: tauri::AppHandle) {
@@ -939,6 +1286,190 @@ impl ProxyServer {
 
 type BoxBody = http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, std::io::Error>;
 type HandlerResult = Result<Response<BoxBody>, hyper::Error>;
+
+/// 处理 OpenCode provider-aware 请求。
+///
+/// UsageMeter 只剥离自身的 `/opencode/provider/{provider_id}/source/{source_id}` 外壳，
+/// 剩余路径由对应协议转发器原样转发到用户原本配置的 provider baseURL。
+async fn handle_opencode_request(
+    method: Method,
+    path: &str,
+    forward_path: &str,
+    client_route: ClientRoute,
+    req: Request<hyper::body::Incoming>,
+    forwarder: Arc<RequestForwarder>,
+    state: &Arc<ProxyState>,
+) -> HandlerResult {
+    let request_start_time_ms = chrono::Utc::now().timestamp_millis();
+    let request_start_instant = std::time::Instant::now();
+
+    let request_headers = req.headers().clone();
+    let body_bytes = req.collect().await?.to_bytes();
+    observe_opencode_request_shape(&method, path, &body_bytes);
+
+    let source_id = client_route
+        .source_id
+        .clone()
+        .or_else(|| OpenCodeConfigManager::new().active_source_id());
+
+    let source_handle = match source_id.as_deref() {
+        Some(id) => match OpenCodeSourceRegistry::new().get(id) {
+            Some(handle) => {
+                let _ = OpenCodeSourceRegistry::new().touch_used(id);
+                Some(handle)
+            }
+            None => {
+                return Ok(json_error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "proxy_source_not_found",
+                    &format!("OpenCode proxy source handle '{}' was not found", id),
+                ));
+            }
+        },
+        None => None,
+    };
+
+    let provider_protocol = opencode_provider_protocol(
+        client_route.provider_id.as_deref().or_else(|| {
+            source_handle
+                .as_ref()
+                .map(|handle| handle.provider_id.as_str())
+        }),
+        source_handle
+            .as_ref()
+            .and_then(|handle| handle.provider_npm.as_deref()),
+    );
+    let auth_token = extract_opencode_auth_token(provider_protocol, &request_headers);
+
+    let target_base_url = match resolve_target_base_url(
+        source_handle.as_ref().map(|h| h.real_base_url.as_str()),
+        client_route.target_base_url.as_deref(),
+        "OpenCode",
+    ) {
+        Ok(url) => url,
+        Err(message) => {
+            return Ok(json_error_response(
+                StatusCode::BAD_GATEWAY,
+                "proxy_target_not_configured",
+                &message,
+            ));
+        }
+    };
+
+    let (api_key_prefix, request_base_url) = if let Some(ref token) = auth_token {
+        let settings = get_settings_snapshot(state).await;
+        let sources = settings.source_aware.sources;
+        let (prefix, base_url, _) = detect_source_info(token, &target_base_url, &sources);
+        (prefix, base_url)
+    } else {
+        (String::new(), normalize_base_url(&target_base_url))
+    };
+
+    let context = RequestContext {
+        start_time: request_start_instant,
+        start_time_ms: request_start_time_ms,
+        api_key_prefix: if api_key_prefix.is_empty() {
+            None
+        } else {
+            Some(api_key_prefix)
+        },
+        request_base_url,
+        client_tool: client_route.client_tool, // "opencode"
+        proxy_profile_id: client_route.proxy_profile_id,
+        client_detection_method: client_route.detection_method,
+        target_base_url: Some(target_base_url),
+        ..Default::default()
+    };
+
+    match provider_protocol {
+        OpenCodeProviderProtocol::Anthropic => {
+            let capture_usage = is_opencode_messages_endpoint(path, &method);
+            if capture_usage {
+                return forward_claude_with_usage(
+                    &forwarder,
+                    method,
+                    forward_path,
+                    request_headers,
+                    body_bytes,
+                    context,
+                    state,
+                )
+                .await;
+            }
+
+            forward_claude_passthrough(
+                &forwarder,
+                method,
+                forward_path,
+                request_headers,
+                body_bytes,
+                context,
+                state,
+            )
+            .await
+        }
+        OpenCodeProviderProtocol::OpenAiCompatible | OpenCodeProviderProtocol::OpenAi => {
+            let openai_forwarder = {
+                let guard = state.openai_forwarder.read().await;
+                guard.clone()
+            };
+            let Some(openai_forwarder) = openai_forwarder else {
+                return Ok(json_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "proxy_error",
+                    "OpenAI forwarder not initialized",
+                ));
+            };
+            let capture_usage = is_openai_usage_endpoint(path, &method);
+            if capture_usage {
+                return forward_codex_with_usage(
+                    &openai_forwarder,
+                    method,
+                    forward_path,
+                    request_headers,
+                    body_bytes,
+                    context,
+                    state,
+                )
+                .await;
+            }
+
+            forward_codex_passthrough(
+                &openai_forwarder,
+                method,
+                forward_path,
+                request_headers,
+                body_bytes,
+                context,
+                state,
+            )
+            .await
+        }
+        OpenCodeProviderProtocol::Unknown => {
+            let openai_forwarder = {
+                let guard = state.openai_forwarder.read().await;
+                guard.clone()
+            };
+            let Some(openai_forwarder) = openai_forwarder else {
+                return Ok(json_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "proxy_error",
+                    "OpenAI forwarder not initialized",
+                ));
+            };
+            forward_codex_passthrough(
+                &openai_forwarder,
+                method,
+                forward_path,
+                request_headers,
+                body_bytes,
+                context,
+                state,
+            )
+            .await
+        }
+    }
+}
 
 /// 处理 Codex / OpenAI-compatible API 请求
 async fn handle_codex_request(
@@ -1459,6 +1990,20 @@ async fn handle_request(
         return handle_codex_request(method, &path, &forward_path, client_route, req, &state).await;
     }
 
+    // 处理 OpenCode 请求（Anthropic API 格式，与 Claude Code 相同协议）
+    if client_route.client_tool == "opencode" {
+        return handle_opencode_request(
+            method,
+            &path,
+            &forward_path,
+            client_route,
+            req,
+            forwarder,
+            &state,
+        )
+        .await;
+    }
+
     if client_route.client_tool == "unknown" {
         return Ok(Response::builder()
             .status(StatusCode::NOT_FOUND)
@@ -1640,6 +2185,36 @@ mod tests {
         assert!(is_codex_endpoint("/v1/v1/chat/completions", &Method::POST));
         assert!(!is_codex_endpoint("/v1/responses", &Method::GET));
         assert!(!is_codex_api_path("/v1/models"));
+    }
+
+    #[test]
+    fn opencode_usage_capture_accepts_transparent_message_paths() {
+        assert!(is_opencode_messages_endpoint("/messages", &Method::POST));
+        assert!(is_opencode_messages_endpoint("/v1/messages", &Method::POST));
+        assert!(!is_opencode_messages_endpoint("/messages", &Method::GET));
+        assert!(!is_opencode_messages_endpoint("/v1/models", &Method::POST));
+    }
+
+    #[test]
+    fn detect_client_route_strips_opencode_route_shell_only() {
+        let mut settings = AppSettings::default();
+        let opencode_profile = settings
+            .client_tools
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.tool == "opencode")
+            .expect("opencode profile");
+        opencode_profile.enabled = true;
+
+        let route = detect_client_route("/opencode/source/oc_123/messages", &settings);
+        assert_eq!(route.client_tool, "opencode");
+        assert_eq!(route.normalized_path, "/messages");
+        assert_eq!(route.detection_method, "path_prefix_source");
+        assert_eq!(route.source_id.as_deref(), Some("oc_123"));
+
+        let route = detect_client_route("/opencode/source/oc_123/v1/messages", &settings);
+        assert_eq!(route.normalized_path, "/v1/messages");
+        assert_eq!(route.source_id.as_deref(), Some("oc_123"));
     }
 
     #[test]

@@ -191,6 +191,7 @@ impl RequestForwarder {
                 client_tool: context.client_tool,
                 proxy_profile_id: context.proxy_profile_id,
                 client_detection_method: context.client_detection_method,
+                ..Default::default()
             };
             self.usage_collector.record(record).await;
 
@@ -348,6 +349,7 @@ impl RequestForwarder {
                     client_tool: context.client_tool,
                     proxy_profile_id: context.proxy_profile_id,
                     client_detection_method: context.client_detection_method,
+                    ..Default::default()
                 };
                 self.usage_collector.record(record).await;
             }
@@ -384,6 +386,7 @@ impl RequestForwarder {
                     client_tool: context.client_tool,
                     proxy_profile_id: context.proxy_profile_id,
                     client_detection_method: context.client_detection_method,
+                    ..Default::default()
                 };
                 self.usage_collector.record(record).await;
             }

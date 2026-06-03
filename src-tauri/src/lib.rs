@@ -377,6 +377,7 @@ pub fn run() {
             commands::get_local_usage_maintenance_stats,
             commands::purge_orphan_local_facts,
             commands::rebuild_local_usage_cache,
+            commands::get_opencode_schema_status,
             // 代理命令
             commands::start_proxy,
             commands::stop_proxy,

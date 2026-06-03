@@ -15,6 +15,7 @@ const store = useMonitorStore()
 const localIncludeErrorRequests = ref(store.settings.proxy.includeErrorRequests ?? true)
 const takeoverStatuses = ref<ToolTakeoverStatus[]>([])
 const takeoverLoading = ref<Record<string, boolean>>({})
+const takeoverActionErrors = ref<Record<string, string>>({})
 const showOfficialApiWarning = ref(false)
 const pendingTakeoverTool = ref<string | null>(null)
 let unlistenTakeoverConflict: UnlistenFn | null = null
@@ -42,7 +43,7 @@ const proxyStatusInfo = computed(() => {
 })
 
 const managedToolProfiles = computed(() => {
-  return store.settings.clientTools.profiles.filter(profile => ['claude_code', 'codex'].includes(profile.tool))
+  return store.settings.clientTools.profiles.filter(profile => ['claude_code', 'codex', 'opencode'].includes(profile.tool))
 })
 
 const handleIncludeErrorRequestsChange = async () => {
@@ -107,10 +108,17 @@ const applyToolTakeover = async (tool: string, nextEnabled: boolean) => {
   takeoverLoading.value = { ...takeoverLoading.value, [tool]: true }
   try {
     await invoke('set_takeover_for_app', { app: tool, enabled: nextEnabled })
+    takeoverActionErrors.value = { ...takeoverActionErrors.value, [tool]: '' }
     await store.loadSettings()
     await store.getProxyStatus()
     await loadTakeoverStatuses()
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : JSON.stringify(error)
+    takeoverActionErrors.value = { ...takeoverActionErrors.value, [tool]: message }
     await loadTakeoverStatuses()
   } finally {
     takeoverLoading.value = { ...takeoverLoading.value, [tool]: false }
@@ -121,9 +129,17 @@ const resolveTakeoverConflict = async (tool: string, action: 'force_reclaim' | '
   takeoverLoading.value = { ...takeoverLoading.value, [tool]: true }
   try {
     await invoke('resolve_takeover_conflict', { tool, action })
+    takeoverActionErrors.value = { ...takeoverActionErrors.value, [tool]: '' }
     await store.loadSettings()
     await store.getProxyStatus()
     await loadTakeoverStatuses()
+  } catch (error) {
+    const message = error instanceof Error
+      ? error.message
+      : typeof error === 'string'
+        ? error
+        : JSON.stringify(error)
+    takeoverActionErrors.value = { ...takeoverActionErrors.value, [tool]: message }
   } finally {
     takeoverLoading.value = { ...takeoverLoading.value, [tool]: false }
   }
@@ -266,6 +282,13 @@ function formatUptime(seconds: number): string {
               {{ conflictPausedFor(profile.tool) ? t(store.settings.locale, 'settings.takeoverConflictPaused') : (takeoverActiveFor(profile.tool) ? t(store.settings.locale, 'settings.configTakenOver') : t(store.settings.locale, 'settings.configNotTakenOver')) }}
               <template v-if="takeoverStatusFor(profile.tool)?.activeSourceId"> · {{ takeoverStatusFor(profile.tool)?.activeSourceId }}</template>
             </div>
+            <div
+              v-if="profile.tool === 'opencode' && takeoverStatusFor(profile.tool)?.managedProviderIds?.length"
+              class="mt-1 truncate text-[10px] text-gray-400"
+            >
+              {{ t(store.settings.locale, 'settings.managedProvidersLabel') }}:
+              {{ takeoverStatusFor(profile.tool)?.managedProviderIds?.join(', ') }}
+            </div>
             <div v-if="conflictPausedFor(profile.tool)" class="mt-2 flex gap-1.5">
               <button
                 class="rounded-lg bg-amber-500/10 px-2 py-1 text-[10px] font-medium text-amber-700 transition-colors hover:bg-amber-500/15 dark:text-amber-300"
@@ -280,8 +303,17 @@ function formatUptime(seconds: number): string {
                 {{ t(store.settings.locale, 'settings.takeoverConflictDisable') }}
               </button>
             </div>
+            <div
+              v-if="takeoverStatusFor(profile.tool)?.scopeWarningKey"
+              class="mt-1 line-clamp-2 text-[10px] leading-snug text-amber-600 dark:text-amber-400"
+            >
+              {{ t(store.settings.locale, takeoverStatusFor(profile.tool)!.scopeWarningKey!) }}
+            </div>
             <div v-if="takeoverStatusFor(profile.tool)?.lastError" class="mt-1 truncate text-[10px] text-red-500">
               {{ takeoverStatusFor(profile.tool)?.lastError }}
+            </div>
+            <div v-if="takeoverActionErrors[profile.tool]" class="mt-1 whitespace-pre-wrap break-words text-[10px] text-red-500">
+              {{ takeoverActionErrors[profile.tool] }}
             </div>
           </div>
         </div>

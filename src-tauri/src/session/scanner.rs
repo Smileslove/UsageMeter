@@ -1,12 +1,13 @@
 //! 会话文件扫描器
 //!
-//! 统一扫描 Claude Code / Codex 本地 transcript，并构建两类缓存：
+//! 统一扫描 Claude Code / Codex / OpenCode 本地 transcript，并构建两类缓存：
 //! - session 级聚合结果（会话列表 / 详情 / 项目统计）
 //! - request 级事实记录（概览 / 趋势 / 活动图）
 //!
 //! 关键原则：
 //! - Claude 以 assistant `message.id` 为基础主键
 //! - Codex 以 rollout token_count 事件主键为基础事实
+//! - OpenCode 以 SQLite message.id 为基础主键（直接读取 opencode.db）
 //! - Claude 子代理 transcript 合并到所属主 session
 //! - 所有页面从同一批去重后的 request 事实层聚合
 
@@ -32,6 +33,8 @@ struct CacheEntry {
     message_to_session: HashMap<String, String>,
     /// session_id -> 内容指纹（用于增量更新检测）
     session_fingerprints: HashMap<String, u64>,
+    /// OpenCode 全量扫描指纹（覆盖 SQLite + legacy 文件来源）
+    opencode_scan_fingerprint: u64,
 }
 
 /// 解析后的单个会话结果
@@ -104,6 +107,34 @@ fn full_scan_and_cache() -> CacheSnapshot {
         data.push(parsed.meta);
     }
 
+    // 加载 OpenCode SQLite 数据（与 JSONL 扫描并行，互不干扰）
+    let opencode_sessions = super::opencode_reader::scan_opencode_sessions();
+    let opencode_scan_fingerprint =
+        super::opencode_reader::compute_opencode_scan_fingerprint(&opencode_sessions);
+    for session_data in opencode_sessions {
+        for request in &session_data.requests {
+            let canonical_raw_key = format!("{}:{}", request.tool, request.message_id);
+            if request
+                .request_key
+                .as_deref()
+                .map(|key| key == canonical_raw_key)
+                .unwrap_or(true)
+            {
+                message_to_session.insert(
+                    request.message_id.clone(),
+                    session_data.meta.session_id.clone(),
+                );
+            }
+        }
+        // OpenCode 走独立扫描缓存；scanner 层只在全量指纹变化时整体替换。
+        session_fingerprints.insert(
+            session_data.meta.session_id.clone(),
+            session_data.fingerprint,
+        );
+        requests.extend(session_data.requests);
+        data.push(session_data.meta);
+    }
+
     data.sort_by_key(|meta| std::cmp::Reverse(meta.last_modified));
     requests.sort_by_key(|record| record.timestamp);
 
@@ -114,6 +145,7 @@ fn full_scan_and_cache() -> CacheSnapshot {
             requests: requests.clone(),
             message_to_session,
             session_fingerprints,
+            opencode_scan_fingerprint,
         });
     }
 
@@ -132,13 +164,23 @@ fn incremental_update_cache() -> CacheSnapshot {
         .map(|(session_id, file)| (session_id.clone(), file.fingerprint))
         .collect();
 
+    let current_opencode_sessions = super::opencode_reader::scan_opencode_sessions();
+    let current_opencode_scan_fingerprint =
+        super::opencode_reader::compute_opencode_scan_fingerprint(&current_opencode_sessions);
+
     let mut cache_guard = cache.lock().unwrap();
     let entry = match cache_guard.as_mut() {
         Some(entry) => entry,
         None => return full_scan_and_cache(),
     };
 
-    let cached_ids: HashSet<String> = entry.session_fingerprints.keys().cloned().collect();
+    // 过滤 OpenCode session 指纹，仅对 JSONL 类工具做增量比对
+    let cached_ids: HashSet<String> = entry
+        .session_fingerprints
+        .keys()
+        .filter(|id| !id.starts_with("opencode::"))
+        .cloned()
+        .collect();
     let current_ids: HashSet<String> = current_fingerprints.keys().cloned().collect();
 
     let deleted_ids: HashSet<String> = cached_ids.difference(&current_ids).cloned().collect();
@@ -160,8 +202,9 @@ fn incremental_update_cache() -> CacheSnapshot {
     }
 
     let new_ids: Vec<String> = current_ids.difference(&cached_ids).cloned().collect();
+    let opencode_changed = current_opencode_scan_fingerprint != entry.opencode_scan_fingerprint;
 
-    if changed_ids.is_empty() && new_ids.is_empty() {
+    if changed_ids.is_empty() && new_ids.is_empty() && !opencode_changed {
         return CacheSnapshot {
             data: entry.data.clone(),
             requests: entry.requests.clone(),
@@ -169,17 +212,25 @@ fn incremental_update_cache() -> CacheSnapshot {
     }
 
     entry.data.retain(|meta| {
-        !changed_ids.contains(&meta.session_id) && !new_ids.contains(&meta.session_id)
+        !(changed_ids.contains(&meta.session_id)
+            || new_ids.contains(&meta.session_id)
+            || opencode_changed && meta.tool == "opencode")
     });
     entry.requests.retain(|record| {
-        !changed_ids.contains(&record.session_id) && !new_ids.contains(&record.session_id)
+        !(changed_ids.contains(&record.session_id)
+            || new_ids.contains(&record.session_id)
+            || opencode_changed && record.tool == "opencode")
     });
-    entry
-        .message_to_session
-        .retain(|_, session_id| !changed_ids.contains(session_id) && !new_ids.contains(session_id));
-    entry
-        .session_fingerprints
-        .retain(|session_id, _| !changed_ids.contains(session_id) && !new_ids.contains(session_id));
+    entry.message_to_session.retain(|_, session_id| {
+        !(changed_ids.contains(session_id)
+            || new_ids.contains(session_id)
+            || opencode_changed && session_id.starts_with("opencode::"))
+    });
+    entry.session_fingerprints.retain(|session_id, _| {
+        !(changed_ids.contains(session_id)
+            || new_ids.contains(session_id)
+            || opencode_changed && session_id.starts_with("opencode::"))
+    });
 
     for session_id in changed_ids.into_iter().chain(new_ids.into_iter()) {
         let Some(file) = current_file_map.get(&session_id) else {
@@ -196,6 +247,33 @@ fn incremental_update_cache() -> CacheSnapshot {
             .insert(session_id, file.fingerprint);
         entry.requests.extend(parsed.requests);
         entry.data.push(parsed.meta);
+    }
+
+    // 如果 OpenCode DB 有变更，重新加载所有 OpenCode sessions
+    if opencode_changed {
+        for session_data in current_opencode_sessions {
+            for request in &session_data.requests {
+                let canonical_raw_key = format!("{}:{}", request.tool, request.message_id);
+                if request
+                    .request_key
+                    .as_deref()
+                    .map(|key| key == canonical_raw_key)
+                    .unwrap_or(true)
+                {
+                    entry.message_to_session.insert(
+                        request.message_id.clone(),
+                        session_data.meta.session_id.clone(),
+                    );
+                }
+            }
+            entry.session_fingerprints.insert(
+                session_data.meta.session_id.clone(),
+                session_data.fingerprint,
+            );
+            entry.requests.extend(session_data.requests);
+            entry.data.push(session_data.meta);
+        }
+        entry.opencode_scan_fingerprint = current_opencode_scan_fingerprint;
     }
 
     entry
