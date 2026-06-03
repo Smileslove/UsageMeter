@@ -1,11 +1,16 @@
 //! HTTP 代理服务器，用于拦截 Claude API 请求
 
+use super::codex_api::is_codex_endpoint;
 use super::codex_config::{CodexConfigManager, CodexSourceRegistry};
 use super::collector::UsageCollector;
 use super::config_manager::ClaudeConfigManager;
 use super::forwarder::{ForwardResult, RequestForwarder};
 use super::openai_forwarder::{OpenAiForwardResult, OpenAiForwarder};
 use super::opencode_config::{OpenCodeConfigManager, OpenCodeSourceRegistry};
+use super::opencode_protocol::{
+    extract_opencode_auth_token, is_openai_usage_endpoint, is_opencode_messages_endpoint,
+    observe_opencode_request_shape, opencode_provider_protocol, OpenCodeProviderProtocol,
+};
 use super::source_detector::{
     detect_source_info, normalize_base_url, register_source_to_settings, SourceRegistrationResult,
 };
@@ -31,7 +36,6 @@ use tokio::sync::{oneshot, RwLock};
 const CONFIG_MONITOR_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const TAKEOVER_CONFLICT_WINDOW_MS: i64 = 30_000;
 const TAKEOVER_CONFLICT_RECLAIM_THRESHOLD: usize = 3;
-const OPENCODE_SESSION_DEBUG_ENV: &str = "USAGEMETER_DEBUG_OPENCODE_SESSION";
 
 struct ClientRoute {
     normalized_path: String,
@@ -41,14 +45,6 @@ struct ClientRoute {
     target_base_url: Option<String>,
     provider_id: Option<String>,
     source_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OpenCodeProviderProtocol {
-    Anthropic,
-    OpenAiCompatible,
-    OpenAi,
-    Unknown,
 }
 
 /// 外部配置管理器持续抢写时发送给前端的事件载荷。
@@ -406,206 +402,10 @@ fn resolve_target_base_url(
         })
 }
 
-fn canonical_codex_api_path(path: &str) -> &str {
-    let path = path.trim_start_matches('/');
-    path.strip_prefix("v1/v1/").unwrap_or(path)
-}
-
-fn is_codex_api_path(path: &str) -> bool {
-    let path = canonical_codex_api_path(path);
-    path == "v1/chat/completions"
-        || path == "chat/completions"
-        || path == "v1/responses"
-        || path == "responses"
-        || path == "v1/responses/compact"
-        || path == "responses/compact"
-        || path.starts_with("v1/responses/")
-        || path.starts_with("responses/")
-}
-
-fn is_codex_endpoint(path: &str, method: &Method) -> bool {
-    *method == Method::POST && is_codex_api_path(path)
-}
-
-fn is_openai_usage_endpoint(path: &str, method: &Method) -> bool {
-    is_codex_endpoint(path, method)
-}
-
-fn is_opencode_messages_endpoint(path: &str, method: &Method) -> bool {
-    if *method != Method::POST {
-        return false;
-    }
-
-    matches!(path.trim_start_matches('/'), "messages" | "v1/messages")
-}
-
-fn opencode_provider_protocol(
-    provider_id: Option<&str>,
-    provider_npm: Option<&str>,
-) -> OpenCodeProviderProtocol {
-    match provider_npm {
-        Some("@ai-sdk/anthropic") => OpenCodeProviderProtocol::Anthropic,
-        Some("@ai-sdk/openai-compatible") => OpenCodeProviderProtocol::OpenAiCompatible,
-        Some("@ai-sdk/openai") => OpenCodeProviderProtocol::OpenAi,
-        Some(_) => OpenCodeProviderProtocol::Unknown,
-        None => match provider_id {
-            Some("anthropic") => OpenCodeProviderProtocol::Anthropic,
-            Some("openai") => OpenCodeProviderProtocol::OpenAi,
-            _ => OpenCodeProviderProtocol::Unknown,
-        },
-    }
-}
-
-fn extract_opencode_auth_token(
-    protocol: OpenCodeProviderProtocol,
-    headers: &hyper::HeaderMap,
-) -> Option<String> {
-    match protocol {
-        OpenCodeProviderProtocol::Anthropic => headers
-            .get("x-api-key")
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string()),
-        _ => headers
-            .get(hyper::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                headers
-                    .get("x-api-key")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string())
-            }),
-    }
-}
-
-// 移除 is_codex_chatgpt_backend_endpoint 函数，因为新的代理实现不再拦截 ChatGPT 后端 API
-// 只拦截标准 OpenAI 端点
-
 fn append_query(path: &str, query: Option<&str>) -> String {
     match query {
         Some(query) if !query.is_empty() => format!("{path}?{query}"),
         _ => path.to_string(),
-    }
-}
-
-fn is_opencode_session_debug_enabled() -> bool {
-    matches!(
-        std::env::var(OPENCODE_SESSION_DEBUG_ENV).ok().as_deref(),
-        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("on")
-    )
-}
-
-fn observe_opencode_request_shape(method: &Method, path: &str, body_bytes: &bytes::Bytes) {
-    if !is_opencode_session_debug_enabled() {
-        return;
-    }
-
-    let body_len = body_bytes.len();
-    let parsed = serde_json::from_slice::<Value>(body_bytes);
-    let json = match parsed {
-        Ok(json) => json,
-        Err(err) => {
-            eprintln!(
-                "[opencode-observe] method={} path={} body_len={} parse_error={}",
-                method, path, body_len, err
-            );
-            return;
-        }
-    };
-
-    let top_level_keys = json
-        .as_object()
-        .map(|obj| {
-            let mut keys: Vec<String> = obj.keys().cloned().collect();
-            keys.sort();
-            keys
-        })
-        .unwrap_or_default();
-    let metadata_keys = json
-        .get("metadata")
-        .and_then(|value| value.as_object())
-        .map(|obj| {
-            let mut keys: Vec<String> = obj.keys().cloned().collect();
-            keys.sort();
-            keys
-        })
-        .unwrap_or_default();
-
-    let mut session_hits = Vec::new();
-    collect_session_field_hits("$", &json, &mut session_hits, 24);
-
-    eprintln!(
-        "[opencode-observe] method={} path={} body_len={} top_level_keys={:?} metadata_keys={:?} session_hits={:?}",
-        method,
-        path,
-        body_len,
-        top_level_keys,
-        metadata_keys,
-        session_hits
-    );
-}
-
-fn collect_session_field_hits(path: &str, value: &Value, hits: &mut Vec<String>, max_hits: usize) {
-    if hits.len() >= max_hits {
-        return;
-    }
-
-    match value {
-        Value::Object(map) => {
-            for (key, child) in map {
-                if hits.len() >= max_hits {
-                    break;
-                }
-                let child_path = format!("{path}.{key}");
-                if matches!(key.as_str(), "session_id" | "sessionId" | "sessionID") {
-                    hits.push(format!(
-                        "{}={}",
-                        child_path,
-                        summarize_session_debug_value(child)
-                    ));
-                }
-                collect_session_field_hits(&child_path, child, hits, max_hits);
-            }
-        }
-        Value::Array(items) => {
-            for (index, child) in items.iter().enumerate() {
-                if hits.len() >= max_hits {
-                    break;
-                }
-                let child_path = format!("{path}[{index}]");
-                collect_session_field_hits(&child_path, child, hits, max_hits);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn summarize_session_debug_value(value: &Value) -> String {
-    match value {
-        Value::Null => "null".to_string(),
-        Value::Bool(v) => v.to_string(),
-        Value::Number(v) => v.to_string(),
-        Value::String(v) => {
-            let trimmed = v.trim();
-            if trimmed.is_empty() {
-                "\"\"".to_string()
-            } else if trimmed.chars().count() <= 96 {
-                format!("{trimmed:?}")
-            } else {
-                let prefix: String = trimmed.chars().take(96).collect();
-                format!("{prefix:?}…")
-            }
-        }
-        Value::Array(items) => format!("[array:{}]", items.len()),
-        Value::Object(map) => {
-            let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
-            keys.sort();
-            if keys.len() > 8 {
-                keys.truncate(8);
-            }
-            format!("{{keys:{keys:?}}}")
-        }
     }
 }
 
@@ -2175,24 +1975,6 @@ mod tests {
         let (path, source_id) = strip_source_handle_path("/v1/messages");
         assert_eq!(path, "/v1/messages");
         assert_eq!(source_id, None);
-    }
-
-    #[test]
-    fn codex_endpoint_detection_uses_shared_path_classifier() {
-        assert!(is_codex_api_path("/v1/responses"));
-        assert!(is_codex_api_path("/v1/v1/responses"));
-        assert!(is_codex_api_path("/responses/resp_123"));
-        assert!(is_codex_endpoint("/v1/v1/chat/completions", &Method::POST));
-        assert!(!is_codex_endpoint("/v1/responses", &Method::GET));
-        assert!(!is_codex_api_path("/v1/models"));
-    }
-
-    #[test]
-    fn opencode_usage_capture_accepts_transparent_message_paths() {
-        assert!(is_opencode_messages_endpoint("/messages", &Method::POST));
-        assert!(is_opencode_messages_endpoint("/v1/messages", &Method::POST));
-        assert!(!is_opencode_messages_endpoint("/messages", &Method::GET));
-        assert!(!is_opencode_messages_endpoint("/v1/models", &Method::POST));
     }
 
     #[test]
