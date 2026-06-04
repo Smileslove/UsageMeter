@@ -46,7 +46,7 @@ pub(crate) async fn handle_opencode_request(
         },
     ) {
         Ok(handle) => handle,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
 
     let provider_protocol = opencode_provider_protocol(
@@ -121,7 +121,7 @@ pub(crate) async fn handle_opencode_request(
         OpenCodeProviderProtocol::OpenAiCompatible | OpenCodeProviderProtocol::OpenAi => {
             let openai_forwarder = match get_openai_forwarder(state).await {
                 Ok(forwarder) => forwarder,
-                Err(response) => return Ok(response),
+                Err(response) => return Ok(*response),
             };
             let capture_usage = is_openai_usage_endpoint(path, &method);
             if capture_usage {
@@ -151,7 +151,7 @@ pub(crate) async fn handle_opencode_request(
         OpenCodeProviderProtocol::Unknown => {
             let openai_forwarder = match get_openai_forwarder(state).await {
                 Ok(forwarder) => forwarder,
-                Err(response) => return Ok(response),
+                Err(response) => return Ok(*response),
             };
             forward_codex_passthrough(
                 &openai_forwarder,

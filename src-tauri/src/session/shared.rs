@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-pub(super) fn extract_project_name(cwd: &str) -> Option<String> {
+pub(in crate::session) fn extract_project_name(cwd: &str) -> Option<String> {
     if cwd.is_empty() {
         return None;
     }
@@ -13,13 +13,13 @@ pub(super) fn extract_project_name(cwd: &str) -> Option<String> {
     parts.last().map(|value| value.to_string())
 }
 
-pub(super) fn extract_u64_by_keys(value: &Value, keys: &[&str]) -> u64 {
+pub(in crate::session) fn extract_u64_by_keys(value: &Value, keys: &[&str]) -> u64 {
     keys.iter()
         .find_map(|key| value.get(*key).and_then(parse_u64_from_value))
         .unwrap_or(0)
 }
 
-pub(super) fn parse_u64_from_value(value: &Value) -> Option<u64> {
+pub(in crate::session) fn parse_u64_from_value(value: &Value) -> Option<u64> {
     if let Some(num) = value.as_u64() {
         return Some(num);
     }
@@ -32,7 +32,7 @@ pub(super) fn parse_u64_from_value(value: &Value) -> Option<u64> {
     None
 }
 
-pub(super) fn extract_model(json: &Value) -> Option<String> {
+pub(in crate::session) fn extract_model(json: &Value) -> Option<String> {
     let model = json
         .get("message")
         .and_then(|message| message.get("model"))
@@ -49,7 +49,7 @@ pub(super) fn extract_model(json: &Value) -> Option<String> {
     Some(model.to_string())
 }
 
-pub(super) fn extract_timestamp(json: &Value) -> Option<i64> {
+pub(in crate::session) fn extract_timestamp(json: &Value) -> Option<i64> {
     let ts = json
         .get("timestamp")
         .or_else(|| json.get("createdAt"))
@@ -73,7 +73,7 @@ pub(super) fn extract_timestamp(json: &Value) -> Option<i64> {
     None
 }
 
-pub(super) fn truncate_string(value: &str, max_len: usize) -> String {
+pub(in crate::session) fn truncate_string(value: &str, max_len: usize) -> String {
     let trimmed = value.trim();
     if trimmed.chars().count() <= max_len {
         trimmed.to_string()

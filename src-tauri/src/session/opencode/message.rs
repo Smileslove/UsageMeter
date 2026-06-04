@@ -1,6 +1,5 @@
 use crate::session::opencode_reader::OpenCodeMessageSnapshot;
 use serde_json::Value;
-use std::path::Path;
 
 pub(in crate::session) fn parse_message_snapshot(
     raw_session_id: &str,
@@ -143,13 +142,4 @@ fn to_non_negative_u64(value: &Value) -> u64 {
         .map(|v| v.max(0) as u64)
         .or_else(|| value.as_u64())
         .unwrap_or(0)
-}
-
-#[allow(dead_code)]
-fn extract_project_name(cwd: &str) -> Option<String> {
-    Path::new(cwd)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
 }

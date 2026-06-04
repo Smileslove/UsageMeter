@@ -14,6 +14,8 @@ use std::time::SystemTime;
 use tauri::Emitter;
 
 pub type BoxBody = http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, std::io::Error>;
+pub type ProxyResponse = Response<BoxBody>;
+pub type ProxyErrorResponse = Box<ProxyResponse>;
 pub type HandlerResult = Result<Response<BoxBody>, hyper::Error>;
 
 #[derive(Debug, Clone)]
@@ -258,7 +260,7 @@ pub(crate) fn json_error_response(
     status: StatusCode,
     error_type: &str,
     message: &str,
-) -> Response<BoxBody> {
+) -> ProxyResponse {
     let body = serde_json::json!({ "error": { "type": error_type, "message": message } });
     Response::builder()
         .status(status)
@@ -309,7 +311,7 @@ pub(crate) fn resolve_registry_source_handle<T, Get, Touch>(
     tool_name: &str,
     get: Get,
     touch: Touch,
-) -> Result<Option<T>, Response<BoxBody>>
+) -> Result<Option<T>, ProxyErrorResponse>
 where
     Get: Fn(&str) -> Option<T>,
     Touch: Fn(&str),
@@ -320,11 +322,11 @@ where
                 touch(id);
                 Ok(Some(handle))
             }
-            None => Err(json_error_response(
+            None => Err(Box::new(json_error_response(
                 StatusCode::BAD_GATEWAY,
                 "proxy_source_not_found",
                 &format!("{tool_name} proxy source handle '{}' was not found", id),
-            )),
+            ))),
         },
         None => Ok(None),
     }
@@ -332,17 +334,17 @@ where
 
 pub(crate) async fn get_openai_forwarder(
     state: &Arc<ProxyState>,
-) -> Result<Arc<OpenAiForwarder>, Response<BoxBody>> {
+) -> Result<Arc<OpenAiForwarder>, ProxyErrorResponse> {
     let openai_forwarder = {
         let guard = state.openai_forwarder.read().await;
         guard.clone()
     };
     openai_forwarder.ok_or_else(|| {
-        json_error_response(
+        Box::new(json_error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "proxy_error",
             "OpenAI forwarder not initialized",
-        )
+        ))
     })
 }
 

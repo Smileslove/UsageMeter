@@ -61,7 +61,7 @@ pub(crate) async fn handle_codex_request(
         },
     ) {
         Ok(handle) => handle,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
 
     let target_base_url = match resolve_target_base_url(
@@ -100,7 +100,7 @@ pub(crate) async fn handle_codex_request(
 
     let openai_forwarder = match get_openai_forwarder(state).await {
         Ok(forwarder) => forwarder,
-        Err(response) => return Ok(response),
+        Err(response) => return Ok(*response),
     };
 
     if !capture_usage {

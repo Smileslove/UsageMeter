@@ -3,7 +3,7 @@
 //! 本模块提供扫描和提取本地会话数据的功能。
 
 mod claude_reader;
-pub(crate) mod codex_reader;
+mod codex_reader;
 mod constants;
 mod meta;
 mod opencode;

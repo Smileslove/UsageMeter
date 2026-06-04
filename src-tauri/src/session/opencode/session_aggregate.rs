@@ -4,11 +4,12 @@ use crate::session::opencode::message::normalize_model_string;
 use crate::session::opencode_reader::{
     OpenCodeMessageSnapshot, OpenCodeSchemaMode, OpenCodeSessionData, SessionRow,
 };
+use crate::session::shared::{extract_project_name, truncate_string};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub(in crate::session) fn build_session_data_from_messages(
     combined: HashMap<String, OpenCodeMessageSnapshot>,
@@ -286,21 +287,4 @@ fn compute_session_fingerprint(session_id: &str, requests: &[LocalRequestRecord]
         request.request_key.hash(&mut hasher);
     }
     hasher.finish()
-}
-
-fn extract_project_name(cwd: &str) -> Option<String> {
-    Path::new(cwd)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-}
-
-fn truncate_string(s: &str, max_chars: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= max_chars {
-        s.to_string()
-    } else {
-        chars[..max_chars].iter().collect::<String>() + "…"
-    }
 }

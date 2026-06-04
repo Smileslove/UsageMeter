@@ -88,8 +88,7 @@ impl LocalUsageDatabase {
     }
 
     fn db_path() -> Result<PathBuf, String> {
-        let home = dirs::home_dir().ok_or_else(|| "Home directory not found".to_string())?;
-        Ok(home.join(".usagemeter").join("local_usage.db"))
+        Ok(crate::utils::usagemeter_dir()?.join("local_usage.db"))
     }
 
     pub fn ensure_synced_throttled(&self, min_interval: Duration) -> Result<(), String> {

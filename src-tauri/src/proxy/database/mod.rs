@@ -102,8 +102,7 @@ impl ProxyDatabase {
 
     /// 获取数据库路径
     fn get_db_path() -> Result<PathBuf, String> {
-        let home = dirs::home_dir().ok_or_else(|| "Home directory not found".to_string())?;
-        Ok(home.join(".usagemeter").join("proxy_data.db"))
+        Ok(crate::utils::usagemeter_dir()?.join("proxy_data.db"))
     }
 
     /// 安全地将 i64 转换为 u64，负值返回 0
