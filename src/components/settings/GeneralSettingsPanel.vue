@@ -112,82 +112,87 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="space-y-2">
-    <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">
-      {{ t(store.settings.locale, 'settings.general') }}
-    </h3>
-    <div class="theme-settings-panel overflow-hidden rounded-xl border">
-      <div class="flex items-center justify-between p-3 px-4 text-[13px]">
-        <span class="text-[var(--theme-text-primary)]">{{ t(store.settings.locale, 'settings.locale') }}</span>
-        <select
-          v-model="localLocale"
-          class="cursor-pointer appearance-none bg-transparent text-right text-sm tracking-tight text-[var(--theme-text-secondary)] outline-none"
-          @change="handleLocaleChange"
-        >
-          <option value="zh-CN">{{ t(store.settings.locale, 'settings.zhCN') }}</option>
-          <option value="zh-TW">{{ t(store.settings.locale, 'settings.zhTW') }}</option>
-          <option value="en-US">{{ t(store.settings.locale, 'settings.enUS') }}</option>
-        </select>
-      </div>
+  <div class="theme-settings-panel overflow-hidden rounded-xl border">
 
-      <div class="flex items-center justify-between p-3 px-4 text-[13px]">
-        <div class="flex flex-col">
-          <span class="text-[var(--theme-text-primary)]">{{ t(store.settings.locale, 'settings.autoStart') }}</span>
-          <span class="mt-0.5 text-[10px] text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.autoStartDesc') }}</span>
-        </div>
-        <SettingsSwitch :checked="autoStartEnabled" @toggle="toggleAutoStart" />
-      </div>
+    <!-- 语言 -->
+    <div class="flex items-center justify-between py-2 px-4 text-[13px]">
+      <span class="text-[var(--theme-text-primary)]">{{ t(store.settings.locale, 'settings.locale') }}</span>
+      <select
+        v-model="localLocale"
+        class="cursor-pointer appearance-none bg-transparent text-right text-sm tracking-tight text-[var(--theme-text-secondary)] outline-none"
+        @change="handleLocaleChange"
+      >
+        <option value="zh-CN">{{ t(store.settings.locale, 'settings.zhCN') }}</option>
+        <option value="zh-TW">{{ t(store.settings.locale, 'settings.zhTW') }}</option>
+        <option value="en-US">{{ t(store.settings.locale, 'settings.enUS') }}</option>
+      </select>
+    </div>
 
-      <div class="flex items-center justify-between p-3 px-4 text-[13px]">
-        <div class="flex flex-col">
-          <span class="text-[var(--theme-text-primary)]">{{ t(store.settings.locale, 'settings.update.autoCheck') }}</span>
-          <span class="mt-0.5 text-[10px] text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.update.autoCheckDesc') }}</span>
-        </div>
-        <SettingsSwitch :checked="store.settings.autoCheckUpdate" @toggle="toggleAutoCheckUpdate" />
+    <!-- 开机自动启动 -->
+    <div class="flex items-center justify-between py-2 px-4 text-[13px]">
+      <div class="flex flex-col">
+        <span class="text-[var(--theme-text-primary)]">{{ t(store.settings.locale, 'settings.autoStart') }}</span>
+        <span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.autoStartDesc') }}</span>
       </div>
+      <SettingsSwitch :checked="autoStartEnabled" @toggle="toggleAutoStart" />
+    </div>
 
-      <div class="flex items-center justify-between p-3 px-4 text-[13px]">
-        <div class="flex flex-col">
-          <span class="text-[var(--theme-text-secondary)]">
-            {{ t(store.settings.locale, 'settings.update.currentVersion') }}
-            <span v-if="appVersion" class="ml-1 font-mono text-[12px]">v{{ appVersion }}</span>
-          </span>
-          <span
-            v-if="updaterStore.hasUpdate && updaterStore.updateInfo"
-            class="mt-0.5 text-[10px] font-medium text-[var(--theme-status-info-fg)]"
-          >
-            {{ t(store.settings.locale, 'settings.update.newVersionReady', { version: updaterStore.updateInfo.version }) }}
-          </span>
-        </div>
-        <button
-          class="theme-action-button h-7 rounded-lg border px-3 text-[11px] transition-colors disabled:opacity-50"
-          :disabled="updaterStore.status === 'checking'"
-          @click="handleCheckUpdate"
-        >
-          <span v-if="updaterStore.status === 'checking'">{{ t(store.settings.locale, 'settings.update.checking') }}</span>
-          <span v-else-if="updaterStore.hasUpdate">{{ t(store.settings.locale, 'settings.update.viewUpdate') }}</span>
-          <span v-else-if="checkUpdateFlash" class="text-green-500">✓ {{ t(store.settings.locale, 'settings.update.upToDate') }}</span>
-          <span v-else-if="updaterStore.status === 'error'" class="text-red-400">{{ t(store.settings.locale, updaterStore.errorMessage === 'downloadFailed' ? 'settings.update.downloadFailed' : 'settings.update.checkFailed') }}</span>
-          <span v-else>{{ t(store.settings.locale, 'settings.update.checkNow') }}</span>
-        </button>
-      </div>
-
-      <div class="flex items-center justify-between p-3 px-4 text-[13px]">
+    <!-- 数据刷新间隔 -->
+    <div class="flex items-center justify-between py-2 px-4 text-[13px]">
+      <div class="flex flex-col">
         <span class="text-[var(--theme-text-primary)]">{{ t(store.settings.locale, 'settings.refreshInterval') }}</span>
-        <div class="flex items-center gap-1">
-          <input
-            v-model.number="localRefreshInterval"
-            type="number"
-            min="5"
-            max="300"
-            class="w-12 bg-transparent p-0 text-right text-sm font-mono text-[var(--theme-text-secondary)] outline-none"
-            @blur="handleRefreshIntervalChange"
-            @keyup.enter="handleRefreshIntervalChange"
-          />
-          <span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'common.seconds') }}</span>
-        </div>
+        <span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.refreshIntervalDesc') }}</span>
+      </div>
+      <div class="flex items-center gap-1 rounded-lg border border-[var(--theme-border-default)] px-2 py-1">
+        <input
+          v-model.number="localRefreshInterval"
+          type="number"
+          min="5"
+          max="300"
+          class="w-8 bg-transparent p-0 text-right text-[12px] font-mono text-[var(--theme-text-secondary)] outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+          @blur="handleRefreshIntervalChange"
+          @keyup.enter="handleRefreshIntervalChange"
+        />
+        <span class="text-[11px] text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'common.seconds') }}</span>
       </div>
     </div>
+
+    <!-- 自动检查更新 -->
+    <div class="flex items-center justify-between py-2 px-4 text-[13px]">
+      <div class="flex flex-col">
+        <span class="text-[var(--theme-text-primary)]">{{ t(store.settings.locale, 'settings.update.autoCheck') }}</span>
+        <span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.update.autoCheckDesc') }}</span>
+      </div>
+      <SettingsSwitch :checked="store.settings.autoCheckUpdate" @toggle="toggleAutoCheckUpdate" />
+    </div>
+
+    <!-- 当前版本（最后） -->
+    <div class="flex items-center justify-between py-2 px-4 text-[13px]">
+      <div class="flex flex-col">
+        <div class="flex items-center gap-1.5 text-[var(--theme-text-secondary)]">
+          <span>{{ t(store.settings.locale, 'settings.update.currentVersion') }}</span>
+          <span v-if="appVersion" class="font-mono text-[12px]">v{{ appVersion }}</span>
+        </div>
+        <span
+          v-if="updaterStore.hasUpdate && updaterStore.updateInfo"
+          class="text-[10px] font-medium text-[var(--theme-status-info-fg)]"
+        >
+          {{ t(store.settings.locale, 'settings.update.newVersionReady', { version: updaterStore.updateInfo.version }) }}
+        </span>
+      </div>
+      <button
+        class="theme-action-button h-6 rounded-lg border px-2.5 text-[11px] transition-colors disabled:opacity-50"
+        :disabled="updaterStore.status === 'checking'"
+        @click="handleCheckUpdate"
+      >
+        <span v-if="updaterStore.status === 'checking'">{{ t(store.settings.locale, 'settings.update.checking') }}</span>
+        <span v-else-if="updaterStore.hasUpdate">{{ t(store.settings.locale, 'settings.update.viewUpdate') }}</span>
+        <span v-else-if="checkUpdateFlash" class="text-green-500">✓ {{ t(store.settings.locale, 'settings.update.upToDate') }}</span>
+        <span v-else-if="updaterStore.status === 'error'" class="text-red-400">{{ t(store.settings.locale, updaterStore.errorMessage === 'downloadFailed' ? 'settings.update.downloadFailed' : 'settings.update.checkFailed') }}</span>
+        <span v-else>{{ t(store.settings.locale, 'settings.update.checkNow') }}</span>
+      </button>
+    </div>
+
   </div>
 </template>
 

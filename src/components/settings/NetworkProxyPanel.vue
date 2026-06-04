@@ -223,7 +223,7 @@ function networkProxyTestLabel(state: TestState) {
 </script>
 
 <template>
-  <div class="p-3 px-4">
+  <div class="py-2 px-4">
     <div class="flex items-center justify-between gap-3">
       <div class="min-w-0 flex-1">
         <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.networkProxyTitle') }}</div>

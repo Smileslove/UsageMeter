@@ -6,6 +6,7 @@ import CurrencySettings from '../components/CurrencySettings.vue'
 import GeneralSettingsPanel from '../components/settings/GeneralSettingsPanel.vue'
 import DataNavigationPanel from '../components/settings/DataNavigationPanel.vue'
 import LocalCachePanel from '../components/settings/LocalCachePanel.vue'
+import LocalCacheManagementPanel from '../components/settings/LocalCacheManagementPanel.vue'
 import ProxyControlPanel from '../components/settings/ProxyControlPanel.vue'
 import NetworkProxyPanel from '../components/settings/NetworkProxyPanel.vue'
 import SyncSettingsPanel from '../components/settings/SyncSettingsPanel.vue'
@@ -58,23 +59,49 @@ const openCurrency = () => {
       @back="goBack"
     />
 
-    <div v-show="subView === 'main'" class="space-y-5 animate-in fade-in zoom-in-95 duration-300 pb-6">
-      <GeneralSettingsPanel />
-      <ProxyControlPanel />
+    <div v-show="subView === 'main'" class="space-y-4 animate-in fade-in zoom-in-95 duration-300 pb-4">
+      <section class="space-y-1.5">
+        <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">
+          {{ t(store.settings.locale, 'settings.appSection') }}
+        </h3>
+        <GeneralSettingsPanel />
+      </section>
 
-      <DataNavigationPanel
-        @open-api-sources="openApiSources"
-        @open-model-pricing="openModelPricing"
-        @open-currency="openCurrency"
-      />
+      <section class="space-y-1.5">
+        <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">
+          {{ t(store.settings.locale, 'settings.dataPipelineSection') }}
+        </h3>
+        <div class="space-y-2">
+          <ProxyControlPanel />
+          <div class="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm dark:border-neutral-800 dark:bg-[#1C1C1E]">
+            <LocalCachePanel />
+          </div>
+          <div class="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm divide-y divide-gray-50 dark:border-neutral-800 dark:bg-[#1C1C1E] dark:divide-neutral-800/50">
+            <SyncSettingsPanel />
+            <LocalCacheManagementPanel />
+          </div>
+        </div>
+      </section>
 
-      <div class="space-y-2">
+      <section class="space-y-1.5">
+        <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">
+          {{ t(store.settings.locale, 'settings.pricingAndSourcesSection') }}
+        </h3>
+        <DataNavigationPanel
+          @open-api-sources="openApiSources"
+          @open-model-pricing="openModelPricing"
+          @open-currency="openCurrency"
+        />
+      </section>
+
+      <section class="space-y-1.5">
+        <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">
+          {{ t(store.settings.locale, 'settings.networkSection') }}
+        </h3>
         <div class="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm divide-y divide-gray-50 dark:border-neutral-800 dark:bg-[#1C1C1E] dark:divide-neutral-800/50">
           <NetworkProxyPanel />
-          <SyncSettingsPanel />
-          <LocalCachePanel />
         </div>
-      </div>
+      </section>
 
       <div v-if="store.saving" class="text-center text-xs text-gray-400">
         {{ t(store.settings.locale, 'common.saving') }}

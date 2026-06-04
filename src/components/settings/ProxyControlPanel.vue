@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
-import { type ToolTakeoverStatus } from '../../types'
+import { type ClientToolProfile, type ToolTakeoverStatus } from '../../types'
 import LobeIcon from '../LobeIcon.vue'
 import SettingsSwitch from './SettingsSwitch.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
@@ -18,6 +18,7 @@ const takeoverLoading = ref<Record<string, boolean>>({})
 const takeoverActionErrors = ref<Record<string, string>>({})
 const showOfficialApiWarning = ref(false)
 const pendingTakeoverTool = ref<string | null>(null)
+const expandedTool = ref<string | null>(null)
 let unlistenTakeoverConflict: UnlistenFn | null = null
 
 watch(() => store.settings.proxy.includeErrorRequests, (value) => {
@@ -46,6 +47,44 @@ const managedToolProfiles = computed(() => {
   return store.settings.clientTools.profiles.filter(profile => ['claude_code', 'codex', 'opencode'].includes(profile.tool))
 })
 
+const toolAlerts = computed(() => {
+  return managedToolProfiles.value.flatMap((profile) => {
+    const status = takeoverStatusFor(profile.tool)
+    const alerts: Array<{ toolId: string; tool: string; tone: 'warning' | 'error'; message: string; actions?: Array<'force_reclaim' | 'disable_takeover'> }> = []
+
+    if (status?.conflictPaused) {
+      alerts.push({
+        toolId: profile.tool,
+        tool: profile.displayName || profile.tool,
+        tone: 'warning',
+        message: t(store.settings.locale, 'settings.takeoverConflictDetectedDesc'),
+        actions: ['force_reclaim', 'disable_takeover']
+      })
+    }
+
+    if (status?.lastError) {
+      alerts.push({
+        toolId: profile.tool,
+        tool: profile.displayName || profile.tool,
+        tone: 'error',
+        message: status.lastError
+      })
+    }
+
+    const actionError = takeoverActionErrors.value[profile.tool]
+    if (actionError) {
+      alerts.push({
+        toolId: profile.tool,
+        tool: profile.displayName || profile.tool,
+        tone: 'error',
+        message: actionError
+      })
+    }
+
+    return alerts
+  })
+})
+
 const handleIncludeErrorRequestsChange = async () => {
   store.settings.proxy.includeErrorRequests = localIncludeErrorRequests.value
   await store.saveSettings()
@@ -66,14 +105,6 @@ const loadTakeoverStatuses = async () => {
 
 const takeoverStatusFor = (tool: string) => {
   return takeoverStatuses.value.find(status => status.tool === tool)
-}
-
-const takeoverActiveFor = (tool: string) => {
-  return takeoverStatusFor(tool)?.takeoverActive ?? false
-}
-
-const conflictPausedFor = (tool: string) => {
-  return takeoverStatusFor(tool)?.conflictPaused ?? false
 }
 
 const takeoverEnabledFor = (tool: string) => {
@@ -186,15 +217,59 @@ function formatUptime(seconds: number): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
 }
+
+function toolLabel(profile: ClientToolProfile): string {
+  return profile.displayName || profile.tool
+}
+
+function compactPath(path: string): string {
+  return path.replace(/^\/Users\/[^/]+/, '~')
+}
+
+function toolConfigPaths(profile: ClientToolProfile): string[] {
+  const status = takeoverStatusFor(profile.tool)
+  const rawPaths = [status?.configPath, status?.authPath].filter((value): value is string => Boolean(value))
+
+  if (rawPaths.length > 0) {
+    return rawPaths.map(compactPath)
+  }
+
+  switch (profile.tool) {
+    case 'claude_code':
+      return ['~/.claude/settings.json']
+    case 'codex':
+      return ['~/.codex/config.toml', '~/.codex/auth.json']
+    case 'opencode':
+      return ['~/.config/opencode/opencode.json']
+    default:
+      return []
+  }
+}
+
+function toolConfigSummary(profile: ClientToolProfile): string {
+  const paths = toolConfigPaths(profile)
+  if (paths.length === 0) {
+    return t(store.settings.locale, 'settings.proxyToolConfigUnknown')
+  }
+
+  const fileNames = paths.map((path) => path.split('/').filter(Boolean).pop() || path)
+  return t(store.settings.locale, 'settings.proxyToolConfigSummary', {
+    files: fileNames.join(' · ')
+  })
+}
+
+function toggleExpandedTool(tool: string): void {
+  expandedTool.value = expandedTool.value === tool ? null : tool
+}
 </script>
 
 <template>
   <div class="space-y-2">
     <div class="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm divide-y divide-gray-50 dark:border-neutral-800 dark:bg-[#1C1C1E] dark:divide-neutral-800/50">
-      <div class="flex items-center justify-between p-3 px-4 text-[13px]">
+      <div class="flex items-center justify-between py-2 px-4 text-[13px]">
         <div class="flex flex-col">
           <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.interceptRequests') }}</span>
-          <span v-if="proxyEnabled && proxyStatusInfo" class="mt-0.5 text-[10px] text-gray-400">
+          <span v-if="proxyEnabled && proxyStatusInfo" class="text-[10px] text-gray-400">
             {{ t(store.settings.locale, 'settings.proxyRunning') }} · {{ t(store.settings.locale, 'settings.port') }} {{ proxyStatusInfo.port }} · {{ proxyStatusInfo.uptime }}
           </span>
         </div>
@@ -224,105 +299,109 @@ function formatUptime(seconds: number): string {
         </div>
       </div>
 
-      <div class="p-3 px-4">
+      <div class="p-2 px-4">
         <div class="mb-2 flex items-center justify-between">
           <div>
             <div class="text-[13px] text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.proxyTools') }}</div>
-            <div class="mt-0.5 text-[10px] text-gray-400">{{ t(store.settings.locale, 'settings.proxyToolsDesc') }}</div>
+            <div class="text-[10px] text-gray-400">{{ t(store.settings.locale, 'settings.proxyToolsDescCompact') }}</div>
           </div>
           <span class="text-[10px] text-gray-400">
             {{ managedToolProfiles.filter(profile => takeoverEnabledFor(profile.tool)).length }}/{{ managedToolProfiles.length }}
           </span>
         </div>
-        <div class="grid grid-cols-2 gap-2">
+
+        <div class="space-y-1.5">
           <div
             v-for="profile in managedToolProfiles"
             :key="profile.id"
-            role="button"
-            tabindex="0"
             :class="[
-              'min-w-0 rounded-xl border p-2.5 text-left transition-all',
-              takeoverEnabledFor(profile.tool)
-                ? 'border-[var(--theme-accent-primary)] bg-[var(--theme-accent-soft)]'
-                : 'border-gray-100 bg-gray-50/70 dark:border-neutral-800 dark:bg-neutral-900/60',
-              takeoverLoading[profile.tool] ? 'pointer-events-none opacity-60' : 'hover:border-[var(--theme-accent-primary)]'
+              'rounded-lg border border-gray-100 bg-white px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-950',
+              takeoverLoading[profile.tool] ? 'opacity-60' : ''
             ]"
-            @click="toggleToolTakeover(profile.tool)"
-            @keydown.enter.prevent="toggleToolTakeover(profile.tool)"
-            @keydown.space.prevent="toggleToolTakeover(profile.tool)"
           >
-            <div class="flex items-center justify-between gap-2">
-              <div class="flex min-w-0 items-center gap-2">
-                <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white shadow-[0_1px_4px_rgba(0,0,0,0.04)] dark:bg-neutral-800">
+            <div class="flex items-start justify-between gap-2">
+              <div class="flex min-w-0 items-start gap-2">
+                <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 dark:bg-neutral-800">
                   <LobeIcon
                     v-if="getToolIcon(profile.tool, profile.icon)"
                     :slug="getToolIcon(profile.tool, profile.icon)!"
-                    :size="17"
+                    :size="15"
                     @error="() => {}"
                   />
-                  <span v-else class="h-2.5 w-2.5 rounded-full bg-gray-400"></span>
+                  <span v-else class="h-1.5 w-1.5 rounded-full bg-gray-400"></span>
                 </div>
-                <span class="truncate text-[12px] font-medium text-gray-700 dark:text-gray-200">{{ profile.displayName || profile.tool }}</span>
+                <div class="min-w-0">
+                  <div class="text-[10.5px] font-medium leading-none text-gray-700 dark:text-gray-200">{{ toolLabel(profile) }}</div>
+                  <div class="mt-0.5 flex items-center gap-1.5">
+                    <div class="min-w-0 truncate font-mono text-[9px] leading-tight text-gray-400 dark:text-gray-500">
+                      {{ toolConfigSummary(profile) }}
+                    </div>
+                    <button
+                      type="button"
+                      class="shrink-0 text-[9px] font-medium text-[var(--theme-accent-primary)]"
+                      @click="toggleExpandedTool(profile.tool)"
+                    >
+                      {{ expandedTool === profile.tool ? t(store.settings.locale, 'common.hide') : t(store.settings.locale, 'common.view') }}
+                    </button>
+                  </div>
+                </div>
               </div>
-              <span
-                :class="[
-                  'relative flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
-                  takeoverEnabledFor(profile.tool) ? 'bg-[var(--theme-accent-primary)]' : 'bg-[var(--theme-border-strong)]'
-                ]"
-              >
-                <span
-                  :class="[
-                    'absolute h-[17px] w-[17px] rounded-full bg-white shadow shadow-black/10 transition-all',
-                    takeoverEnabledFor(profile.tool) ? 'right-[2px]' : 'left-[2px]'
-                  ]"
-                ></span>
-              </span>
-            </div>
-            <div class="mt-2 truncate text-[10px] text-gray-400">
-              {{ conflictPausedFor(profile.tool) ? t(store.settings.locale, 'settings.takeoverConflictPaused') : (takeoverActiveFor(profile.tool) ? t(store.settings.locale, 'settings.configTakenOver') : t(store.settings.locale, 'settings.configNotTakenOver')) }}
-              <template v-if="takeoverStatusFor(profile.tool)?.activeSourceId"> · {{ takeoverStatusFor(profile.tool)?.activeSourceId }}</template>
+              <SettingsSwitch
+                :checked="takeoverEnabledFor(profile.tool)"
+                :disabled="takeoverLoading[profile.tool]"
+                @toggle="toggleToolTakeover(profile.tool)"
+              />
             </div>
             <div
-              v-if="profile.tool === 'opencode' && takeoverStatusFor(profile.tool)?.managedProviderIds?.length"
-              class="mt-1 truncate text-[10px] text-gray-400"
+              v-if="expandedTool === profile.tool"
+              class="mt-1.5 border-t border-gray-100 pt-1.5 dark:border-neutral-800/60"
             >
-              {{ t(store.settings.locale, 'settings.managedProvidersLabel') }}:
-              {{ takeoverStatusFor(profile.tool)?.managedProviderIds?.join(', ') }}
+              <div
+                v-for="path in toolConfigPaths(profile)"
+                :key="path"
+                class="break-all font-mono text-[9px] leading-relaxed text-gray-400 dark:text-gray-500"
+              >
+                {{ path }}
+              </div>
             </div>
-            <div v-if="conflictPausedFor(profile.tool)" class="mt-2 flex gap-1.5">
+          </div>
+        </div>
+
+        <div v-if="toolAlerts.length" class="mt-2 space-y-2">
+          <div
+            v-for="alert in toolAlerts"
+            :key="`${alert.toolId}-${alert.message}`"
+            :class="[
+              'rounded-xl border px-3 py-2 text-[10px] leading-snug',
+              alert.tone === 'error'
+                ? 'border-red-100 bg-red-50 text-red-600 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300'
+                : 'border-amber-100 bg-amber-50 text-amber-700 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300'
+            ]"
+          >
+            <div class="font-medium">{{ alert.tool }}</div>
+            <div class="mt-0.5">{{ alert.message }}</div>
+            <div v-if="alert.actions?.length" class="mt-2 flex gap-1.5">
               <button
                 class="rounded-lg bg-amber-500/10 px-2 py-1 text-[10px] font-medium text-amber-700 transition-colors hover:bg-amber-500/15 dark:text-amber-300"
-                @click.stop="resolveTakeoverConflict(profile.tool, 'force_reclaim')"
+                @click.stop="resolveTakeoverConflict(alert.toolId, 'force_reclaim')"
               >
                 {{ t(store.settings.locale, 'settings.takeoverConflictForce') }}
               </button>
               <button
                 class="rounded-lg bg-gray-200/70 px-2 py-1 text-[10px] font-medium text-gray-600 transition-colors hover:bg-gray-200 dark:bg-neutral-800 dark:text-gray-300"
-                @click.stop="resolveTakeoverConflict(profile.tool, 'disable_takeover')"
+                @click.stop="resolveTakeoverConflict(alert.toolId, 'disable_takeover')"
               >
                 {{ t(store.settings.locale, 'settings.takeoverConflictDisable') }}
               </button>
-            </div>
-            <div
-              v-if="takeoverStatusFor(profile.tool)?.scopeWarningKey"
-              class="mt-1 line-clamp-2 text-[10px] leading-snug text-amber-600 dark:text-amber-400"
-            >
-              {{ t(store.settings.locale, takeoverStatusFor(profile.tool)!.scopeWarningKey!) }}
-            </div>
-            <div v-if="takeoverStatusFor(profile.tool)?.lastError" class="mt-1 truncate text-[10px] text-red-500">
-              {{ takeoverStatusFor(profile.tool)?.lastError }}
-            </div>
-            <div v-if="takeoverActionErrors[profile.tool]" class="mt-1 whitespace-pre-wrap break-words text-[10px] text-red-500">
-              {{ takeoverActionErrors[profile.tool] }}
             </div>
           </div>
         </div>
       </div>
 
-      <div class="flex items-center justify-between p-3 px-4 text-[13px]">
+      <div class="flex items-center justify-between py-2 px-4 text-[13px]">
         <div class="flex flex-col">
           <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.includeErrorRequests') }}</span>
-          <span class="mt-0.5 text-[10px] text-gray-400">{{ t(store.settings.locale, 'settings.includeErrorRequestsDesc') }}</span>
+          <span class="text-[10px] text-gray-400">{{ t(store.settings.locale, 'settings.includeErrorRequestsDesc') }}</span>
         </div>
         <SettingsSwitch :checked="localIncludeErrorRequests" @toggle="localIncludeErrorRequests = !localIncludeErrorRequests; handleIncludeErrorRequestsChange()" />
       </div>
