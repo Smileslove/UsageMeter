@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.0] - 2026-06-04
+
+### Added
+
+- **OpenCode Support**: Added OpenCode local session scanning and proxy takeover support so UsageMeter can track OpenCode usage alongside Claude Code and Codex
+- **Cache Hit Rate Metric**: Added a cache hit rate indicator in statistics to expose local cache effectiveness directly in the UI
+
+### Changed
+
+- **Theme System Refresh**: Reworked the global theme system to unify accent colors, shared control styling, and hardcoded color cleanup across the tray UI
+- **Settings Panel Layout**: Reorganized the settings view into a denser, clearer layout with improved local cache management controls and better use of the compact tray surface
+- **Usage Backend Structure**: Refactored usage, local database, proxy, and session modules into smaller bounded components to reduce coupling and make future feature work safer
+
+### Fixed
+
+- **Mixed-source Status Visibility**: Fixed statistics so mixed local/proxy results no longer hide status code information and instead mark local-only requests with a dedicated badge
+
+---
+
+### 新增
+
+- **OpenCode 支持**：新增 OpenCode 本地会话扫描与代理接管支持，使 UsageMeter 可以与 Claude Code、Codex 一并追踪 OpenCode 用量
+- **缓存命中率指标**：统计面板新增缓存命中率指标，可直接在界面中查看本地缓存的实际生效情况
+
+### 变更
+
+- **主题系统刷新**：重构全局主题系统，统一 accent 色、共享控件样式，并清理托盘界面中的硬编码颜色
+- **设置面板布局**：重新整理设置页为更紧凑清晰的布局，增强本地缓存管理控件，并更好适配托盘窗口的紧凑空间
+- **用量后端结构**：将 usage、本地数据库、代理与会话模块拆分为更小的边界组件，降低耦合，为后续功能演进提供更稳妥的结构基础
+
+### 修复
+
+- **混合来源状态可见性**：修复本地与代理混合来源统计会隐藏状态码信息的问题，改为通过专用 Local 标记展示仅本地请求
+
+---
+
 ## [0.6.4] - 2026-06-01
 
 ### Added
@@ -573,6 +609,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.7.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.0
 [0.6.4]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.4
 [0.6.3]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.3
 [0.6.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.2

@@ -2,7 +2,7 @@
 
 <div align="center">
   <img src="UsageMeter.svg" alt="UsageMeter Logo" width="128" height="128">
-  <p><strong>A menu bar application for monitoring LLM usage</strong></p>
+  <p><strong>A lightweight menu bar app for monitoring AI coding tool usage</strong></p>
 
   <p>
     <img src="https://img.shields.io/badge/platform-macos-lightgrey" alt="Platform">
@@ -18,9 +18,9 @@
 >
 > 🎯 **Why UsageMeter?**
 >
-> While using domestic LLM Coding Plans, I found that some plans charge based on request counts, but there's a lack of tools that can comprehensively track LLM usage. So I developed UsageMeter — a lightweight monitoring application focused on tracking request counts, token usage, token generation rates, and quota consumption.
+> While using AI coding plans, I found that some plans charge by request count while others care more about token budgets and runtime quality, but there was no small tray app that could track all of that in one place. So I built UsageMeter — a lightweight monitor for requests, tokens, cost, response speed, and quota consumption.
 >
-> I'm a student and currently use Claude Code for daily development. This project primarily targets Claude Code, with plans to support more Coding Plans and AI coding tools in the future.
+> I originally built it around Claude Code, and it now also tracks Codex and OpenCode with a shared local-plus-proxy data pipeline. The long-term goal is to make AI coding tool usage observable without adding friction to daily work.
 
 ---
 
@@ -28,9 +28,11 @@
 
 ### ✅ Implemented
 
-- 📊 **Real-time Usage Monitoring** - Track Claude Code and Codex token usage and request counts in real-time
+- 📊 **Multi-tool Usage Monitoring** - Track Claude Code, Codex, and OpenCode usage from local history and optional proxy traffic
 - 🎯 **Multi-window Statistics** - Support for 5h, 24h, Today, 7d, and monthly usage statistics
-- 🌐 **Proxy Mode** - Optional local proxy for accurate real-time tracking with generation rate, TTFT, and status code metrics
+- 🧩 **Unified Local + Proxy Aggregation** - Merge local scans and proxy-captured requests into one deduplicated statistics layer
+- 📂 **Native Local Data Readers** - Read Claude Code and Codex JSONL logs directly, plus OpenCode's SQLite database when its local schema is compatible enough for this build
+- 🌐 **Proxy Takeover & Runtime Metrics** - Optional local proxy with Claude Code takeover, Codex takeover, and supported OpenCode global-route takeover, plus generation rate, TTFT, duration, and status code metrics
 - 🌍 **i18n Support** - Available in English and Simplified/Traditional Chinese
 - ⚙️ **Flexible Quota Settings** - Configure independent limits and warning thresholds for different time windows
 - 💵 **Cost Estimation** - Sync open-source model pricing data, add custom prices, and estimate usage cost by model; batch-apply prices to historical records
@@ -38,15 +40,18 @@
 - 💬 **Session & Project Analytics** - Browse recent sessions, project-level summaries, token usage, cost, and proxy-only performance metrics
 - 🔀 **Multi-tool & Multi-source Filtering** - Filter usage by client tool (Claude Code / Codex) and by API source/provider
 - 🏆 **Usage Attribution Breakdown** - Overview panel ranks usage by source, tool, and model for the selected time window
+- 📦 **Codex Quota Card** - When ChatGPT OAuth is detected in Codex, display five-hour and seven-day quota utilization directly in the overview
+- 🌍 **App-wide Outbound Network Proxy** - Route UsageMeter's own HTTP traffic through HTTP / HTTPS / SOCKS5 proxies with built-in connectivity tests
 - 💱 **Multi-currency Support** - Auto-synced exchange rates with cost display in any currency
 - ☁️ **WebDAV Multi-device Sync** - End-to-end encrypted (AES-256-GCM) sync across devices via WebDAV, with auto-sync, device management, and password rotation
+- 🎨 **Theme Palette System** - System/light/dark appearance with multiple curated light and dark palette families
 - 🚀 **Auto Start & Native Tray UX** - Launch on login, follow system theme, and run as a lightweight menu bar app
 
 ### 🚧 Planned
 
 - 🛠️ **More Tool Support** - Extend support to other AI coding assistants (Cursor, Copilot, etc.)
 - 🪟 **Windows Support** - Full compatibility with Windows 10/11
-- 📋 **Claude Pro Support** - Support usage query and monitoring for Claude Pro subscriptions
+- 📋 **Broader Subscription Integrations** - Extend quota query support beyond the current Codex ChatGPT OAuth card
 
 ---
 
@@ -67,7 +72,7 @@ Download the latest release from the [Releases](https://github.com/smileslove/Us
 ### Requirements
 
 - macOS 11.0 (Big Sur) or later
-- [Claude Code](https://claude.ai/code) or [Codex CLI](https://github.com/openai/codex) installed
+- At least one supported tool installed if you want local/proxy tracking: [Claude Code](https://claude.ai/code), [Codex CLI](https://github.com/openai/codex), or OpenCode
 
 ## Usage
 
@@ -80,20 +85,28 @@ Download the latest release from the [Releases](https://github.com/smileslove/Us
 
 UsageMeter supports two data collection strategies:
 
-| Mode            | Description                                                                                    | Feature Differences                                                                                                           |
+| Mode | Description | Feature Differences |
 | --------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| **Local Files** | Default mode. Scans and parses Claude Code / Codex session JSONL files directly (no external CLI required) | Supports quota windows, token/request statistics, model distribution, cost estimation, sessions, project summaries, and tool filtering |
-| **Local Proxy** | Collects request data through a local Anthropic-compatible proxy                               | Adds real-time performance data such as generation rate, TTFT, status codes, request duration, API-source filtering, and proxy-side request records |
+| **Local Sources** | Default mode. Scans Claude Code / Codex local JSONL history and reads OpenCode's local SQLite database in read-only mode when the schema is supported well enough for this build | Supports historical quota windows, token/request statistics, sessions, project summaries, cost estimation, tool filtering, and local-first analytics |
+| **Local Proxy** | Captures request traffic through a local proxy and can take over Claude Code, Codex, and supported OpenCode global routes when enabled | Adds runtime metrics such as generation rate, TTFT, duration, status codes, API-source/provider attribution, and request-time records not present in local history |
 
 > **Note**:
 >
-> - Local-file mode is the default and covers most historical token, request, session, project, and cost statistics for both Claude Code and Codex — no additional CLI tools are required.
-> - Proxy mode enriches the same views with runtime metrics unavailable in JSONL files, such as generation rate, TTFT, response time, and status code distribution.
+> - Local-source mode is the default and covers most historical token, request, session, project, and cost statistics for Claude Code, Codex, and OpenCode without relying on external CLIs.
+> - OpenCode local scanning is read-only and may fall back to a message-only compatibility mode when the installed OpenCode schema is only partially compatible.
+> - Proxy mode enriches the same views with runtime metrics unavailable in local history, such as generation rate, TTFT, response time, status code distribution, and provider/source attribution.
+> - UsageMeter merges local and proxy data into a unified view where possible, reducing duplicate counts across the two collection paths.
 > - Cost estimation uses synced open-source model pricing plus user-defined custom prices. Custom prices take priority. You can also batch-apply prices to historical proxy records.
 
-### Proxy Provider Configs
+### Proxy Takeover & Source Handles
 
-When local proxy mode takes over Claude Code, UsageMeter writes a provider-specific proxy URL such as `http://127.0.0.1:18765/claude-code/source/<id>` into Claude settings. The real provider config is stored separately in `~/.usagemeter/proxy_source_handles.json`, so external switchers can change providers without permanently replacing their profiles with the local proxy URL. When the proxy stops or recovers from a crash, UsageMeter restores the active provider config from that saved mapping.
+When proxy takeover is enabled, UsageMeter preserves the upstream provider identity separately from the local proxy URL so it can restore the external tool configuration safely when the proxy stops, the app exits, or crash recovery runs.
+
+- **Claude Code**: writes a proxy URL such as `http://127.0.0.1:18765/claude-code/source/<id>` and stores the real upstream handle in `~/.usagemeter/proxy_source_handles.json`
+- **Codex**: temporarily manages `~/.codex/config.toml` and related auth/provider state while takeover is active, then restores the prior source when takeover stops
+- **OpenCode**: manages detected global OpenCode config routes for providers with explicit `baseURL` entries; project-local config or environment overrides may still supersede it
+
+This separation lets UsageMeter observe source/provider usage without permanently replacing the original upstream settings.
 
 ### Codex OAuth Proxy Risk Notice
 
@@ -108,6 +121,15 @@ Please read this carefully before continuing:
 - Continuing to enable this feature means you understand and accept the risks yourself.
 
 For lower-risk usage, prefer third-party providers, API-key based providers, or OpenAI-compatible configurations when possible.
+
+### App-wide Network Proxy
+
+UsageMeter can also route its own outbound HTTP traffic through an optional network proxy. This is separate from the local request-capture proxy above.
+
+- Supported schemes: `http`, `https`, and `socks5`
+- Optional username/password authentication
+- Built-in connectivity tests for GitHub, Anthropic, and OpenAI targets before saving the config
+- Shared by background tasks such as pricing sync, exchange-rate sync, WebDAV sync, updater checks, and subscription queries
 
 ## Development
 
@@ -163,11 +185,12 @@ UsageMeter/
 │   └── src/
 │       ├── commands/       # Tauri commands
 │       ├── models/         # Data models
-│       ├── proxy/          # Proxy server implementation
-│       ├── session/        # Local JSONL session metadata scanner (Claude Code & Codex)
-│       ├── local_usage/    # Local-file usage database & WebDAV sync export
+│       ├── proxy/          # Proxy routing, takeover, request capture, and provider/source tracking
+│       ├── session/        # Local history readers for Claude Code, Codex, and OpenCode
+│       ├── local_usage/    # Local usage SQLite storage, materialized summaries, and sync export
+│       ├── net/            # Shared HTTP client factory and app-wide outbound proxy integration
 │       ├── unified_usage/  # Merged local + proxy statistics layer
-│       ├── subscription/   # ChatGPT / Claude subscription quota queries
+│       ├── subscription/   # Codex ChatGPT OAuth quota query support
 │       ├── sync/           # WebDAV multi-device encrypted sync engine
 │       └── utils/          # Utilities
 ├── scripts/                # Build scripts
@@ -176,7 +199,7 @@ UsageMeter/
 
 ## Database Design
 
-UsageMeter stores proxy records, aggregated statistics, and model pricing data in SQLite at `~/.usagemeter/proxy_data.db`. Local-file mode also reads Claude Code JSONL files directly for session metadata and historical usage.
+UsageMeter stores proxy records, aggregated statistics, and model pricing data in SQLite at `~/.usagemeter/proxy_data.db`. Local history is maintained separately in `~/.usagemeter/local_usage.db`, while the collectors read Claude Code / Codex local logs and OpenCode's local SQLite data source to build historical usage snapshots.
 
 ### Core Data Tables
 
@@ -267,18 +290,19 @@ Application configuration is stored in JSON format at `~/.usagemeter/settings.js
 - Quota limits for `5h`, `24h`, `today`, `7d`, `30d`, and `current_month`
 - Summary display window and data source (`local` or `proxy`)
 - Proxy port, auto-start behavior, and whether error requests are counted
-- Theme settings and login auto-start
+- Theme appearance, palette settings, and login auto-start
 - Model pricing match mode, last sync time, and custom pricing overrides
 - Currency settings and synced exchange rates
+- Client-tool takeover preferences and source-aware filters
 - WebDAV sync configuration (URL, credentials, device ID, interval, encryption password)
 
-The local-file usage database is stored at `~/.usagemeter/local_usage.db` (separate from the proxy database), and sync-related provider handles are kept in `~/.usagemeter/proxy_source_handles.json`.
+The local usage database is stored at `~/.usagemeter/local_usage.db` (separate from the proxy database), and Claude proxy source handles are kept in `~/.usagemeter/proxy_source_handles.json`.
 
 ## Tech Stack
 
 - **Frontend**: Vue 3 + TypeScript + Vite + Tailwind CSS + Pinia + ECharts / vue-echarts
 - **Backend**: Tauri 2.x (Rust) with tray icon, autostart, local proxy, and native window controls
-- **Data**: local Claude Code and Codex session JSONL parsing, SQLite (`rusqlite`) persistence, optional proxy capture, and unified merged usage facts
+- **Data**: local Claude Code / Codex history parsing, OpenCode SQLite scanning, SQLite (`rusqlite`) persistence, optional proxy capture, and unified merged usage facts
 - **Proxy Runtime**: Tokio + Hyper + Reqwest for local Anthropic-compatible request forwarding
 
 ## Contributing
