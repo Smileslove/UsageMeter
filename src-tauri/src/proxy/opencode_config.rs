@@ -11,7 +11,8 @@
 //! 不猜测默认 provider，也不会为未配置的 provider 自动补配置。
 //!
 //! 文件格式采用 JSONC（支持注释的 JSON），读取时先剥离注释再解析。
-//! 写回时保存为标准 JSON（注释丢失，但所有配置项均被保留）。
+//! 写回时仅对目标 provider 的 `options.baseURL` 做原位文本 patch，
+//! 尽量保留注释、缩进和其他未修改字段。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,6 +31,10 @@ pub struct OpenCodeProviderRouteState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub original_base_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<OpenCodeConfigSourceKind>,
 }
 
 /// 接管前保存的 OpenCode provider 路由状态。
@@ -66,6 +71,39 @@ struct OpenCodeSourceRegistryData {
 pub struct OpenCodeActiveRoute {
     pub provider_id: String,
     pub source_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenCodeConfigSourceKind {
+    GlobalLegacyConfigJson,
+    GlobalJsonc,
+    GlobalJson,
+    CustomFile,
+    InlineContent,
+}
+
+#[derive(Debug, Clone)]
+struct OpenCodeProviderProvenance {
+    source_kind: OpenCodeConfigSourceKind,
+    source_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct OpenCodeEffectiveProviderRoute {
+    route_state: OpenCodeProviderRouteState,
+}
+
+#[derive(Debug, Clone)]
+struct OpenCodeEffectiveConfig {
+    providers: Vec<OpenCodeEffectiveProviderRoute>,
+}
+
+#[derive(Debug, Clone)]
+struct OpenCodeLoadedLayer {
+    kind: OpenCodeConfigSourceKind,
+    path: Option<PathBuf>,
+    json: serde_json::Value,
 }
 
 // === Source Registry ===
@@ -295,6 +333,16 @@ fn parse_opencode_source_handle(value: &Value) -> Option<OpenCodeSourceHandle> {
             provider_npm,
             display_name,
             original_base_url,
+            source_path: route_state_value
+                .and_then(|route| route.get("sourcePath").or_else(|| route.get("source_path")))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+            source_kind: route_state_value
+                .and_then(|route| route.get("sourceKind").or_else(|| route.get("source_kind")))
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok()),
         },
         created_at_ms: object
             .get("createdAtMs")
@@ -373,10 +421,89 @@ impl OpenCodeConfigManager {
 
     /// 读取当前 OpenCode 已显式配置 baseURL 的 provider 路由状态。
     pub fn read_live_snapshot(&self) -> Result<OpenCodeRouteState, String> {
-        let json = load_merged_opencode_config()?;
-        let disabled_providers = read_disabled_provider_ids(&json);
+        let mut providers = self
+            .read_effective_config()?
+            .providers
+            .into_iter()
+            .map(|provider| provider.route_state)
+            .collect::<Vec<_>>();
+        providers.sort_by(|a, b| a.provider_id.cmp(&b.provider_id));
 
-        let mut providers = json
+        Ok(OpenCodeRouteState { providers })
+    }
+
+    fn read_effective_config(&self) -> Result<OpenCodeEffectiveConfig, String> {
+        let layers = load_opencode_config_layers()?;
+        Self::build_effective_config_from_layers(&layers)
+    }
+
+    #[cfg(test)]
+    fn read_effective_config_for_test_path(&self) -> Result<OpenCodeEffectiveConfig, String> {
+        let content = fs::read_to_string(&self.config_path).map_err(|e| {
+            format!(
+                "Failed to read OpenCode config {}: {}",
+                self.config_path.display(),
+                e
+            )
+        })?;
+        let json = parse_jsonc(&content)?;
+        let kind = match self.config_path.extension().and_then(|ext| ext.to_str()) {
+            Some("jsonc") => OpenCodeConfigSourceKind::GlobalJsonc,
+            _ => OpenCodeConfigSourceKind::GlobalJson,
+        };
+        Self::build_effective_config_from_layers(&[OpenCodeLoadedLayer {
+            kind,
+            path: Some(self.config_path.clone()),
+            safe_for_takeover: true,
+            json,
+        }])
+    }
+
+    fn build_effective_config_from_layers(
+        layers: &[OpenCodeLoadedLayer],
+    ) -> Result<OpenCodeEffectiveConfig, String> {
+        let mut merged = serde_json::json!({});
+        let mut provider_origins =
+            std::collections::HashMap::<String, OpenCodeProviderProvenance>::new();
+        let mut loaded_any = false;
+
+        for layer in layers {
+            merge_json_values(&mut merged, layer.json.clone());
+            loaded_any = true;
+
+            if let Some(provider_map) = layer
+                .json
+                .pointer("/provider")
+                .and_then(|value| value.as_object())
+            {
+                for (provider_id, provider) in provider_map {
+                    let has_base_url = provider
+                        .get("options")
+                        .and_then(|options| options.as_object())
+                        .and_then(|options| options.get("baseURL"))
+                        .and_then(|base_url| base_url.as_str())
+                        .is_some();
+                    if has_base_url {
+                        provider_origins.insert(
+                            provider_id.to_string(),
+                            OpenCodeProviderProvenance {
+                                source_kind: layer.kind,
+                                source_path: layer.path.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        if !loaded_any {
+            return Ok(OpenCodeEffectiveConfig {
+                providers: Vec::new(),
+            });
+        }
+
+        let disabled_providers = read_disabled_provider_ids(&merged);
+        let mut providers = merged
             .pointer("/provider")
             .and_then(|value| value.as_object())
             .map(|provider_map| {
@@ -401,19 +528,30 @@ impl OpenCodeConfigManager {
                             .or_else(|| provider.get("displayName"))
                             .and_then(|value| value.as_str())
                             .map(str::to_string);
-                        Some(OpenCodeProviderRouteState {
-                            provider_id: provider_id.to_string(),
-                            provider_npm,
-                            display_name,
-                            original_base_url: base_url.to_string(),
+                        let provenance = provider_origins.get(provider_id)?.clone();
+                        // Keep unsupported effective routes visible to callers. When the
+                        // winning layer is not a safe writable file source, `source_path`
+                        // remains `None` and later takeover attempts are rejected explicitly.
+                        Some(OpenCodeEffectiveProviderRoute {
+                            route_state: OpenCodeProviderRouteState {
+                                provider_id: provider_id.to_string(),
+                                provider_npm,
+                                display_name,
+                                original_base_url: base_url.to_string(),
+                                source_path: provenance
+                                    .source_path
+                                    .as_ref()
+                                    .map(|path| path.display().to_string()),
+                                source_kind: Some(provenance.source_kind),
+                            },
                         })
                     })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        providers.sort_by(|a, b| a.provider_id.cmp(&b.provider_id));
+        providers.sort_by(|a, b| a.route_state.provider_id.cmp(&b.route_state.provider_id));
 
-        Ok(OpenCodeRouteState { providers })
+        Ok(OpenCodeEffectiveConfig { providers })
     }
 
     /// 将已显式配置 baseURL 的 provider 替换为代理地址。
@@ -422,29 +560,53 @@ impl OpenCodeConfigManager {
         proxy_port: u16,
         handles: &[OpenCodeSourceHandle],
     ) -> Result<(), String> {
-        self.ensure_config_exists()?;
         if handles.is_empty() {
             return Err("No OpenCode providers with explicit baseURL were found".to_string());
         }
 
-        let content = fs::read_to_string(&self.config_path)
-            .map_err(|e| format!("Failed to read OpenCode config: {}", e))?;
-        let mut json = parse_jsonc(&content)?;
-
+        let mut grouped = std::collections::BTreeMap::<PathBuf, Vec<&OpenCodeSourceHandle>>::new();
         for handle in handles {
-            let proxy_url = format!(
-                "http://127.0.0.1:{}/opencode/provider/{}/source/{}",
-                proxy_port, handle.provider_id, handle.id
-            );
-            set_provider_base_url(&mut json, &handle.provider_id, &proxy_url);
+            let Some(path) = handle.route_state.source_path.as_ref().map(PathBuf::from) else {
+                return Err(format!(
+                    "OpenCode provider {} has no writable source path; takeover is not supported for this source",
+                    handle.provider_id
+                ));
+            };
+            grouped.entry(path).or_default().push(handle);
         }
 
-        self.write_config(&json)
+        for (path, file_handles) in grouped {
+            if !path.exists() {
+                return Err(format!(
+                    "OpenCode config file was not found. UsageMeter will not create it automatically. \
+                     Expected path: {}",
+                    path.display()
+                ));
+            }
+            let mut content = fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read OpenCode config {}: {}", path.display(), e))?;
+            for handle in file_handles {
+                let proxy_url = format!(
+                    "http://127.0.0.1:{}/opencode/provider/{}/source/{}",
+                    proxy_port, handle.provider_id, handle.id
+                );
+                content = patch_provider_base_url(
+                    &content,
+                    &handle.provider_id,
+                    &handle.route_state.original_base_url,
+                    &proxy_url,
+                )?;
+            }
+            fs::write(&path, content)
+                .map_err(|e| format!("Failed to save OpenCode config {}: {}", path.display(), e))?;
+        }
+
+        Ok(())
     }
 
     /// 从已保存的 source handles 恢复原始 baseURL。
     pub fn restore_from_sources(&self, source_ids: &[String]) -> Result<usize, String> {
-        if source_ids.is_empty() || !self.config_path.exists() {
+        if source_ids.is_empty() {
             return Ok(0);
         }
 
@@ -461,21 +623,51 @@ impl OpenCodeConfigManager {
                     .to_string(),
             );
         }
-
-        let content = fs::read_to_string(&self.config_path)
-            .map_err(|e| format!("Failed to read OpenCode config: {}", e))?;
-        let mut json = parse_jsonc(&content)?;
-
+        let mut grouped = std::collections::BTreeMap::<PathBuf, Vec<&OpenCodeSourceHandle>>::new();
         for handle in &handles {
-            set_provider_base_url(
-                &mut json,
-                &handle.provider_id,
-                &handle.route_state.original_base_url,
-            );
+            let Some(path) = handle.route_state.source_path.as_ref().map(PathBuf::from) else {
+                continue;
+            };
+            if path.exists() {
+                grouped.entry(path).or_default().push(handle);
+            }
         }
 
-        self.write_config(&json)?;
-        Ok(handles.len())
+        let mut restored = 0usize;
+        for (path, file_handles) in grouped {
+            let mut content = fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read OpenCode config {}: {}", path.display(), e))?;
+            for handle in file_handles {
+                if let Some(current_base_url) =
+                    provider_base_url_value(&content, &handle.provider_id)
+                {
+                    let should_restore = provider_base_url_is_proxy_for_source(
+                        &content,
+                        &handle.provider_id,
+                        &handle.id,
+                    ) || provider_base_url_matches(
+                        &content,
+                        &handle.provider_id,
+                        &current_base_url,
+                    )
+                        && Self::extract_provider_and_source_from_proxy_url(&current_base_url)
+                            .map(|(_, source_id)| source_id == handle.id)
+                            .unwrap_or(false);
+                    if should_restore {
+                        content = patch_provider_base_url(
+                            &content,
+                            &handle.provider_id,
+                            &current_base_url,
+                            &handle.route_state.original_base_url,
+                        )?;
+                        restored += 1;
+                    }
+                }
+            }
+            fs::write(&path, content)
+                .map_err(|e| format!("Failed to save OpenCode config {}: {}", path.display(), e))?;
+        }
+        Ok(restored)
     }
 
     /// 检查当前 OpenCode 是否有任意 provider 指向本地代理。
@@ -582,22 +774,6 @@ impl OpenCodeConfigManager {
             || path.starts_with("/opencode/source/")
             || path.starts_with("/opencode/provider/")
     }
-
-    fn write_config(&self, json: &serde_json::Value) -> Result<(), String> {
-        if !self.config_path.exists() {
-            return Err(format!(
-                "OpenCode config file was not found. UsageMeter will not create it automatically. \
-                 Expected path: {}",
-                self.config_path.display()
-            ));
-        }
-
-        let content = serde_json::to_string_pretty(json)
-            .map_err(|e| format!("Failed to serialize OpenCode config: {}", e))?;
-        fs::write(&self.config_path, content)
-            .map_err(|e| format!("Failed to save OpenCode config: {}", e))?;
-        Ok(())
-    }
 }
 
 impl Default for OpenCodeConfigManager {
@@ -637,24 +813,20 @@ fn resolve_opencode_write_target() -> (PathBuf, bool) {
     (config_dir.join("opencode.json"), false)
 }
 
-fn load_merged_opencode_config() -> Result<serde_json::Value, String> {
-    let mut merged = serde_json::json!({});
-    let mut loaded_any = false;
-
+fn load_opencode_config_layers() -> Result<Vec<OpenCodeLoadedLayer>, String> {
+    let mut layers = Vec::new();
     for source in collect_opencode_config_sources() {
         let Some(content) = source.read_content()? else {
             continue;
         };
         let json = parse_jsonc(&content)?;
-        merge_json_values(&mut merged, json);
-        loaded_any = true;
+        layers.push(OpenCodeLoadedLayer {
+            kind: source.kind,
+            path: source.path.clone(),
+            json,
+        });
     }
-
-    if !loaded_any {
-        return Ok(serde_json::json!({}));
-    }
-
-    Ok(merged)
+    Ok(layers)
 }
 
 fn collect_opencode_config_sources() -> Vec<OpenCodeConfigSource> {
@@ -668,9 +840,18 @@ fn collect_opencode_config_sources() -> Vec<OpenCodeConfigSource> {
         .join("opencode");
 
     let mut sources = vec![
-        OpenCodeConfigSource::file(config_dir.join("config.json")),
-        OpenCodeConfigSource::file(config_dir.join("opencode.jsonc")),
-        OpenCodeConfigSource::file(config_dir.join("opencode.json")),
+        OpenCodeConfigSource::file(
+            config_dir.join("config.json"),
+            OpenCodeConfigSourceKind::GlobalLegacyConfigJson,
+        ),
+        OpenCodeConfigSource::file(
+            config_dir.join("opencode.jsonc"),
+            OpenCodeConfigSourceKind::GlobalJsonc,
+        ),
+        OpenCodeConfigSource::file(
+            config_dir.join("opencode.json"),
+            OpenCodeConfigSourceKind::GlobalJson,
+        ),
     ];
 
     if let Ok(explicit) = std::env::var("OPENCODE_CONFIG") {
@@ -681,14 +862,20 @@ fn collect_opencode_config_sources() -> Vec<OpenCodeConfigSource> {
                 .iter()
                 .any(|source| source.path.as_ref() == Some(&path))
             {
-                sources.push(OpenCodeConfigSource::file(path));
+                sources.push(OpenCodeConfigSource::file(
+                    path,
+                    OpenCodeConfigSourceKind::CustomFile,
+                ));
             }
         }
     }
 
     if let Ok(content) = std::env::var("OPENCODE_CONFIG_CONTENT") {
         if !content.trim().is_empty() {
-            sources.push(OpenCodeConfigSource::inline(content));
+            sources.push(OpenCodeConfigSource::inline(
+                content,
+                OpenCodeConfigSourceKind::InlineContent,
+            ));
         }
     }
 
@@ -697,20 +884,23 @@ fn collect_opencode_config_sources() -> Vec<OpenCodeConfigSource> {
 
 #[derive(Debug, Clone)]
 struct OpenCodeConfigSource {
+    kind: OpenCodeConfigSourceKind,
     path: Option<PathBuf>,
     inline_content: Option<String>,
 }
 
 impl OpenCodeConfigSource {
-    fn file(path: PathBuf) -> Self {
+    fn file(path: PathBuf, kind: OpenCodeConfigSourceKind) -> Self {
         Self {
+            kind,
             path: Some(path),
             inline_content: None,
         }
     }
 
-    fn inline(content: String) -> Self {
+    fn inline(content: String, kind: OpenCodeConfigSourceKind) -> Self {
         Self {
+            kind,
             path: None,
             inline_content: Some(content),
         }
@@ -867,6 +1057,7 @@ fn remove_trailing_commas(content: &str) -> String {
     result
 }
 
+#[cfg(test)]
 fn set_provider_base_url(json: &mut serde_json::Value, provider_id: &str, base_url: &str) {
     let Some(root) = json.as_object_mut() else {
         *json = serde_json::Value::Object(serde_json::Map::new());
@@ -912,6 +1103,273 @@ fn set_provider_base_url(json: &mut serde_json::Value, provider_id: &str, base_u
     );
 }
 
+fn provider_base_url_value(content: &str, provider_id: &str) -> Option<String> {
+    let range = find_provider_base_url_range(content, provider_id).ok()?;
+    let raw = &content[range.start..range.end];
+    serde_json::from_str::<String>(raw).ok()
+}
+
+fn provider_base_url_matches(content: &str, provider_id: &str, expected: &str) -> bool {
+    provider_base_url_value(content, provider_id)
+        .map(|value| value == expected)
+        .unwrap_or(false)
+}
+
+fn provider_base_url_is_proxy_for_source(
+    content: &str,
+    provider_id: &str,
+    source_id: &str,
+) -> bool {
+    provider_base_url_value(content, provider_id)
+        .and_then(|value| {
+            OpenCodeConfigManager::extract_provider_and_source_from_proxy_url(&value)
+                .map(|(_, candidate_source_id)| candidate_source_id == source_id)
+        })
+        .unwrap_or(false)
+}
+
+fn patch_provider_base_url(
+    content: &str,
+    provider_id: &str,
+    expected_old_value: &str,
+    new_value: &str,
+) -> Result<String, String> {
+    let range = find_provider_base_url_range(content, provider_id)?;
+    let current_value =
+        serde_json::from_str::<String>(&content[range.start..range.end]).map_err(|e| {
+            format!(
+                "Failed to parse OpenCode provider {} baseURL: {}",
+                provider_id, e
+            )
+        })?;
+    if current_value != expected_old_value {
+        return Err(format!(
+            "OpenCode provider {} baseURL changed unexpectedly; expected {}, found {}",
+            provider_id, expected_old_value, current_value
+        ));
+    }
+
+    let mut patched = String::with_capacity(
+        content.len() + new_value.len().saturating_sub(expected_old_value.len()),
+    );
+    patched.push_str(&content[..range.start]);
+    patched.push_str(
+        &serde_json::to_string(new_value)
+            .map_err(|e| format!("Failed to encode baseURL: {}", e))?,
+    );
+    patched.push_str(&content[range.end..]);
+    Ok(patched)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TextRange {
+    start: usize,
+    end: usize,
+}
+
+fn find_provider_base_url_range(content: &str, provider_id: &str) -> Result<TextRange, String> {
+    let root_start = skip_ws_and_comments(content, 0);
+    let provider_object = find_object_member_value_range(content, root_start, "provider")
+        .ok_or_else(|| "OpenCode config does not contain provider object".to_string())?;
+    let provider_entry =
+        find_object_member_value_range(content, provider_object.start, provider_id)
+            .ok_or_else(|| format!("OpenCode config does not contain provider {}", provider_id))?;
+    let options_object = find_object_member_value_range(content, provider_entry.start, "options")
+        .ok_or_else(|| {
+        format!(
+            "OpenCode provider {} does not contain options object",
+            provider_id
+        )
+    })?;
+    find_object_member_value_range(content, options_object.start, "baseURL").ok_or_else(|| {
+        format!(
+            "OpenCode provider {} does not contain options.baseURL",
+            provider_id
+        )
+    })
+}
+
+fn find_object_member_value_range(
+    content: &str,
+    object_start: usize,
+    target_key: &str,
+) -> Option<TextRange> {
+    let mut idx = skip_ws_and_comments(content, object_start);
+    if content.as_bytes().get(idx).copied()? != b'{' {
+        return None;
+    }
+    idx += 1;
+
+    loop {
+        idx = skip_ws_and_comments(content, idx);
+        match content.as_bytes().get(idx).copied()? {
+            b'}' => return None,
+            b'"' => {}
+            _ => return None,
+        }
+
+        let key_end = skip_json_string(content, idx).ok()?;
+        let key = serde_json::from_str::<String>(&content[idx..key_end]).ok()?;
+        idx = skip_ws_and_comments(content, key_end);
+        if content.as_bytes().get(idx).copied()? != b':' {
+            return None;
+        }
+        idx += 1;
+        idx = skip_ws_and_comments(content, idx);
+        let value_start = idx;
+        let value_end = skip_json_value(content, value_start).ok()?;
+        if key == target_key {
+            return Some(TextRange {
+                start: value_start,
+                end: value_end,
+            });
+        }
+        idx = skip_ws_and_comments(content, value_end);
+        match content.as_bytes().get(idx).copied()? {
+            b',' => idx += 1,
+            b'}' => return None,
+            _ => return None,
+        }
+    }
+}
+
+fn skip_json_value(content: &str, start: usize) -> Result<usize, String> {
+    let idx = skip_ws_and_comments(content, start);
+    let Some(byte) = content.as_bytes().get(idx).copied() else {
+        return Err("Unexpected end of JSON while parsing value".to_string());
+    };
+    match byte {
+        b'"' => skip_json_string(content, idx),
+        b'{' => skip_json_object(content, idx),
+        b'[' => skip_json_array(content, idx),
+        _ => Ok(skip_json_primitive(content, idx)),
+    }
+}
+
+fn skip_json_string(content: &str, start: usize) -> Result<usize, String> {
+    let bytes = content.as_bytes();
+    if bytes.get(start).copied() != Some(b'"') {
+        return Err("Expected JSON string".to_string());
+    }
+    let mut idx = start + 1;
+    let mut escaped = false;
+    while let Some(byte) = bytes.get(idx).copied() {
+        if escaped {
+            escaped = false;
+            idx += 1;
+            continue;
+        }
+        match byte {
+            b'\\' => {
+                escaped = true;
+                idx += 1;
+            }
+            b'"' => return Ok(idx + 1),
+            _ => idx += 1,
+        }
+    }
+    Err("Unterminated JSON string".to_string())
+}
+
+fn skip_json_object(content: &str, start: usize) -> Result<usize, String> {
+    let bytes = content.as_bytes();
+    if bytes.get(start).copied() != Some(b'{') {
+        return Err("Expected JSON object".to_string());
+    }
+    let mut idx = start + 1;
+    loop {
+        idx = skip_ws_and_comments(content, idx);
+        match bytes.get(idx).copied() {
+            Some(b'}') => return Ok(idx + 1),
+            Some(b'"') => {}
+            Some(_) => return Err("Expected JSON object key".to_string()),
+            None => return Err("Unterminated JSON object".to_string()),
+        }
+        idx = skip_json_string(content, idx)?;
+        idx = skip_ws_and_comments(content, idx);
+        if bytes.get(idx).copied() != Some(b':') {
+            return Err("Expected ':' after JSON object key".to_string());
+        }
+        idx += 1;
+        idx = skip_json_value(content, idx)?;
+        idx = skip_ws_and_comments(content, idx);
+        match bytes.get(idx).copied() {
+            Some(b',') => idx += 1,
+            Some(b'}') => return Ok(idx + 1),
+            Some(_) => return Err("Expected ',' or '}' in JSON object".to_string()),
+            None => return Err("Unterminated JSON object".to_string()),
+        }
+    }
+}
+
+fn skip_json_array(content: &str, start: usize) -> Result<usize, String> {
+    let bytes = content.as_bytes();
+    if bytes.get(start).copied() != Some(b'[') {
+        return Err("Expected JSON array".to_string());
+    }
+    let mut idx = start + 1;
+    loop {
+        idx = skip_ws_and_comments(content, idx);
+        match bytes.get(idx).copied() {
+            Some(b']') => return Ok(idx + 1),
+            Some(_) => {}
+            None => return Err("Unterminated JSON array".to_string()),
+        }
+        idx = skip_json_value(content, idx)?;
+        idx = skip_ws_and_comments(content, idx);
+        match bytes.get(idx).copied() {
+            Some(b',') => idx += 1,
+            Some(b']') => return Ok(idx + 1),
+            Some(_) => return Err("Expected ',' or ']' in JSON array".to_string()),
+            None => return Err("Unterminated JSON array".to_string()),
+        }
+    }
+}
+
+fn skip_json_primitive(content: &str, start: usize) -> usize {
+    let bytes = content.as_bytes();
+    let mut idx = start;
+    while let Some(byte) = bytes.get(idx).copied() {
+        match byte {
+            b',' | b'}' | b']' => break,
+            _ if byte.is_ascii_whitespace() => break,
+            _ => idx += 1,
+        }
+    }
+    idx
+}
+
+fn skip_ws_and_comments(content: &str, start: usize) -> usize {
+    let bytes = content.as_bytes();
+    let mut idx = start;
+    while let Some(byte) = bytes.get(idx).copied() {
+        match byte {
+            b' ' | b'\n' | b'\r' | b'\t' => idx += 1,
+            b'/' if bytes.get(idx + 1).copied() == Some(b'/') => {
+                idx += 2;
+                while let Some(inner) = bytes.get(idx).copied() {
+                    idx += 1;
+                    if inner == b'\n' {
+                        break;
+                    }
+                }
+            }
+            b'/' if bytes.get(idx + 1).copied() == Some(b'*') => {
+                idx += 2;
+                while idx + 1 < bytes.len() {
+                    if bytes[idx] == b'*' && bytes[idx + 1] == b'/' {
+                        idx += 2;
+                        break;
+                    }
+                    idx += 1;
+                }
+            }
+            _ => break,
+        }
+    }
+    idx
+}
+
 fn compute_handle_id(provider_id: &str, real_base_url: &str) -> Result<String, String> {
     let mut hasher = Sha256::new();
     hasher.update(provider_id.as_bytes());
@@ -943,6 +1401,23 @@ mod tests {
         match old {
             Some(value) => std::env::set_var(key, value),
             None => std::env::remove_var(key),
+        }
+        result
+    }
+
+    fn with_clean_opencode_env<T>(xdg_config_home: &Path, f: impl FnOnce() -> T) -> T {
+        let old_config = std::env::var_os("OPENCODE_CONFIG");
+        let old_inline = std::env::var_os("OPENCODE_CONFIG_CONTENT");
+        std::env::remove_var("OPENCODE_CONFIG");
+        std::env::remove_var("OPENCODE_CONFIG_CONTENT");
+        let result = with_env_var("XDG_CONFIG_HOME", Some(xdg_config_home), f);
+        match old_config {
+            Some(value) => std::env::set_var("OPENCODE_CONFIG", value),
+            None => std::env::remove_var("OPENCODE_CONFIG"),
+        }
+        match old_inline {
+            Some(value) => std::env::set_var("OPENCODE_CONFIG_CONTENT", value),
+            None => std::env::remove_var("OPENCODE_CONFIG_CONTENT"),
         }
         result
     }
@@ -994,14 +1469,15 @@ mod tests {
             }"#,
         )
         .unwrap();
-        with_env_var("XDG_CONFIG_HOME", Some(dir.path()), || {
-            let manager = OpenCodeConfigManager::new();
-            let snapshot = manager.read_live_snapshot().unwrap();
+        let manager = OpenCodeConfigManager::new_for_path(config_path, true);
+        let effective = manager.read_effective_config_for_test_path().unwrap();
+        let provider_ids: Vec<&str> = effective
+            .providers
+            .iter()
+            .map(|provider| provider.route_state.provider_id.as_str())
+            .collect();
 
-            assert_eq!(snapshot.providers.len(), 2);
-            assert_eq!(snapshot.providers[0].provider_id, "anthropic");
-            assert_eq!(snapshot.providers[1].provider_id, "xiaomi");
-        });
+        assert_eq!(provider_ids, vec!["anthropic", "xiaomi"]);
     }
 
     #[test]
@@ -1035,7 +1511,7 @@ mod tests {
         )
         .unwrap();
 
-        with_env_var("XDG_CONFIG_HOME", Some(dir.path()), || {
+        with_clean_opencode_env(dir.path(), || {
             let manager = OpenCodeConfigManager::new();
             let snapshot = manager.read_live_snapshot().unwrap();
             let provider_ids: Vec<&str> = snapshot
@@ -1071,13 +1547,15 @@ mod tests {
             }"#,
         )
         .unwrap();
-        with_env_var("XDG_CONFIG_HOME", Some(dir.path()), || {
-            let manager = OpenCodeConfigManager::new();
-            let snapshot = manager.read_live_snapshot().unwrap();
+        let manager = OpenCodeConfigManager::new_for_path(config_path, true);
+        let effective = manager.read_effective_config_for_test_path().unwrap();
+        let provider_ids: Vec<&str> = effective
+            .providers
+            .iter()
+            .map(|provider| provider.route_state.provider_id.as_str())
+            .collect();
 
-            assert_eq!(snapshot.providers.len(), 1);
-            assert_eq!(snapshot.providers[0].provider_id, "anthropic");
-        });
+        assert_eq!(provider_ids, vec!["anthropic"]);
     }
 
     #[test]
@@ -1166,6 +1644,8 @@ mod tests {
                 provider_npm: Some("@ai-sdk/openai-compatible".to_string()),
                 display_name: None,
                 original_base_url: "https://api.xiaomi.example/v1".to_string(),
+                source_path: Some(config_path.display().to_string()),
+                source_kind: Some(OpenCodeConfigSourceKind::GlobalJson),
             },
             created_at_ms: 0,
             last_seen_at_ms: 0,
@@ -1211,6 +1691,8 @@ mod tests {
                     provider_npm: Some("@ai-sdk/anthropic".to_string()),
                     display_name: None,
                     original_base_url: "https://api.anthropic.com/v1".to_string(),
+                    source_path: Some(config_path.display().to_string()),
+                    source_kind: Some(OpenCodeConfigSourceKind::GlobalJson),
                 },
                 created_at_ms: 0,
                 last_seen_at_ms: 0,
@@ -1226,6 +1708,8 @@ mod tests {
                     provider_npm: Some("@ai-sdk/openai-compatible".to_string()),
                     display_name: None,
                     original_base_url: "https://api.xiaomi.example/v1".to_string(),
+                    source_path: Some(config_path.display().to_string()),
+                    source_kind: Some(OpenCodeConfigSourceKind::GlobalJson),
                 },
                 created_at_ms: 0,
                 last_seen_at_ms: 0,
@@ -1275,6 +1759,93 @@ mod tests {
         assert!(
             err.contains("no matching source handles"),
             "expected registry-missing error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn takeover_preserves_jsonc_comments_and_updates_only_effective_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("opencode");
+        fs::create_dir_all(&config_dir).unwrap();
+        let jsonc_path = config_dir.join("opencode.jsonc");
+        let json_path = config_dir.join("opencode.json");
+        fs::write(
+            &jsonc_path,
+            r#"{
+  // anthropic comment
+  "provider": {
+    "anthropic": {
+      "options": { "baseURL": "https://api.anthropic.com/v1" }
+    }
+  }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            &json_path,
+            r#"{
+  "provider": {
+    "anthropic": {
+      "options": { "baseURL": "https://override.example/v1" }
+    }
+  }
+}"#,
+        )
+        .unwrap();
+
+        with_clean_opencode_env(dir.path(), || {
+            let manager = OpenCodeConfigManager::new();
+            let route_state = manager.read_live_snapshot().unwrap();
+            assert_eq!(route_state.providers.len(), 1);
+            assert_eq!(
+                route_state.providers[0].source_path.as_deref(),
+                Some(json_path.to_string_lossy().as_ref())
+            );
+
+            let handles = vec![OpenCodeSourceHandle {
+                id: "oc_ant".to_string(),
+                provider_id: "anthropic".to_string(),
+                provider_npm: Some("@ai-sdk/anthropic".to_string()),
+                real_base_url: "https://override.example/v1".to_string(),
+                route_state: route_state.providers[0].clone(),
+                created_at_ms: 0,
+                last_seen_at_ms: 0,
+                last_used_at_ms: 0,
+            }];
+            manager.takeover_with_handles(18765, &handles).unwrap();
+
+            let jsonc_content = fs::read_to_string(&jsonc_path).unwrap();
+            let json_content = fs::read_to_string(&json_path).unwrap();
+            assert!(jsonc_content.contains("// anthropic comment"));
+            assert!(jsonc_content.contains("https://api.anthropic.com/v1"));
+            assert!(json_content
+                .contains("http://127.0.0.1:18765/opencode/provider/anthropic/source/oc_ant"));
+            assert!(!json_content.contains("// anthropic comment"));
+        });
+    }
+
+    #[test]
+    fn patch_provider_base_url_preserves_jsonc_comment() {
+        let content = r#"{
+  "provider": {
+    "anthropic": {
+      // keep me
+      "options": { "baseURL": "https://api.anthropic.com/v1" }
+    }
+  }
+}"#;
+
+        let patched = patch_provider_base_url(
+            content,
+            "anthropic",
+            "https://api.anthropic.com/v1",
+            "http://127.0.0.1:18765/opencode/provider/anthropic/source/oc_ant",
+        )
+        .unwrap();
+
+        assert!(patched.contains("// keep me"));
+        assert!(
+            patched.contains("http://127.0.0.1:18765/opencode/provider/anthropic/source/oc_ant")
         );
     }
 }
