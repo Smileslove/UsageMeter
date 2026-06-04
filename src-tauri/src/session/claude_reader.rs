@@ -6,11 +6,53 @@ use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
 use super::shared::{
     extract_model, extract_project_name, extract_timestamp, extract_u64_by_keys, truncate_string,
 };
+use super::source::{ParsedSessionData, SessionSource, SourceSnapshot, SourceUpdateMode};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+
+pub(super) struct ClaudeSource;
+
+impl SessionSource for ClaudeSource {
+    fn tool_id(&self) -> &'static str {
+        super::constants::TOOL_CLAUDE_CODE
+    }
+
+    fn scan(&self) -> SourceSnapshot {
+        let mut sessions = Vec::new();
+        if let Some(home) = dirs::home_dir() {
+            for root in [
+                home.join(".claude").join("projects"),
+                home.join(".config").join("claude").join("projects"),
+            ] {
+                if root.exists() {
+                    sessions.extend(collect_claude_session_files_from_root(&root));
+                }
+            }
+        }
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.last_modified));
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for session in &sessions {
+            session.session_id.hash(&mut hasher);
+            session.fingerprint.hash(&mut hasher);
+        }
+
+        SourceSnapshot {
+            source_id: self.tool_id(),
+            update_mode: SourceUpdateMode::PerSession,
+            sessions,
+            scan_fingerprint: hasher.finish(),
+        }
+    }
+
+    fn parse(&self, session: &SessionFile) -> Result<ParsedSessionData, String> {
+        let (meta, requests) = parse_claude_session_file(session);
+        Ok(ParsedSessionData { meta, requests })
+    }
+}
 
 pub(super) fn collect_claude_session_files_from_root(projects_root: &Path) -> Vec<SessionFile> {
     #[derive(Default)]
@@ -94,7 +136,7 @@ pub(super) fn collect_claude_session_files_from_root(projects_root: &Path) -> Ve
             group.transcript_paths.sort();
             SessionFile {
                 session_id: group.session_id,
-                tool: "claude_code".to_string(),
+                tool: super::constants::TOOL_CLAUDE_CODE.to_string(),
                 project_path: group.project_path,
                 file_path: group
                     .primary_file_path
@@ -477,6 +519,7 @@ fn find_nested_token_usage(value: &serde_json::Value) -> Option<TokenUsage> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::constants::TOOL_CLAUDE_CODE;
     use std::io::Write;
     use tempfile::tempdir;
 
@@ -617,7 +660,7 @@ mod tests {
 
         let session = SessionFile {
             session_id: "project-a::session-1".to_string(),
-            tool: "claude_code".to_string(),
+            tool: TOOL_CLAUDE_CODE.to_string(),
             project_path: "project-a".to_string(),
             file_path: session_path.to_string_lossy().to_string(),
             transcript_paths: vec![session_path.to_string_lossy().to_string()],

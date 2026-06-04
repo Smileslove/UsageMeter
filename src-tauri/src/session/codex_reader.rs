@@ -7,10 +7,52 @@ use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
 use super::shared::{
     extract_project_name, extract_timestamp, parse_u64_from_value, truncate_string,
 };
-use std::collections::{BTreeSet, VecDeque};
+use super::source::{ParsedSessionData, SessionSource, SourceSnapshot, SourceUpdateMode};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+
+pub(super) struct CodexSource;
+
+impl SessionSource for CodexSource {
+    fn tool_id(&self) -> &'static str {
+        super::constants::TOOL_CODEX
+    }
+
+    fn scan(&self) -> SourceSnapshot {
+        let mut sessions = Vec::new();
+        if let Some(home) = dirs::home_dir() {
+            let codex_root = home.join(".codex").join("sessions");
+            if codex_root.exists() {
+                sessions.extend(collect_codex_session_files(&codex_root));
+            }
+        }
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.last_modified));
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for session in &sessions {
+            session.session_id.hash(&mut hasher);
+            session.fingerprint.hash(&mut hasher);
+        }
+
+        SourceSnapshot {
+            source_id: self.tool_id(),
+            update_mode: SourceUpdateMode::PerSession,
+            sessions,
+            scan_fingerprint: hasher.finish(),
+        }
+    }
+
+    fn parse(&self, session: &SessionFile) -> Result<ParsedSessionData, String> {
+        let data = parse_codex_session_file(session);
+        Ok(ParsedSessionData {
+            meta: data.meta,
+            requests: data.requests,
+        })
+    }
+}
 
 /// Codex 解析结果，供 scanner.rs 消费。
 pub(super) struct CodexParsedData {
@@ -31,6 +73,95 @@ pub(super) struct CodexRolloutIdentity {
     pub(super) root_session_id: String,
     pub(super) cwd: Option<String>,
     pub(super) is_subagent: bool,
+}
+
+pub(super) fn collect_codex_session_files(root: &Path) -> Vec<SessionFile> {
+    #[derive(Default)]
+    struct SessionGroupBuilder {
+        session_id: String,
+        project_path: String,
+        primary_file_path: Option<String>,
+        transcript_paths: Vec<String>,
+        file_size: u64,
+        last_modified: i64,
+        fingerprint: u64,
+    }
+
+    let mut groups: HashMap<String, SessionGroupBuilder> = HashMap::new();
+
+    for path in collect_codex_rollout_files(root) {
+        let Some(identity) = inspect_codex_rollout_identity(&path) else {
+            continue;
+        };
+
+        let metadata = std::fs::metadata(path.as_path()).ok();
+        let file_size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+        if file_size < 10 {
+            continue;
+        }
+
+        let last_modified = metadata
+            .and_then(|m| m.modified().ok())
+            .map(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64
+            })
+            .unwrap_or(0);
+
+        let unique_id = format!(
+            "{}::{}",
+            super::constants::TOOL_CODEX,
+            identity.root_session_id
+        );
+        let project_name = identity
+            .cwd
+            .as_deref()
+            .and_then(extract_project_name)
+            .unwrap_or_default();
+        let group = groups
+            .entry(unique_id.clone())
+            .or_insert_with(|| SessionGroupBuilder {
+                session_id: unique_id.clone(),
+                project_path: project_name.to_string(),
+                ..Default::default()
+            });
+
+        let path_string = path.to_string_lossy().to_string();
+        if group.primary_file_path.is_none() || !identity.is_subagent {
+            group.primary_file_path = Some(path_string.clone());
+        }
+        group.transcript_paths.push(path_string.clone());
+        group.file_size += file_size;
+        group.last_modified = group.last_modified.max(last_modified);
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        path_string.hash(&mut hasher);
+        file_size.hash(&mut hasher);
+        last_modified.hash(&mut hasher);
+        group.fingerprint ^= hasher.finish();
+    }
+
+    groups
+        .into_values()
+        .map(|mut group| {
+            group.transcript_paths.sort();
+            SessionFile {
+                session_id: group.session_id,
+                tool: super::constants::TOOL_CODEX.to_string(),
+                project_path: group.project_path,
+                file_path: group
+                    .primary_file_path
+                    .or_else(|| group.transcript_paths.first().cloned())
+                    .unwrap_or_default(),
+                transcript_paths: group.transcript_paths,
+                file_size: group.file_size,
+                last_modified: group.last_modified,
+                fingerprint: group.fingerprint,
+            }
+        })
+        .filter(|session| !session.file_path.is_empty() && !session.transcript_paths.is_empty())
+        .collect()
 }
 
 /// 解析一个 Codex 会话（包括所有关联 rollout 文件），返回元数据和请求事实。
@@ -559,6 +690,7 @@ fn normalize_codex_delta(delta: CodexCumulativeTokens) -> CodexCumulativeTokens 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::constants::TOOL_CODEX;
     use crate::session::meta::SessionFile;
     use std::io::Write;
     use tempfile::tempdir;
@@ -566,7 +698,7 @@ mod tests {
     fn make_codex_session(session_id: &str, project_path: &str, paths: Vec<String>) -> SessionFile {
         SessionFile {
             session_id: session_id.to_string(),
-            tool: "codex".to_string(),
+            tool: TOOL_CODEX.to_string(),
             project_path: project_path.to_string(),
             file_path: paths.first().cloned().unwrap_or_default(),
             transcript_paths: paths,

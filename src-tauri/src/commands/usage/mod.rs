@@ -1,5 +1,6 @@
 //! 用量相关 Tauri 命令
 
+mod accumulator;
 mod helpers;
 mod maintenance;
 mod overview;

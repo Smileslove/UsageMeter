@@ -3,40 +3,23 @@
 //! 统一扫描 Claude Code / Codex / OpenCode 本地 transcript，并构建两类缓存：
 //! - session 级聚合结果（会话列表 / 详情 / 项目统计）
 //! - request 级事实记录（概览 / 趋势 / 活动图）
-//!
-//! 关键原则：
-//! - Claude 以 assistant `message.id` 为基础主键
-//! - Codex 以 rollout token_count 事件主键为基础事实
-//! - OpenCode 以 SQLite message.id 为基础主键（直接读取 opencode.db）
-//! - Claude 子代理 transcript 合并到所属主 session
-//! - 所有页面从同一批去重后的 request 事实层聚合
 
 use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
+use super::registry::all_sources;
+use super::source::{ParsedSessionData, SourceSnapshot, SourceUpdateMode};
 use crate::models::ToolFilter;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
-/// 缓存条目
 struct CacheEntry {
-    /// 会话级聚合结果
     data: Vec<SessionMeta>,
-    /// 去重后的请求事实
     requests: Vec<LocalRequestRecord>,
-    /// message_id -> session_id 索引（用于快速查找）
     message_to_session: HashMap<String, String>,
-    /// session_id -> 内容指纹（用于增量更新检测）
     session_fingerprints: HashMap<String, u64>,
-    /// OpenCode 全量扫描指纹（覆盖 SQLite + legacy 文件来源）
-    opencode_scan_fingerprint: u64,
+    source_scan_fingerprints: HashMap<String, u64>,
+    source_session_ids: HashMap<String, HashSet<String>>,
 }
 
-/// 解析后的单个会话结果
-pub(crate) struct ParsedSessionData {
-    meta: SessionMeta,
-    requests: Vec<LocalRequestRecord>,
-}
-
-/// 全局会话元数据缓存
 static SESSION_CACHE: OnceLock<Arc<Mutex<Option<CacheEntry>>>> = OnceLock::new();
 
 fn get_cache() -> &'static Arc<Mutex<Option<CacheEntry>>> {
@@ -61,7 +44,6 @@ pub fn get_local_request_records_by_session_cached(session_id: &str) -> Vec<Loca
         .collect()
 }
 
-#[allow(dead_code)]
 struct CacheSnapshot {
     data: Vec<SessionMeta>,
     requests: Vec<LocalRequestRecord>,
@@ -83,53 +65,37 @@ fn ensure_cache_ready() -> CacheSnapshot {
 
 fn full_scan_and_cache() -> CacheSnapshot {
     let cache = get_cache();
-    let session_files = super::registry::scan_session_files();
 
     let mut data = Vec::new();
     let mut requests = Vec::new();
     let mut message_to_session = HashMap::new();
     let mut session_fingerprints = HashMap::new();
+    let mut source_scan_fingerprints = HashMap::new();
+    let mut source_session_ids = HashMap::new();
 
-    for session_file in &session_files {
-        let parsed = parse_session_file(session_file);
-        for request in &parsed.requests {
-            message_to_session.insert(request.message_id.clone(), request.session_id.clone());
+    for source in all_sources() {
+        let snapshot = source.scan();
+        let source_id = snapshot.source_id.to_string();
+        source_scan_fingerprints.insert(source_id.clone(), snapshot.scan_fingerprint);
+
+        let mut session_ids = HashSet::new();
+        for session_file in &snapshot.sessions {
+            let parsed = parse_session_file(session_file);
+            merge_parsed_session(
+                &mut data,
+                &mut requests,
+                &mut message_to_session,
+                &mut session_fingerprints,
+                session_file,
+                parsed,
+            );
+            session_ids.insert(session_file.session_id.clone());
         }
-        session_fingerprints.insert(session_file.session_id.clone(), session_file.fingerprint);
-        requests.extend(parsed.requests);
-        data.push(parsed.meta);
+
+        source_session_ids.insert(source_id, session_ids);
     }
 
-    // 加载 OpenCode SQLite 数据（与 JSONL 扫描并行，互不干扰）
-    let opencode_sessions = super::opencode_reader::scan_opencode_sessions();
-    let opencode_scan_fingerprint =
-        super::opencode_reader::compute_opencode_scan_fingerprint(&opencode_sessions);
-    for session_data in opencode_sessions {
-        for request in &session_data.requests {
-            let canonical_raw_key = format!("{}:{}", request.tool, request.message_id);
-            if request
-                .request_key
-                .as_deref()
-                .map(|key| key == canonical_raw_key)
-                .unwrap_or(true)
-            {
-                message_to_session.insert(
-                    request.message_id.clone(),
-                    session_data.meta.session_id.clone(),
-                );
-            }
-        }
-        // OpenCode 走独立扫描缓存；scanner 层只在全量指纹变化时整体替换。
-        session_fingerprints.insert(
-            session_data.meta.session_id.clone(),
-            session_data.fingerprint,
-        );
-        requests.extend(session_data.requests);
-        data.push(session_data.meta);
-    }
-
-    data.sort_by_key(|meta| std::cmp::Reverse(meta.last_modified));
-    requests.sort_by_key(|record| record.timestamp);
+    sort_cache_vectors(&mut data, &mut requests);
 
     {
         let mut cache_guard = cache.lock().unwrap();
@@ -138,7 +104,8 @@ fn full_scan_and_cache() -> CacheSnapshot {
             requests: requests.clone(),
             message_to_session,
             session_fingerprints,
-            opencode_scan_fingerprint,
+            source_scan_fingerprints,
+            source_session_ids,
         });
     }
 
@@ -147,19 +114,10 @@ fn full_scan_and_cache() -> CacheSnapshot {
 
 fn incremental_update_cache() -> CacheSnapshot {
     let cache = get_cache();
-    let current_files = super::registry::scan_session_files();
-    let current_file_map: HashMap<String, SessionFile> = current_files
+    let snapshots: Vec<SourceSnapshot> = all_sources()
         .into_iter()
-        .map(|file| (file.session_id.clone(), file))
+        .map(|source| source.scan())
         .collect();
-    let current_fingerprints: HashMap<String, u64> = current_file_map
-        .iter()
-        .map(|(session_id, file)| (session_id.clone(), file.fingerprint))
-        .collect();
-
-    let current_opencode_sessions = super::opencode_reader::scan_opencode_sessions();
-    let current_opencode_scan_fingerprint =
-        super::opencode_reader::compute_opencode_scan_fingerprint(&current_opencode_sessions);
 
     let mut cache_guard = cache.lock().unwrap();
     let entry = match cache_guard.as_mut() {
@@ -167,112 +125,35 @@ fn incremental_update_cache() -> CacheSnapshot {
         None => return full_scan_and_cache(),
     };
 
-    // 过滤 OpenCode session 指纹，仅对 JSONL 类工具做增量比对
-    let cached_ids: HashSet<String> = entry
-        .session_fingerprints
-        .keys()
-        .filter(|id| !id.starts_with("opencode::"))
-        .cloned()
-        .collect();
-    let current_ids: HashSet<String> = current_fingerprints.keys().cloned().collect();
-
-    let deleted_ids: HashSet<String> = cached_ids.difference(&current_ids).cloned().collect();
-    let mut changed_ids: HashSet<String> = deleted_ids.clone();
-
-    for session_id in current_ids.intersection(&cached_ids) {
-        let current = current_fingerprints
-            .get(session_id)
+    let has_changes = snapshots.iter().any(|snapshot| {
+        entry
+            .source_scan_fingerprints
+            .get(snapshot.source_id)
             .copied()
-            .unwrap_or_default();
-        let cached = entry
-            .session_fingerprints
-            .get(session_id)
-            .copied()
-            .unwrap_or_default();
-        if current != cached {
-            changed_ids.insert(session_id.clone());
-        }
-    }
+            .unwrap_or_default()
+            != snapshot.scan_fingerprint
+    });
 
-    let new_ids: Vec<String> = current_ids.difference(&cached_ids).cloned().collect();
-    let opencode_changed = current_opencode_scan_fingerprint != entry.opencode_scan_fingerprint;
-
-    if changed_ids.is_empty() && new_ids.is_empty() && !opencode_changed {
+    if !has_changes {
         return CacheSnapshot {
             data: entry.data.clone(),
             requests: entry.requests.clone(),
         };
     }
 
-    entry.data.retain(|meta| {
-        !(changed_ids.contains(&meta.session_id)
-            || new_ids.contains(&meta.session_id)
-            || opencode_changed && meta.tool == "opencode")
-    });
-    entry.requests.retain(|record| {
-        !(changed_ids.contains(&record.session_id)
-            || new_ids.contains(&record.session_id)
-            || opencode_changed && record.tool == "opencode")
-    });
-    entry.message_to_session.retain(|_, session_id| {
-        !(changed_ids.contains(session_id)
-            || new_ids.contains(session_id)
-            || opencode_changed && session_id.starts_with("opencode::"))
-    });
-    entry.session_fingerprints.retain(|session_id, _| {
-        !(changed_ids.contains(session_id)
-            || new_ids.contains(session_id)
-            || opencode_changed && session_id.starts_with("opencode::"))
-    });
-
-    for session_id in changed_ids.into_iter().chain(new_ids.into_iter()) {
-        let Some(file) = current_file_map.get(&session_id) else {
+    for snapshot in snapshots {
+        let previous = entry
+            .source_scan_fingerprints
+            .get(snapshot.source_id)
+            .copied()
+            .unwrap_or_default();
+        if previous == snapshot.scan_fingerprint {
             continue;
-        };
-        let parsed = parse_session_file(file);
-        for request in &parsed.requests {
-            entry
-                .message_to_session
-                .insert(request.message_id.clone(), request.session_id.clone());
         }
-        entry
-            .session_fingerprints
-            .insert(session_id, file.fingerprint);
-        entry.requests.extend(parsed.requests);
-        entry.data.push(parsed.meta);
+        apply_source_snapshot(entry, snapshot);
     }
 
-    // 如果 OpenCode DB 有变更，重新加载所有 OpenCode sessions
-    if opencode_changed {
-        for session_data in current_opencode_sessions {
-            for request in &session_data.requests {
-                let canonical_raw_key = format!("{}:{}", request.tool, request.message_id);
-                if request
-                    .request_key
-                    .as_deref()
-                    .map(|key| key == canonical_raw_key)
-                    .unwrap_or(true)
-                {
-                    entry.message_to_session.insert(
-                        request.message_id.clone(),
-                        session_data.meta.session_id.clone(),
-                    );
-                }
-            }
-            entry.session_fingerprints.insert(
-                session_data.meta.session_id.clone(),
-                session_data.fingerprint,
-            );
-            entry.requests.extend(session_data.requests);
-            entry.data.push(session_data.meta);
-        }
-        entry.opencode_scan_fingerprint = current_opencode_scan_fingerprint;
-    }
-
-    entry
-        .data
-        .sort_by_key(|meta| std::cmp::Reverse(meta.last_modified));
-    entry.requests.sort_by_key(|record| record.timestamp);
+    sort_cache_vectors(&mut entry.data, &mut entry.requests);
 
     CacheSnapshot {
         data: entry.data.clone(),
@@ -305,8 +186,111 @@ pub fn invalidate_cache() {
 }
 
 pub(crate) fn parse_session_file(session: &SessionFile) -> ParsedSessionData {
-    let (meta, requests) = super::registry::parse_session_file_for_storage(session);
-    ParsedSessionData { meta, requests }
+    super::registry::parse_session_file(session)
+        .unwrap_or_else(|err| panic!("failed to parse session {}: {err}", session.session_id))
+}
+
+fn apply_source_snapshot(entry: &mut CacheEntry, snapshot: SourceSnapshot) {
+    let source_id = snapshot.source_id.to_string();
+    let current_file_map: HashMap<String, SessionFile> = snapshot
+        .sessions
+        .into_iter()
+        .map(|file| (file.session_id.clone(), file))
+        .collect();
+    let current_ids: HashSet<String> = current_file_map.keys().cloned().collect();
+    let previous_ids = entry
+        .source_session_ids
+        .get(&source_id)
+        .cloned()
+        .unwrap_or_default();
+
+    let removed_ids: HashSet<String> = match snapshot.update_mode {
+        SourceUpdateMode::ReplaceAll => previous_ids.clone(),
+        SourceUpdateMode::PerSession => previous_ids.difference(&current_ids).cloned().collect(),
+    };
+    remove_sessions(entry, &removed_ids);
+
+    let changed_or_new_ids: Vec<String> = match snapshot.update_mode {
+        SourceUpdateMode::ReplaceAll => current_ids.iter().cloned().collect(),
+        SourceUpdateMode::PerSession => current_ids
+            .iter()
+            .filter(|session_id| {
+                current_file_map
+                    .get(*session_id)
+                    .map(|file| {
+                        entry
+                            .session_fingerprints
+                            .get(*session_id)
+                            .copied()
+                            .unwrap_or_default()
+                            != file.fingerprint
+                    })
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect(),
+    };
+    let changed_set: HashSet<String> = changed_or_new_ids.iter().cloned().collect();
+    remove_sessions(entry, &changed_set);
+
+    for session_id in changed_or_new_ids {
+        let Some(file) = current_file_map.get(&session_id) else {
+            continue;
+        };
+        let parsed = parse_session_file(file);
+        merge_parsed_session(
+            &mut entry.data,
+            &mut entry.requests,
+            &mut entry.message_to_session,
+            &mut entry.session_fingerprints,
+            file,
+            parsed,
+        );
+    }
+
+    entry
+        .source_scan_fingerprints
+        .insert(source_id.clone(), snapshot.scan_fingerprint);
+    entry.source_session_ids.insert(source_id, current_ids);
+}
+
+fn remove_sessions(entry: &mut CacheEntry, session_ids: &HashSet<String>) {
+    if session_ids.is_empty() {
+        return;
+    }
+    entry
+        .data
+        .retain(|meta| !session_ids.contains(&meta.session_id));
+    entry
+        .requests
+        .retain(|record| !session_ids.contains(&record.session_id));
+    entry
+        .message_to_session
+        .retain(|_, session_id| !session_ids.contains(session_id));
+    entry
+        .session_fingerprints
+        .retain(|session_id, _| !session_ids.contains(session_id));
+}
+
+fn merge_parsed_session(
+    data: &mut Vec<SessionMeta>,
+    requests: &mut Vec<LocalRequestRecord>,
+    message_to_session: &mut HashMap<String, String>,
+    session_fingerprints: &mut HashMap<String, u64>,
+    session_file: &SessionFile,
+    parsed: ParsedSessionData,
+) {
+    for request in &parsed.requests {
+        message_to_session.insert(request.message_id.clone(), request.session_id.clone());
+    }
+    session_fingerprints.insert(session_file.session_id.clone(), session_file.fingerprint);
+    requests.extend(parsed.requests);
+    data.push(parsed.meta);
+}
+
+fn sort_cache_vectors(data: &mut [SessionMeta], requests: &mut [LocalRequestRecord]) {
+    data.sort_by_key(|meta| std::cmp::Reverse(meta.last_modified));
+    requests.sort_by_key(|record| record.timestamp);
 }
 
 #[allow(dead_code)]
@@ -438,7 +422,7 @@ mod tests {
 
         let session = SessionFile {
             session_id: "project::session-1".to_string(),
-            tool: "claude_code".to_string(),
+            tool: super::super::constants::TOOL_CLAUDE_CODE.to_string(),
             project_path: "project".to_string(),
             file_path: primary_path.to_string_lossy().to_string(),
             transcript_paths: vec![

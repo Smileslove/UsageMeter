@@ -45,3 +45,5 @@ CLAUDE.md
 AGENTS.md
 doc
 .codex
+.codegraph
+.env

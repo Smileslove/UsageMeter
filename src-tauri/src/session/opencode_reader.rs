@@ -10,18 +10,16 @@
 //! - DB 变化时优先增量读取 message 表，而不是每次整库重扫
 //! - `session` 表漂移时退化到 message-only 模式，而不是整条链路返回空
 
-use super::meta::{LocalRequestRecord, SessionMeta};
-use rusqlite::{params, Connection, OpenFlags};
-use serde_json::Value;
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::fs;
+use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
+use super::source::{ParsedSessionData, SessionSource, SourceSnapshot, SourceUpdateMode};
+use rusqlite::{Connection, OpenFlags};
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-const TOOL_OPENCODE: &str = "opencode";
-const OPENCODE_DB_FULL_RECONCILE_INTERVAL_SECS: i64 = 24 * 60 * 60;
-const REQUIRED_SESSION_COLUMNS: &[&str] = &[
+pub(in crate::session) const OPENCODE_DB_FULL_RECONCILE_INTERVAL_SECS: i64 = 24 * 60 * 60;
+pub(in crate::session) const REQUIRED_SESSION_COLUMNS: &[&str] = &[
     "id",
     "directory",
     "title",
@@ -35,10 +33,11 @@ const REQUIRED_SESSION_COLUMNS: &[&str] = &[
     "time_updated",
     "time_archived",
 ];
-const REQUIRED_MESSAGE_COLUMNS: &[&str] = &["id", "session_id", "data", "time_updated"];
+pub(in crate::session) const REQUIRED_MESSAGE_COLUMNS: &[&str] =
+    &["id", "session_id", "data", "time_updated"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum OpenCodeSchemaMode {
+pub(super) enum OpenCodeSchemaMode {
     Full,
     MessageOnly,
     #[default]
@@ -95,49 +94,48 @@ pub struct OpenCodeSessionData {
 }
 
 #[derive(Debug, Clone)]
-struct OpenCodeMessageSnapshot {
-    canonical_session_id: String,
-    raw_session_id: String,
-    raw_message_id: String,
-    timestamp_sec: i64,
-    model: String,
-    cwd: Option<String>,
-    title: Option<String>,
-    input_tokens: u64,
-    output_tokens: u64,
-    reasoning_tokens: u64,
-    cache_create_tokens: u64,
-    cache_read_tokens: u64,
-    total_tokens: u64,
-    source_kind: &'static str,
+pub(in crate::session) struct OpenCodeMessageSnapshot {
+    pub canonical_session_id: String,
+    pub raw_message_id: String,
+    pub timestamp_sec: i64,
+    pub model: String,
+    pub cwd: Option<String>,
+    pub title: Option<String>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub cache_create_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub total_tokens: u64,
+    pub source_kind: &'static str,
 }
 
 #[derive(Debug, Clone)]
-struct SessionRow {
-    id: String,
-    directory: String,
-    title: String,
-    model_json: Option<String>,
-    time_created_ms: i64,
-    time_updated_ms: i64,
-    tokens_input: i64,
-    tokens_output: i64,
-    tokens_reasoning: i64,
-    tokens_cache_read: i64,
-    tokens_cache_write: i64,
+pub(in crate::session) struct SessionRow {
+    pub id: String,
+    pub directory: String,
+    pub title: String,
+    pub model_json: Option<String>,
+    pub time_created_ms: i64,
+    pub time_updated_ms: i64,
+    pub tokens_input: i64,
+    pub tokens_output: i64,
+    pub tokens_reasoning: i64,
+    pub tokens_cache_read: i64,
+    pub tokens_cache_write: i64,
 }
 
 #[derive(Debug, Clone, Default)]
-struct OpenCodeDbCacheState {
-    storage_signature_hash: u64,
-    file_size: u64,
-    schema_fingerprint: u64,
-    assistant_row_count: u64,
-    last_time_updated_ms: i64,
-    last_rowid: i64,
-    last_full_reconcile_at_ms: i64,
-    schema_mode: OpenCodeSchemaMode,
-    messages: HashMap<String, OpenCodeMessageSnapshot>,
+pub(in crate::session) struct OpenCodeDbCacheState {
+    pub storage_signature_hash: u64,
+    pub file_size: u64,
+    pub schema_fingerprint: u64,
+    pub assistant_row_count: u64,
+    pub last_time_updated_ms: i64,
+    pub last_rowid: i64,
+    pub last_full_reconcile_at_ms: i64,
+    pub schema_mode: OpenCodeSchemaMode,
+    pub messages: HashMap<String, OpenCodeMessageSnapshot>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -153,39 +151,39 @@ pub struct OpenCodeDbScanState {
 }
 
 #[derive(Debug, Clone, Default)]
-struct OpenCodePathSignature {
-    exists: bool,
-    size: u64,
-    mtime_ns: u128,
+pub(in crate::session) struct OpenCodePathSignature {
+    pub exists: bool,
+    pub size: u64,
+    pub mtime_ns: u128,
 }
 
 #[derive(Debug, Clone, Default)]
-struct OpenCodeStorageSignature {
-    db_path: String,
-    db: OpenCodePathSignature,
-    wal: OpenCodePathSignature,
-    shm: OpenCodePathSignature,
+pub(in crate::session) struct OpenCodeStorageSignature {
+    pub db_path: String,
+    pub db: OpenCodePathSignature,
+    pub wal: OpenCodePathSignature,
+    pub shm: OpenCodePathSignature,
 }
 
 #[derive(Debug, Clone, Default)]
-struct OpenCodeDbCheckpoint {
-    schema_fingerprint: u64,
-    assistant_row_count: u64,
-    max_time_updated_ms: i64,
-    max_rowid: i64,
+pub(in crate::session) struct OpenCodeDbCheckpoint {
+    pub schema_fingerprint: u64,
+    pub assistant_row_count: u64,
+    pub max_time_updated_ms: i64,
+    pub max_rowid: i64,
 }
 
 #[derive(Debug, Clone)]
-struct OpenCodeFileEntryState {
-    size: u64,
-    mtime_ms: i64,
-    message_identity_key: Option<String>,
+pub(in crate::session) struct OpenCodeFileEntryState {
+    pub size: u64,
+    pub mtime_ms: i64,
+    pub message_identity_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
-struct OpenCodeFileCacheState {
-    files: HashMap<String, OpenCodeFileEntryState>,
-    messages: HashMap<String, OpenCodeMessageSnapshot>,
+pub(in crate::session) struct OpenCodeFileCacheState {
+    pub files: HashMap<String, OpenCodeFileEntryState>,
+    pub messages: HashMap<String, OpenCodeMessageSnapshot>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -195,6 +193,55 @@ struct OpenCodeScanCache {
 }
 
 static OPENCODE_SCAN_CACHE: OnceLock<Arc<Mutex<OpenCodeScanCache>>> = OnceLock::new();
+
+pub(super) struct OpenCodeSource;
+
+impl SessionSource for OpenCodeSource {
+    fn tool_id(&self) -> &'static str {
+        super::constants::TOOL_OPENCODE
+    }
+
+    fn scan(&self) -> SourceSnapshot {
+        let scanned = scan_opencode_sessions();
+        let sessions = scanned
+            .iter()
+            .map(|session| SessionFile {
+                session_id: session.meta.session_id.clone(),
+                tool: session.meta.tool.clone(),
+                project_path: session.meta.project_name.clone().unwrap_or_default(),
+                file_path: session.source_locator.clone(),
+                transcript_paths: Vec::new(),
+                file_size: session.meta.file_size,
+                last_modified: session.meta.last_modified,
+                fingerprint: session.fingerprint,
+            })
+            .collect::<Vec<_>>();
+
+        SourceSnapshot {
+            source_id: self.tool_id(),
+            update_mode: SourceUpdateMode::ReplaceAll,
+            scan_fingerprint: compute_opencode_scan_fingerprint(&scanned),
+            sessions,
+        }
+    }
+
+    fn parse(&self, session: &SessionFile) -> Result<ParsedSessionData, String> {
+        let Some(parsed) = scan_opencode_sessions()
+            .into_iter()
+            .find(|item| item.meta.session_id == session.session_id)
+        else {
+            return Err(format!(
+                "opencode session not found: {}",
+                session.session_id
+            ));
+        };
+
+        Ok(ParsedSessionData {
+            meta: parsed.meta,
+            requests: parsed.requests,
+        })
+    }
+}
 
 fn get_scan_cache() -> &'static Arc<Mutex<OpenCodeScanCache>> {
     OPENCODE_SCAN_CACHE.get_or_init(|| Arc::new(Mutex::new(OpenCodeScanCache::default())))
@@ -230,13 +277,13 @@ fn resolve_opencode_home() -> PathBuf {
         .join("opencode")
 }
 
-fn opencode_message_storage_root() -> PathBuf {
+pub(in crate::session) fn opencode_message_storage_root() -> PathBuf {
     resolve_opencode_home().join("storage").join("message")
 }
 
 #[allow(dead_code)]
 pub fn compute_opencode_db_fingerprint(db_path: &Path) -> u64 {
-    compute_opencode_db_storage_signature(db_path).hash()
+    super::opencode::db_scan::compute_opencode_db_storage_signature(db_path).hash()
 }
 
 pub fn compute_opencode_scan_fingerprint(sessions: &[OpenCodeSessionData]) -> u64 {
@@ -297,8 +344,12 @@ pub fn check_opencode_schema() -> OpenCodeSchemaStatus {
     };
     let _ = conn.execute_batch("PRAGMA busy_timeout=2000;");
 
-    let (mode, reason) = detect_schema_mode(&conn);
-    let conflict = detect_message_id_conflicts(&conn, 5);
+    let (mode, reason) = super::opencode::schema::detect_schema_mode(
+        &conn,
+        REQUIRED_SESSION_COLUMNS,
+        REQUIRED_MESSAGE_COLUMNS,
+    );
+    let conflict = super::opencode::conflict::detect_message_id_conflicts(&conn, 5);
     OpenCodeSchemaStatus {
         db_found: true,
         db_path: Some(db_path_str),
@@ -312,8 +363,9 @@ pub fn check_opencode_schema() -> OpenCodeSchemaStatus {
 
 pub fn scan_opencode_sessions() -> Vec<OpenCodeSessionData> {
     let mut cache = get_scan_cache().lock().unwrap();
-    let db_messages = refresh_db_messages(&mut cache.db_state);
-    let file_messages = refresh_legacy_file_messages(&mut cache.file_state);
+    let db_messages = super::opencode::db_scan::refresh_db_messages(&mut cache.db_state);
+    let file_messages =
+        super::opencode::legacy_scan::refresh_legacy_file_messages(&mut cache.file_state);
 
     let mut combined: HashMap<String, OpenCodeMessageSnapshot> = HashMap::new();
     for (key, snapshot) in file_messages {
@@ -324,7 +376,13 @@ pub fn scan_opencode_sessions() -> Vec<OpenCodeSessionData> {
     }
     drop(cache);
 
-    build_session_data_from_messages(combined)
+    super::opencode::session_aggregate::build_session_data_from_messages(
+        combined,
+        find_opencode_db,
+        REQUIRED_SESSION_COLUMNS,
+        REQUIRED_MESSAGE_COLUMNS,
+        query_session_rows,
+    )
 }
 
 pub fn get_opencode_db_scan_state() -> OpenCodeDbScanState {
@@ -353,129 +411,6 @@ pub fn hydrate_opencode_db_scan_state(state: &OpenCodeDbScanState) {
     cache.db_state.schema_mode = OpenCodeSchemaMode::from_str(&state.schema_mode);
 }
 
-fn refresh_db_messages(
-    state: &mut OpenCodeDbCacheState,
-) -> HashMap<String, OpenCodeMessageSnapshot> {
-    let Some(db_path) = find_opencode_db() else {
-        state.messages.clear();
-        state.storage_signature_hash = 0;
-        state.file_size = 0;
-        state.schema_fingerprint = 0;
-        state.assistant_row_count = 0;
-        state.last_time_updated_ms = 0;
-        state.last_rowid = 0;
-        state.last_full_reconcile_at_ms = 0;
-        state.schema_mode = OpenCodeSchemaMode::Incompatible;
-        return state.messages.clone();
-    };
-
-    let storage_signature = compute_opencode_db_storage_signature(&db_path);
-    let storage_signature_hash = storage_signature.hash();
-    let storage_signature_changed = storage_signature_hash != state.storage_signature_hash;
-
-    let file_size = storage_signature.db.size;
-    let conn = match open_opencode_db_read_only(&db_path) {
-        Ok(c) => c,
-        Err(_) => return state.messages.clone(),
-    };
-
-    let previous_schema_mode = state.schema_mode;
-    let (schema_mode, _) = detect_schema_mode(&conn);
-    if schema_mode == OpenCodeSchemaMode::Incompatible {
-        state.messages.clear();
-        state.storage_signature_hash = storage_signature_hash;
-        state.file_size = file_size;
-        state.schema_fingerprint = compute_schema_fingerprint(&conn);
-        state.assistant_row_count = 0;
-        state.last_time_updated_ms = 0;
-        state.last_rowid = 0;
-        state.schema_mode = schema_mode;
-        return state.messages.clone();
-    }
-
-    let checkpoint = read_db_checkpoint(&conn);
-    let checkpoint_unchanged = checkpoint.schema_fingerprint == state.schema_fingerprint
-        && checkpoint.assistant_row_count == state.assistant_row_count
-        && checkpoint.max_rowid == state.last_rowid
-        && checkpoint.max_time_updated_ms == state.last_time_updated_ms;
-    if !storage_signature_changed
-        && checkpoint_unchanged
-        && previous_schema_mode == schema_mode
-        && !state.messages.is_empty()
-    {
-        return state.messages.clone();
-    }
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let checkpoint_rewound = checkpoint.assistant_row_count < state.assistant_row_count
-        || checkpoint.max_rowid < state.last_rowid
-        || checkpoint.max_time_updated_ms < state.last_time_updated_ms;
-    let checkpoint_advanced = checkpoint.assistant_row_count > state.assistant_row_count
-        || checkpoint.max_rowid > state.last_rowid
-        || checkpoint.max_time_updated_ms > state.last_time_updated_ms;
-    let should_full_reconcile = state.messages.is_empty()
-        || checkpoint_rewound
-        || state.last_full_reconcile_at_ms == 0
-        || previous_schema_mode != schema_mode
-        || checkpoint.schema_fingerprint != state.schema_fingerprint
-        || (storage_signature_changed && !checkpoint_advanced)
-        || now_ms.saturating_sub(state.last_full_reconcile_at_ms)
-            >= OPENCODE_DB_FULL_RECONCILE_INTERVAL_SECS * 1000;
-
-    let rows = if should_full_reconcile {
-        query_db_message_rows(&conn, None, None)
-    } else {
-        query_db_message_rows(
-            &conn,
-            Some(state.last_time_updated_ms),
-            Some(state.last_rowid),
-        )
-    };
-
-    if should_full_reconcile {
-        state.messages.clear();
-    }
-
-    let mut max_time_updated_ms = if should_full_reconcile {
-        0
-    } else {
-        state.last_time_updated_ms
-    };
-    let mut max_rowid = if should_full_reconcile {
-        0
-    } else {
-        state.last_rowid
-    };
-    for row in rows {
-        max_time_updated_ms = max_time_updated_ms.max(row.time_updated_ms);
-        max_rowid = max_rowid.max(row.rowid);
-        if let Some(snapshot) = parse_message_snapshot(
-            &row.session_id,
-            &row.id,
-            &row.data,
-            row.time_updated_ms,
-            "opencode_db",
-            &format!("opencode.db::{}::{}", row.session_id, row.id),
-        ) {
-            state
-                .messages
-                .insert(snapshot.message_identity_key(), snapshot);
-        }
-    }
-
-    state.storage_signature_hash = storage_signature_hash;
-    state.file_size = file_size;
-    state.schema_fingerprint = checkpoint.schema_fingerprint;
-    state.assistant_row_count = checkpoint.assistant_row_count;
-    state.last_time_updated_ms = checkpoint.max_time_updated_ms.max(max_time_updated_ms);
-    state.last_rowid = checkpoint.max_rowid.max(max_rowid);
-    state.schema_mode = schema_mode;
-    if should_full_reconcile {
-        state.last_full_reconcile_at_ms = now_ms;
-    }
-
-    state.messages.clone()
-}
-
 impl OpenCodeDbCacheState {
     fn schema_mode(&self) -> String {
         if self.storage_signature_hash == 0
@@ -491,7 +426,7 @@ impl OpenCodeDbCacheState {
 }
 
 impl OpenCodeStorageSignature {
-    fn hash(&self) -> u64 {
+    pub(in crate::session) fn hash(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.db_path.hash(&mut hasher);
         hash_path_signature(&self.db, &mut hasher);
@@ -508,410 +443,6 @@ fn hash_path_signature(
     signature.exists.hash(hasher);
     signature.size.hash(hasher);
     signature.mtime_ns.hash(hasher);
-}
-
-fn detect_message_id_conflicts(conn: &Connection, limit: usize) -> OpenCodeMessageIdConflictStatus {
-    let sql = format!(
-        "SELECT id, COUNT(DISTINCT session_id) AS session_count
-         FROM message
-         WHERE id IS NOT NULL AND TRIM(id) != ''
-         GROUP BY id
-         HAVING COUNT(DISTINCT session_id) > 1
-         LIMIT {}",
-        limit.max(1)
-    );
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(stmt) => stmt,
-        Err(_) => {
-            return OpenCodeMessageIdConflictStatus {
-                has_conflict: false,
-                conflict_count: 0,
-                sample_ids: Vec::new(),
-            }
-        }
-    };
-    let rows = match stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, i64>(1).unwrap_or(0).max(0) as u64,
-        ))
-    }) {
-        Ok(rows) => rows,
-        Err(_) => {
-            return OpenCodeMessageIdConflictStatus {
-                has_conflict: false,
-                conflict_count: 0,
-                sample_ids: Vec::new(),
-            }
-        }
-    };
-    let mut sample_ids = Vec::new();
-    let mut count = 0_u64;
-    for row in rows.flatten() {
-        count += 1;
-        sample_ids.push(row.0);
-    }
-    OpenCodeMessageIdConflictStatus {
-        has_conflict: count > 0,
-        conflict_count: count,
-        sample_ids,
-    }
-}
-
-fn refresh_legacy_file_messages(
-    state: &mut OpenCodeFileCacheState,
-) -> HashMap<String, OpenCodeMessageSnapshot> {
-    let root = opencode_message_storage_root();
-    if !root.exists() {
-        state.files.clear();
-        state.messages.clear();
-        return state.messages.clone();
-    }
-
-    let files = collect_legacy_message_files(&root);
-    let current_paths: HashSet<String> = files
-        .iter()
-        .map(|path| path.to_string_lossy().to_string())
-        .collect();
-
-    let stale_paths: Vec<String> = state
-        .files
-        .keys()
-        .filter(|path| !current_paths.contains(*path))
-        .cloned()
-        .collect();
-    for stale_path in stale_paths {
-        if let Some(entry) = state.files.remove(&stale_path) {
-            if let Some(message_key) = entry.message_identity_key {
-                state.messages.remove(&message_key);
-            }
-        }
-    }
-
-    for path in files {
-        let path_string = path.to_string_lossy().to_string();
-        let metadata = match fs::metadata(&path) {
-            Ok(meta) => meta,
-            Err(_) => continue,
-        };
-        let size = metadata.len();
-        let mtime_ms = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|duration| duration.as_millis() as i64)
-            .unwrap_or(0);
-
-        let unchanged = state
-            .files
-            .get(&path_string)
-            .map(|entry| entry.size == size && entry.mtime_ms == mtime_ms)
-            .unwrap_or(false);
-        if unchanged {
-            continue;
-        }
-
-        let previous_identity = state
-            .files
-            .get(&path_string)
-            .and_then(|entry| entry.message_identity_key.clone());
-        let content = match fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(_) => continue,
-        };
-        let json = match serde_json::from_str::<Value>(&content) {
-            Ok(json) => json,
-            Err(_) => {
-                state.files.insert(
-                    path_string,
-                    OpenCodeFileEntryState {
-                        size,
-                        mtime_ms,
-                        message_identity_key: previous_identity,
-                    },
-                );
-                continue;
-            }
-        };
-
-        if let Some(ref identity) = previous_identity {
-            state.messages.remove(identity);
-        }
-
-        let raw_session_id = json
-            .get("sessionID")
-            .or_else(|| json.get("sessionId"))
-            .or_else(|| json.get("session_id"))
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        let raw_message_id = json
-            .get("id")
-            .or_else(|| json.get("messageID"))
-            .or_else(|| json.get("messageId"))
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-
-        let snapshot = parse_message_snapshot(
-            raw_session_id,
-            raw_message_id,
-            &json,
-            0,
-            "opencode_file",
-            &path.to_string_lossy(),
-        );
-
-        state.files.insert(
-            path_string,
-            OpenCodeFileEntryState {
-                size,
-                mtime_ms,
-                message_identity_key: snapshot.as_ref().map(|entry| entry.message_identity_key()),
-            },
-        );
-
-        if let Some(snapshot) = snapshot {
-            state
-                .messages
-                .insert(snapshot.message_identity_key(), snapshot);
-        }
-    }
-
-    state.messages.clone()
-}
-
-#[derive(Debug, Clone)]
-struct DbMessageRow {
-    rowid: i64,
-    id: String,
-    session_id: String,
-    time_updated_ms: i64,
-    data: Value,
-}
-
-fn query_db_message_rows(
-    conn: &Connection,
-    last_time_updated_ms: Option<i64>,
-    last_rowid: Option<i64>,
-) -> Vec<DbMessageRow> {
-    let (sql, params_vec): (&str, Vec<i64>) = if let (Some(last_time), Some(last_rowid)) =
-        (last_time_updated_ms, last_rowid)
-    {
-        (
-            "SELECT rowid, id, session_id, COALESCE(time_updated, 0), data
-             FROM message
-             WHERE json_extract(data, '$.role') = 'assistant'
-               AND (COALESCE(time_updated, 0) > ?1 OR (COALESCE(time_updated, 0) = ?1 AND rowid > ?2))
-             ORDER BY COALESCE(time_updated, 0) ASC, rowid ASC",
-            vec![last_time, last_rowid],
-        )
-    } else {
-        (
-            "SELECT rowid, id, session_id, COALESCE(time_updated, 0), data
-             FROM message
-             WHERE json_extract(data, '$.role') = 'assistant'
-             ORDER BY COALESCE(time_updated, 0) ASC, rowid ASC",
-            Vec::new(),
-        )
-    };
-
-    let mut stmt = match conn.prepare(sql) {
-        Ok(stmt) => stmt,
-        Err(_) => return Vec::new(),
-    };
-    let mut rows = if params_vec.is_empty() {
-        match stmt.query([]) {
-            Ok(rows) => rows,
-            Err(_) => return Vec::new(),
-        }
-    } else {
-        match stmt.query(params![params_vec[0], params_vec[1]]) {
-            Ok(rows) => rows,
-            Err(_) => return Vec::new(),
-        }
-    };
-
-    let mut out = Vec::new();
-    while let Ok(Some(row)) = rows.next() {
-        let data_str: String = match row.get(4) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let data = match serde_json::from_str::<Value>(&data_str) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        out.push(DbMessageRow {
-            rowid: row.get(0).unwrap_or(0),
-            id: row.get::<_, String>(1).unwrap_or_default(),
-            session_id: row.get::<_, String>(2).unwrap_or_default(),
-            time_updated_ms: row.get::<_, i64>(3).unwrap_or(0),
-            data,
-        });
-    }
-    out
-}
-
-fn compute_opencode_db_storage_signature(db_path: &Path) -> OpenCodeStorageSignature {
-    OpenCodeStorageSignature {
-        db_path: db_path.to_string_lossy().to_string(),
-        db: read_path_signature(db_path),
-        wal: read_path_signature(&db_path.with_extension("db-wal")),
-        shm: read_path_signature(&db_path.with_extension("db-shm")),
-    }
-}
-
-fn read_path_signature(path: &Path) -> OpenCodePathSignature {
-    let meta = match fs::metadata(path) {
-        Ok(meta) => meta,
-        Err(_) => return OpenCodePathSignature::default(),
-    };
-    let mtime_ns = meta
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    OpenCodePathSignature {
-        exists: true,
-        size: meta.len(),
-        mtime_ns,
-    }
-}
-
-fn open_opencode_db_read_only(db_path: &Path) -> rusqlite::Result<Connection> {
-    let conn = Connection::open_with_flags(
-        db_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    let _ = conn.execute_batch("PRAGMA busy_timeout=3000;");
-    Ok(conn)
-}
-
-fn read_db_checkpoint(conn: &Connection) -> OpenCodeDbCheckpoint {
-    let mut checkpoint = OpenCodeDbCheckpoint {
-        schema_fingerprint: compute_schema_fingerprint(conn),
-        ..Default::default()
-    };
-    let values: rusqlite::Result<(i64, i64, i64)> = conn.query_row(
-        "SELECT
-            COUNT(*),
-            COALESCE(MAX(rowid), 0),
-            COALESCE(MAX(COALESCE(time_updated, 0)), 0)
-         FROM message
-         WHERE json_extract(data, '$.role') = 'assistant'",
-        [],
-        |row| {
-            Ok((
-                row.get::<_, i64>(0).unwrap_or(0),
-                row.get::<_, i64>(1).unwrap_or(0),
-                row.get::<_, i64>(2).unwrap_or(0),
-            ))
-        },
-    );
-    if let Ok((count, max_rowid, max_time)) = values {
-        checkpoint.assistant_row_count = count.max(0) as u64;
-        checkpoint.max_rowid = max_rowid.max(0);
-        checkpoint.max_time_updated_ms = max_time.max(0);
-    }
-    checkpoint
-}
-
-fn compute_schema_fingerprint(conn: &Connection) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    let mut stmt = match conn.prepare(
-        "SELECT name, COALESCE(sql, '')
-         FROM sqlite_schema
-         WHERE type = 'table' AND name IN ('message', 'session')
-         ORDER BY name ASC",
-    ) {
-        Ok(stmt) => stmt,
-        Err(_) => return 0,
-    };
-    let rows = match stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0).unwrap_or_default(),
-            row.get::<_, String>(1).unwrap_or_default(),
-        ))
-    }) {
-        Ok(rows) => rows,
-        Err(_) => return 0,
-    };
-    for row in rows.flatten() {
-        row.0.hash(&mut hasher);
-        row.1.hash(&mut hasher);
-    }
-    hasher.finish()
-}
-
-fn detect_schema_mode(conn: &Connection) -> (OpenCodeSchemaMode, Option<String>) {
-    if let Some(col) = missing_required_columns(conn, "message", REQUIRED_MESSAGE_COLUMNS)
-        .into_iter()
-        .next()
-    {
-        return (
-            OpenCodeSchemaMode::Incompatible,
-            Some(format!(
-                "message 表缺少字段 `{}`，可能是较旧或较新版本的 OpenCode",
-                col
-            )),
-        );
-    }
-
-    if !verify_json_structure(conn) {
-        return (
-            OpenCodeSchemaMode::Incompatible,
-            Some(
-                "message.data JSON 结构与预期不匹配（tokens.input / tokens.output 字段不存在），可能是 OpenCode 版本升级后更改了内部格式"
-                    .to_string(),
-            ),
-        );
-    }
-
-    if let Some(col) = missing_required_columns(conn, "session", REQUIRED_SESSION_COLUMNS)
-        .into_iter()
-        .next()
-    {
-        return (
-            OpenCodeSchemaMode::MessageOnly,
-            Some(format!("session 表缺少字段 `{}`，将退化为仅消息模式", col)),
-        );
-    }
-
-    (OpenCodeSchemaMode::Full, None)
-}
-
-fn get_table_columns(conn: &Connection, table: &str) -> Vec<String> {
-    let sql = format!("PRAGMA table_info({})", table);
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    stmt.query_map([], |row| row.get::<_, String>(1))
-        .map(|rows| rows.flatten().collect())
-        .unwrap_or_default()
-}
-
-fn missing_required_columns(conn: &Connection, table: &str, required: &[&str]) -> Vec<String> {
-    let columns = get_table_columns(conn, table);
-    required
-        .iter()
-        .filter(|col| !columns.iter().any(|existing| existing == **col))
-        .map(|col| (*col).to_string())
-        .collect()
-}
-
-fn verify_json_structure(conn: &Connection) -> bool {
-    let result: rusqlite::Result<Option<i64>> = conn.query_row(
-        "SELECT COUNT(*) FROM message
-         WHERE json_extract(data, '$.role') = 'assistant'
-           AND (json_extract(data, '$.tokens.input') IS NOT NULL
-             OR json_extract(data, '$.tokens.output') IS NOT NULL
-             OR json_extract(data, '$.tokens.reasoning') IS NOT NULL)
-         LIMIT 1",
-        [],
-        |row| row.get(0),
-    );
-    result.is_ok()
 }
 
 fn query_session_rows(conn: &Connection) -> HashMap<String, SessionRow> {
@@ -953,477 +484,19 @@ fn query_session_rows(conn: &Connection) -> HashMap<String, SessionRow> {
     out
 }
 
-fn build_session_data_from_messages(
-    combined: HashMap<String, OpenCodeMessageSnapshot>,
-) -> Vec<OpenCodeSessionData> {
-    let mut message_by_session: HashMap<String, Vec<OpenCodeMessageSnapshot>> = HashMap::new();
-    let mut raw_message_id_sessions: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut raw_sessions: HashSet<String> = HashSet::new();
-    let mut source_kinds: HashSet<&'static str> = HashSet::new();
-
-    for snapshot in combined.into_values() {
-        raw_message_id_sessions
-            .entry(snapshot.raw_message_id.clone())
-            .or_default()
-            .insert(snapshot.canonical_session_id.clone());
-        raw_sessions.insert(snapshot.raw_session_id.clone());
-        source_kinds.insert(snapshot.source_kind);
-        message_by_session
-            .entry(snapshot.canonical_session_id.clone())
-            .or_default()
-            .push(snapshot);
-    }
-
-    let mut session_rows = HashMap::new();
-    let schema_mode = if let Some(db_path) = find_opencode_db() {
-        if let Ok(conn) = Connection::open_with_flags(
-            &db_path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ) {
-            let _ = conn.execute_batch("PRAGMA busy_timeout=2000;");
-            let (mode, _) = detect_schema_mode(&conn);
-            if mode == OpenCodeSchemaMode::Full {
-                session_rows = query_session_rows(&conn);
-            }
-            mode
-        } else {
-            OpenCodeSchemaMode::Incompatible
-        }
-    } else {
-        OpenCodeSchemaMode::MessageOnly
-    };
-
-    let mut result = Vec::new();
-    for (session_id, mut snapshots) in message_by_session {
-        snapshots.sort_by_key(|snapshot| snapshot.timestamp_sec);
-        let raw_session_id = snapshots
-            .first()
-            .map(|snapshot| snapshot.raw_session_id.clone())
-            .unwrap_or_default();
-        let session_row = session_rows.get(&raw_session_id);
-        let data = build_session_data(
-            &session_id,
-            session_row,
-            &snapshots,
-            &raw_message_id_sessions,
-            schema_mode,
-            &source_kinds,
-        );
-        result.push(data);
-    }
-    result.sort_by_key(|entry| std::cmp::Reverse(entry.meta.last_modified));
-    result
-}
-
-fn build_session_data(
-    canonical_session_id: &str,
-    session_row: Option<&SessionRow>,
-    snapshots: &[OpenCodeMessageSnapshot],
-    raw_message_id_sessions: &HashMap<String, HashSet<String>>,
-    schema_mode: OpenCodeSchemaMode,
-    source_kinds: &HashSet<&'static str>,
-) -> OpenCodeSessionData {
-    let fallback_cwd = snapshots
-        .iter()
-        .rev()
-        .find_map(|snapshot| snapshot.cwd.clone());
-    let cwd = session_row
-        .map(|row| row.directory.clone())
-        .filter(|value| !value.is_empty())
-        .or(fallback_cwd.clone());
-    let project_name = cwd.as_deref().and_then(extract_project_name);
-
-    let session_model = session_row.and_then(|row| {
-        row.model_json
-            .as_deref()
-            .and_then(|json| serde_json::from_str::<Value>(json).ok())
-            .map(|value| {
-                let model_id = value
-                    .get("id")
-                    .or_else(|| value.get("modelID"))
-                    .or_else(|| value.get("modelId"))
-                    .and_then(|v| v.as_str());
-                let provider_id = value
-                    .get("providerID")
-                    .or_else(|| value.get("providerId"))
-                    .and_then(|v| v.as_str());
-                normalize_model_string(provider_id, model_id)
-            })
-    });
-
-    let mut models = BTreeSet::new();
-    let mut total_input = 0_u64;
-    let mut total_output = 0_u64;
-    let mut total_cache_create = 0_u64;
-    let mut total_cache_read = 0_u64;
-    let mut message_ids = Vec::new();
-    let mut requests = Vec::new();
-
-    for snapshot in snapshots {
-        if !snapshot.model.is_empty() && snapshot.model != "unknown" {
-            models.insert(snapshot.model.clone());
-        }
-        total_input += snapshot.input_tokens;
-        total_output += snapshot.output_tokens + snapshot.reasoning_tokens;
-        total_cache_create += snapshot.cache_create_tokens;
-        total_cache_read += snapshot.cache_read_tokens;
-        message_ids.push(snapshot.raw_message_id.clone());
-
-        let duplicate_raw_message_id = raw_message_id_sessions
-            .get(&snapshot.raw_message_id)
-            .map(|sessions| sessions.len() > 1)
-            .unwrap_or(false);
-        let request_key = if duplicate_raw_message_id {
-            Some(format!(
-                "{}:{}|{}",
-                TOOL_OPENCODE, canonical_session_id, snapshot.raw_message_id
-            ))
-        } else {
-            Some(format!("{}:{}", TOOL_OPENCODE, snapshot.raw_message_id))
-        };
-
-        requests.push(LocalRequestRecord {
-            session_id: canonical_session_id.to_string(),
-            tool: TOOL_OPENCODE.to_string(),
-            timestamp: snapshot.timestamp_sec,
-            message_id: snapshot.raw_message_id.clone(),
-            input_tokens: snapshot.input_tokens,
-            output_tokens: snapshot.output_tokens + snapshot.reasoning_tokens,
-            reasoning_tokens: snapshot.reasoning_tokens,
-            cache_create_tokens: snapshot.cache_create_tokens,
-            cache_read_tokens: snapshot.cache_read_tokens,
-            total_tokens: snapshot.total_tokens,
-            model: snapshot.model.clone(),
-            is_subagent: false,
-            request_key,
-            source_file_present: Some(true),
-        });
-    }
-
-    if let Some(model) = session_model {
-        if !model.is_empty() && model != "unknown" {
-            models.insert(model);
-        }
-    }
-
-    let start_time = session_row
-        .map(|row| row.time_created_ms / 1000)
-        .filter(|t| *t > 0)
-        .unwrap_or_else(|| {
-            snapshots
-                .iter()
-                .map(|snapshot| snapshot.timestamp_sec)
-                .filter(|&t| t > 0)
-                .min()
-                .unwrap_or(0)
-        });
-    let end_time = session_row
-        .map(|row| row.time_updated_ms / 1000)
-        .filter(|t| *t > 0)
-        .unwrap_or_else(|| {
-            snapshots
-                .iter()
-                .map(|snapshot| snapshot.timestamp_sec)
-                .filter(|&t| t > 0)
-                .max()
-                .unwrap_or(0)
-        });
-    let last_modified = end_time.max(start_time);
-
-    let title = session_row
-        .map(|row| row.title.clone())
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            snapshots
-                .iter()
-                .rev()
-                .find_map(|snapshot| snapshot.title.clone())
-        });
-
-    let source = match schema_mode {
-        OpenCodeSchemaMode::Full => {
-            if source_kinds.contains("opencode_db") && source_kinds.contains("opencode_file") {
-                "opencode_mixed"
-            } else if source_kinds.contains("opencode_db") {
-                "opencode_sqlite"
-            } else {
-                "opencode_file"
-            }
-        }
-        OpenCodeSchemaMode::MessageOnly => "opencode_sqlite_message_only",
-        OpenCodeSchemaMode::Incompatible => "opencode_incompatible",
-    }
-    .to_string();
-
-    let session_row_totals = session_row.map(|row| {
-        (
-            row.tokens_input.max(0) as u64,
-            (row.tokens_output + row.tokens_reasoning).max(0) as u64,
-            row.tokens_cache_write.max(0) as u64,
-            row.tokens_cache_read.max(0) as u64,
-        )
-    });
-
-    let (meta_input, meta_output, meta_cache_create, meta_cache_read) = if requests.is_empty() {
-        session_row_totals.unwrap_or((0, 0, 0, 0))
-    } else {
-        (
-            total_input,
-            total_output,
-            total_cache_create,
-            total_cache_read,
-        )
-    };
-
-    let fingerprint = compute_session_fingerprint(canonical_session_id, &requests);
-    let source_locator = if source.starts_with("opencode_file") {
-        format!("opencode-file://{}", canonical_session_id)
-    } else {
-        format!("opencode-db://{}", canonical_session_id)
-    };
-
-    OpenCodeSessionData {
-        meta: SessionMeta {
-            session_id: canonical_session_id.to_string(),
-            tool: TOOL_OPENCODE.to_string(),
-            cwd,
-            project_name,
-            topic: title.as_deref().map(|value| truncate_string(value, 50)),
-            last_prompt: None,
-            session_name: title.clone(),
-            file_path: source_locator.clone(),
-            file_size: 0,
-            last_modified,
-            total_input_tokens: meta_input,
-            total_output_tokens: meta_output,
-            total_cache_create_tokens: meta_cache_create,
-            total_cache_read_tokens: meta_cache_read,
-            models: models.into_iter().collect(),
-            message_count: requests.len() as u64,
-            start_time,
-            end_time,
-            source,
-            message_ids,
-        },
-        requests,
-        fingerprint,
-        source_locator,
-    }
-}
-
-fn compute_session_fingerprint(session_id: &str, requests: &[LocalRequestRecord]) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    session_id.hash(&mut hasher);
-    for request in requests {
-        request.session_id.hash(&mut hasher);
-        request.message_id.hash(&mut hasher);
-        request.timestamp.hash(&mut hasher);
-        request.model.hash(&mut hasher);
-        request.input_tokens.hash(&mut hasher);
-        request.output_tokens.hash(&mut hasher);
-        request.cache_create_tokens.hash(&mut hasher);
-        request.cache_read_tokens.hash(&mut hasher);
-        request.total_tokens.hash(&mut hasher);
-        request.request_key.hash(&mut hasher);
-    }
-    hasher.finish()
-}
-
-fn collect_legacy_message_files(root: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut queue = VecDeque::from([root.to_path_buf()]);
-    while let Some(dir) = queue.pop_front() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                queue.push_back(path);
-                continue;
-            }
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("msg_") && name.ends_with(".json"))
-                .unwrap_or(false)
-            {
-                out.push(path);
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
-fn parse_message_snapshot(
-    raw_session_id: &str,
-    raw_message_id: &str,
-    data: &Value,
-    fallback_time_updated_ms: i64,
-    source_kind: &'static str,
-    _source_locator: &str,
-) -> Option<OpenCodeMessageSnapshot> {
-    let role = data
-        .get("role")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    if role != "assistant" {
-        return None;
-    }
-
-    let canonical_session_id = canonical_opencode_session_id(raw_session_id);
-    let message_id = if raw_message_id.is_empty() {
-        data.get("id")
-            .or_else(|| data.get("messageID"))
-            .or_else(|| data.get("messageId"))
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .trim()
-            .to_string()
-    } else {
-        raw_message_id.trim().to_string()
-    };
-    if canonical_session_id.trim().is_empty() || message_id.trim().is_empty() {
-        return None;
-    }
-
-    let tokens = data.get("tokens")?.as_object()?;
-    let input_tokens = tokens.get("input").map(to_non_negative_u64).unwrap_or(0);
-    let output_tokens = tokens.get("output").map(to_non_negative_u64).unwrap_or(0);
-    let reasoning_tokens = tokens
-        .get("reasoning")
-        .map(to_non_negative_u64)
-        .unwrap_or(0);
-    let cache_read_tokens = tokens
-        .get("cache")
-        .and_then(|cache| cache.get("read"))
-        .map(to_non_negative_u64)
-        .unwrap_or(0);
-    let cache_create_tokens = tokens
-        .get("cache")
-        .and_then(|cache| cache.get("write"))
-        .map(to_non_negative_u64)
-        .unwrap_or(0);
-    let total_tokens =
-        input_tokens + output_tokens + reasoning_tokens + cache_read_tokens + cache_create_tokens;
-    if total_tokens == 0 {
-        return None;
-    }
-
-    let timestamp_ms = extract_opencode_timestamp_ms(data).unwrap_or(fallback_time_updated_ms);
-    if timestamp_ms <= 0 {
-        return None;
-    }
-    let timestamp_sec = timestamp_ms / 1000;
-
-    let provider_id = data
-        .get("providerID")
-        .or_else(|| data.get("providerId"))
-        .or_else(|| data.get("provider"))
-        .and_then(|value| value.as_str())
-        .map(str::to_string);
-    let model_id = data
-        .get("modelID")
-        .or_else(|| data.get("modelId"))
-        .or_else(|| data.get("model"))
-        .and_then(|value| value.as_str())
-        .map(str::to_string);
-    let model = normalize_model_string(provider_id.as_deref(), model_id.as_deref());
-    let cwd = data
-        .pointer("/path/cwd")
-        .or_else(|| data.pointer("/path/cwdPath"))
-        .and_then(|value| value.as_str())
-        .map(str::to_string);
-    let title = data
-        .get("title")
-        .or_else(|| data.get("sessionTitle"))
-        .and_then(|value| value.as_str())
-        .map(str::to_string);
-
-    Some(OpenCodeMessageSnapshot {
-        canonical_session_id,
-        raw_session_id: raw_session_id.to_string(),
-        raw_message_id: message_id,
-        timestamp_sec,
-        model,
-        cwd,
-        title,
-        input_tokens,
-        output_tokens,
-        reasoning_tokens,
-        cache_create_tokens,
-        cache_read_tokens,
-        total_tokens,
-        source_kind,
-    })
-}
-
 impl OpenCodeMessageSnapshot {
-    fn message_identity_key(&self) -> String {
+    pub(in crate::session) fn message_identity_key(&self) -> String {
         format!("{}|{}", self.canonical_session_id, self.raw_message_id)
     }
-}
-
-fn extract_opencode_timestamp_ms(data: &Value) -> Option<i64> {
-    let completed = data
-        .pointer("/time/completed")
-        .and_then(|value| value.as_i64())
-        .unwrap_or(0);
-    if completed > 0 {
-        return Some(completed);
-    }
-    let created = data
-        .pointer("/time/created")
-        .and_then(|value| value.as_i64())
-        .unwrap_or(0);
-    (created > 0).then_some(created)
-}
-
-fn normalize_model_string(provider_id: Option<&str>, model_id: Option<&str>) -> String {
-    match (provider_id, model_id) {
-        (_, Some(model)) if !model.is_empty() => model.to_string(),
-        (Some(provider), None) if !provider.is_empty() => provider.to_string(),
-        _ => "unknown".to_string(),
-    }
-}
-
-fn extract_project_name(cwd: &str) -> Option<String> {
-    Path::new(cwd)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-}
-
-fn canonical_opencode_session_id(raw_session_id: &str) -> String {
-    if raw_session_id.starts_with("opencode::") {
-        raw_session_id.to_string()
-    } else {
-        format!("opencode::{}", raw_session_id)
-    }
-}
-
-fn truncate_string(s: &str, max_chars: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= max_chars {
-        s.to_string()
-    } else {
-        chars[..max_chars].iter().collect::<String>() + "…"
-    }
-}
-
-fn to_non_negative_u64(value: &Value) -> u64 {
-    value
-        .as_i64()
-        .map(|v| v.max(0) as u64)
-        .or_else(|| value.as_u64())
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::opencode::message::{
+        canonical_opencode_session_id, normalize_model_string, parse_message_snapshot,
+    };
+    use crate::session::opencode::schema;
     use rusqlite::Connection;
     use std::fs;
 
@@ -1467,7 +540,8 @@ mod tests {
         )
         .unwrap();
 
-        let (mode, reason) = detect_schema_mode(&conn);
+        let (mode, reason) =
+            schema::detect_schema_mode(&conn, REQUIRED_SESSION_COLUMNS, REQUIRED_MESSAGE_COLUMNS);
 
         assert_eq!(mode, OpenCodeSchemaMode::MessageOnly);
         assert!(reason.unwrap_or_default().contains("session 表缺少字段"));
@@ -1491,8 +565,7 @@ mod tests {
         });
 
         let snapshot =
-            parse_message_snapshot("sess_1", "msg_1", &data, 0, "opencode_db", "locator")
-                .expect("snapshot");
+            parse_message_snapshot("sess_1", "msg_1", &data, 0, "opencode_db").expect("snapshot");
 
         assert_eq!(snapshot.timestamp_sec, 2);
         assert_eq!(snapshot.model, "glm-4.7-free");
