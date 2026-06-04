@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { COLOR_ICON_SLUGS } from '../iconConfig'
+import reasonixIconUrl from '../assets/tool-icons/reasonix.svg'
 
 const CDN = 'https://unpkg.com/@lobehub/icons-static-svg@1.87.0/icons'
 
@@ -16,6 +17,9 @@ const emit = defineEmits<{
 }>()
 
 const src = computed(() => {
+  if (props.slug === 'reasonix') {
+    return reasonixIconUrl
+  }
   const variant = COLOR_ICON_SLUGS.has(props.slug) ? `${props.slug}-color` : props.slug
   return `${CDN}/${variant}.svg`
 })

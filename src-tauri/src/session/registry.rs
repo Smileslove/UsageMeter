@@ -4,18 +4,25 @@ use super::claude_reader::ClaudeSource;
 use super::codex_reader::CodexSource;
 use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
 use super::opencode_reader::OpenCodeSource;
+use super::reasonix_reader::ReasonixSource;
 use super::source::{ParsedSessionData, SessionSource};
 
 static CLAUDE_SOURCE: ClaudeSource = ClaudeSource;
 static CODEX_SOURCE: CodexSource = CodexSource;
 static OPENCODE_SOURCE: OpenCodeSource = OpenCodeSource;
+static REASONIX_SOURCE: ReasonixSource = ReasonixSource;
 
-pub fn all_sources() -> [&'static dyn SessionSource; 3] {
-    [&CLAUDE_SOURCE, &CODEX_SOURCE, &OPENCODE_SOURCE]
+pub fn all_sources() -> [&'static dyn SessionSource; 4] {
+    [
+        &CLAUDE_SOURCE,
+        &CODEX_SOURCE,
+        &OPENCODE_SOURCE,
+        &REASONIX_SOURCE,
+    ]
 }
 
-pub fn file_backed_sources() -> [&'static dyn SessionSource; 2] {
-    [&CLAUDE_SOURCE, &CODEX_SOURCE]
+pub fn file_backed_sources() -> [&'static dyn SessionSource; 3] {
+    [&CLAUDE_SOURCE, &CODEX_SOURCE, &REASONIX_SOURCE]
 }
 
 pub fn scan_file_backed_session_files() -> Vec<SessionFile> {

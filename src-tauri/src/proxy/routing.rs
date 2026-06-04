@@ -1,5 +1,5 @@
 use super::forwarder::RequestForwarder;
-use super::handlers::{claude, codex, opencode};
+use super::handlers::{claude, codex, opencode, reasonix};
 use super::request_common::{
     append_query, detect_client_route, full, get_settings_snapshot, HandlerResult,
 };
@@ -61,6 +61,18 @@ pub(crate) async fn handle_request(
         }
         "claude_code" => {
             claude::handle_claude_request(
+                method,
+                &path,
+                &forward_path,
+                client_route,
+                req,
+                forwarder,
+                &state,
+            )
+            .await
+        }
+        "reasonix" => {
+            reasonix::handle_reasonix_request(
                 method,
                 &path,
                 &forward_path,

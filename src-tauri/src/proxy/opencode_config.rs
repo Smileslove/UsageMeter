@@ -454,7 +454,12 @@ impl OpenCodeConfigManager {
             .filter_map(|source_id| registry.get(source_id))
             .collect();
         if handles.is_empty() {
-            return Ok(0);
+            return Err(
+                "OpenCode config contains proxy URLs, but no matching source handles \
+                 were found in the registry. The registry file may be missing or corrupted. \
+                 Restore the OpenCode config manually or re-enable takeover."
+                    .to_string(),
+            );
         }
 
         let content = fs::read_to_string(&self.config_path)
@@ -1241,6 +1246,35 @@ mod tests {
             json.pointer("/provider/xiaomi/options/baseURL")
                 .and_then(|value| value.as_str()),
             Some("http://127.0.0.1:18765/opencode/provider/xiaomi/source/oc_xm")
+        );
+    }
+
+    #[test]
+    fn restore_fails_when_no_handles_found_for_active_takeover() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("opencode.json");
+        // 模拟已接管状态：opencode.json 包含代理 URL。
+        fs::write(
+            &config_path,
+            r#"{
+              "provider": {
+                "anthropic": {
+                  "npm": "@ai-sdk/anthropic",
+                  "options": { "baseURL": "http://127.0.0.1:18765/opencode/provider/anthropic/source/oc_ant" }
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        let manager = OpenCodeConfigManager::new_for_path(config_path, true);
+
+        // Registry 中不存在 oc_ant → restore 应该失败，不能静默返回 Ok(0)。
+        let err = manager
+            .restore_from_sources(&["oc_ant".to_string()])
+            .unwrap_err();
+        assert!(
+            err.contains("no matching source handles"),
+            "expected registry-missing error, got: {err}"
         );
     }
 }

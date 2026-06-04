@@ -53,7 +53,8 @@ const defaultClientTools: ClientToolSettings = {
     { id: 'claude_code', tool: 'claude_code', displayName: 'Claude Code', pathPrefix: 'claude-code', enabled: true, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'claudecode' },
     { id: 'codex', tool: 'codex', displayName: 'Codex', pathPrefix: 'codex', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'codex' },
     { id: 'cursor', tool: 'cursor', displayName: 'Cursor', pathPrefix: 'cursor', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'cursor' },
-    { id: 'opencode', tool: 'opencode', displayName: 'OpenCode', pathPrefix: 'opencode', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'opencode' }
+    { id: 'opencode', tool: 'opencode', displayName: 'OpenCode', pathPrefix: 'opencode', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'opencode' },
+    { id: 'reasonix', tool: 'reasonix', displayName: 'Reasonix', pathPrefix: 'reasonix', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'reasonix' }
   ],
   activeToolFilter: null
 }

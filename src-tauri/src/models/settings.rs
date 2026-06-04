@@ -308,6 +308,18 @@ pub fn default_client_tool_profiles() -> Vec<ClientToolProfile> {
             last_seen_ms: now,
             icon: Some("opencode".to_string()),
         },
+        ClientToolProfile {
+            id: "reasonix".to_string(),
+            tool: "reasonix".to_string(),
+            display_name: Some("Reasonix".to_string()),
+            path_prefix: "reasonix".to_string(),
+            target_base_url: None,
+            enabled: false,
+            auto_detected: false,
+            first_seen_ms: now,
+            last_seen_ms: now,
+            icon: Some("reasonix".to_string()),
+        },
     ]
 }
 

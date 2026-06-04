@@ -44,7 +44,7 @@ const proxyStatusInfo = computed(() => {
 })
 
 const managedToolProfiles = computed(() => {
-  return store.settings.clientTools.profiles.filter(profile => ['claude_code', 'codex', 'opencode'].includes(profile.tool))
+  return store.settings.clientTools.profiles.filter(profile => ['claude_code', 'codex', 'opencode', 'reasonix'].includes(profile.tool))
 })
 
 const toolAlerts = computed(() => {
@@ -241,6 +241,8 @@ function toolConfigPaths(profile: ClientToolProfile): string[] {
       return ['~/.codex/config.toml', '~/.codex/auth.json']
     case 'opencode':
       return ['~/.config/opencode/opencode.json']
+    case 'reasonix':
+      return ['~/Library/Application Support/reasonix/config.toml']
     default:
       return []
   }
@@ -256,6 +258,19 @@ function toolConfigSummary(profile: ClientToolProfile): string {
   return t(store.settings.locale, 'settings.proxyToolConfigSummary', {
     files: fileNames.join(' · ')
   })
+}
+
+function inlineScopeWarning(profile: ClientToolProfile): string | null {
+  const status = takeoverStatusFor(profile.tool)
+  if (!status?.enabled || !status.scopeWarningKey) {
+    return null
+  }
+  return t(store.settings.locale, status.scopeWarningKey)
+}
+
+function showScopeBadge(profile: ClientToolProfile): boolean {
+  const status = takeoverStatusFor(profile.tool)
+  return Boolean(status?.enabled && status?.scopeWarningKey)
 }
 
 function toggleExpandedTool(tool: string): void {
@@ -331,7 +346,13 @@ function toggleExpandedTool(tool: string): void {
                   <span v-else class="h-1.5 w-1.5 rounded-full bg-gray-400"></span>
                 </div>
                 <div class="min-w-0">
-                  <div class="text-[10.5px] font-medium leading-none text-gray-700 dark:text-gray-200">{{ toolLabel(profile) }}</div>
+                  <div class="flex items-center gap-1.5">
+                    <div class="text-[10.5px] font-medium leading-none text-gray-700 dark:text-gray-200">{{ toolLabel(profile) }}</div>
+                    <span
+                      v-if="showScopeBadge(profile)"
+                      class="rounded px-1 py-px text-[9px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300"
+                    >{{ t(store.settings.locale, 'settings.globalConfigOnlyBadge') }}</span>
+                  </div>
                   <div class="mt-0.5 flex items-center gap-1.5">
                     <div class="min-w-0 truncate font-mono text-[9px] leading-tight text-gray-400 dark:text-gray-500">
                       {{ toolConfigSummary(profile) }}
@@ -362,6 +383,12 @@ function toggleExpandedTool(tool: string): void {
                 class="break-all font-mono text-[9px] leading-relaxed text-gray-400 dark:text-gray-500"
               >
                 {{ path }}
+              </div>
+              <div
+                v-if="inlineScopeWarning(profile)"
+                class="mt-1 text-[9px] leading-relaxed text-amber-600 dark:text-amber-300"
+              >
+                {{ inlineScopeWarning(profile) }}
               </div>
             </div>
           </div>

@@ -6,6 +6,7 @@ use super::config_manager::ClaudeConfigManager;
 use super::forwarder::RequestForwarder;
 use super::openai_forwarder::OpenAiForwarder;
 use super::opencode_config::{OpenCodeConfigManager, OpenCodeSourceRegistry};
+use super::reasonix_config::{ReasonixConfigManager, ReasonixSourceRegistry};
 use super::request_common::{
     get_settings_snapshot, refresh_settings_snapshot_if_needed, settings_file_mtime,
 };
@@ -393,6 +394,69 @@ async fn sync_opencode_external_config_change(proxy_port: u16, state: Arc<ProxyS
     .await;
 }
 
+async fn sync_reasonix_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
+    if is_takeover_conflict_paused(&state, "reasonix").await {
+        return;
+    }
+
+    let settings = get_settings_snapshot(&state).await;
+    let reasonix_enabled = settings
+        .client_tools
+        .profiles
+        .iter()
+        .any(|profile| profile.tool == "reasonix" && profile.enabled);
+    if !reasonix_enabled {
+        return;
+    }
+
+    let config_manager = ReasonixConfigManager::new();
+    if config_manager.ensure_config_exists().is_err() {
+        return;
+    }
+
+    let route_state = match config_manager.read_live_snapshot() {
+        Ok(state) => state,
+        Err(_) => return,
+    };
+
+    if route_state.providers.is_empty() {
+        return;
+    }
+
+    // 所有 provider 都已指向代理，无需处理。
+    if route_state.providers.iter().all(|provider| {
+        ReasonixConfigManager::is_usagemeter_proxy_url_for_port(
+            &provider.original_base_url,
+            proxy_port,
+        )
+    }) {
+        return;
+    }
+
+    let external_base_url = route_state
+        .providers
+        .iter()
+        .find(|provider| {
+            !ReasonixConfigManager::is_usagemeter_proxy_url_for_port(
+                &provider.original_base_url,
+                proxy_port,
+            )
+        })
+        .map(|provider| format!("{}: {}", provider.provider_name, provider.original_base_url))
+        .unwrap_or_else(|| "external override detected".to_string());
+
+    pause_takeover_conflict(&state, "reasonix", Some(external_base_url.clone())).await;
+    emit_takeover_conflict_detected(
+        &state,
+        "reasonix",
+        config_manager.config_path().display().to_string(),
+        external_base_url,
+        1,
+        0,
+    )
+    .await;
+}
+
 /// 代理服务器
 pub struct ProxyServer {
     /// 代理配置
@@ -551,6 +615,7 @@ impl ProxyServer {
 
         sync_codex_external_config_change(self.config.port, self.state.clone()).await;
         sync_opencode_external_config_change(self.config.port, self.state.clone()).await;
+        sync_reasonix_external_config_change(self.config.port, self.state.clone()).await;
 
         // 创建关闭通道
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
@@ -583,6 +648,7 @@ impl ProxyServer {
                         }
                         sync_codex_external_config_change(proxy_port, state.clone()).await;
                         sync_opencode_external_config_change(proxy_port, state.clone()).await;
+                        sync_reasonix_external_config_change(proxy_port, state.clone()).await;
                         None
                     }
                     _ = &mut shutdown_rx => {
@@ -739,6 +805,7 @@ impl ProxyServer {
             "claude_code" | "claude" => self.force_reclaim_claude_takeover().await?,
             "codex" => self.force_reclaim_codex_takeover().await?,
             "opencode" => self.force_reclaim_opencode_takeover().await?,
+            "reasonix" => self.force_reclaim_reasonix_takeover().await?,
             other => return Err(format!("Unsupported takeover tool: {}", other)),
         };
         clear_takeover_conflict(&self.state, tool).await;
@@ -829,6 +896,38 @@ impl ProxyServer {
 
         config_manager.takeover_with_handles(self.config.port, &handles)?;
         mark_takeover_config_write(&self.state, "opencode").await;
+        Ok(())
+    }
+
+    async fn force_reclaim_reasonix_takeover(&self) -> Result<(), String> {
+        let config_manager = ReasonixConfigManager::new();
+        config_manager.ensure_config_exists()?;
+
+        let registry = ReasonixSourceRegistry::new();
+        let route_state = config_manager.read_live_snapshot()?;
+        let handles = if route_state.providers.iter().any(|provider| {
+            ReasonixConfigManager::is_usagemeter_proxy_url(&provider.original_base_url)
+        }) {
+            let mut handles = Vec::new();
+            for source_id in config_manager.active_source_ids() {
+                if let Some(handle) = registry.get(&source_id) {
+                    handles.push(handle);
+                }
+            }
+            handles
+        } else {
+            registry.upsert_from_state(&route_state)?
+        };
+
+        if handles.is_empty() {
+            return Err(
+                "No Reasonix providers with a base_url were found. Run `reasonix setup` first, then enable takeover."
+                    .to_string(),
+            );
+        }
+
+        config_manager.takeover_with_handles(self.config.port, &handles)?;
+        mark_takeover_config_write(&self.state, "reasonix").await;
         Ok(())
     }
 

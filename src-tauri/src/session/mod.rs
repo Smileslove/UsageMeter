@@ -8,6 +8,7 @@ mod constants;
 mod meta;
 mod opencode;
 pub(crate) mod opencode_reader;
+mod reasonix_reader;
 mod registry;
 mod scanner;
 mod shared;

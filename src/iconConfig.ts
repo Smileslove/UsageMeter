@@ -204,4 +204,5 @@ export const TOOL_LOBE_ICONS: Record<string, string> = {
   codex: 'codex',
   cursor: 'cursor',
   opencode: 'opencode',
+  reasonix: 'reasonix',
 }
