@@ -4,7 +4,7 @@ import { Activity, Boxes, CircleDollarSign, HelpCircle, Layers3, LayoutGrid } fr
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
 import { formatCost, formatRequestCount, formatTokenValue } from '../../utils/format'
-import { TOOL_LOBE_ICONS } from '../../iconConfig'
+import { resolveToolLobeIcon } from '../../iconConfig'
 import LobeIcon from '../LobeIcon.vue'
 import type { OverviewBreakdownItem } from '../../types'
 
@@ -80,7 +80,7 @@ function displayLabel(item: OverviewBreakdownItem): string {
 }
 
 function toolIcon(item: OverviewBreakdownItem): string | null {
-  return item.icon || TOOL_LOBE_ICONS[item.id] || null
+  return resolveToolLobeIcon(item.id, item.icon)
 }
 
 function requestMeta(item: OverviewBreakdownItem): RankMetaItem {

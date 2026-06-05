@@ -4,7 +4,7 @@ import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import { ChevronDown, LayoutGrid } from 'lucide-vue-next'
 import LobeIcon from './LobeIcon.vue'
-import { TOOL_LOBE_ICONS } from '../iconConfig'
+import { resolveToolLobeIcon } from '../iconConfig'
 
 const store = useMonitorStore()
 
@@ -27,7 +27,7 @@ const getToolName = (tool: string) => {
 
 const getToolIcon = (tool: string) => {
   const profile = profiles.value.find(p => p.tool === tool)
-  return profile?.icon || TOOL_LOBE_ICONS[tool] || null
+  return resolveToolLobeIcon(tool, profile?.icon)
 }
 
 const currentProfile = computed(() => {
@@ -37,7 +37,7 @@ const currentProfile = computed(() => {
 
 const currentIcon = computed(() => {
   if (!currentProfile.value) return null
-  return currentProfile.value.icon || TOOL_LOBE_ICONS[currentProfile.value.tool] || null
+  return resolveToolLobeIcon(currentProfile.value.tool, currentProfile.value.icon)
 })
 
 const currentLabel = computed(() => {
