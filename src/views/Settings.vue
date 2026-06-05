@@ -10,6 +10,7 @@ import LocalCacheManagementPanel from '../components/settings/LocalCacheManageme
 import ProxyControlPanel from '../components/settings/ProxyControlPanel.vue'
 import NetworkProxyPanel from '../components/settings/NetworkProxyPanel.vue'
 import SyncSettingsPanel from '../components/settings/SyncSettingsPanel.vue'
+import WslScanPanel from '../components/settings/WslScanPanel.vue'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 
@@ -79,6 +80,7 @@ const openCurrency = () => {
           <div class="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm divide-y divide-gray-50 dark:border-neutral-800 dark:bg-[#1C1C1E] dark:divide-neutral-800/50">
             <SyncSettingsPanel />
             <LocalCacheManagementPanel />
+            <WslScanPanel />
           </div>
         </div>
       </section>

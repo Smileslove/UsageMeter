@@ -379,6 +379,7 @@ pub fn run() {
             // 设置命令
             commands::load_settings,
             commands::save_settings,
+            commands::list_wsl_distros,
             // 用量命令
             commands::refresh_usage_bundle,
             commands::get_overview_breakdown,

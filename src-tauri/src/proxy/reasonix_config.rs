@@ -85,6 +85,7 @@ impl ReasonixSourceRegistry {
             .find(|handle| handle.id == id)
     }
 
+    #[allow(dead_code)]
     pub fn list_handles(&self) -> Vec<ReasonixSourceHandle> {
         self.read_data()
             .map(|data| data.handles)
@@ -320,7 +321,7 @@ impl ReasonixConfigManager {
             let Some(current_base_url) = current_provider_urls.get(&handle.provider_name) else {
                 continue;
             };
-            let should_restore = Self::is_usagemeter_proxy_url(&current_base_url)
+            let should_restore = Self::is_usagemeter_proxy_url(current_base_url)
                 && Self::extract_source_id_from_proxy_url(current_base_url)
                     .map(|source_id| source_id == handle.id)
                     .unwrap_or(false);

@@ -11,10 +11,10 @@ mod openai_forwarder;
 mod opencode_config;
 mod opencode_protocol;
 mod reasonix_config;
-mod request_common;
+pub(crate) mod request_common;
 mod response_bridge;
 mod routing;
-mod server;
+pub(crate) mod server;
 mod source_detector;
 mod source_registry;
 mod sse;
@@ -33,12 +33,6 @@ pub use database::{
 };
 pub use opencode_config::{OpenCodeConfigManager, OpenCodeSourceRegistry};
 pub use reasonix_config::{ReasonixConfigManager, ReasonixSourceRegistry};
-pub(crate) use request_common::{refresh_settings_snapshot_if_needed, settings_file_mtime};
 pub use server::ProxyServer;
-pub(crate) use server::{
-    sync_codex_external_config_change, sync_external_config_change,
-    sync_opencode_external_config_change, sync_reasonix_external_config_change,
-    ExternalConfigSyncMode,
-};
 pub use source_detector::compute_source_id;
 pub use types::*;

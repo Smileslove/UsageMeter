@@ -190,6 +190,47 @@ fn migrate_sync(settings: &mut AppSettings) -> Result<(), String> {
     Ok(())
 }
 
+/// 列出所有已安装的 WSL 发行版（仅 Windows 生效）。
+#[tauri::command]
+pub fn list_wsl_distros() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+        let output = match std::process::Command::new("wsl.exe")
+            .args(["-l", "-q"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+        {
+            Ok(out) if out.status.success() => out,
+            _ => return Vec::new(),
+        };
+
+        let units: Vec<u16> = output
+            .stdout
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        let text = String::from_utf16_lossy(&units);
+
+        text.lines()
+            .map(|line| line.trim().trim_end_matches('\r').to_string())
+            .filter(|name| {
+                !name.is_empty()
+                    && name.len() <= 64
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            })
+            .collect()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

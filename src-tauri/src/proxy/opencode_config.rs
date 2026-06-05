@@ -760,6 +760,7 @@ impl OpenCodeConfigManager {
         None
     }
 
+    #[allow(dead_code)]
     fn is_local_opencode_proxy_url(url: &reqwest::Url) -> bool {
         let Some(host) = url.host_str() else {
             return false;

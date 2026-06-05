@@ -13,6 +13,7 @@ mod registry;
 mod scanner;
 mod shared;
 mod source;
+mod wsl;
 
 #[allow(unused_imports)]
 pub use meta::{LocalRequestRecord, SessionFile, SessionMeta};

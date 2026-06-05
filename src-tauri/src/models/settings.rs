@@ -567,6 +567,27 @@ pub struct AppSettings {
     pub auto_check_update: bool,
     #[serde(default)]
     pub skipped_update_version: String,
+    #[serde(default)]
+    pub wsl_scan: WslScanSettings,
+}
+
+/// WSL 被动扫描设置（仅在 Windows 上生效）。
+///
+/// 开启后，UsageMeter 会经 UNC 路径 `\\wsl$\<distro>\home\<user>\...` 额外扫描
+/// WSL 发行版内的 Claude Code / Codex transcript，纳入统计。默认关闭，避免无 WSL
+/// 用户每次刷新都唤醒发行版。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WslScanSettings {
+    /// 是否启用 WSL 被动扫描。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 手动指定的发行版列表；为空时自动枚举（`wsl.exe -l -q`）。
+    #[serde(default)]
+    pub distros: Vec<String>,
+    /// 手动指定的扫描根（UNC 路径），用于自动探测失败时的兜底。
+    #[serde(default)]
+    pub extra_roots: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -752,6 +773,7 @@ impl Default for AppSettings {
             network_proxy: NetworkProxyConfig::default(),
             auto_check_update: default_auto_check_update(),
             skipped_update_version: String::new(),
+            wsl_scan: WslScanSettings::default(),
         }
     }
 }

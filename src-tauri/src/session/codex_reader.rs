@@ -29,6 +29,15 @@ impl SessionSource for CodexSource {
                 sessions.extend(collect_codex_session_files(&codex_root));
             }
         }
+        // 额外扫描 WSL 发行版内的 Codex sessions（仅 Windows，且 wslScan 开启时）。
+        #[cfg(windows)]
+        if let Some(cfg) = super::wsl::scan_config_if_enabled() {
+            for root in super::wsl::codex_session_roots(&cfg) {
+                if root.exists() {
+                    sessions.extend(collect_codex_session_files(&root));
+                }
+            }
+        }
         sessions.sort_by_key(|session| std::cmp::Reverse(session.last_modified));
 
         let mut hasher = std::collections::hash_map::DefaultHasher::new();

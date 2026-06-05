@@ -32,6 +32,15 @@ impl SessionSource for ClaudeSource {
                 }
             }
         }
+        // 额外扫描 WSL 发行版内的 Claude transcript（仅 Windows，且 wslScan 开启时）。
+        #[cfg(windows)]
+        if let Some(cfg) = super::wsl::scan_config_if_enabled() {
+            for root in super::wsl::claude_projects_roots(&cfg) {
+                if root.exists() {
+                    sessions.extend(collect_claude_session_files_from_root(&root));
+                }
+            }
+        }
         sessions.sort_by_key(|session| std::cmp::Reverse(session.last_modified));
 
         let mut hasher = std::collections::hash_map::DefaultHasher::new();

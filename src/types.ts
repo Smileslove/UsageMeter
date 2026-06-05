@@ -117,6 +117,14 @@ export interface AppSettings {
   networkProxy: NetworkProxyConfig      // 全局出站网络代理
   autoCheckUpdate: boolean              // 启动时自动检查更新
   skippedUpdateVersion: string          // 已跳过的版本号（空字符串表示不跳过）
+  wslScan: WslScanSettings              // WSL 被动扫描设置
+}
+
+// WSL 被动扫描设置（仅 Windows 生效）
+export interface WslScanSettings {
+  enabled: boolean       // 是否启用
+  distros: string[]      // 手动指定的发行版列表；空则自动枚举
+  extraRoots: string[]   // 手动 UNC 根，兜底
 }
 
 // API 来源配置
