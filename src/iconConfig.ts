@@ -206,3 +206,27 @@ export const TOOL_LOBE_ICONS: Record<string, string> = {
   opencode: 'opencode',
   reasonix: 'reasonix',
 }
+
+const TOOL_ICON_ALIASES: Record<string, string> = {
+  claude: 'claudecode',
+  claude_code: 'claudecode',
+  githubcopilot: 'copilot',
+  github_copilot: 'copilot',
+  open_code: 'opencode',
+}
+
+function normalizeIconSlug(icon?: string | null): string | null {
+  if (!icon) return null
+  const normalized = icon.trim().toLowerCase()
+  return normalized.length > 0 ? normalized : null
+}
+
+export function resolveToolLobeIcon(tool?: string | null, icon?: string | null): string | null {
+  const explicitIcon = normalizeIconSlug(icon)
+  if (explicitIcon) return TOOL_ICON_ALIASES[explicitIcon] || explicitIcon
+
+  const normalizedTool = normalizeIconSlug(tool)
+  if (!normalizedTool) return null
+
+  return TOOL_LOBE_ICONS[normalizedTool] || TOOL_ICON_ALIASES[normalizedTool] || null
+}

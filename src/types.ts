@@ -371,9 +371,13 @@ export interface SessionStats {
   errorRequests?: number
   estimatedCost?: number
   isCostEstimated?: boolean
+  usageFullyCovered?: boolean
+  coveredRequests?: number
+  uncoveredRequests?: number
   // JSONL 元信息（Phase 4 添加）
   cwd?: string
   projectName?: string  // 项目名称（从 cwd 提取）
+  projectIdentity?: 'project' | 'global' | 'unknown'
   topic?: string        // 首个有意义用户消息
   lastPrompt?: string
   sessionName?: string  // 自定义会话名（customTitle 或 slug）
@@ -382,6 +386,8 @@ export interface SessionStats {
 // 项目统计（聚合多个会话）
 export interface ProjectStats {
   name: string
+  projectKey?: string | null
+  projectIdentity?: 'project' | 'global' | 'unknown'
   projectPath?: string | null
   requestCount: number
   sessionCount: number
@@ -391,6 +397,9 @@ export interface ProjectStats {
   totalCacheReadTokens: number
   totalCost: number
   lastActive: number
+  usageFullyCovered?: boolean
+  coveredRequests?: number
+  uncoveredRequests?: number
   toolBreakdown: ProjectToolStats[]
 }
 
@@ -404,6 +413,9 @@ export interface ProjectToolStats {
   totalCacheReadTokens: number
   totalCost: number
   lastActive: number
+  usageFullyCovered?: boolean
+  coveredRequests?: number
+  uncoveredRequests?: number
 }
 
 // 会话请求记录

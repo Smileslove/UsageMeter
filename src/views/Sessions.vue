@@ -3,14 +3,14 @@ import { LayoutGrid } from 'lucide-vue-next'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { ProjectStats, SessionStats } from '../types'
+import type { ProjectStats, ProjectToolStats, SessionStats } from '../types'
 import SessionDetailModal from '../components/SessionDetailModal.vue'
 import LobeIcon from '../components/LobeIcon.vue'
 import { TOOL_LOBE_ICONS } from '../iconConfig'
 import { formatCost as formatCostUtil, formatTokenValue, formatRequestCount } from '../utils/format'
 
 const store = useMonitorStore()
-const SESSION_SOURCE_TOOLS = new Set(['claude_code', 'codex', 'opencode'])
+const SESSION_SOURCE_TOOLS = new Set(['claude_code', 'codex', 'opencode', 'reasonix'])
 const normalizeSessionTool = (tool: string | null | undefined) => (
   tool && SESSION_SOURCE_TOOLS.has(tool) ? tool : null
 )
@@ -86,7 +86,7 @@ const clearViewCaches = () => {
   projectCache.clear()
 }
 
-const projectCacheKey = () => `projects:all-tools`
+const projectCacheKey = () => `projects:${selectedTool.value ?? '__all__'}`
 
 const triggerSessionViewRefresh = async () => {
   clearViewCaches()
@@ -138,7 +138,7 @@ const reloadProjectStats = async (force = false) => {
     }
   }
 
-  await store.fetchProjectStatsForTool(null)
+  await store.fetchProjectStatsForTool(selectedTool.value)
   projectCache.set(key, [...store.projectStats])
 }
 
@@ -200,6 +200,59 @@ const sessionCacheHitRate = (session: SessionStats): string => {
   return `${((session.totalCacheReadTokens || 0) / total * 100).toFixed(1)}%`
 }
 
+const coveredRequests = (value?: number) => value || 0
+const uncoveredRequests = (value?: number) => value || 0
+const localRequests = (session: SessionStats) => coveredRequests(session.coveredRequests) + uncoveredRequests(session.uncoveredRequests)
+const hasReasonixCoverageData = (covered?: number, uncovered?: number, usageFullyCovered?: boolean) => (
+  (covered || 0) > 0 || (uncovered || 0) > 0 || usageFullyCovered === false
+)
+const sessionUsageVisible = (session: SessionStats) => (
+  session.tool !== 'reasonix' || hasReasonixCoverageData(session.coveredRequests, session.uncoveredRequests, session.usageFullyCovered)
+)
+const projectUsageVisible = (project: ProjectStats) => (
+  !project.toolBreakdown?.some(tool => tool.tool === 'reasonix')
+  || hasReasonixCoverageData(project.coveredRequests, project.uncoveredRequests, project.usageFullyCovered)
+)
+const projectToolUsageVisible = (tool: ProjectToolStats) => (
+  tool.tool !== 'reasonix'
+  || hasReasonixCoverageData(tool.coveredRequests, tool.uncoveredRequests, tool.usageFullyCovered)
+)
+const sessionHasPartialCoverage = (session: SessionStats) => (
+  session.tool === 'reasonix' && uncoveredRequests(session.uncoveredRequests) > 0
+)
+const displayTokens = (value: number, visible: boolean) => (visible ? formatTokens(value) : '—')
+const displayCost = (value: number | undefined, visible: boolean) => (visible ? formatCost(value) : '—')
+const displayRequestValue = (value: number) => formatRequestCount(value)
+const displaySessionCacheHitRate = (session: SessionStats) => (
+  sessionUsageVisible(session) ? sessionCacheHitRate(session) : '—'
+)
+const displaySessionPrimaryLabel = (session: SessionStats) => (
+  sessionHasPartialCoverage(session)
+    ? t(store.settings.locale, 'common.covered')
+    : t(store.settings.locale, 'common.totalTokens')
+)
+const displaySessionPrimaryValue = (session: SessionStats) => (
+  sessionHasPartialCoverage(session)
+    ? displayRequestValue(coveredRequests(session.coveredRequests))
+    : displayTokens(
+      (session.totalInputTokens || 0)
+        + (session.totalOutputTokens || 0)
+        + (session.totalCacheCreateTokens || 0)
+        + (session.totalCacheReadTokens || 0),
+      sessionUsageVisible(session)
+    )
+)
+const displayProjectCoverageHint = (project: ProjectStats) => (
+  uncoveredRequests(project.uncoveredRequests) > 0
+    ? t(store.settings.locale, 'sessions.uncoveredRequests', { count: uncoveredRequests(project.uncoveredRequests) })
+    : ''
+)
+const displayToolCoverageHint = (tool: ProjectToolStats) => (
+  uncoveredRequests(tool.uncoveredRequests) > 0
+    ? t(store.settings.locale, 'sessions.uncoveredRequests', { count: uncoveredRequests(tool.uncoveredRequests) })
+    : ''
+)
+
 const displaySessionTitle = (session: SessionStats) => {
   const sessionName = session.sessionName?.trim()
   if (session.topic?.trim()) return session.topic
@@ -208,6 +261,52 @@ const displaySessionTitle = (session: SessionStats) => {
   if (session.projectName?.trim()) return session.projectName
   return t(store.settings.locale, 'sessions.untitled')
 }
+
+const displaySessionProjectBadge = (session: SessionStats) => {
+  if (session.projectName?.trim()) return session.projectName
+  if (session.projectIdentity === 'global') return t(store.settings.locale, 'common.global')
+  if (session.projectIdentity === 'unknown') return t(store.settings.locale, 'common.unknownProject')
+  return ''
+}
+
+const projectBadgeClasses = (identity?: string) => {
+  if (identity === 'global') {
+    return 'bg-slate-50 text-slate-500 dark:bg-slate-500/15 dark:text-slate-300 border border-slate-100 dark:border-slate-400/20'
+  }
+  if (identity === 'unknown') {
+    return 'bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300 border border-amber-100 dark:border-amber-400/20'
+  }
+  return 'bg-indigo-50 text-indigo-500 dark:bg-indigo-500/20 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-500/30'
+}
+
+const displayProjectName = (project: ProjectStats) => {
+  if (project.projectIdentity === 'global') return t(store.settings.locale, 'common.global')
+  if (project.projectIdentity === 'unknown') return t(store.settings.locale, 'common.unknownProject')
+  return project.name
+}
+
+const displayProjectHint = (project: ProjectStats) => {
+  if (project.projectIdentity === 'global') return t(store.settings.locale, 'sessions.globalSessionHint')
+  if (project.projectIdentity === 'unknown') return t(store.settings.locale, 'sessions.unknownProjectHint')
+  return ''
+}
+
+const displayProxyTokenValue = (session: SessionStats) => (
+  coveredRequests(session.coveredRequests) > 0
+    ? formatTokens(
+      (session.totalInputTokens || 0)
+        + (session.totalOutputTokens || 0)
+        + (session.totalCacheCreateTokens || 0)
+        + (session.totalCacheReadTokens || 0)
+    )
+    : '—'
+)
+
+const displayProxyRateValue = (session: SessionStats) => (
+  coveredRequests(session.coveredRequests) > 0 && (session.avgOutputTokensPerSecond || 0) > 0
+    ? `${session.avgOutputTokensPerSecond.toFixed(1)}t/s`
+    : '—'
+)
 
 const getToolProfile = (tool: string) => (
   store.settings.clientTools.profiles.find(profile => profile.tool === tool)
@@ -457,8 +556,12 @@ onUnmounted(() => {
         <div class="flex items-center justify-between w-full gap-2 min-w-0">
           <!-- 左侧：项目名 + 模型 -->
           <div class="flex items-center gap-1.5 min-w-0 shrink">
-            <span v-if="session.projectName" class="shrink-0 text-[10px] font-semibold px-1.5 py-px rounded bg-indigo-50 text-indigo-500 dark:bg-indigo-500/20 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-500/30 truncate max-w-[130px]">
-              {{ session.projectName }}
+            <span
+              v-if="displaySessionProjectBadge(session)"
+              class="shrink-0 text-[10px] font-semibold px-1.5 py-px rounded truncate max-w-[130px]"
+              :class="projectBadgeClasses(session.projectIdentity)"
+            >
+              {{ displaySessionProjectBadge(session) }}
             </span>
             <div class="flex items-center gap-0.5 text-[10px] text-gray-400 dark:text-gray-500 min-w-0">
               <svg class="w-2.5 h-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
@@ -466,7 +569,7 @@ onUnmounted(() => {
             </div>
           </div>
           <!-- 右侧：时间 -->
-          <div class="flex items-center gap-0.5 shrink-0 text-[10px] text-gray-400 dark:text-gray-500">
+          <div class="flex items-center gap-1 shrink-0 text-[10px] text-gray-400 dark:text-gray-500">
             <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
             <span>{{ formatTime(session.lastRequestTime) }}</span>
           </div>
@@ -476,32 +579,55 @@ onUnmounted(() => {
         <p class="text-[12px] font-medium text-gray-800 dark:text-gray-200 line-clamp-1 leading-snug">
           {{ displaySessionTitle(session) }}
         </p>
-
         <!-- 2. 底部数据行：单行横排 -->
         <div class="flex items-center justify-between pt-1.5 border-t border-gray-100 dark:border-white/5 text-[10px]">
+          <template v-if="sessionHasPartialCoverage(session)">
+            <div class="flex items-center gap-0.5">
+              <svg class="w-[10px] h-[10px] text-orange-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 12h16" /></svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.localRecords') }}</span>
+              <span class="text-gray-700 dark:text-gray-300 font-semibold ml-0.5">{{ displayRequestValue(localRequests(session)) }}</span>
+            </div>
+            <div class="flex items-center gap-0.5">
+              <svg class="w-[10px] h-[10px] text-cyan-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.proxyRecords') }}</span>
+              <span class="text-gray-700 dark:text-gray-300 font-semibold ml-0.5">{{ displayRequestValue(coveredRequests(session.coveredRequests)) }}</span>
+            </div>
+            <div class="flex items-center gap-0.5">
+              <svg class="w-[10px] h-[10px] text-violet-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.proxyTokens') }}</span>
+              <span class="text-gray-700 dark:text-gray-300 font-semibold ml-0.5">{{ displayProxyTokenValue(session) }}</span>
+            </div>
+            <div class="flex items-center gap-0.5">
+              <svg class="w-[10px] h-[10px] text-yellow-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.proxyRate') }}</span>
+              <span class="text-gray-700 dark:text-gray-300 font-semibold ml-0.5">{{ displayProxyRateValue(session) }}</span>
+            </div>
+          </template>
+          <template v-else>
           <!-- 总 Token -->
           <div class="flex items-center gap-0.5">
             <svg class="w-[10px] h-[10px] text-orange-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
-            <span class="text-gray-400">{{ t(store.settings.locale, 'common.totalTokens') }}</span>
-            <span class="text-gray-700 dark:text-gray-300 font-semibold ml-0.5">{{ formatTokens((session.totalInputTokens || 0) + (session.totalOutputTokens || 0) + (session.totalCacheCreateTokens || 0) + (session.totalCacheReadTokens || 0)) }}</span>
+            <span class="text-gray-400">{{ displaySessionPrimaryLabel(session) }}</span>
+            <span class="text-gray-700 dark:text-gray-300 font-semibold ml-0.5">{{ displaySessionPrimaryValue(session) }}</span>
           </div>
           <!-- 缓存命中率 -->
           <div class="flex items-center gap-0.5">
             <svg class="w-[10px] h-[10px] text-violet-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
             <span class="text-gray-400">{{ t(store.settings.locale, 'statistics.cacheHitRate') }}</span>
-            <span class="text-violet-500 dark:text-violet-400 font-semibold ml-0.5">{{ sessionCacheHitRate(session) }}</span>
+            <span class="text-violet-500 dark:text-violet-400 font-semibold ml-0.5">{{ displaySessionCacheHitRate(session) }}</span>
           </div>
           <!-- 平均速率 -->
           <div class="flex items-center gap-0.5">
             <svg class="w-[10px] h-[10px] text-yellow-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
             <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.avgRate') }}</span>
-            <span class="text-gray-700 dark:text-gray-300 font-semibold ml-0.5">{{ session.avgOutputTokensPerSecond > 0 ? `${session.avgOutputTokensPerSecond.toFixed(1)}t/s` : '—' }}</span>
+            <span class="text-gray-700 dark:text-gray-300 font-semibold ml-0.5">{{ sessionUsageVisible(session) && session.avgOutputTokensPerSecond > 0 ? `${session.avgOutputTokensPerSecond.toFixed(1)}t/s` : '—' }}</span>
           </div>
           <!-- 费用 -->
           <div class="flex items-center gap-0.5">
             <svg class="w-[10px] h-[10px] text-[#00E5FF] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-            <span class="font-semibold text-[var(--theme-chart-cost)]">{{ formatCost(session.estimatedCost) }}</span>
+            <span class="font-semibold text-[var(--theme-chart-cost)]">{{ displayCost(session.estimatedCost, sessionUsageVisible(session)) }}</span>
           </div>
+          </template>
         </div>
       </div>
 
@@ -533,12 +659,12 @@ onUnmounted(() => {
 
       <!-- 项目列表 -->
       <template v-else>
-        <div v-for="project in store.projectStats" :key="project.projectPath || project.name" class="bg-white dark:bg-[#1E2024] rounded-xl border border-gray-100 dark:border-white/5 py-2 px-2 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors flex flex-col gap-1">
+        <div v-for="project in store.projectStats" :key="project.projectKey || project.projectPath || project.name" class="bg-white dark:bg-[#1E2024] rounded-xl border border-gray-100 dark:border-white/5 py-2 px-2 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors flex flex-col gap-1">
         <!-- 顶部：项目名称与最后活跃时间 -->
         <div class="flex items-center justify-between gap-2 w-full px-0.5">
           <div class="flex min-w-0 flex-1 items-center gap-1.5">
-            <span class="shrink-0 max-w-[130px] truncate text-[10px] font-semibold px-1.5 py-px rounded bg-indigo-50 text-indigo-500 dark:bg-indigo-500/20 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-500/30 leading-none">
-              {{ project.name }}
+            <span class="shrink-0 max-w-[130px] truncate text-[10px] font-semibold px-1.5 py-px rounded leading-none" :class="projectBadgeClasses(project.projectIdentity)">
+              {{ displayProjectName(project) }}
             </span>
             <button
               v-if="project.projectPath"
@@ -566,6 +692,18 @@ onUnmounted(() => {
             <span>{{ t(store.settings.locale, 'sessions.lastActive') }}: {{ formatTime(project.lastActive).split(' ')[0] }}</span>
           </div>
         </div>
+        <p
+          v-if="displayProjectHint(project)"
+          class="px-0.5 text-[10px] leading-none text-gray-400 dark:text-gray-500"
+        >
+          {{ displayProjectHint(project) }}
+        </p>
+        <p
+          v-if="!projectUsageVisible(project) && displayProjectCoverageHint(project)"
+          class="px-0.5 text-[10px] leading-none text-amber-600 dark:text-amber-300"
+        >
+          {{ displayProjectCoverageHint(project) }}
+        </p>
 
         <!-- 项目统计表格 -->
         <div class="overflow-hidden rounded-xl border border-gray-100/90 bg-gray-50/40 dark:border-white/6 dark:bg-white/[0.02]">
@@ -601,16 +739,17 @@ onUnmounted(() => {
                 {{ t(store.settings.locale, 'sessions.totalRow') }}
               </span>
             </div>
-            <span class="text-center font-semibold leading-none text-gray-700 dark:text-gray-200">{{ formatRequestCount(project.requestCount) }}</span>
-            <span class="text-center font-semibold leading-none text-gray-700 dark:text-gray-200">{{ formatTokens(project.totalInputTokens) }}</span>
-            <span class="text-center font-semibold leading-none text-gray-700 dark:text-gray-200">{{ formatTokens(project.totalOutputTokens) }}</span>
-            <span class="text-center font-semibold leading-none text-gray-700 dark:text-gray-200">{{ formatTokens(projectTotalTokens(project)) }}</span>
-            <span class="text-center font-semibold leading-none text-[var(--theme-chart-cost)]">{{ formatCost(project.totalCost) }}</span>
+            <span class="text-center font-semibold leading-none text-gray-700 dark:text-gray-200">{{ displayRequestValue(project.requestCount) }}</span>
+            <span class="text-center font-semibold leading-none text-gray-700 dark:text-gray-200">{{ displayTokens(project.totalInputTokens, projectUsageVisible(project)) }}</span>
+            <span class="text-center font-semibold leading-none text-gray-700 dark:text-gray-200">{{ displayTokens(project.totalOutputTokens, projectUsageVisible(project)) }}</span>
+            <span class="text-center font-semibold leading-none text-gray-700 dark:text-gray-200">{{ displayTokens(projectTotalTokens(project), projectUsageVisible(project)) }}</span>
+            <span class="text-center font-semibold leading-none text-[var(--theme-chart-cost)]">{{ displayCost(project.totalCost, projectUsageVisible(project)) }}</span>
           </div>
           <div
             v-for="tool in projectToolRows(project)"
             :key="`${project.name}-${tool.tool}`"
             class="grid grid-cols-[36px_0.68fr_0.92fr_0.92fr_1fr_1fr] items-center border-t border-white/80 px-2 py-1 text-[9.5px] dark:border-white/6"
+            :title="!projectToolUsageVisible(tool) ? displayToolCoverageHint(tool) : undefined"
           >
             <div class="flex items-center justify-center">
               <LobeIcon
@@ -621,11 +760,11 @@ onUnmounted(() => {
               />
               <span v-else class="h-2 w-2 shrink-0 rounded-full bg-gray-400"></span>
             </div>
-            <span class="text-center font-medium leading-none text-gray-700 dark:text-gray-300">{{ formatRequestCount(tool.requestCount) }}</span>
-            <span class="text-center font-medium leading-none text-gray-700 dark:text-gray-300">{{ formatTokens(tool.totalInputTokens) }}</span>
-            <span class="text-center font-medium leading-none text-gray-700 dark:text-gray-300">{{ formatTokens(tool.totalOutputTokens) }}</span>
-            <span class="text-center font-medium leading-none text-gray-700 dark:text-gray-300">{{ formatTokens(tool.totalInputTokens + tool.totalOutputTokens + tool.totalCacheCreateTokens + tool.totalCacheReadTokens) }}</span>
-            <span class="text-center font-medium leading-none text-[var(--theme-chart-cost)]">{{ formatCost(tool.totalCost) }}</span>
+            <span class="text-center font-medium leading-none text-gray-700 dark:text-gray-300">{{ displayRequestValue(tool.requestCount) }}</span>
+            <span class="text-center font-medium leading-none text-gray-700 dark:text-gray-300">{{ displayTokens(tool.totalInputTokens, projectToolUsageVisible(tool)) }}</span>
+            <span class="text-center font-medium leading-none text-gray-700 dark:text-gray-300">{{ displayTokens(tool.totalOutputTokens, projectToolUsageVisible(tool)) }}</span>
+            <span class="text-center font-medium leading-none text-gray-700 dark:text-gray-300">{{ displayTokens(tool.totalInputTokens + tool.totalOutputTokens + tool.totalCacheCreateTokens + tool.totalCacheReadTokens, projectToolUsageVisible(tool)) }}</span>
+            <span class="text-center font-medium leading-none text-[var(--theme-chart-cost)]">{{ displayCost(tool.totalCost, projectToolUsageVisible(tool)) }}</span>
           </div>
         </div>
       </div>

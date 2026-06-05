@@ -284,6 +284,15 @@ pub struct SessionStats {
     /// 是否为估算费用
     #[serde(default)]
     pub is_cost_estimated: bool,
+    /// usage 是否已被完整覆盖；当前主要用于新版 Reasonix 会话。
+    #[serde(default)]
+    pub usage_fully_covered: bool,
+    /// 已被代理覆盖、可用于完整 usage 统计的请求数。
+    #[serde(default)]
+    pub covered_requests: u64,
+    /// 尚未被代理覆盖的请求数。
+    #[serde(default)]
+    pub uncovered_requests: u64,
     // === JSONL 元信息（可选） ===
     /// 工作目录
     #[serde(default)]
@@ -291,6 +300,9 @@ pub struct SessionStats {
     /// 项目名称（从 cwd 提取）
     #[serde(default)]
     pub project_name: Option<String>,
+    /// 项目归属状态：project / global / unknown
+    #[serde(default)]
+    pub project_identity: Option<String>,
     /// 会话主题
     #[serde(default)]
     pub topic: Option<String>,
@@ -308,6 +320,12 @@ pub struct SessionStats {
 pub struct ProjectStats {
     /// 项目名称
     pub name: String,
+    /// 结构化项目键，供前端稳定区分未知项目分组
+    #[serde(default)]
+    pub project_key: Option<String>,
+    /// 项目归属状态：project / global / unknown
+    #[serde(default)]
+    pub project_identity: Option<String>,
     /// 项目路径（如果可识别）
     #[serde(default)]
     pub project_path: Option<String>,
@@ -330,6 +348,15 @@ pub struct ProjectStats {
     pub total_cost: f64,
     /// 最后活跃时间（Unix 时间戳）
     pub last_active: i64,
+    /// 项目 usage 是否已被完整覆盖；当前主要用于新版 Reasonix 项目。
+    #[serde(default)]
+    pub usage_fully_covered: bool,
+    /// 已被代理覆盖、可用于完整 usage 统计的请求数。
+    #[serde(default)]
+    pub covered_requests: u64,
+    /// 尚未被代理覆盖的请求数。
+    #[serde(default)]
+    pub uncovered_requests: u64,
     /// 按客户端工具拆分的项目统计
     #[serde(default)]
     pub tool_breakdown: Vec<ProjectToolStats>,
@@ -360,6 +387,15 @@ pub struct ProjectToolStats {
     pub total_cost: f64,
     /// 最后活跃时间（Unix 时间戳）
     pub last_active: i64,
+    /// 该工具在当前项目下的 usage 是否已被完整覆盖。
+    #[serde(default)]
+    pub usage_fully_covered: bool,
+    /// 已被代理覆盖、可用于完整 usage 统计的请求数。
+    #[serde(default)]
+    pub covered_requests: u64,
+    /// 尚未被代理覆盖的请求数。
+    #[serde(default)]
+    pub uncovered_requests: u64,
 }
 
 /// 代理状态（在处理器之间共享）

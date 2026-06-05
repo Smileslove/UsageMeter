@@ -205,7 +205,10 @@ onUnmounted(() => {
     </header>
 
     <!-- View Content -->
-    <div class="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-5 pt-1 no-scrollbar">
+    <div
+      class="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-5 pt-1 no-scrollbar"
+      style="-webkit-app-region: no-drag; app-region: no-drag"
+    >
       <Overview v-if="currentView === 'overview'" />
       <Statistics v-else-if="currentView === 'statistics'" />
       <Sessions v-else-if="currentView === 'sessions'" />

@@ -4,11 +4,15 @@ use std::collections::HashSet;
 use super::super::types::{SessionStats, UsageRecord};
 use super::{ProxyDatabase, LEGACY_UNMATCHED_SESSION_ID};
 use crate::models::ModelPricingConfig;
-use crate::session::LocalRequestRecord;
+use crate::session::{LocalRequestRecord, SessionMeta};
 
 struct OpenCodeLocalMatcher<'a> {
     candidates: &'a [&'a LocalRequestRecord],
     used_request_keys: HashSet<String>,
+}
+
+struct ReasonixSessionMatcher<'a> {
+    candidates: &'a [SessionMeta],
 }
 
 impl<'a> OpenCodeLocalMatcher<'a> {
@@ -92,6 +96,68 @@ impl<'a> OpenCodeLocalMatcher<'a> {
         if let Some(key) = candidate.request_key.as_ref() {
             self.used_request_keys.insert(key.clone());
         }
+    }
+}
+
+impl<'a> ReasonixSessionMatcher<'a> {
+    fn new(candidates: &'a [SessionMeta]) -> Self {
+        Self { candidates }
+    }
+
+    fn match_record(&self, proxy_record: &UsageRecord) -> Option<&'a SessionMeta> {
+        let compatible = self.compatible_candidates(proxy_record);
+        if compatible.len() == 1 {
+            compatible.into_iter().next()
+        } else {
+            None
+        }
+    }
+
+    fn compatible_candidate_count(&self, proxy_record: &UsageRecord) -> usize {
+        self.compatible_candidates(proxy_record).len()
+    }
+
+    fn compatible_candidates(&self, proxy_record: &UsageRecord) -> Vec<&'a SessionMeta> {
+        let proxy_model_key = crate::models::normalize_model_id(&proxy_record.model);
+        let proxy_ts_sec = self.proxy_timestamp_secs(proxy_record);
+
+        self.candidates
+            .iter()
+            .filter(|meta| meta.tool == "reasonix" && !meta.session_id.trim().is_empty())
+            .filter(|meta| {
+                meta.models.is_empty()
+                    || meta
+                        .models
+                        .iter()
+                        .any(|model| crate::models::normalize_model_id(model) == proxy_model_key)
+            })
+            .filter(|meta| self.timestamp_matches(proxy_ts_sec, meta))
+            .collect()
+    }
+
+    fn proxy_timestamp_secs(&self, proxy_record: &UsageRecord) -> i64 {
+        if proxy_record.request_end_time > 0 {
+            proxy_record.request_end_time / 1000
+        } else {
+            proxy_record.timestamp / 1000
+        }
+    }
+
+    fn timestamp_matches(&self, proxy_ts_sec: i64, meta: &SessionMeta) -> bool {
+        let start = if meta.start_time > 0 {
+            meta.start_time
+        } else {
+            meta.last_modified.saturating_sub(15)
+        };
+        let end = meta.end_time.max(meta.last_modified);
+        let effective_end = if end > 0 {
+            end
+        } else {
+            start.saturating_add(15)
+        };
+        let grace = 15;
+        proxy_ts_sec >= start.saturating_sub(grace)
+            && proxy_ts_sec <= effective_end.saturating_add(grace)
     }
 }
 
@@ -298,8 +364,12 @@ impl ProxyDatabase {
                 error_requests: row.get::<_, i64>(11)? as u64,
                 estimated_cost,
                 is_cost_estimated: true,
+                usage_fully_covered: true,
+                covered_requests: row.get::<_, i64>(0)? as u64,
+                uncovered_requests: 0,
                 cwd: None,
                 project_name: None,
+                project_identity: None,
                 topic: None,
                 last_prompt: None,
                 session_name: None,
@@ -587,5 +657,198 @@ impl ProxyDatabase {
             .map_err(|e| format!("Failed to commit OpenCode reconciliation: {}", e))?;
 
         Ok(updated)
+    }
+
+    pub fn reconcile_reasonix_records(
+        &self,
+        local_sessions: &[SessionMeta],
+    ) -> Result<usize, String> {
+        let reasonix_sessions: Vec<SessionMeta> = local_sessions
+            .iter()
+            .filter(|meta| meta.tool == "reasonix")
+            .cloned()
+            .collect();
+        if reasonix_sessions.is_empty() {
+            return Ok(0);
+        }
+
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+        let unresolved_records: Vec<(i64, UsageRecord)> = {
+            let mut stmt = conn
+                .prepare(
+                    r#"
+                    SELECT timestamp, message_id, input_tokens, output_tokens,
+                           cache_create_tokens, cache_read_tokens, model, session_id,
+                           request_start_time, request_end_time, duration_ms, output_tokens_per_second,
+                           ttft_ms, status_code, estimated_cost, pricing_snapshot_id, cost_locked,
+                           api_key_prefix, request_base_url, client_tool, proxy_profile_id,
+                           client_detection_method, storage_dedupe_key, canonical_request_key,
+                           session_resolution_state, message_id_conflicted, id
+                    FROM usage_records
+                    WHERE client_tool = 'reasonix'
+                      AND (session_resolution_state IS NULL OR session_resolution_state != 'known')
+                    ORDER BY timestamp ASC
+                    "#,
+                )
+                .map_err(|e| format!("Failed to prepare unresolved Reasonix query: {}", e))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(26)?, usage_record_from_row(row)?))
+                })
+                .map_err(|e| format!("Failed to query unresolved Reasonix records: {}", e))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to collect unresolved Reasonix records: {}", e))?
+        };
+
+        if unresolved_records.is_empty() {
+            return Ok(0);
+        }
+
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Failed to start Reasonix reconciliation transaction: {}", e))?;
+        let mut updated = 0usize;
+        let matcher = ReasonixSessionMatcher::new(&reasonix_sessions);
+
+        for (row_id, record) in unresolved_records {
+            let mut resolved_record = record.clone();
+            let resolution_state;
+
+            match matcher.match_record(&record) {
+                Some(session_meta) => {
+                    resolution_state = "known".to_string();
+                    resolved_record.session_id = Some(session_meta.session_id.clone());
+                    resolved_record.session_resolution_state = Some(resolution_state.clone());
+                }
+                None if matcher.compatible_candidate_count(&record) == 0 => {
+                    resolution_state = "unmatched".to_string();
+                }
+                None => {
+                    resolution_state = "ambiguous".to_string();
+                }
+            }
+
+            if resolved_record.session_resolution_state.as_deref() != Some(&resolution_state) {
+                resolved_record.session_resolution_state = Some(resolution_state.clone());
+            }
+
+            tx.execute(
+                "UPDATE usage_records
+                 SET session_id = ?1,
+                     canonical_request_key = ?2,
+                     session_resolution_state = ?3,
+                     migration_attempted_at = ?4,
+                     updated_at = ?4
+                 WHERE id = ?5",
+                rusqlite::params![
+                    &resolved_record.session_id,
+                    &resolved_record
+                        .canonical_request_key
+                        .clone()
+                        .unwrap_or_else(|| computed_canonical_request_key(&resolved_record)),
+                    &resolution_state,
+                    now,
+                    row_id
+                ],
+            )
+            .map_err(|e| format!("Failed to update Reasonix proxy reconciliation row: {}", e))?;
+
+            if resolution_state == "known" {
+                updated += 1;
+                if let Some(session_id) = resolved_record.session_id.as_deref() {
+                    Self::upsert_session_stats_for_record(&tx, session_id, &resolved_record)?;
+                }
+            }
+        }
+
+        tx.commit()
+            .map_err(|e| format!("Failed to commit Reasonix reconciliation: {}", e))?;
+
+        Ok(updated)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_reasonix_session(
+        session_id: &str,
+        model: &str,
+        start_time: i64,
+        end_time: i64,
+    ) -> SessionMeta {
+        SessionMeta {
+            session_id: session_id.to_string(),
+            tool: "reasonix".to_string(),
+            models: vec![model.to_string()],
+            start_time,
+            end_time,
+            last_modified: end_time,
+            ..Default::default()
+        }
+    }
+
+    fn make_reasonix_record(model: &str, request_end_time_ms: i64) -> UsageRecord {
+        UsageRecord {
+            client_tool: "reasonix".to_string(),
+            model: model.to_string(),
+            request_end_time: request_end_time_ms,
+            timestamp: request_end_time_ms,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn reasonix_matcher_resolves_unique_session_by_model_and_time_range() {
+        let sessions = vec![
+            make_reasonix_session(
+                "reasonix::sess-a",
+                "deepseek-v4-pro",
+                1_700_000_000,
+                1_700_000_030,
+            ),
+            make_reasonix_session(
+                "reasonix::sess-b",
+                "deepseek-v4-pro",
+                1_700_000_100,
+                1_700_000_130,
+            ),
+        ];
+        let matcher = ReasonixSessionMatcher::new(&sessions);
+        let record = make_reasonix_record("deepseek-v4-pro", 1_700_000_025_000);
+
+        let matched = matcher
+            .match_record(&record)
+            .map(|meta| meta.session_id.clone());
+
+        assert_eq!(matched.as_deref(), Some("reasonix::sess-a"));
+    }
+
+    #[test]
+    fn reasonix_matcher_keeps_ambiguous_overlap_unresolved() {
+        let sessions = vec![
+            make_reasonix_session(
+                "reasonix::sess-a",
+                "deepseek-v4-pro",
+                1_700_000_000,
+                1_700_000_040,
+            ),
+            make_reasonix_session(
+                "reasonix::sess-b",
+                "deepseek-v4-pro",
+                1_700_000_010,
+                1_700_000_050,
+            ),
+        ];
+        let matcher = ReasonixSessionMatcher::new(&sessions);
+        let record = make_reasonix_record("deepseek-v4-pro", 1_700_000_020_000);
+
+        assert!(matcher.match_record(&record).is_none());
+        assert_eq!(matcher.compatible_candidate_count(&record), 2);
     }
 }

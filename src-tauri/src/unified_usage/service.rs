@@ -83,6 +83,7 @@ const MERGED_REQUEST_FACTS_CACHE_CAPACITY: usize = 8;
 const HOT_MERGED_REQUEST_FACTS_CACHE_CAPACITY: usize = 4;
 const MERGED_SESSIONS_CACHE_CAPACITY: usize = 6;
 const MERGED_PROJECTS_CACHE_CAPACITY: usize = 6;
+const REASONIX_FULL_COVERAGE_GRACE_SECS: i64 = 30;
 
 fn perf_logging_enabled() -> bool {
     cfg!(debug_assertions) || matches!(std::env::var("USAGEMETER_DEBUG_PERF"), Ok(v) if v == "1")
@@ -354,6 +355,280 @@ struct ProjectAggregate {
     tool_sessions: HashMap<String, HashSet<String>>,
 }
 
+#[derive(Debug, Clone)]
+struct ProjectDescriptor {
+    key: String,
+    name: String,
+    identity: String,
+    path: Option<String>,
+}
+
+fn metadata_only_sessions_allowed(source_filter: &crate::models::SourceFilter) -> bool {
+    matches!(
+        source_filter,
+        crate::models::SourceFilter::All | crate::models::SourceFilter::Unknown { .. }
+    )
+}
+
+fn session_project_identity(project_name: Option<&str>, cwd: Option<&str>) -> &'static str {
+    if project_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+        || cwd
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+    {
+        "project"
+    } else {
+        "unknown"
+    }
+}
+
+fn project_descriptor_for_session(meta: &SessionMeta) -> ProjectDescriptor {
+    let project_name = meta
+        .project_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let project_path = meta
+        .cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    if let Some(path) = project_path.clone() {
+        return ProjectDescriptor {
+            key: path.clone(),
+            name: project_name.clone().unwrap_or_else(|| path.clone()),
+            identity: "project".to_string(),
+            path: Some(path),
+        };
+    }
+
+    if let Some(name) = project_name {
+        return ProjectDescriptor {
+            key: format!("name::{name}"),
+            name,
+            identity: "project".to_string(),
+            path: None,
+        };
+    }
+
+    ProjectDescriptor {
+        key: format!("unknown::{}", meta.session_id),
+        name: meta.session_id.clone(),
+        identity: "unknown".to_string(),
+        path: None,
+    }
+}
+
+fn project_descriptor_for_fact(fact: &MergedRequestFact) -> ProjectDescriptor {
+    let project_name = fact
+        .project_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let project_path = fact
+        .project_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    if let Some(path) = project_path.clone() {
+        return ProjectDescriptor {
+            key: path.clone(),
+            name: project_name.clone().unwrap_or_else(|| path.clone()),
+            identity: "project".to_string(),
+            path: Some(path),
+        };
+    }
+
+    if let Some(name) = project_name {
+        return ProjectDescriptor {
+            key: format!("name::{name}"),
+            name,
+            identity: "project".to_string(),
+            path: None,
+        };
+    }
+
+    let fallback = if !fact.session_id.trim().is_empty() {
+        format!("unknown::{}", fact.session_id)
+    } else {
+        format!("unknown::fact::{}", fact.canonical_request_key)
+    };
+    ProjectDescriptor {
+        key: fallback,
+        name: fact.session_id.clone(),
+        identity: "unknown".to_string(),
+        path: None,
+    }
+}
+
+fn session_usage_fully_covered(
+    meta: Option<&SessionMeta>,
+    tool: &str,
+    proxy_backed_requests: u64,
+    unresolved_proxy_requests: u64,
+    now_sec: i64,
+) -> bool {
+    if tool != "reasonix" {
+        return true;
+    }
+    let Some(meta) = meta else {
+        return false;
+    };
+    if meta.message_count == 0 {
+        return false;
+    }
+    let last_activity = meta.end_time.max(meta.last_modified);
+    if last_activity <= 0
+        || now_sec.saturating_sub(last_activity) <= REASONIX_FULL_COVERAGE_GRACE_SECS
+    {
+        return false;
+    }
+    unresolved_proxy_requests == 0 && proxy_backed_requests == meta.message_count
+}
+
+fn reasonix_uncovered_request_count(
+    local_only_requests: u64,
+    unresolved_proxy_requests: u64,
+) -> u64 {
+    local_only_requests.saturating_add(unresolved_proxy_requests)
+}
+
+fn session_has_reasonix_coverage_gap(
+    meta: &SessionMeta,
+    proxy_backed_requests: u64,
+    unresolved_proxy_requests: u64,
+    now_sec: i64,
+) -> bool {
+    meta.tool == "reasonix"
+        && !session_usage_fully_covered(
+            Some(meta),
+            &meta.tool,
+            proxy_backed_requests,
+            unresolved_proxy_requests,
+            now_sec,
+        )
+}
+
+fn build_metadata_only_session_stats(meta: &SessionMeta, now_sec: i64) -> SessionStats {
+    SessionStats {
+        session_id: meta.session_id.clone(),
+        tool: meta.tool.clone(),
+        total_requests: meta.message_count,
+        total_input_tokens: meta.total_input_tokens,
+        total_output_tokens: meta.total_output_tokens,
+        total_cache_create_tokens: meta.total_cache_create_tokens,
+        total_cache_read_tokens: meta.total_cache_read_tokens,
+        total_duration_ms: 0,
+        avg_output_tokens_per_second: 0.0,
+        first_request_time: meta.start_time,
+        last_request_time: meta.end_time.max(meta.last_modified),
+        models: meta.models.clone(),
+        avg_ttft_ms: 0.0,
+        success_requests: 0,
+        error_requests: 0,
+        estimated_cost: 0.0,
+        is_cost_estimated: true,
+        usage_fully_covered: session_usage_fully_covered(Some(meta), &meta.tool, 0, 0, now_sec),
+        covered_requests: 0,
+        uncovered_requests: meta.message_count,
+        cwd: meta.cwd.clone(),
+        project_name: meta.project_name.clone(),
+        project_identity: Some(
+            session_project_identity(meta.project_name.as_deref(), meta.cwd.as_deref()).to_string(),
+        ),
+        topic: meta.topic.clone(),
+        last_prompt: meta.last_prompt.clone(),
+        session_name: meta.session_name.clone(),
+    }
+}
+
+fn merge_metadata_only_project(map: &mut HashMap<String, ProjectAggregate>, meta: &SessionMeta) {
+    let descriptor = project_descriptor_for_session(meta);
+    let entry = map
+        .entry(descriptor.key.clone())
+        .or_insert_with(|| ProjectAggregate {
+            stats: ProjectStats {
+                name: descriptor.name.clone(),
+                project_key: Some(descriptor.key.clone()),
+                project_identity: Some(descriptor.identity.clone()),
+                project_path: descriptor.path.clone(),
+                usage_fully_covered: true,
+                covered_requests: 0,
+                uncovered_requests: 0,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+    if entry.stats.project_path.is_none() {
+        entry.stats.project_path = descriptor.path.clone();
+    }
+    if entry.stats.project_key.is_none() {
+        entry.stats.project_key = Some(descriptor.key.clone());
+    }
+    if entry.stats.project_identity.is_none() {
+        entry.stats.project_identity = Some(descriptor.identity);
+    }
+    entry.stats.request_count += meta.message_count;
+    entry.stats.uncovered_requests += meta.message_count;
+    entry.stats.total_input_tokens += meta.total_input_tokens;
+    entry.stats.total_output_tokens += meta.total_output_tokens;
+    entry.stats.total_cache_create_tokens += meta.total_cache_create_tokens;
+    entry.stats.total_cache_read_tokens += meta.total_cache_read_tokens;
+    entry.stats.last_active = entry
+        .stats
+        .last_active
+        .max(meta.end_time.max(meta.last_modified));
+    if !meta.session_id.trim().is_empty() {
+        entry.sessions.insert(meta.session_id.clone());
+        entry
+            .tool_sessions
+            .entry(meta.tool.clone())
+            .or_default()
+            .insert(meta.session_id.clone());
+    } else {
+        entry.tool_sessions.entry(meta.tool.clone()).or_default();
+    }
+
+    let tool_stats = entry
+        .stats
+        .tool_breakdown
+        .iter_mut()
+        .find(|stats| stats.tool == meta.tool);
+    let tool_stats = match tool_stats {
+        Some(stats) => stats,
+        None => {
+            entry.stats.tool_breakdown.push(ProjectToolStats {
+                tool: meta.tool.clone(),
+                usage_fully_covered: true,
+                covered_requests: 0,
+                uncovered_requests: 0,
+                ..Default::default()
+            });
+            entry.stats.tool_breakdown.last_mut().unwrap()
+        }
+    };
+    tool_stats.request_count += meta.message_count;
+    tool_stats.uncovered_requests += meta.message_count;
+    tool_stats.total_input_tokens += meta.total_input_tokens;
+    tool_stats.total_output_tokens += meta.total_output_tokens;
+    tool_stats.total_cache_create_tokens += meta.total_cache_create_tokens;
+    tool_stats.total_cache_read_tokens += meta.total_cache_read_tokens;
+    tool_stats.last_active = tool_stats
+        .last_active
+        .max(meta.end_time.max(meta.last_modified));
+}
+
 fn build_local_request_index(
     local_records: &[LocalRequestRecord],
 ) -> HashMap<String, LocalRequestRecord> {
@@ -362,6 +637,68 @@ fn build_local_request_index(
         map.insert(request_key_for_local(record), record.clone());
     }
     map
+}
+
+fn reasonix_session_matches_proxy_fact(meta: &SessionMeta, fact: &MergedRequestFact) -> bool {
+    if meta.tool != "reasonix" || fact.tool != "reasonix" {
+        return false;
+    }
+    if !fact.session_id.trim().is_empty() {
+        return false;
+    }
+
+    let proxy_model_key = crate::models::normalize_model_id(&fact.model);
+    if !meta.models.is_empty()
+        && !meta
+            .models
+            .iter()
+            .any(|model| crate::models::normalize_model_id(model) == proxy_model_key)
+    {
+        return false;
+    }
+
+    let start = if meta.start_time > 0 {
+        meta.start_time
+    } else {
+        meta.last_modified.saturating_sub(15)
+    };
+    let end = meta.end_time.max(meta.last_modified);
+    let effective_end = if end > 0 {
+        end
+    } else {
+        start.saturating_add(15)
+    };
+    let grace = 15;
+    fact.timestamp_sec >= start.saturating_sub(grace)
+        && fact.timestamp_sec <= effective_end.saturating_add(grace)
+}
+
+fn count_unresolved_reasonix_requests_by_session(
+    facts: &[MergedRequestFact],
+    local_sessions: &[SessionMeta],
+) -> HashMap<String, u64> {
+    let reasonix_sessions: Vec<&SessionMeta> = local_sessions
+        .iter()
+        .filter(|meta| meta.tool == "reasonix" && !meta.session_id.trim().is_empty())
+        .collect();
+    let mut unresolved_by_session: HashMap<String, u64> = HashMap::new();
+
+    for fact in facts
+        .iter()
+        .filter(|fact| fact.tool == "reasonix" && fact.session_id.trim().is_empty())
+    {
+        for meta in reasonix_sessions
+            .iter()
+            .copied()
+            .filter(|meta| reasonix_session_matches_proxy_fact(meta, fact))
+        {
+            *unresolved_by_session
+                .entry(meta.session_id.clone())
+                .or_default() += 1;
+        }
+    }
+
+    unresolved_by_session
 }
 
 fn build_proxy_request_index(proxy_records: &[UsageRecord]) -> HashMap<String, UsageRecord> {
@@ -1306,6 +1643,7 @@ pub async fn get_merged_sessions(
     offset: i64,
 ) -> Result<Vec<SessionStats>, String> {
     let started_at = Instant::now();
+    let now_sec = chrono::Utc::now().timestamp();
     let include_errors = settings.proxy.include_error_requests;
     let tool_filter = settings.client_tools.build_filter();
     let source_filter = settings.source_aware.build_filter();
@@ -1353,6 +1691,8 @@ pub async fn get_merged_sessions(
     let facts_count = facts.len();
     let mut local_sessions = local_db.get_all_sessions(&tool_filter)?;
     local_sessions.extend(local_db.get_remote_sessions(&tool_filter)?);
+    let unresolved_reasonix_requests_by_session =
+        count_unresolved_reasonix_requests_by_session(&facts, &local_sessions);
     let meta_by_id: HashMap<String, SessionMeta> = local_sessions
         .into_iter()
         .map(|meta| (meta.session_id.clone(), meta))
@@ -1369,6 +1709,7 @@ pub async fn get_merged_sessions(
             .push(fact);
     }
 
+    let fact_backed_session_ids: HashSet<String> = by_session.keys().cloned().collect();
     let mut result = Vec::new();
     for (session_id, session_facts) in by_session {
         let meta = meta_by_id.get(&session_id);
@@ -1435,15 +1776,28 @@ pub async fn get_merged_sessions(
         let has_partial_status_coverage =
             has_partial_coverage(proxy_backed_requests, local_only_requests);
 
+        let session_tool = meta.map(|m| m.tool.clone()).unwrap_or_else(|| {
+            settings
+                .client_tools
+                .active_tool_filter
+                .clone()
+                .unwrap_or_default()
+        });
+        let unresolved_proxy_requests = unresolved_reasonix_requests_by_session
+            .get(&session_id)
+            .copied()
+            .unwrap_or(0);
+        let usage_fully_covered = session_usage_fully_covered(
+            meta,
+            &session_tool,
+            proxy_backed_requests,
+            unresolved_proxy_requests,
+            now_sec,
+        );
+
         result.push(SessionStats {
             session_id: session_id.clone(),
-            tool: meta.map(|m| m.tool.clone()).unwrap_or_else(|| {
-                settings
-                    .client_tools
-                    .active_tool_filter
-                    .clone()
-                    .unwrap_or_default()
-            }),
+            tool: session_tool,
             total_requests: session_facts.len() as u64,
             total_input_tokens,
             total_output_tokens,
@@ -1479,12 +1833,34 @@ pub async fn get_merged_sessions(
             },
             estimated_cost,
             is_cost_estimated: true,
+            usage_fully_covered,
+            covered_requests: proxy_backed_requests,
+            uncovered_requests: reasonix_uncovered_request_count(
+                local_only_requests,
+                unresolved_proxy_requests,
+            ),
             cwd: meta.and_then(|m| m.cwd.clone()),
             project_name: meta.and_then(|m| m.project_name.clone()),
+            project_identity: Some(
+                meta.map(|m| {
+                    session_project_identity(m.project_name.as_deref(), m.cwd.as_deref())
+                        .to_string()
+                })
+                .unwrap_or_else(|| "unknown".to_string()),
+            ),
             topic: meta.and_then(|m| m.topic.clone()),
             last_prompt: meta.and_then(|m| m.last_prompt.clone()),
             session_name: meta.and_then(|m| m.session_name.clone()),
         });
+    }
+
+    if metadata_only_sessions_allowed(&source_filter) {
+        for meta in meta_by_id.values() {
+            if fact_backed_session_ids.contains(&meta.session_id) {
+                continue;
+            }
+            result.push(build_metadata_only_session_stats(meta, now_sec));
+        }
     }
 
     result.sort_by_key(|session| std::cmp::Reverse(session.last_request_time));
@@ -1519,6 +1895,7 @@ pub async fn get_merged_session_detail(
 
 pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<ProjectStats>, String> {
     let started_at = Instant::now();
+    let now_sec = chrono::Utc::now().timestamp();
     let include_errors = settings.proxy.include_error_requests;
     let tool_filter = settings.client_tools.build_filter();
     let source_filter = settings.source_aware.build_filter();
@@ -1559,33 +1936,45 @@ pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<Proj
         return Ok(projects);
     }
 
+    let mut local_sessions = local_db.get_all_sessions(&tool_filter)?;
+    local_sessions.extend(local_db.get_remote_sessions(&tool_filter)?);
+    let local_sessions_by_id: HashMap<String, SessionMeta> = local_sessions
+        .iter()
+        .cloned()
+        .map(|meta| (meta.session_id.clone(), meta))
+        .collect();
+
     let (facts, _) = get_merged_request_facts(settings, None, None, include_errors).await?;
     let facts_count = facts.len();
+    let unresolved_reasonix_requests_by_session =
+        count_unresolved_reasonix_requests_by_session(&facts, &local_sessions);
     let mut map: HashMap<String, ProjectAggregate> = HashMap::new();
+    let mut fact_backed_project_session_ids: HashSet<String> = HashSet::new();
+    let mut proxy_backed_requests_by_session: HashMap<String, u64> = HashMap::new();
 
     for fact in facts {
-        let project_name = fact
-            .project_name
-            .clone()
-            .unwrap_or_else(|| "未命名项目".to_string());
-        let project_path = fact.project_path.clone();
-        let aggregate_key = project_path
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| project_name.clone());
+        let descriptor = project_descriptor_for_fact(&fact);
         let entry = map
-            .entry(aggregate_key)
+            .entry(descriptor.key.clone())
             .or_insert_with(|| ProjectAggregate {
                 stats: ProjectStats {
-                    name: project_name.clone(),
-                    project_path: project_path.clone(),
+                    name: descriptor.name.clone(),
+                    project_key: Some(descriptor.key.clone()),
+                    project_identity: Some(descriptor.identity.clone()),
+                    project_path: descriptor.path.clone(),
                     ..Default::default()
                 },
                 ..Default::default()
             });
 
         if entry.stats.project_path.is_none() {
-            entry.stats.project_path = project_path.clone();
+            entry.stats.project_path = descriptor.path.clone();
+        }
+        if entry.stats.project_key.is_none() {
+            entry.stats.project_key = Some(descriptor.key.clone());
+        }
+        if entry.stats.project_identity.is_none() {
+            entry.stats.project_identity = Some(descriptor.identity.clone());
         }
 
         entry.stats.total_input_tokens += fact.input_tokens;
@@ -1596,12 +1985,23 @@ pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<Proj
         entry.stats.request_count += 1;
         entry.stats.last_active = entry.stats.last_active.max(fact.timestamp_sec);
         if !fact.session_id.trim().is_empty() {
+            fact_backed_project_session_ids.insert(fact.session_id.clone());
             entry.sessions.insert(fact.session_id.clone());
             entry
                 .tool_sessions
                 .entry(fact.tool.clone())
                 .or_default()
                 .insert(fact.session_id.clone());
+            if fact.tool == "reasonix"
+                && matches!(
+                    fact.coverage_origin,
+                    CoverageOrigin::ProxyOnly | CoverageOrigin::MergedProxyPreferred
+                )
+            {
+                *proxy_backed_requests_by_session
+                    .entry(fact.session_id.clone())
+                    .or_default() += 1;
+            }
         } else {
             entry.tool_sessions.entry(fact.tool.clone()).or_default();
         }
@@ -1616,29 +2016,156 @@ pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<Proj
             None => {
                 entry.stats.tool_breakdown.push(ProjectToolStats {
                     tool: fact.tool.clone(),
+                    covered_requests: 0,
+                    uncovered_requests: 0,
                     ..Default::default()
                 });
                 entry.stats.tool_breakdown.last_mut().unwrap()
             }
         };
+        entry.stats.covered_requests += 1;
         tool_stats.total_input_tokens += fact.input_tokens;
         tool_stats.total_output_tokens += fact.output_tokens;
         tool_stats.total_cache_create_tokens += fact.cache_create_tokens;
         tool_stats.total_cache_read_tokens += fact.cache_read_tokens;
         tool_stats.total_cost += fact.estimated_cost;
         tool_stats.request_count += 1;
+        tool_stats.covered_requests += 1;
         tool_stats.last_active = tool_stats.last_active.max(fact.timestamp_sec);
+    }
+
+    if metadata_only_sessions_allowed(&source_filter) {
+        for meta in &local_sessions {
+            if fact_backed_project_session_ids.contains(&meta.session_id) {
+                continue;
+            }
+            merge_metadata_only_project(&mut map, meta);
+        }
     }
 
     let mut projects: Vec<ProjectStats> = map
         .into_values()
         .map(|mut aggregate| {
             aggregate.stats.session_count = aggregate.sessions.len() as u64;
+            let has_unresolved_reasonix_tool_rows =
+                aggregate.stats.tool_breakdown.iter().any(|tool| {
+                    tool.tool == "reasonix"
+                        && tool.request_count > 0
+                        && aggregate
+                            .tool_sessions
+                            .get(&tool.tool)
+                            .map(|sessions| sessions.is_empty())
+                            .unwrap_or(true)
+                });
+            let reasonix_session_ids: Vec<&String> = aggregate
+                .sessions
+                .iter()
+                .filter(|session_id| {
+                    local_sessions_by_id
+                        .get(*session_id)
+                        .map(|meta| meta.tool == "reasonix")
+                        .unwrap_or(false)
+                })
+                .collect();
+            let has_reasonix_sessions =
+                !reasonix_session_ids.is_empty() || has_unresolved_reasonix_tool_rows;
+            aggregate.stats.usage_fully_covered = if has_reasonix_sessions {
+                !has_unresolved_reasonix_tool_rows
+                    && reasonix_session_ids.iter().all(|session_id| {
+                        local_sessions_by_id
+                            .get(*session_id)
+                            .map(|meta| {
+                                !session_has_reasonix_coverage_gap(
+                                    meta,
+                                    proxy_backed_requests_by_session
+                                        .get(*session_id)
+                                        .copied()
+                                        .unwrap_or(0),
+                                    unresolved_reasonix_requests_by_session
+                                        .get(*session_id)
+                                        .copied()
+                                        .unwrap_or(0),
+                                    now_sec,
+                                )
+                            })
+                            .unwrap_or(true)
+                    })
+            } else {
+                true
+            };
+            aggregate.stats.uncovered_requests = aggregate
+                .sessions
+                .iter()
+                .filter(|session_id| {
+                    local_sessions_by_id
+                        .get(*session_id)
+                        .map(|meta| meta.tool == "reasonix")
+                        .unwrap_or(false)
+                })
+                .map(|session_id| {
+                    unresolved_reasonix_requests_by_session
+                        .get(session_id)
+                        .copied()
+                        .unwrap_or(0)
+                })
+                .sum();
             for tool_stats in &mut aggregate.stats.tool_breakdown {
                 tool_stats.session_count = aggregate
                     .tool_sessions
                     .get(&tool_stats.tool)
                     .map(|sessions| sessions.len() as u64)
+                    .unwrap_or(0);
+                let sessions_for_tool = aggregate.tool_sessions.get(&tool_stats.tool);
+                tool_stats.usage_fully_covered = if tool_stats.tool == "reasonix"
+                    && tool_stats.request_count > 0
+                    && sessions_for_tool
+                        .map(|sessions| sessions.is_empty())
+                        .unwrap_or(true)
+                {
+                    false
+                } else {
+                    sessions_for_tool
+                        .map(|sessions| {
+                            sessions.iter().all(|session_id| {
+                                local_sessions_by_id
+                                    .get(session_id)
+                                    .map(|meta| {
+                                        !session_has_reasonix_coverage_gap(
+                                            meta,
+                                            proxy_backed_requests_by_session
+                                                .get(session_id)
+                                                .copied()
+                                                .unwrap_or(0),
+                                            unresolved_reasonix_requests_by_session
+                                                .get(session_id)
+                                                .copied()
+                                                .unwrap_or(0),
+                                            now_sec,
+                                        )
+                                    })
+                                    .unwrap_or(true)
+                            })
+                        })
+                        .unwrap_or(true)
+                };
+                tool_stats.uncovered_requests = sessions_for_tool
+                    .map(|sessions| {
+                        sessions
+                            .iter()
+                            .filter(|session_id| {
+                                local_sessions_by_id
+                                    .get(*session_id)
+                                    .map(|meta| meta.tool == "reasonix")
+                                    .unwrap_or(false)
+                            })
+                            .map(|session_id| {
+                                unresolved_reasonix_requests_by_session
+                                    .get(session_id)
+                                    .copied()
+                                    .unwrap_or(0)
+                            })
+                            .sum()
+                    })
                     .unwrap_or(0);
             }
             aggregate

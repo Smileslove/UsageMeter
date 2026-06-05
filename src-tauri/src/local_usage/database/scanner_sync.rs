@@ -62,34 +62,39 @@ impl LocalUsageDatabase {
         crate::session::opencode_reader::hydrate_opencode_db_scan_state(&persisted_opencode_state);
 
         let scanned = scan_file_backed_session_files();
-        let transcript_map: HashMap<String, DirtySessionSync> = scanned
-            .into_iter()
-            .map(|session| {
-                let (meta, requests) = parse_session_file_for_storage(&session);
-                let project_key = meta
-                    .project_name
-                    .clone()
-                    .or(meta.cwd.clone())
-                    .unwrap_or_else(|| "unknown_project".to_string());
-                let key = session.session_id.clone();
-                (
-                    key.clone(),
-                    DirtySessionSync {
-                        session_id: key,
-                        tool: session.tool.clone(),
-                        file_path: session.file_path.clone(),
-                        file_role: "session_group".to_string(),
-                        file_size: session.file_size,
-                        last_modified: session.last_modified,
-                        fingerprint: session.fingerprint.to_string(),
-                        meta,
-                        requests,
-                        project_key,
-                    },
-                )
-            })
-            .collect();
+        let mut reasonix_local_sessions: Vec<crate::session::SessionMeta> = Vec::new();
+        let mut transcript_map: HashMap<String, DirtySessionSync> = HashMap::new();
+        for session in scanned {
+            let (meta, requests) = parse_session_file_for_storage(&session);
+            if session.tool == "reasonix" {
+                reasonix_local_sessions.push(meta.clone());
+            }
+            let project_key = meta
+                .project_name
+                .clone()
+                .or(meta.cwd.clone())
+                .unwrap_or_else(|| "unknown_project".to_string());
+            let key = session.session_id.clone();
+            transcript_map.insert(
+                key.clone(),
+                DirtySessionSync {
+                    session_id: key,
+                    tool: session.tool.clone(),
+                    file_path: session.file_path.clone(),
+                    file_role: "session_group".to_string(),
+                    file_size: session.file_size,
+                    last_modified: session.last_modified,
+                    fingerprint: session.fingerprint.to_string(),
+                    meta,
+                    requests,
+                    project_key,
+                },
+            );
+        }
         self.sync_dirty_session_map(transcript_map, "session_group", None)?;
+        if let Some(proxy_db) = crate::proxy::ProxyDatabase::get_global() {
+            let _ = proxy_db.reconcile_reasonix_records(&reasonix_local_sessions);
+        }
 
         let opencode_sessions = crate::session::opencode_reader::scan_opencode_sessions();
         let opencode_local_records: Vec<crate::session::LocalRequestRecord> = opencode_sessions
