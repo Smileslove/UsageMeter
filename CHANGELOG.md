@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.1] - 2026-06-06
+
+### Added
+
+- **Reasonix Support**: Added Reasonix local session metadata parsing and proxy takeover support so UsageMeter can track Reasonix usage alongside Claude Code, Codex, and OpenCode
+- **Session & Project Coverage Views**: Added coverage status views for sessions and projects so it is clear which records are tracked after proxy takeover
+
+### Changed
+
+- **Unified Post-takeover Statistics**: Unified statistics and coverage status display after takeover, with agent-record backfill matching so historical local sessions are reconciled with proxy records
+- **OpenCode Config Source Tracking**: Track the effective OpenCode configuration source and patch the takeover configuration in place to reduce conflicts
+- **Proxy Takeover Recovery**: Improved proxy takeover recovery handling for more reliable resume after configuration changes
+
+### Fixed
+
+- **Reasonix Icons**: Fixed the Reasonix icon in the tool selector and the overview breakdown
+
+---
+
+### 新增
+
+- **Reasonix 支持**：新增 Reasonix 本地会话元数据解析与代理接管支持，使 UsageMeter 可以与 Claude Code、Codex、OpenCode 一并追踪 Reasonix 用量
+- **会话与项目覆盖率视图**：新增会话与项目的覆盖状态视图，清晰展示代理接管后哪些记录已被纳入统计
+
+### 变更
+
+- **接管后统一统计**：统一接管后的统计与覆盖状态展示，并补全代理记录回填匹配，使历史本地会话与代理记录得以对齐
+- **OpenCode 配置源追踪**：追踪生效的 OpenCode 配置源，并就地修补接管配置以减少冲突
+- **代理接管恢复**：增强代理接管的恢复处理，使配置变更后的接管恢复更稳定可靠
+
+### 修复
+
+- **Reasonix 图标**：修正工具选择器与概览细分中的 Reasonix 图标
+
+---
+
 ## [0.7.0] - 2026-06-04
 
 ### Added
@@ -609,6 +645,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.7.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.1
 [0.7.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.0
 [0.6.4]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.4
 [0.6.3]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.3
