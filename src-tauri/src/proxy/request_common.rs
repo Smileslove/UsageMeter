@@ -46,12 +46,73 @@ fn strip_prefix_path(path: &str, prefix: &str) -> Option<String> {
         .map(|rest| format!("/{rest}"))
 }
 
+fn strip_known_usagemeter_tool_prefix(path: &str, tool: &str) -> Option<String> {
+    let new_prefix = format!("/usagemeter/{tool}");
+    if path == new_prefix {
+        return Some("/".to_string());
+    }
+    if let Some(rest) = path.strip_prefix(&(new_prefix.clone() + "/")) {
+        return Some(format!("/{rest}"));
+    }
+
+    let legacy_prefix = format!("/{tool}");
+    if path == legacy_prefix {
+        return Some("/".to_string());
+    }
+    path.strip_prefix(&(legacy_prefix + "/"))
+        .map(|rest| format!("/{rest}"))
+}
+
 pub(crate) fn settings_file_mtime() -> Option<SystemTime> {
     let path = AppSettings::settings_path().ok()?;
     fs::metadata(path).ok()?.modified().ok()
 }
 
 pub(crate) fn detect_client_route(path: &str, settings: &AppSettings) -> ClientRoute {
+    for tool in ["claude-code", "codex", "opencode", "reasonix"] {
+        if let Some(normalized_path) = strip_known_usagemeter_tool_prefix(path, tool) {
+            let (normalized_path, provider_id, source_id, detection_method) = if tool == "opencode"
+            {
+                let (normalized_path, provider_id, source_id) =
+                    strip_opencode_provider_source_path(&normalized_path);
+                let detection_method = if provider_id.is_some() && source_id.is_some() {
+                    "path_prefix_provider_source".to_string()
+                } else if source_id.is_some() {
+                    "path_prefix_source".to_string()
+                } else {
+                    "path_prefix".to_string()
+                };
+                (normalized_path, provider_id, source_id, detection_method)
+            } else {
+                let (normalized_path, source_id) = strip_source_handle_path(&normalized_path);
+                let detection_method = if source_id.is_some() {
+                    "path_prefix_source".to_string()
+                } else {
+                    "path_prefix".to_string()
+                };
+                (normalized_path, None, source_id, detection_method)
+            };
+            let client_tool = match tool {
+                "claude-code" => "claude_code",
+                other => other,
+            };
+            let profile = settings
+                .client_tools
+                .profiles
+                .iter()
+                .find(|profile| profile.enabled && profile.tool == client_tool);
+            return ClientRoute {
+                normalized_path,
+                client_tool: client_tool.to_string(),
+                proxy_profile_id: profile.map(|profile| profile.id.clone()),
+                detection_method,
+                target_base_url: profile.and_then(|profile| profile.target_base_url.clone()),
+                provider_id,
+                source_id,
+            };
+        }
+    }
+
     for profile in settings
         .client_tools
         .profiles

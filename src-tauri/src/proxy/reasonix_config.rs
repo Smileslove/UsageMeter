@@ -17,6 +17,7 @@
 //! 本接管只改写全局 config.toml；若用户在项目级 `./reasonix.toml` 重定义了同名
 //! provider，则项目级覆盖全局，代理无法采集该项目数据。前端需在开启代理时提示。
 
+use super::url_identity;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -273,10 +274,8 @@ impl ReasonixConfigManager {
             .map_err(|e| format!("Failed to parse Reasonix config.toml: {}", e))?;
 
         for handle in handles {
-            let proxy_url = format!(
-                "http://127.0.0.1:{}/reasonix/source/{}",
-                proxy_port, handle.id
-            );
+            let proxy_url =
+                url_identity::prefixed_proxy_url(proxy_port, "reasonix", &handle.id, "");
             set_provider_base_url(&mut doc, &handle.provider_name, &proxy_url);
         }
 
@@ -309,16 +308,35 @@ impl ReasonixConfigManager {
             .parse::<DocumentMut>()
             .map_err(|e| format!("Failed to parse Reasonix config.toml: {}", e))?;
 
+        let current_snapshot = self.read_live_snapshot()?;
+        let current_provider_urls = current_snapshot
+            .providers
+            .into_iter()
+            .map(|provider| (provider.provider_name, provider.original_base_url))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let mut restored = 0usize;
         for handle in &handles {
+            let Some(current_base_url) = current_provider_urls.get(&handle.provider_name) else {
+                continue;
+            };
+            let should_restore = Self::is_usagemeter_proxy_url(&current_base_url)
+                && Self::extract_source_id_from_proxy_url(current_base_url)
+                    .map(|source_id| source_id == handle.id)
+                    .unwrap_or(false);
+            if !should_restore {
+                continue;
+            }
             set_provider_base_url(
                 &mut doc,
                 &handle.provider_name,
                 &handle.route_state.original_base_url,
             );
+            restored += 1;
         }
 
         self.write_config_doc(&doc)?;
-        Ok(handles.len())
+        Ok(restored)
     }
 
     /// 当前配置是否有任意 provider 指向本地代理。
@@ -346,49 +364,15 @@ impl ReasonixConfigManager {
     }
 
     pub fn is_usagemeter_proxy_url(base_url: &str) -> bool {
-        let Ok(url) = reqwest::Url::parse(base_url) else {
-            return false;
-        };
-        Self::is_local_reasonix_proxy_url(&url)
+        url_identity::is_usagemeter_proxy_url(base_url, &["reasonix"])
     }
 
     pub fn is_usagemeter_proxy_url_for_port(base_url: &str, proxy_port: u16) -> bool {
-        let Ok(url) = reqwest::Url::parse(base_url) else {
-            return false;
-        };
-        if !Self::is_local_reasonix_proxy_url(&url) {
-            return false;
-        }
-        url.port() == Some(proxy_port)
+        url_identity::is_usagemeter_proxy_url_for_port(base_url, proxy_port, &["reasonix"])
     }
 
     pub fn extract_source_id_from_proxy_url(base_url: &str) -> Option<String> {
-        if !Self::is_usagemeter_proxy_url(base_url) {
-            return None;
-        }
-        let marker = "/source/";
-        let marker_index = base_url.find(marker)?;
-        let rest = &base_url[(marker_index + marker.len())..];
-        let source_id = rest
-            .split('/')
-            .next()
-            .unwrap_or_default()
-            .split('?')
-            .next()
-            .unwrap_or_default()
-            .trim();
-        (!source_id.is_empty()).then(|| source_id.to_string())
-    }
-
-    fn is_local_reasonix_proxy_url(url: &reqwest::Url) -> bool {
-        let Some(host) = url.host_str() else {
-            return false;
-        };
-        if host != "127.0.0.1" && host != "localhost" {
-            return false;
-        }
-        let path = url.path().trim_end_matches('/');
-        path == "/reasonix" || path.starts_with("/reasonix/source/")
+        url_identity::extract_source_id_from_proxy_url(base_url, &["reasonix"])
     }
 
     fn write_config_doc(&self, doc: &DocumentMut) -> Result<(), String> {
@@ -638,5 +622,77 @@ api_key_env = "DEEPSEEK_API_KEY"
             err.contains("no matching source handles"),
             "expected registry-missing error, got: {err}"
         );
+    }
+
+    #[test]
+    fn restore_from_sources_skips_provider_that_is_no_longer_proxy_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.toml");
+        fs::write(&config_path, SAMPLE_CONFIG).unwrap();
+
+        let manager = ReasonixConfigManager::new_for_path(config_path.clone(), true);
+        let snapshot = manager.read_live_snapshot().unwrap();
+        let handles: Vec<ReasonixSourceHandle> = snapshot
+            .providers
+            .iter()
+            .map(|provider| ReasonixSourceHandle {
+                id: compute_handle_id(&provider.provider_name, &provider.original_base_url)
+                    .unwrap(),
+                provider_name: provider.provider_name.clone(),
+                kind: provider.kind.clone(),
+                real_base_url: provider.original_base_url.clone(),
+                route_state: provider.clone(),
+                created_at_ms: 0,
+                last_seen_at_ms: 0,
+                last_used_at_ms: 0,
+            })
+            .collect();
+
+        manager.takeover_with_handles(18765, &handles).unwrap();
+
+        let mimo_handle = handles
+            .iter()
+            .find(|handle| handle.provider_name == "mimo-pro")
+            .unwrap();
+        let mut content = fs::read_to_string(&config_path).unwrap();
+        content = content.replace(
+            &format!(
+                "http://127.0.0.1:18765/usagemeter/reasonix/source/{}",
+                mimo_handle.id
+            ),
+            "https://custom.example/v1",
+        );
+        fs::write(&config_path, content).unwrap();
+
+        let restored = manager
+            .restore_from_sources(
+                &handles
+                    .iter()
+                    .map(|handle| handle.id.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        assert_eq!(restored, 2);
+
+        let after = manager.read_live_snapshot().unwrap();
+        let deepseek = after
+            .providers
+            .iter()
+            .find(|provider| provider.provider_name == "deepseek-pro")
+            .unwrap();
+        let mimo = after
+            .providers
+            .iter()
+            .find(|provider| provider.provider_name == "mimo-pro")
+            .unwrap();
+        let claude = after
+            .providers
+            .iter()
+            .find(|provider| provider.provider_name == "claude")
+            .unwrap();
+
+        assert_eq!(deepseek.original_base_url, "https://api.deepseek.com");
+        assert_eq!(claude.original_base_url, "https://api.anthropic.com");
+        assert_eq!(mimo.original_base_url, "https://custom.example/v1");
     }
 }

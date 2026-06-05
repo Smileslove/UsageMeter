@@ -13,6 +13,10 @@ use super::request_common::{
 use super::source_registry::ProxySourceRegistry;
 use super::types::{ProxyConfig, ProxyState, ProxyStatus};
 use crate::commands::load_settings;
+use crate::commands::{
+    restore_claude_takeover_if_proxy_url_present, restore_codex_takeover_if_proxy_url_present,
+    restore_opencode_takeover_if_proxy_url_present, restore_reasonix_takeover_if_proxy_url_present,
+};
 use crate::net::HttpClientFactory;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -28,6 +32,12 @@ use tokio::sync::{oneshot, RwLock};
 const CONFIG_MONITOR_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const TAKEOVER_CONFLICT_WINDOW_MS: i64 = 30_000;
 const TAKEOVER_CONFLICT_RECLAIM_THRESHOLD: usize = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExternalConfigSyncMode {
+    RunningTakeover,
+    PassiveRecoveryOnly,
+}
 
 /// 外部配置管理器持续抢写时发送给前端的事件载荷。
 #[derive(serde::Serialize, Clone)]
@@ -201,7 +211,26 @@ struct ProxyConfigChangedPayload {
     source_id: String,
 }
 
-async fn sync_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
+pub(crate) async fn sync_external_config_change(
+    proxy_port: u16,
+    state: Arc<ProxyState>,
+    mode: ExternalConfigSyncMode,
+) {
+    if mode == ExternalConfigSyncMode::PassiveRecoveryOnly {
+        let _ = restore_claude_takeover_if_proxy_url_present(proxy_port);
+        return;
+    }
+
+    let settings = get_settings_snapshot(&state).await;
+    let claude_enabled = settings
+        .client_tools
+        .profiles
+        .iter()
+        .any(|profile| profile.tool == "claude_code" && profile.enabled);
+    if !claude_enabled {
+        return;
+    }
+
     if is_takeover_conflict_paused(&state, "claude_code").await {
         return;
     }
@@ -267,8 +296,13 @@ async fn sync_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
     }
 }
 
-async fn sync_codex_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
-    if is_takeover_conflict_paused(&state, "codex").await {
+pub(crate) async fn sync_codex_external_config_change(
+    proxy_port: u16,
+    state: Arc<ProxyState>,
+    mode: ExternalConfigSyncMode,
+) {
+    if mode == ExternalConfigSyncMode::PassiveRecoveryOnly {
+        let _ = restore_codex_takeover_if_proxy_url_present(proxy_port);
         return;
     }
 
@@ -279,6 +313,10 @@ async fn sync_codex_external_config_change(proxy_port: u16, state: Arc<ProxyStat
         .iter()
         .any(|profile| profile.tool == "codex" && profile.enabled);
     if !codex_enabled {
+        return;
+    }
+
+    if is_takeover_conflict_paused(&state, "codex").await {
         return;
     }
 
@@ -332,8 +370,13 @@ async fn sync_codex_external_config_change(proxy_port: u16, state: Arc<ProxyStat
     }
 }
 
-async fn sync_opencode_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
-    if is_takeover_conflict_paused(&state, "opencode").await {
+pub(crate) async fn sync_opencode_external_config_change(
+    proxy_port: u16,
+    state: Arc<ProxyState>,
+    mode: ExternalConfigSyncMode,
+) {
+    if mode == ExternalConfigSyncMode::PassiveRecoveryOnly {
+        let _ = restore_opencode_takeover_if_proxy_url_present(proxy_port);
         return;
     }
 
@@ -344,6 +387,10 @@ async fn sync_opencode_external_config_change(proxy_port: u16, state: Arc<ProxyS
         .iter()
         .any(|profile| profile.tool == "opencode" && profile.enabled);
     if !opencode_enabled {
+        return;
+    }
+
+    if is_takeover_conflict_paused(&state, "opencode").await {
         return;
     }
 
@@ -394,8 +441,13 @@ async fn sync_opencode_external_config_change(proxy_port: u16, state: Arc<ProxyS
     .await;
 }
 
-async fn sync_reasonix_external_config_change(proxy_port: u16, state: Arc<ProxyState>) {
-    if is_takeover_conflict_paused(&state, "reasonix").await {
+pub(crate) async fn sync_reasonix_external_config_change(
+    proxy_port: u16,
+    state: Arc<ProxyState>,
+    mode: ExternalConfigSyncMode,
+) {
+    if mode == ExternalConfigSyncMode::PassiveRecoveryOnly {
+        let _ = restore_reasonix_takeover_if_proxy_url_present(proxy_port);
         return;
     }
 
@@ -406,6 +458,10 @@ async fn sync_reasonix_external_config_change(proxy_port: u16, state: Arc<ProxyS
         .iter()
         .any(|profile| profile.tool == "reasonix" && profile.enabled);
     if !reasonix_enabled {
+        return;
+    }
+
+    if is_takeover_conflict_paused(&state, "reasonix").await {
         return;
     }
 
@@ -506,6 +562,7 @@ impl ProxyServer {
             settings_snapshot: Arc::new(RwLock::new(initial_settings)),
             settings_file_mtime: Arc::new(RwLock::new(initial_settings_mtime)),
             takeover_conflicts: Arc::new(RwLock::new(Default::default())),
+            passive_recovery_enabled: Arc::new(RwLock::new(false)),
         });
 
         Self {
@@ -613,9 +670,32 @@ impl ProxyServer {
             status.port = self.config.port;
         }
 
-        sync_codex_external_config_change(self.config.port, self.state.clone()).await;
-        sync_opencode_external_config_change(self.config.port, self.state.clone()).await;
-        sync_reasonix_external_config_change(self.config.port, self.state.clone()).await;
+        if self.takeover_claude {
+            sync_external_config_change(
+                self.config.port,
+                self.state.clone(),
+                ExternalConfigSyncMode::RunningTakeover,
+            )
+            .await;
+        }
+        sync_codex_external_config_change(
+            self.config.port,
+            self.state.clone(),
+            ExternalConfigSyncMode::RunningTakeover,
+        )
+        .await;
+        sync_opencode_external_config_change(
+            self.config.port,
+            self.state.clone(),
+            ExternalConfigSyncMode::RunningTakeover,
+        )
+        .await;
+        sync_reasonix_external_config_change(
+            self.config.port,
+            self.state.clone(),
+            ExternalConfigSyncMode::RunningTakeover,
+        )
+        .await;
 
         // 创建关闭通道
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
@@ -644,11 +724,31 @@ impl ProxyServer {
                     _ = config_monitor.changed() => {
                         refresh_settings_snapshot_if_needed(&state).await;
                         if takeover_claude {
-                            sync_external_config_change(proxy_port, state.clone()).await;
+                            sync_external_config_change(
+                                proxy_port,
+                                state.clone(),
+                                ExternalConfigSyncMode::RunningTakeover,
+                            )
+                            .await;
                         }
-                        sync_codex_external_config_change(proxy_port, state.clone()).await;
-                        sync_opencode_external_config_change(proxy_port, state.clone()).await;
-                        sync_reasonix_external_config_change(proxy_port, state.clone()).await;
+                        sync_codex_external_config_change(
+                            proxy_port,
+                            state.clone(),
+                            ExternalConfigSyncMode::RunningTakeover,
+                        )
+                        .await;
+                        sync_opencode_external_config_change(
+                            proxy_port,
+                            state.clone(),
+                            ExternalConfigSyncMode::RunningTakeover,
+                        )
+                        .await;
+                        sync_reasonix_external_config_change(
+                            proxy_port,
+                            state.clone(),
+                            ExternalConfigSyncMode::RunningTakeover,
+                        )
+                        .await;
                         None
                     }
                     _ = &mut shutdown_rx => {
@@ -1022,6 +1122,27 @@ mod tests {
 
         let route =
             detect_client_route("/codex/source/src_123/connectors/directory/list", &settings);
+        assert_eq!(route.client_tool, "codex");
+        assert_eq!(route.normalized_path, "/connectors/directory/list");
+        assert_eq!(route.detection_method, "path_prefix_source");
+        assert_eq!(route.source_id.as_deref(), Some("src_123"));
+    }
+
+    #[test]
+    fn detect_client_route_accepts_new_usagemeter_codex_prefix() {
+        let mut settings = AppSettings::default();
+        let codex_profile = settings
+            .client_tools
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.tool == "codex")
+            .expect("codex profile");
+        codex_profile.enabled = true;
+
+        let route = detect_client_route(
+            "/usagemeter/codex/source/src_123/connectors/directory/list",
+            &settings,
+        );
         assert_eq!(route.client_tool, "codex");
         assert_eq!(route.normalized_path, "/connectors/directory/list");
         assert_eq!(route.detection_method, "path_prefix_source");

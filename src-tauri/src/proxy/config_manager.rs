@@ -4,6 +4,7 @@
 
 use super::source_registry::ProxySourceRegistry;
 use super::types::ClaudeSettings;
+use super::url_identity;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -64,21 +65,11 @@ impl ClaudeConfigManager {
     }
 
     pub fn is_usagemeter_proxy_url(base_url: &str) -> bool {
-        let Ok(url) = reqwest::Url::parse(base_url) else {
-            return false;
-        };
-        Self::is_local_claude_code_proxy_url(&url)
+        url_identity::is_usagemeter_proxy_url(base_url, &["claude-code"])
     }
 
     pub fn is_usagemeter_proxy_url_for_port(base_url: &str, proxy_port: u16) -> bool {
-        let Ok(url) = reqwest::Url::parse(base_url) else {
-            return false;
-        };
-        if !Self::is_local_claude_code_proxy_url(&url) {
-            return false;
-        }
-
-        url.port() == Some(proxy_port)
+        url_identity::is_usagemeter_proxy_url_for_port(base_url, proxy_port, &["claude-code"])
     }
 
     pub fn uses_official_provider(&self) -> bool {
@@ -87,40 +78,8 @@ impl ClaudeConfigManager {
             .unwrap_or(true)
     }
 
-    fn is_local_claude_code_proxy_url(url: &reqwest::Url) -> bool {
-        let Some(host) = url.host_str() else {
-            return false;
-        };
-        if host != "127.0.0.1" && host != "localhost" {
-            return false;
-        }
-
-        let path = url.path().trim_end_matches('/');
-        path == "/claude-code" || path.starts_with("/claude-code/source/")
-    }
-
     pub fn extract_source_id_from_proxy_url(base_url: &str) -> Option<String> {
-        if !Self::is_usagemeter_proxy_url(base_url) {
-            return None;
-        }
-
-        let marker = "/source/";
-        let marker_index = base_url.find(marker)?;
-        let rest = &base_url[(marker_index + marker.len())..];
-        let source_id = rest
-            .split('/')
-            .next()
-            .unwrap_or_default()
-            .split('?')
-            .next()
-            .unwrap_or_default()
-            .trim();
-
-        if source_id.is_empty() {
-            None
-        } else {
-            Some(source_id.to_string())
-        }
+        url_identity::extract_source_id_from_proxy_url(base_url, &["claude-code"])
     }
 
     /// 检查备份是否存在
@@ -226,7 +185,7 @@ impl ClaudeConfigManager {
             .filter(|p| !p.is_empty())
         {
             Some(prefix) => match source_id.map(str::trim).filter(|id| !id.is_empty()) {
-                Some(id) => format!("http://127.0.0.1:{}/{}/source/{}", proxy_port, prefix, id),
+                Some(id) => url_identity::prefixed_proxy_url(proxy_port, prefix, id, ""),
                 None => format!("http://127.0.0.1:{}/{}", proxy_port, prefix),
             },
             None => format!("http://127.0.0.1:{}", proxy_port),
@@ -429,6 +388,27 @@ fn is_official_anthropic_base_url(base_url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proxy::types::ClaudeSettings;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("usagemeter_{label}_{nanos}"))
+    }
+
+    fn manager_for_test(root: &PathBuf) -> ClaudeConfigManager {
+        let usagemeter_dir = root.join(".usagemeter");
+        let claude_dir = root.join(".claude");
+        fs::create_dir_all(&usagemeter_dir).unwrap();
+        fs::create_dir_all(&claude_dir).unwrap();
+        ClaudeConfigManager {
+            settings_path: claude_dir.join("settings.json"),
+            backup_path: usagemeter_dir.join("claude_settings_backup.json"),
+        }
+    }
 
     #[test]
     fn test_config_manager_creation() {
@@ -485,5 +465,36 @@ mod tests {
         assert!(!is_official_anthropic_base_url(
             "https://api.example.com/v1"
         ));
+    }
+
+    #[test]
+    fn restore_from_backup_when_source_handle_cannot_be_resolved() {
+        let root = unique_test_dir("claude_restore_backup_fallback");
+        let manager = manager_for_test(&root);
+
+        let mut settings = ClaudeSettings::default();
+        settings.set_base_url("https://api.anthropic.com");
+        manager.write_settings(&settings).unwrap();
+
+        manager
+            .takeover_with_path_prefix_and_source(18765, Some("claude-code"), Some("src_missing"))
+            .unwrap();
+
+        assert!(
+            manager
+                .restore_from_active_source_handle()
+                .expect("source restore result")
+                == false
+        );
+
+        manager.restore().unwrap();
+        let restored = manager.read_settings().unwrap();
+        assert_eq!(
+            restored.get_base_url().as_deref(),
+            Some("https://api.anthropic.com")
+        );
+        assert!(!manager.has_backup());
+
+        let _ = fs::remove_dir_all(root);
     }
 }

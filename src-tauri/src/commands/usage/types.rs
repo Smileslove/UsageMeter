@@ -2,16 +2,21 @@ use crate::models::{StatusCodeCount, UsageSnapshot, WindowRateSummary};
 use crate::proxy::ProxyServer;
 use crate::unified_usage::MergedRequestFact;
 use std::sync::Arc;
+use tokio::sync::{oneshot, RwLock};
 
 /// 全局代理服务器状态
 pub struct ProxyState {
-    pub server: Arc<tokio::sync::RwLock<Option<ProxyServer>>>,
+    pub server: Arc<RwLock<Option<ProxyServer>>>,
+    pub passive_monitor_handle: Arc<RwLock<Option<tauri::async_runtime::JoinHandle<()>>>>,
+    pub passive_monitor_shutdown: Arc<RwLock<Option<oneshot::Sender<()>>>>,
 }
 
 impl Default for ProxyState {
     fn default() -> Self {
         Self {
-            server: Arc::new(tokio::sync::RwLock::new(None)),
+            server: Arc::new(RwLock::new(None)),
+            passive_monitor_handle: Arc::new(RwLock::new(None)),
+            passive_monitor_shutdown: Arc::new(RwLock::new(None)),
         }
     }
 }

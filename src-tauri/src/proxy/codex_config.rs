@@ -5,6 +5,7 @@
 //! to point at the local proxy, and persists only the minimal route state needed
 //! to restore those fields later.
 
+use super::url_identity;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -231,13 +232,10 @@ impl CodexConfigManager {
 
         let proxy_url = match snapshot.auth_mode {
             CodexAuthMode::ChatGpt => {
-                format!("http://127.0.0.1:{}/codex/source/{}", proxy_port, source_id)
+                url_identity::prefixed_proxy_url(proxy_port, "codex", source_id, "")
             }
             CodexAuthMode::ApiKey => {
-                format!(
-                    "http://127.0.0.1:{}/codex/source/{}/v1",
-                    proxy_port, source_id
-                )
+                url_identity::prefixed_proxy_url(proxy_port, "codex", source_id, "v1")
             }
         };
         match snapshot.auth_mode {
@@ -324,64 +322,15 @@ impl CodexConfigManager {
     }
 
     pub fn is_usagemeter_proxy_url(base_url: &str) -> bool {
-        let Ok(url) = reqwest::Url::parse(base_url) else {
-            return false;
-        };
-        Self::is_local_codex_proxy_url(&url)
+        url_identity::is_usagemeter_proxy_url(base_url, &["codex"])
     }
 
     pub fn is_usagemeter_proxy_url_for_port(base_url: &str, proxy_port: u16) -> bool {
-        let Ok(url) = reqwest::Url::parse(base_url) else {
-            return false;
-        };
-        if !Self::is_local_codex_proxy_url(&url) && !Self::is_local_openai_proxy_url(&url) {
-            return false;
-        }
-
-        url.port() == Some(proxy_port)
-    }
-
-    fn is_local_codex_proxy_url(url: &reqwest::Url) -> bool {
-        if !Self::is_local_proxy_host(url) {
-            return false;
-        }
-
-        let path = url.path().trim_end_matches('/');
-        path == "/codex" || path.starts_with("/codex/source/")
-    }
-
-    fn is_local_openai_proxy_url(url: &reqwest::Url) -> bool {
-        if !Self::is_local_proxy_host(url) {
-            return false;
-        }
-
-        let path = url.path().trim_end_matches('/');
-        path == "/v1" || path.starts_with("/v1/")
-    }
-
-    fn is_local_proxy_host(url: &reqwest::Url) -> bool {
-        let Some(host) = url.host_str() else {
-            return false;
-        };
-        host == "127.0.0.1" || host == "localhost"
+        url_identity::is_usagemeter_proxy_url_for_port(base_url, proxy_port, &["codex"])
     }
 
     pub fn extract_source_id_from_proxy_url(base_url: &str) -> Option<String> {
-        if !Self::is_usagemeter_proxy_url(base_url) {
-            return None;
-        }
-        let marker = "/source/";
-        let marker_index = base_url.find(marker)?;
-        let rest = &base_url[(marker_index + marker.len())..];
-        let source_id = rest
-            .split('/')
-            .next()
-            .unwrap_or_default()
-            .split('?')
-            .next()
-            .unwrap_or_default()
-            .trim();
-        (!source_id.is_empty()).then(|| source_id.to_string())
+        url_identity::extract_source_id_from_proxy_url(base_url, &["codex"])
     }
 
     fn read_auth_json(&self) -> Result<Option<serde_json::Value>, String> {

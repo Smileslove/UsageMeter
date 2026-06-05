@@ -144,6 +144,23 @@ pub fn run() {
 
             crate::sync::spawn_background_sync_loop();
 
+            {
+                let proxy_state = commands::ProxyState {
+                    server: app.state::<commands::ProxyState>().server.clone(),
+                    passive_monitor_handle: app
+                        .state::<commands::ProxyState>()
+                        .passive_monitor_handle
+                        .clone(),
+                    passive_monitor_shutdown: app
+                        .state::<commands::ProxyState>()
+                        .passive_monitor_shutdown
+                        .clone(),
+                };
+                tauri::async_runtime::spawn(async move {
+                    commands::ensure_passive_proxy_monitor_started(&proxy_state).await;
+                });
+            }
+
             // 启动时检测并恢复孤立的代理状态
             // 如果上次应用异常崩溃，可能存在备份文件残留或配置未恢复的情况
             {

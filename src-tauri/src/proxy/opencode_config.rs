@@ -14,6 +14,7 @@
 //! 写回时仅对目标 provider 的 `options.baseURL` 做原位文本 patch，
 //! 尽量保留注释、缩进和其他未修改字段。
 
+use super::url_identity;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -586,10 +587,8 @@ impl OpenCodeConfigManager {
             let mut content = fs::read_to_string(&path)
                 .map_err(|e| format!("Failed to read OpenCode config {}: {}", path.display(), e))?;
             for handle in file_handles {
-                let proxy_url = format!(
-                    "http://127.0.0.1:{}/opencode/provider/{}/source/{}",
-                    proxy_port, handle.provider_id, handle.id
-                );
+                let proxy_url =
+                    url_identity::prefixed_proxy_url(proxy_port, "opencode", &handle.id, "");
                 content = patch_provider_base_url(
                     &content,
                     &handle.provider_id,
@@ -704,20 +703,11 @@ impl OpenCodeConfigManager {
     }
 
     pub fn is_usagemeter_proxy_url(base_url: &str) -> bool {
-        let Ok(url) = reqwest::Url::parse(base_url) else {
-            return false;
-        };
-        Self::is_local_opencode_proxy_url(&url)
+        url_identity::is_usagemeter_proxy_url(base_url, &["opencode"])
     }
 
     pub fn is_usagemeter_proxy_url_for_port(base_url: &str, proxy_port: u16) -> bool {
-        let Ok(url) = reqwest::Url::parse(base_url) else {
-            return false;
-        };
-        if !Self::is_local_opencode_proxy_url(&url) {
-            return false;
-        }
-        url.port() == Some(proxy_port)
+        url_identity::is_usagemeter_proxy_url_for_port(base_url, proxy_port, &["opencode"])
     }
 
     #[allow(dead_code)]
@@ -738,21 +728,29 @@ impl OpenCodeConfigManager {
             .split('/')
             .filter(|segment| !segment.is_empty())
             .collect();
-        if segments.first().copied() != Some("opencode") {
+        let offset = if segments.first().copied() == Some("usagemeter") {
+            1
+        } else {
+            0
+        };
+        if segments.get(offset).copied() != Some("opencode") {
             return None;
         }
 
-        if segments.len() >= 5 && segments[1] == "provider" && segments[3] == "source" {
-            let provider_id = segments[2].trim();
-            let source_id = segments[4].trim();
+        if segments.len() >= offset + 5
+            && segments[offset + 1] == "provider"
+            && segments[offset + 3] == "source"
+        {
+            let provider_id = segments[offset + 2].trim();
+            let source_id = segments[offset + 4].trim();
             if provider_id.is_empty() || source_id.is_empty() {
                 return None;
             }
             return Some((Some(provider_id.to_string()), source_id.to_string()));
         }
 
-        if segments.len() >= 3 && segments[1] == "source" {
-            let source_id = segments[2].trim();
+        if segments.len() >= offset + 3 && segments[offset + 1] == "source" {
+            let source_id = segments[offset + 2].trim();
             if source_id.is_empty() {
                 return None;
             }

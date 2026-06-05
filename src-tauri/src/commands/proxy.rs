@@ -1,14 +1,88 @@
 //! 代理相关的 Tauri 命令
 
 use crate::proxy::{
-    codex_snapshot_uses_official_provider, ClaudeConfigManager, CodexConfigManager,
-    CodexSourceRegistry, OpenCodeConfigManager, OpenCodeSourceRegistry, ProxyConfig, ProxyServer,
-    ProxyStatus, ReasonixConfigManager, ReasonixSourceRegistry,
+    codex_snapshot_uses_official_provider, request_common, server, ClaudeConfigManager,
+    CodexConfigManager, CodexSourceRegistry, OpenCodeConfigManager, OpenCodeSourceRegistry,
+    ProxyConfig, ProxyServer, ProxyStatus, ReasonixConfigManager, ReasonixSourceRegistry,
 };
 use tauri::State;
 
 use super::usage::ProxyState;
 use super::{load_settings, save_settings_internal};
+
+pub async fn ensure_passive_proxy_monitor_started(state: &ProxyState) {
+    if state.passive_monitor_handle.read().await.is_some() {
+        return;
+    }
+
+    let port = load_settings().unwrap_or_default().proxy.port;
+    let proxy_state = std::sync::Arc::new(crate::proxy::ProxyState {
+        usage_collector: std::sync::Arc::new(crate::proxy::UsageCollector::new()),
+        client: reqwest::Client::new(),
+        config: std::sync::Arc::new(tokio::sync::RwLock::new(ProxyConfig {
+            port,
+            ..ProxyConfig::default()
+        })),
+        status: std::sync::Arc::new(tokio::sync::RwLock::new(ProxyStatus::default())),
+        start_time: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+        app_handle: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+        active_source_id: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+        openai_forwarder: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+        settings_snapshot: std::sync::Arc::new(tokio::sync::RwLock::new(
+            load_settings().unwrap_or_default(),
+        )),
+        settings_file_mtime: std::sync::Arc::new(tokio::sync::RwLock::new(
+            request_common::settings_file_mtime(),
+        )),
+        takeover_conflicts: std::sync::Arc::new(tokio::sync::RwLock::new(Default::default())),
+        passive_recovery_enabled: std::sync::Arc::new(tokio::sync::RwLock::new(true)),
+    });
+    let server_state = state.server.clone();
+
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tauri::async_runtime::spawn(async move {
+        tokio::select! {
+            _ = async {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+                loop {
+                    interval.tick().await;
+                    if server_state.read().await.is_some() {
+                        continue;
+                    }
+                    request_common::refresh_settings_snapshot_if_needed(&proxy_state).await;
+                    server::sync_external_config_change(
+                        port,
+                        proxy_state.clone(),
+                        server::ExternalConfigSyncMode::PassiveRecoveryOnly,
+                    )
+                    .await;
+                    server::sync_codex_external_config_change(
+                        port,
+                        proxy_state.clone(),
+                        server::ExternalConfigSyncMode::PassiveRecoveryOnly,
+                    )
+                    .await;
+                    server::sync_opencode_external_config_change(
+                        port,
+                        proxy_state.clone(),
+                        server::ExternalConfigSyncMode::PassiveRecoveryOnly,
+                    )
+                    .await;
+                    server::sync_reasonix_external_config_change(
+                        port,
+                        proxy_state.clone(),
+                        server::ExternalConfigSyncMode::PassiveRecoveryOnly,
+                    )
+                    .await;
+                }
+            } => {}
+            _ = &mut shutdown_rx => {}
+        }
+    });
+
+    *state.passive_monitor_shutdown.write().await = Some(shutdown_tx);
+    *state.passive_monitor_handle.write().await = Some(handle);
+}
 
 /// 启动代理服务器
 #[tauri::command]
@@ -179,7 +253,7 @@ async fn set_claude_takeover(
     Ok(())
 }
 
-fn restore_codex_takeover_if_active(port: u16) -> Result<(), String> {
+pub(crate) fn restore_codex_takeover_if_active(port: u16) -> Result<(), String> {
     let manager = CodexConfigManager::new();
     if !manager.is_takeover_active(port).unwrap_or(false) {
         return Ok(());
@@ -208,6 +282,54 @@ fn restore_codex_takeover_if_active(port: u16) -> Result<(), String> {
     let _ = manager.restore_from_source(&handle.id)?;
 
     Ok(())
+}
+
+pub(crate) fn restore_claude_takeover_if_proxy_url_present(port: u16) -> Result<bool, String> {
+    let manager = ClaudeConfigManager::new();
+    let current_settings = match manager.read_settings() {
+        Ok(settings) => settings,
+        Err(_) => return Ok(false),
+    };
+
+    let Some(base_url) = current_settings.get_base_url() else {
+        return Ok(false);
+    };
+
+    if !ClaudeConfigManager::is_usagemeter_proxy_url_for_port(&base_url, port) {
+        return Ok(false);
+    }
+
+    if manager.restore_from_active_source_handle()? {
+        return Ok(true);
+    }
+
+    if manager.has_backup() {
+        manager.restore()?;
+        let restored_settings = manager.read_settings()?;
+        let restored_base_url = restored_settings.get_base_url();
+        let still_proxy = restored_base_url
+            .as_deref()
+            .map(|url| ClaudeConfigManager::is_usagemeter_proxy_url_for_port(url, port))
+            .unwrap_or(false);
+        return Ok(!still_proxy);
+    }
+
+    Ok(false)
+}
+
+pub(crate) fn restore_codex_takeover_if_proxy_url_present(port: u16) -> Result<bool, String> {
+    let manager = CodexConfigManager::new();
+    let snapshot = match manager.read_live_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(_) => return Ok(false),
+    };
+
+    if !CodexConfigManager::is_usagemeter_proxy_url_for_port(&snapshot.real_base_url, port) {
+        return Ok(false);
+    }
+
+    restore_codex_takeover_if_active(port)?;
+    Ok(true)
 }
 
 async fn set_codex_takeover(
@@ -268,7 +390,7 @@ async fn set_codex_takeover(
     Ok(())
 }
 
-fn restore_opencode_takeover_if_active(port: u16) -> Result<(), String> {
+pub(crate) fn restore_opencode_takeover_if_active(port: u16) -> Result<(), String> {
     let manager = OpenCodeConfigManager::new();
     if !manager.is_takeover_active(port).unwrap_or(false) {
         return Ok(());
@@ -300,6 +422,23 @@ fn restore_opencode_takeover_if_active(port: u16) -> Result<(), String> {
 
     let _ = manager.restore_from_sources(&source_ids)?;
     Ok(())
+}
+
+pub(crate) fn restore_opencode_takeover_if_proxy_url_present(port: u16) -> Result<bool, String> {
+    let manager = OpenCodeConfigManager::new();
+    let snapshot = match manager.read_live_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(_) => return Ok(false),
+    };
+
+    if !snapshot.providers.iter().any(|provider| {
+        OpenCodeConfigManager::is_usagemeter_proxy_url_for_port(&provider.original_base_url, port)
+    }) {
+        return Ok(false);
+    }
+
+    restore_opencode_takeover_if_active(port)?;
+    Ok(true)
 }
 
 async fn set_opencode_takeover(
@@ -383,25 +522,14 @@ async fn set_opencode_takeover(
     Ok(())
 }
 
-fn restore_reasonix_takeover_if_active(port: u16) -> Result<(), String> {
+pub(crate) fn restore_reasonix_takeover_if_active(port: u16) -> Result<(), String> {
     let manager = ReasonixConfigManager::new();
     if !manager.is_takeover_active(port).unwrap_or(false) {
         return Ok(());
     }
 
-    let registry = ReasonixSourceRegistry::new();
     let active_source_ids = manager.active_source_ids();
-    let source_ids = if !active_source_ids.is_empty() {
-        active_source_ids
-    } else {
-        registry
-            .list_handles()
-            .into_iter()
-            .map(|handle| handle.id)
-            .collect()
-    };
-
-    if source_ids.is_empty() {
+    if active_source_ids.is_empty() {
         return Err(
             "Reasonix is pointed at UsageMeter, but no restorable source handle was found. \
              Restore the Reasonix config.toml manually or re-enable takeover."
@@ -409,8 +537,25 @@ fn restore_reasonix_takeover_if_active(port: u16) -> Result<(), String> {
         );
     }
 
-    let _ = manager.restore_from_sources(&source_ids)?;
+    let _ = manager.restore_from_sources(&active_source_ids)?;
     Ok(())
+}
+
+pub(crate) fn restore_reasonix_takeover_if_proxy_url_present(port: u16) -> Result<bool, String> {
+    let manager = ReasonixConfigManager::new();
+    let snapshot = match manager.read_live_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(_) => return Ok(false),
+    };
+
+    if !snapshot.providers.iter().any(|provider| {
+        ReasonixConfigManager::is_usagemeter_proxy_url_for_port(&provider.original_base_url, port)
+    }) {
+        return Ok(false);
+    }
+
+    restore_reasonix_takeover_if_active(port)?;
+    Ok(true)
 }
 
 async fn set_reasonix_takeover(

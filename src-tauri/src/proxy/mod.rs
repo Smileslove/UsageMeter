@@ -20,6 +20,7 @@ mod source_registry;
 mod sse;
 mod stream_processor;
 mod types;
+mod url_identity;
 
 pub use codex_config::{
     codex_snapshot_uses_official_provider, CodexAuthMode, CodexConfigManager, CodexSourceRegistry,
@@ -32,6 +33,12 @@ pub use database::{
 };
 pub use opencode_config::{OpenCodeConfigManager, OpenCodeSourceRegistry};
 pub use reasonix_config::{ReasonixConfigManager, ReasonixSourceRegistry};
+pub(crate) use request_common::{refresh_settings_snapshot_if_needed, settings_file_mtime};
 pub use server::ProxyServer;
+pub(crate) use server::{
+    sync_codex_external_config_change, sync_external_config_change,
+    sync_opencode_external_config_change, sync_reasonix_external_config_change,
+    ExternalConfigSyncMode,
+};
 pub use source_detector::compute_source_id;
 pub use types::*;

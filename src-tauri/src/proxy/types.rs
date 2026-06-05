@@ -424,6 +424,8 @@ pub struct ProxyState {
     pub settings_file_mtime: Arc<RwLock<Option<SystemTime>>>,
     /// 外部配置管理器与 UsageMeter 接管之间的运行期冲突状态。
     pub takeover_conflicts: Arc<RwLock<TakeoverConflictRegistry>>,
+    /// 代理关闭后的被动恢复模式。true 时检测残留的 UsageMeter URL 并恢复原始 upstream。
+    pub passive_recovery_enabled: Arc<RwLock<bool>>,
 }
 
 /// 单个工具的接管冲突运行态。
