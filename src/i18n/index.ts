@@ -51,7 +51,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       hoursAgo: '小时前',
       daysAgo: '天前',
       confirm: '确认',
-      custom: '自定义'
+      custom: '自定义',
+      error: '错误'
     },
     source: {
       localFiles: '本地文件',
@@ -453,6 +454,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       title: '会话',
       tabs: {
         recent: '最近会话',
+        requests: '最近请求',
         projects: '项目统计'
       },
       proxyRequired: '会话统计需要启用代理模式',
@@ -499,7 +501,16 @@ const messages: Record<AppLocale, TranslationNode> = {
       copied: '已复制',
       timeMinutesAgo: '{count}分钟前',
       timeHoursAgo: '{count}小时前',
-      wslBadgeTitle: '来自 WSL 发行版：{distro}'
+      wslBadgeTitle: '来自 WSL 发行版：{distro}',
+      requestsRecentHint: '最近 30 条请求，滚动加载更多',
+      noRequestData: '暂无最近请求',
+      requestLocalOnly: '本地',
+      requestCoverage: '数据覆盖',
+      requestCoverageProxy: '代理采集',
+      requestCoverageLocal: '本地扫描',
+      requestCoverageMerged: '合并记录',
+      sessionId: '会话 ID',
+      requestKey: '请求 Key'
     },
     statistics: {
       activity: '月活跃度',
@@ -722,7 +733,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       hoursAgo: '小時前',
       daysAgo: '天前',
       confirm: '確認',
-      custom: '自定義'
+      custom: '自定義',
+      error: '錯誤'
     },
     source: {
       localFiles: '本地檔案',
@@ -1124,6 +1136,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       title: '會話',
       tabs: {
         recent: '最近會話',
+        requests: '最近請求',
         projects: '專案統計'
       },
       proxyRequired: '會話統計需要啟用代理模式',
@@ -1170,7 +1183,16 @@ const messages: Record<AppLocale, TranslationNode> = {
       copied: '已複製',
       timeMinutesAgo: '{count}分鐘前',
       timeHoursAgo: '{count}小時前',
-      wslBadgeTitle: '來自 WSL 發行版：{distro}'
+      wslBadgeTitle: '來自 WSL 發行版：{distro}',
+      requestsRecentHint: '最近 30 條請求，捲動載入更多',
+      noRequestData: '暫無最近請求',
+      requestLocalOnly: '本地',
+      requestCoverage: '資料覆蓋',
+      requestCoverageProxy: '代理採集',
+      requestCoverageLocal: '本地掃描',
+      requestCoverageMerged: '合併記錄',
+      sessionId: '會話 ID',
+      requestKey: '請求 Key'
     },
     statistics: {
       activity: '月活躍度',
@@ -1392,7 +1414,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       hoursAgo: 'h ago',
       daysAgo: 'd ago',
       confirm: 'Confirm',
-      custom: 'Custom'
+      custom: 'Custom',
+      error: 'Error'
     },
     source: {
       localFiles: 'Local Files',
@@ -1794,6 +1817,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       title: 'Sessions',
       tabs: {
         recent: 'Recent Sessions',
+        requests: 'Recent Requests',
         projects: 'Projects'
       },
       proxyRequired: 'Session statistics requires proxy mode',
@@ -1840,7 +1864,16 @@ const messages: Record<AppLocale, TranslationNode> = {
       copied: 'Copied',
       timeMinutesAgo: '{count} minutes ago',
       timeHoursAgo: '{count} hours ago',
-      wslBadgeTitle: 'From WSL distro: {distro}'
+      wslBadgeTitle: 'From WSL distro: {distro}',
+      requestsRecentHint: 'Latest 30 requests. Scroll to load more.',
+      noRequestData: 'No recent requests',
+      requestLocalOnly: 'Local',
+      requestCoverage: 'Coverage',
+      requestCoverageProxy: 'Proxy captured',
+      requestCoverageLocal: 'Local scan',
+      requestCoverageMerged: 'Merged record',
+      sessionId: 'Session ID',
+      requestKey: 'Request Key'
     },
     statistics: {
       activity: 'Month Activity',

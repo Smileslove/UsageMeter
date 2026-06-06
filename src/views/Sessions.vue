@@ -3,7 +3,7 @@ import { LayoutGrid } from 'lucide-vue-next'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { ProjectStats, ProjectToolStats, SessionStats } from '../types'
+import type { ProjectStats, ProjectToolStats, RequestRecord, SessionStats } from '../types'
 import SessionDetailModal from '../components/SessionDetailModal.vue'
 import LobeIcon from '../components/LobeIcon.vue'
 import { TOOL_LOBE_ICONS } from '../iconConfig'
@@ -17,13 +17,15 @@ const normalizeSessionTool = (tool: string | null | undefined) => (
 const uuidLikePattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 // 视图切换状态
-const activeTab = ref<'recent' | 'projects'>('recent')
+const activeTab = ref<'recent' | 'requests' | 'projects'>('recent')
 const selectedTool = ref<string | null>(normalizeSessionTool(store.settings.clientTools.activeToolFilter))
 const lastGlobalTool = ref<string | null>(normalizeSessionTool(store.settings.clientTools.activeToolFilter))
 
 // 选中的会话（用于模态框）
 const selectedSession = ref<SessionStats | null>(null)
 const showModal = ref(false)
+const selectedRequest = ref<RequestRecord | null>(null)
+const showRequestModal = ref(false)
 
 interface SessionCacheEntry {
   items: SessionStats[]
@@ -31,7 +33,14 @@ interface SessionCacheEntry {
   hasMore: boolean
 }
 
+interface RequestCacheEntry {
+  items: RequestRecord[]
+  currentPage: number
+  hasMore: boolean
+}
+
 const sessionCache = new Map<string, SessionCacheEntry>()
+const requestCache = new Map<string, RequestCacheEntry>()
 const projectCache = new Map<string, ProjectStats[]>()
 const lastProxyRecordCount = ref<number | null>(null)
 const proxyRefreshDebounceMs = 1500
@@ -83,6 +92,7 @@ const rememberSessionCache = (key: string) => {
 
 const clearViewCaches = () => {
   sessionCache.clear()
+  requestCache.clear()
   projectCache.clear()
 }
 
@@ -90,7 +100,11 @@ const projectCacheKey = () => `projects:${selectedTool.value ?? '__all__'}`
 
 const triggerSessionViewRefresh = async () => {
   clearViewCaches()
-  await reloadSessions(true)
+  if (activeTab.value === 'requests') {
+    await reloadRequestRecords(true)
+  } else {
+    await reloadSessions(true)
+  }
   if (activeTab.value === 'projects') {
     await reloadProjectStats(true)
   } else {
@@ -144,6 +158,9 @@ const reloadProjectStats = async (force = false) => {
 
 // 切换 tab 时加载项目统计
 watch(activeTab, async (newTab) => {
+  if (newTab === 'requests') {
+    await reloadRequestRecords()
+  }
   if (newTab === 'projects') {
     await reloadProjectStats()
   }
@@ -154,6 +171,44 @@ const currentPage = ref(0)
 const pageSize = 30
 const hasMore = ref(true)
 const loadingMore = ref(false)
+const requestCurrentPage = ref(0)
+const requestPageSize = 30
+const requestHasMore = ref(true)
+const loadingMoreRequests = ref(false)
+
+const applyRequestCache = (entry: RequestCacheEntry) => {
+  store.requestRecords = entry.items
+  requestCurrentPage.value = entry.currentPage
+  requestHasMore.value = entry.hasMore
+  store.requestRecordsLoading = false
+}
+
+const rememberRequestCache = (key: string) => {
+  requestCache.set(key, {
+    items: [...store.requestRecords],
+    currentPage: requestCurrentPage.value,
+    hasMore: requestHasMore.value
+  })
+}
+
+const reloadRequestRecords = async (force = false) => {
+  const key = cacheKey()
+  if (!force) {
+    const cached = requestCache.get(key)
+    if (cached) {
+      applyRequestCache(cached)
+      return
+    }
+  }
+
+  requestCurrentPage.value = 0
+  requestHasMore.value = true
+  const count = await store.fetchRecentRequestRecordsForTool(selectedTool.value, requestPageSize, 0, false)
+  if (count < requestPageSize) {
+    requestHasMore.value = false
+  }
+  rememberRequestCache(key)
+}
 
 // 格式化时间
 const formatTime = (epoch: number) => {
@@ -193,6 +248,74 @@ const formatCost = (cost: number | undefined) => {
   if (cost === undefined || cost === null) return '-'
   return formatCostUtil(cost, store.settings.currency, 4)
 }
+
+const formatDuration = (ms?: number | null) => {
+  if (!ms) return '—'
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  const minutes = Math.floor(ms / 60000)
+  const seconds = Math.round((ms % 60000) / 1000)
+  return `${minutes}m ${seconds}s`
+}
+
+const compactModelName = (model: string) => {
+  const value = model?.trim()
+  if (!value) return t(store.settings.locale, 'common.unknown')
+  return value
+    .replace(/^claude-/, '')
+    .replace(/^gpt-/, 'gpt-')
+    .replace(/-20\d{6}$/, '')
+}
+
+const requestStatusLabel = (request: RequestRecord) => {
+  if (request.coverageOrigin === 'local_only') return t(store.settings.locale, 'sessions.requestLocalOnly')
+  const statusCode = request.statusCode
+  if (!statusCode) return t(store.settings.locale, 'common.unknown')
+  if (statusCode < 400) return t(store.settings.locale, 'common.success')
+  return t(store.settings.locale, 'common.error')
+}
+
+const requestStatusClasses = (request: RequestRecord) => {
+  if (request.coverageOrigin === 'local_only') {
+    return 'bg-slate-50 text-slate-500 border-slate-100 dark:bg-white/[0.04] dark:text-slate-300 dark:border-white/8'
+  }
+  const statusCode = request.statusCode || 0
+  if (statusCode >= 400) {
+    return 'bg-rose-50 text-rose-600 border-rose-100 dark:bg-rose-500/15 dark:text-rose-300 dark:border-rose-400/20'
+  }
+  return 'bg-emerald-50 text-emerald-600 border-emerald-100 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-400/20'
+}
+
+const requestCoverageLabel = (origin: RequestRecord['coverageOrigin']) => {
+  if (origin === 'proxy_only') return t(store.settings.locale, 'sessions.requestCoverageProxy')
+  if (origin === 'merged_proxy_preferred') return t(store.settings.locale, 'sessions.requestCoverageMerged')
+  return t(store.settings.locale, 'sessions.requestCoverageLocal')
+}
+
+const requestProjectLabel = (request: RequestRecord) => {
+  const pathParts = request.projectPath?.split('/').filter(Boolean) || []
+  return request.projectName?.trim()
+    || pathParts[pathParts.length - 1]
+    || t(store.settings.locale, 'common.unknownProject')
+}
+
+const requestSourceLabel = (request: RequestRecord) => (
+  request.sourceLabel?.trim()
+    || request.requestBaseUrl?.trim()
+    || t(store.settings.locale, 'sources.unknown')
+)
+
+const requestToolLabel = (tool: string) => (
+  getToolProfile(tool)?.displayName || tool || t(store.settings.locale, 'common.unknown')
+)
+
+const requestCacheTokens = (request: RequestRecord) => (
+  (request.cacheCreateTokens || 0) + (request.cacheReadTokens || 0)
+)
+
+const requestHasProxyPerformance = (request: RequestRecord) => (
+  request.durationMs !== null && request.durationMs !== undefined
+)
 
 const sessionCacheHitRate = (session: SessionStats): string => {
   const total = (session.totalInputTokens || 0) + (session.totalCacheCreateTokens || 0) + (session.totalCacheReadTokens || 0)
@@ -411,6 +534,16 @@ const closeModal = () => {
   selectedSession.value = null
 }
 
+const openRequestDetail = (request: RequestRecord) => {
+  selectedRequest.value = request
+  showRequestModal.value = true
+}
+
+const closeRequestModal = () => {
+  showRequestModal.value = false
+  selectedRequest.value = null
+}
+
 // 加载更多
 const loadMore = async () => {
   if (loadingMore.value || !hasMore.value) return
@@ -426,9 +559,38 @@ const loadMore = async () => {
   loadingMore.value = false
 }
 
+const loadMoreRequests = async () => {
+  if (loadingMoreRequests.value || !requestHasMore.value) return
+  const remaining = 200 - store.requestRecords.length
+  if (remaining <= 0) {
+    requestHasMore.value = false
+    return
+  }
+
+  loadingMoreRequests.value = true
+  requestCurrentPage.value++
+  const nextLimit = Math.min(requestPageSize, remaining)
+
+  const count = await store.fetchRecentRequestRecordsForTool(
+    selectedTool.value,
+    nextLimit,
+    requestCurrentPage.value * requestPageSize,
+    true
+  )
+  if (count < nextLimit || store.requestRecords.length >= 200) {
+    requestHasMore.value = false
+  }
+  rememberRequestCache(cacheKey())
+  loadingMoreRequests.value = false
+}
+
 // 监听工具筛选变化
 watch([selectedTool], async () => {
-  await reloadSessions()
+  if (activeTab.value === 'requests') {
+    await reloadRequestRecords()
+  } else {
+    await reloadSessions()
+  }
   if (activeTab.value === 'projects') {
     await reloadProjectStats()
   } else {
@@ -474,7 +636,30 @@ watch(() => store.proxyStatus?.recordCount ?? null, async (current, previous) =>
 
 // 触底加载触发元素
 const loadMoreTrigger = ref<HTMLElement | null>(null)
+const requestLoadMoreTrigger = ref<HTMLElement | null>(null)
 let observer: IntersectionObserver | null = null
+
+const observeLoadTriggers = () => {
+  if (!observer) return
+  if (loadMoreTrigger.value) {
+    observer.observe(loadMoreTrigger.value)
+  }
+  if (requestLoadMoreTrigger.value) {
+    observer.observe(requestLoadMoreTrigger.value)
+  }
+}
+
+watch(activeTab, () => {
+  setTimeout(observeLoadTriggers, 50)
+})
+
+watch(() => store.requestRecords.length, () => {
+  setTimeout(observeLoadTriggers, 50)
+})
+
+watch(() => store.sessions.length, () => {
+  setTimeout(observeLoadTriggers, 50)
+})
 
 // 初始加载
 onMounted(async () => {
@@ -484,15 +669,17 @@ onMounted(async () => {
   setTimeout(() => {
     observer = new IntersectionObserver(
       entries => {
-        if (entries[0].isIntersecting && hasMore.value && !loadingMore.value) {
+        if (!entries[0].isIntersecting) return
+        if (entries[0].target === loadMoreTrigger.value && hasMore.value && !loadingMore.value) {
           loadMore()
+        }
+        if (entries[0].target === requestLoadMoreTrigger.value && requestHasMore.value && !loadingMoreRequests.value) {
+          loadMoreRequests()
         }
       },
       { root: null, rootMargin: '100px' }
     )
-    if (loadMoreTrigger.value) {
-      observer.observe(loadMoreTrigger.value)
-    }
+    observeLoadTriggers()
   }, 100)
 })
 
@@ -526,6 +713,14 @@ onUnmounted(() => {
       <button
         type="button"
         class="session-tabs__item"
+        :class="{ 'session-tabs__item--on': activeTab === 'requests' }"
+        @click="activeTab = 'requests'"
+      >
+        {{ t(store.settings.locale, 'sessions.tabs.requests') }}
+      </button>
+      <button
+        type="button"
+        class="session-tabs__item"
         :class="{ 'session-tabs__item--on': activeTab === 'projects' }"
         @click="activeTab = 'projects'"
       >
@@ -533,7 +728,7 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <div v-if="activeTab === 'recent'" class="tool-filter">
+    <div v-if="activeTab === 'recent' || activeTab === 'requests'" class="tool-filter">
       <button
         v-for="option in sourceOptions"
         :key="option.key"
@@ -556,20 +751,16 @@ onUnmounted(() => {
       </button>
     </div>
 
-
-
-    <!-- 加载状态 -->
-    <div v-if="store.sessionsLoading" class="flex justify-center py-8">
-      <div class="animate-spin w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full"></div>
-    </div>
-
-    <!-- 空状态 -->
-    <div v-else-if="store.sessions.length === 0" class="text-center py-8 text-gray-400 text-sm">
-      {{ t(store.settings.locale, 'sessions.noData') }}
-    </div>
-
     <!-- 1. 会话列表视图 -->
-    <template v-else-if="activeTab === 'recent'">
+    <template v-if="activeTab === 'recent'">
+      <div v-if="store.sessionsLoading" class="flex justify-center py-8">
+        <div class="animate-spin w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full"></div>
+      </div>
+
+      <div v-else-if="store.sessions.length === 0" class="text-center py-8 text-gray-400 text-sm">
+        {{ t(store.settings.locale, 'sessions.noData') }}
+      </div>
+
       <div v-for="session in store.sessions" :key="session.sessionId" class="bg-white dark:bg-[#1E2024] rounded-xl border border-gray-100 dark:border-white/5 px-2.5 py-2 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors cursor-pointer flex flex-col gap-1.5" @click="openSessionDetail(session)">
         <!-- 1. 顶部信息行 -->
         <div class="flex items-center justify-between w-full gap-2 min-w-0">
@@ -672,7 +863,81 @@ onUnmounted(() => {
       <div ref="loadMoreTrigger" class="h-1 w-full"></div>
     </template>
 
-    <!-- 2. 项目维度的聚合视图 -->
+    <!-- 2. 最近请求流 -->
+    <template v-else-if="activeTab === 'requests'">
+      <div class="request-stream-note">
+        <span>{{ t(store.settings.locale, 'sessions.requestsRecentHint') }}</span>
+        <span class="font-mono">{{ store.requestRecords.length }}/200</span>
+      </div>
+
+      <div v-if="store.requestRecordsLoading" class="flex justify-center py-8">
+        <div class="animate-spin w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full"></div>
+      </div>
+
+      <div v-else-if="store.requestRecords.length === 0" class="text-center py-8 text-gray-400 text-sm">
+        {{ t(store.settings.locale, 'sessions.noRequestData') }}
+      </div>
+
+      <template v-else>
+        <button
+          v-for="request in store.requestRecords"
+          :key="request.requestKey"
+          type="button"
+          class="request-card"
+          @click="openRequestDetail(request)"
+        >
+          <div class="request-card__top">
+            <div class="min-w-0 flex items-center gap-1.5">
+              <span class="request-card__time">{{ formatTime(request.timestampSec) }}</span>
+              <span class="request-card__model" :title="request.model">{{ compactModelName(request.model) }}</span>
+            </div>
+            <div class="flex shrink-0 items-center gap-1.5">
+              <span class="request-card__tokens">{{ formatTokens(request.totalTokens) }}</span>
+              <span class="request-card__cost">{{ formatCost(request.estimatedCost) }}</span>
+            </div>
+          </div>
+
+          <div class="request-card__meta">
+            <div class="min-w-0 flex items-center gap-1">
+              <LobeIcon
+                v-if="getToolIcon(request.tool)"
+                :slug="getToolIcon(request.tool) ?? 'claudecode'"
+                :size="12"
+                @error="() => {}"
+              />
+              <span v-else class="h-1.5 w-1.5 shrink-0 rounded-full bg-gray-400"></span>
+              <span class="truncate">{{ requestProjectLabel(request) }}</span>
+              <span class="text-gray-300 dark:text-gray-600">/</span>
+              <span class="truncate">{{ requestToolLabel(request.tool) }}</span>
+              <span class="text-gray-300 dark:text-gray-600">/</span>
+              <span class="truncate">{{ requestSourceLabel(request) }}</span>
+            </div>
+            <span class="request-card__status" :class="requestStatusClasses(request)">
+              {{ requestStatusLabel(request) }}
+            </span>
+          </div>
+
+          <div class="request-card__metrics">
+            <span>{{ t(store.settings.locale, 'sessions.input') }} {{ formatTokens(request.inputTokens) }}</span>
+            <span>{{ t(store.settings.locale, 'sessions.output') }} {{ formatTokens(request.outputTokens) }}</span>
+            <span>{{ t(store.settings.locale, 'statistics.cache') }} {{ formatTokens(requestCacheTokens(request)) }}</span>
+            <span class="ml-auto">{{ requestHasProxyPerformance(request) ? formatDuration(request.durationMs) : requestCoverageLabel(request.coverageOrigin) }}</span>
+          </div>
+        </button>
+
+        <div v-if="loadingMoreRequests" class="flex justify-center py-4">
+          <div class="animate-spin w-4 h-4 border-2 border-gray-300 border-t-gray-500 rounded-full"></div>
+        </div>
+
+        <div v-else-if="!requestHasMore && store.requestRecords.length > 0" class="text-center py-3 text-[10px] text-gray-400">
+          {{ t(store.settings.locale, 'common.noMore') }}
+        </div>
+
+        <div ref="requestLoadMoreTrigger" class="h-1 w-full"></div>
+      </template>
+    </template>
+
+    <!-- 3. 项目维度的聚合视图 -->
     <template v-else-if="activeTab === 'projects'">
       <!-- 加载状态 -->
       <div v-if="store.projectStatsLoading" class="flex justify-center py-8">
@@ -808,6 +1073,113 @@ onUnmounted(() => {
 
     <!-- 会话详情模态框 -->
     <SessionDetailModal :visible="showModal" :session="selectedSession" @close="closeModal" />
+
+    <Teleport to="#app">
+      <div
+        v-if="showRequestModal && selectedRequest"
+        class="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+        style="-webkit-app-region: no-drag; app-region: no-drag"
+        @click.self="closeRequestModal"
+      >
+        <div class="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-[#1C1C1E]">
+          <div class="flex items-start justify-between border-b border-gray-100 p-4 dark:border-neutral-800">
+            <div class="min-w-0 pr-3">
+              <div class="mb-1 flex items-center gap-1.5">
+                <span class="request-card__status" :class="requestStatusClasses(selectedRequest)">
+                  {{ requestStatusLabel(selectedRequest) }}
+                </span>
+                <span class="text-[10px] text-gray-400">{{ formatTime(selectedRequest.timestampSec) }}</span>
+              </div>
+              <h3 class="truncate text-base font-semibold text-gray-800 dark:text-gray-100">
+                {{ selectedRequest.model || t(store.settings.locale, 'common.unknown') }}
+              </h3>
+              <p class="mt-0.5 truncate text-[10px] text-gray-400">
+                {{ requestProjectLabel(selectedRequest) }} / {{ requestToolLabel(selectedRequest.tool) }} / {{ requestSourceLabel(selectedRequest) }}
+              </p>
+            </div>
+            <button
+              type="button"
+              class="shrink-0 rounded-lg p-1.5 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800"
+              @click="closeRequestModal"
+            >
+              <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div class="max-h-[calc(80vh-64px)] space-y-3 overflow-y-auto p-4">
+            <div class="grid grid-cols-3 gap-2">
+              <div class="request-detail-stat">
+                <span>{{ t(store.settings.locale, 'common.totalTokens') }}</span>
+                <strong>{{ formatTokens(selectedRequest.totalTokens) }}</strong>
+              </div>
+              <div class="request-detail-stat">
+                <span>{{ t(store.settings.locale, 'sessions.cost') }}</span>
+                <strong class="text-[var(--theme-chart-cost)]">{{ formatCost(selectedRequest.estimatedCost) }}</strong>
+              </div>
+              <div class="request-detail-stat">
+                <span>{{ t(store.settings.locale, 'sessions.duration') }}</span>
+                <strong>{{ formatDuration(selectedRequest.durationMs) }}</strong>
+              </div>
+            </div>
+
+            <div class="request-detail-section">
+              <div class="request-detail-row">
+                <span>{{ t(store.settings.locale, 'sessions.input') }}</span>
+                <strong>{{ formatTokens(selectedRequest.inputTokens) }}</strong>
+              </div>
+              <div class="request-detail-row">
+                <span>{{ t(store.settings.locale, 'sessions.output') }}</span>
+                <strong>{{ formatTokens(selectedRequest.outputTokens) }}</strong>
+              </div>
+              <div class="request-detail-row">
+                <span>{{ t(store.settings.locale, 'statistics.cacheCreate') }}</span>
+                <strong>{{ formatTokens(selectedRequest.cacheCreateTokens) }}</strong>
+              </div>
+              <div class="request-detail-row">
+                <span>{{ t(store.settings.locale, 'statistics.cacheRead') }}</span>
+                <strong>{{ formatTokens(selectedRequest.cacheReadTokens) }}</strong>
+              </div>
+            </div>
+
+            <div class="request-detail-section">
+              <div class="request-detail-row">
+                <span>{{ t(store.settings.locale, 'sessions.ttft') }}</span>
+                <strong>{{ formatDuration(selectedRequest.ttftMs) }}</strong>
+              </div>
+              <div class="request-detail-row">
+                <span>{{ t(store.settings.locale, 'metrics.tokensPerSecond') }}</span>
+                <strong>{{ selectedRequest.outputTokensPerSecond ? selectedRequest.outputTokensPerSecond.toFixed(1) : '—' }}</strong>
+              </div>
+              <div class="request-detail-row">
+                <span>{{ t(store.settings.locale, 'statistics.status') }}</span>
+                <strong>{{ selectedRequest.statusCode || '—' }}</strong>
+              </div>
+              <div class="request-detail-row">
+                <span>{{ t(store.settings.locale, 'sessions.requestCoverage') }}</span>
+                <strong>{{ requestCoverageLabel(selectedRequest.coverageOrigin) }}</strong>
+              </div>
+            </div>
+
+            <div class="request-detail-section">
+              <div class="request-detail-row">
+                <span>{{ t(store.settings.locale, 'common.source') }}</span>
+                <strong class="truncate text-right">{{ requestSourceLabel(selectedRequest) }}</strong>
+              </div>
+              <div class="request-detail-row">
+                <span>{{ t(store.settings.locale, 'sessions.sessionId') }}</span>
+                <strong class="truncate text-right">{{ selectedRequest.sessionId || '—' }}</strong>
+              </div>
+              <div class="request-detail-row">
+                <span>{{ t(store.settings.locale, 'sessions.requestKey') }}</span>
+                <strong class="truncate text-right">{{ selectedRequest.requestKey }}</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -899,5 +1271,154 @@ onUnmounted(() => {
   color: var(--theme-accent-contrast);
   border-color: transparent;
   box-shadow: 0 2px 8px color-mix(in srgb, var(--theme-accent-primary) 35%, transparent);
+}
+
+.request-stream-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--theme-accent-primary) 8%, transparent), transparent 58%),
+    var(--theme-bg-elevated);
+  padding: 7px 10px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--theme-text-tertiary);
+}
+
+.request-card {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 16px;
+  background: var(--theme-bg-elevated);
+  padding: 10px;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.018);
+  transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.request-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--theme-border-strong);
+  background: color-mix(in srgb, var(--theme-bg-elevated) 88%, var(--theme-accent-primary) 12%);
+}
+
+.request-card__top,
+.request-card__meta,
+.request-card__metrics {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 8px;
+}
+
+.request-card__time {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--theme-text-tertiary);
+}
+
+.request-card__model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--theme-text-primary);
+}
+
+.request-card__tokens {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--theme-text-primary);
+}
+
+.request-card__cost {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--theme-chart-cost);
+}
+
+.request-card__meta {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--theme-text-tertiary);
+}
+
+.request-card__status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-width: 1px;
+  border-radius: 9999px;
+  padding: 2px 6px;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.request-card__metrics {
+  border-top: 1px solid var(--theme-border-subtle);
+  padding-top: 7px;
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--theme-text-tertiary);
+}
+
+.request-detail-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border-radius: 14px;
+  background: var(--theme-bg-surface);
+  padding: 9px 8px;
+  text-align: center;
+}
+
+.request-detail-stat span,
+.request-detail-row span {
+  font-size: 10px;
+  color: var(--theme-text-tertiary);
+}
+
+.request-detail-stat strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  color: var(--theme-text-primary);
+}
+
+.request-detail-section {
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 14px;
+  background: var(--theme-bg-elevated);
+  padding: 8px 10px;
+}
+
+.request-detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.request-detail-row strong {
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  color: var(--theme-text-primary);
 }
 </style>

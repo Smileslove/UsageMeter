@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SyncSettings, NetworkProxyConfig, ThemeSettings, WslScanSettings } from '../types'
+import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SyncSettings, NetworkProxyConfig, ThemeSettings, WslScanSettings } from '../types'
 
 const defaultModelPricing: ModelPricingSettings = {
   matchMode: 'fuzzy',
@@ -122,6 +122,8 @@ export const useMonitorStore = defineStore('monitor', {
     sessions: [] as SessionStats[],
     sessionsLoading: false,
     selectedSession: null as SessionStats | null,
+    requestRecords: [] as RequestRecord[],
+    requestRecordsLoading: false,
     // 项目统计（基于所有会话聚合，不受分页影响）
     projectStats: [] as ProjectStats[],
     projectStatsLoading: false,
@@ -540,6 +542,38 @@ export const useMonitorStore = defineStore('monitor', {
      */
     clearSelectedSession() {
       this.selectedSession = null
+    },
+    async fetchRecentRequestRecordsForTool(toolFilter: string | null, limit: number = 30, offset: number = 0, append: boolean = false) {
+      if (offset === 0) {
+        this.requestRecordsLoading = true
+      }
+      try {
+        const settings = {
+          ...this.settings,
+          clientTools: {
+            ...this.settings.clientTools,
+            activeToolFilter: toolFilter
+          }
+        }
+        const records = await invoke<RequestRecord[]>('get_recent_request_records', {
+          query: { limit, offset },
+          settings
+        })
+        if (append) {
+          this.requestRecords = [...this.requestRecords, ...records]
+        } else {
+          this.requestRecords = records
+        }
+        return records.length
+      } catch (e) {
+        console.error('Failed to fetch request records:', e)
+        if (!append) {
+          this.requestRecords = []
+        }
+        return 0
+      } finally {
+        this.requestRecordsLoading = false
+      }
     },
     /**
      * 获取项目统计（基于所有会话聚合，不受分页影响）

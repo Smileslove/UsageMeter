@@ -429,19 +429,32 @@ export interface ProjectToolStats {
   uncoveredRequests?: number
 }
 
-// 会话请求记录
-export interface SessionRequest {
-  timestamp: number
-  messageId: string
+export type RequestCoverageOrigin = 'proxy_only' | 'local_only' | 'merged_proxy_preferred'
+
+// 最近请求记录
+export interface RequestRecord {
+  requestKey: string
+  sessionId: string
+  projectName?: string | null
+  projectPath?: string | null
+  sourceLabel?: string | null
+  apiKeyPrefix?: string | null
+  requestBaseUrl?: string | null
+  tool: string
+  timestampSec: number
+  timestampMs: number
+  model: string
   inputTokens: number
   outputTokens: number
   cacheCreateTokens: number
   cacheReadTokens: number
-  model: string
-  durationMs: number
+  totalTokens: number
+  estimatedCost: number
+  coverageOrigin: RequestCoverageOrigin
+  statusCode?: number | null
+  durationMs?: number | null
   outputTokensPerSecond: number | null
   ttftMs: number | null
-  statusCode: number
 }
 
 // 统计面板
