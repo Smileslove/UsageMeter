@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.2] - 2026-06-06
+
+### Added
+
+- **WSL Passive Scanning**: Added WSL passive scanning with per-distribution toggles so UsageMeter can collect local usage data from supported WSL environments
+- **WSL UI Markers**: Added WSL-aware labels in sessions and projects so WSL-sourced records are visible in the UI
+- **WSL OpenCode Coverage**: Extended OpenCode local usage scanning to work inside WSL
+
+---
+
+### 新增
+
+- **WSL 被动扫描**：新增 WSL 被动扫描，并支持按发行版独立开关，使 UsageMeter 可以从受支持的 WSL 环境采集本地用量数据
+- **WSL 界面标记**：会话和项目现在会显示 WSL 感知标签，方便在界面中识别来自 WSL 的记录
+- **WSL OpenCode 覆盖**：扩展 OpenCode 本地用量扫描，使其可在 WSL 内工作
+
+---
+
 ## [0.7.1] - 2026-06-06
 
 ### Added
@@ -646,6 +664,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 [0.7.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.1
+[0.7.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.2
 [0.7.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.0
 [0.6.4]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.4
 [0.6.3]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.3
