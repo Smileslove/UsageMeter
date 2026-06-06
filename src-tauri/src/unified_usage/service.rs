@@ -5,7 +5,7 @@ use super::types::{
 use crate::models::{AppSettings, ToolFilter, UsageQueryFilter};
 use crate::proxy::ProxyMergeCacheSignature;
 use crate::proxy::{ProjectStats, ProjectToolStats, ProxyDatabase, SessionStats, UsageRecord};
-use crate::session::{LocalRequestRecord, SessionMeta};
+use crate::session::{wsl_distro_from_path, LocalRequestRecord, SessionMeta};
 use chrono::{Local, TimeZone};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -549,6 +549,7 @@ fn build_metadata_only_session_stats(meta: &SessionMeta, now_sec: i64) -> Sessio
         topic: meta.topic.clone(),
         last_prompt: meta.last_prompt.clone(),
         session_name: meta.session_name.clone(),
+        wsl_distro: wsl_distro_from_path(&meta.file_path),
     }
 }
 
@@ -1851,6 +1852,7 @@ pub async fn get_merged_sessions(
             topic: meta.and_then(|m| m.topic.clone()),
             last_prompt: meta.and_then(|m| m.last_prompt.clone()),
             session_name: meta.and_then(|m| m.session_name.clone()),
+            wsl_distro: meta.and_then(|m| wsl_distro_from_path(&m.file_path)),
         });
     }
 
@@ -2047,6 +2049,16 @@ pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<Proj
         .into_values()
         .map(|mut aggregate| {
             aggregate.stats.session_count = aggregate.sessions.len() as u64;
+            let mut session_ids: Vec<&String> = aggregate.sessions.iter().collect();
+            session_ids.sort();
+            aggregate.stats.wsl_distros = session_ids
+                .into_iter()
+                .filter_map(|session_id| local_sessions_by_id.get(session_id))
+                .filter_map(|meta| wsl_distro_from_path(&meta.file_path))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            aggregate.stats.wsl_distro = aggregate.stats.wsl_distros.first().cloned();
             let has_unresolved_reasonix_tool_rows =
                 aggregate.stats.tool_breakdown.iter().any(|tool| {
                     tool.tool == "reasonix"

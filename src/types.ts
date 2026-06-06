@@ -389,6 +389,7 @@ export interface SessionStats {
   topic?: string        // 首个有意义用户消息
   lastPrompt?: string
   sessionName?: string  // 自定义会话名（customTitle 或 slug）
+  wslDistro?: string | null  // 来源 WSL 发行版名（非 WSL 会话为空）
 }
 
 // 项目统计（聚合多个会话）
@@ -409,6 +410,8 @@ export interface ProjectStats {
   coveredRequests?: number
   uncoveredRequests?: number
   toolBreakdown: ProjectToolStats[]
+  wslDistro?: string | null  // 来源 WSL 发行版名（项目内有 WSL 会话时，兼容字段）
+  wslDistros?: string[]      // 项目内涉及的所有 WSL 发行版名
 }
 
 export interface ProjectToolStats {

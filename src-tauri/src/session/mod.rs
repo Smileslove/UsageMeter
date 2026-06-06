@@ -16,6 +16,6 @@ mod source;
 mod wsl;
 
 #[allow(unused_imports)]
-pub use meta::{LocalRequestRecord, SessionFile, SessionMeta};
+pub use meta::{wsl_distro_from_path, LocalRequestRecord, SessionFile, SessionMeta};
 pub use registry::{parse_session_file_for_storage, scan_file_backed_session_files};
 pub use scanner::{find_session_id_by_message_id, get_all_session_meta_cached};

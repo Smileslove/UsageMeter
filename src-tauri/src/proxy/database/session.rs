@@ -373,6 +373,7 @@ impl ProxyDatabase {
                 topic: None,
                 last_prompt: None,
                 session_name: None,
+                wsl_distro: None,
             })
         });
 

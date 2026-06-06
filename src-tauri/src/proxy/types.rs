@@ -312,6 +312,10 @@ pub struct SessionStats {
     /// 自定义会话名称
     #[serde(default)]
     pub session_name: Option<String>,
+    /// 来源 WSL 发行版名（如 "Ubuntu"）；非 WSL 会话为 None。
+    /// 由 transcript 文件路径的 `\\wsl$\<distro>\...` 前缀解析得到。
+    #[serde(default)]
+    pub wsl_distro: Option<String>,
 }
 
 /// 项目统计信息（聚合多个会话）
@@ -360,6 +364,12 @@ pub struct ProjectStats {
     /// 按客户端工具拆分的项目统计
     #[serde(default)]
     pub tool_breakdown: Vec<ProjectToolStats>,
+    /// 来源 WSL 发行版名；项目内任一会话来自 WSL 时设置（多发行版时取首个）。
+    #[serde(default)]
+    pub wsl_distro: Option<String>,
+    /// 项目内涉及的所有 WSL 发行版名，按名称稳定排序。
+    #[serde(default)]
+    pub wsl_distros: Vec<String>,
 }
 
 /// 项目内按客户端工具拆分的统计信息

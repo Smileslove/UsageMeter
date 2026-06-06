@@ -9,6 +9,30 @@
 
 use serde::{Deserialize, Serialize};
 
+/// 从 transcript 文件路径解析来源 WSL 发行版名。
+///
+/// WSL 文件经 UNC 路径 `\\wsl$\<distro>\...` 或 `\\wsl.localhost\<distro>\...`
+/// 被 Windows 侧扫描，distro 名是 UNC 的第一段。非 WSL 路径返回 None。
+/// 纯字符串解析，跨平台可用（含测试）。
+pub fn wsl_distro_from_path(file_path: &str) -> Option<String> {
+    let normalized = file_path.replace('/', "\\");
+    let rest = strip_ascii_case_insensitive_prefix(&normalized, r"\\wsl$\")
+        .or_else(|| strip_ascii_case_insensitive_prefix(&normalized, r"\\wsl.localhost\"))?;
+    let distro = rest.split('\\').next().unwrap_or("").trim();
+    if distro.is_empty() {
+        None
+    } else {
+        Some(distro.to_string())
+    }
+}
+
+fn strip_ascii_case_insensitive_prefix<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    value
+        .get(..prefix.len())
+        .filter(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        .and_then(|_| value.get(prefix.len()..))
+}
+
 /// 从 JSONL 文件提取的会话元数据
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -134,4 +158,49 @@ pub struct SessionFile {
     pub last_modified: i64,
     /// 内容指纹，用于增量缓存判定
     pub fingerprint: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wsl_distro_from_path;
+
+    #[test]
+    fn parses_wsl_unc_paths() {
+        assert_eq!(
+            wsl_distro_from_path(r"\\wsl$\Ubuntu\home\alice\.claude\projects\p\s.jsonl"),
+            Some("Ubuntu".to_string()),
+        );
+        assert_eq!(
+            wsl_distro_from_path(r"\\wsl.localhost\Debian-11\home\bob\.codex\sessions\r.jsonl"),
+            Some("Debian-11".to_string()),
+        );
+        // forward-slash variant normalizes
+        assert_eq!(
+            wsl_distro_from_path("//wsl$/Ubuntu/home/alice/.claude"),
+            Some("Ubuntu".to_string()),
+        );
+        // UNC server names are case-insensitive on Windows.
+        assert_eq!(
+            wsl_distro_from_path(r"\\WSL$\Ubuntu\home\alice\.claude"),
+            Some("Ubuntu".to_string()),
+        );
+        assert_eq!(
+            wsl_distro_from_path(r"\\Wsl.LocalHost\Debian\home\bob\.codex"),
+            Some("Debian".to_string()),
+        );
+    }
+
+    #[test]
+    fn rejects_non_wsl_paths() {
+        assert_eq!(
+            wsl_distro_from_path(r"C:\Users\alice\.claude\projects\p\s.jsonl"),
+            None,
+        );
+        assert_eq!(
+            wsl_distro_from_path("/home/alice/.claude/projects/p/s.jsonl"),
+            None
+        );
+        assert_eq!(wsl_distro_from_path(r"\\server\share\path"), None);
+        assert_eq!(wsl_distro_from_path(r"\\wsl$\"), None);
+    }
 }

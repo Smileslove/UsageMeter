@@ -498,7 +498,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       globalSessionHint: '该会话未绑定到具体项目工作区',
       copied: '已复制',
       timeMinutesAgo: '{count}分钟前',
-      timeHoursAgo: '{count}小时前'
+      timeHoursAgo: '{count}小时前',
+      wslBadgeTitle: '来自 WSL 发行版：{distro}'
     },
     statistics: {
       activity: '月活跃度',
@@ -1168,7 +1169,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       globalSessionHint: '該會話未綁定到具體專案工作區',
       copied: '已複製',
       timeMinutesAgo: '{count}分鐘前',
-      timeHoursAgo: '{count}小時前'
+      timeHoursAgo: '{count}小時前',
+      wslBadgeTitle: '來自 WSL 發行版：{distro}'
     },
     statistics: {
       activity: '月活躍度',
@@ -1837,7 +1839,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       globalSessionHint: 'This session is not bound to a specific project workspace.',
       copied: 'Copied',
       timeMinutesAgo: '{count} minutes ago',
-      timeHoursAgo: '{count} hours ago'
+      timeHoursAgo: '{count} hours ago',
+      wslBadgeTitle: 'From WSL distro: {distro}'
     },
     statistics: {
       activity: 'Month Activity',

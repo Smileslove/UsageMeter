@@ -291,6 +291,25 @@ const displayProjectHint = (project: ProjectStats) => {
   return ''
 }
 
+const projectWslDistros = (project: ProjectStats) => {
+  const distros = project.wslDistros?.filter(distro => distro.trim()) || []
+  if (distros.length > 0) return distros
+  return project.wslDistro ? [project.wslDistro] : []
+}
+
+const displayProjectWslBadge = (project: ProjectStats) => {
+  const distros = projectWslDistros(project)
+  if (distros.length === 0) return ''
+  if (distros.length === 1) return distros[0]
+  return `${distros[0]} +${distros.length - 1}`
+}
+
+const displayProjectWslTitle = (project: ProjectStats) => {
+  const distros = projectWslDistros(project)
+  if (distros.length === 0) return ''
+  return t(store.settings.locale, 'sessions.wslBadgeTitle', { distro: distros.join(', ') })
+}
+
 const displayProxyTokenValue = (session: SessionStats) => (
   coveredRequests(session.coveredRequests) > 0
     ? formatTokens(
@@ -563,6 +582,14 @@ onUnmounted(() => {
             >
               {{ displaySessionProjectBadge(session) }}
             </span>
+            <span
+              v-if="session.wslDistro"
+              class="shrink-0 inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-px rounded truncate max-w-[110px] bg-cyan-50 text-cyan-600 border border-cyan-100 dark:bg-cyan-500/15 dark:text-cyan-300 dark:border-cyan-400/20"
+              :title="t(store.settings.locale, 'sessions.wslBadgeTitle', { distro: session.wslDistro })"
+            >
+              <svg class="w-2.5 h-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" /></svg>
+              <span class="truncate">{{ session.wslDistro }}</span>
+            </span>
             <div class="flex items-center gap-0.5 text-[10px] text-gray-400 dark:text-gray-500 min-w-0">
               <svg class="w-2.5 h-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
               <span class="truncate">{{ session.models[0] || 'Unknown' }}</span>
@@ -665,6 +692,14 @@ onUnmounted(() => {
           <div class="flex min-w-0 flex-1 items-center gap-1.5">
             <span class="shrink-0 max-w-[130px] truncate text-[10px] font-semibold px-1.5 py-px rounded leading-none" :class="projectBadgeClasses(project.projectIdentity)">
               {{ displayProjectName(project) }}
+            </span>
+            <span
+              v-if="displayProjectWslBadge(project)"
+              class="shrink-0 inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-px rounded leading-none truncate max-w-[110px] bg-cyan-50 text-cyan-600 border border-cyan-100 dark:bg-cyan-500/15 dark:text-cyan-300 dark:border-cyan-400/20"
+              :title="displayProjectWslTitle(project)"
+            >
+              <svg class="w-2.5 h-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" /></svg>
+              <span class="truncate">{{ displayProjectWslBadge(project) }}</span>
             </span>
             <button
               v-if="project.projectPath"
