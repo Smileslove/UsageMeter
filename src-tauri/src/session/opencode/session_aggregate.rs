@@ -13,7 +13,8 @@ use std::path::PathBuf;
 
 pub(in crate::session) fn build_session_data_from_messages(
     combined: HashMap<String, OpenCodeMessageSnapshot>,
-    find_opencode_db: fn() -> Option<PathBuf>,
+    session_db_paths: HashMap<String, PathBuf>,
+    session_source_paths: HashMap<String, String>,
     required_session_columns: &[&str],
     required_message_columns: &[&str],
     query_session_rows: fn(&Connection) -> HashMap<String, SessionRow>,
@@ -34,8 +35,17 @@ pub(in crate::session) fn build_session_data_from_messages(
             .push(snapshot);
     }
 
-    let mut session_rows = HashMap::new();
-    let schema_mode = if let Some(db_path) = find_opencode_db() {
+    let mut rows_by_session = HashMap::new();
+    let mut schema_mode_by_session = HashMap::new();
+    let mut db_paths_by_path: HashMap<String, Vec<String>> = HashMap::new();
+    for (session_id, db_path) in &session_db_paths {
+        db_paths_by_path
+            .entry(db_path.to_string_lossy().to_string())
+            .or_default()
+            .push(session_id.clone());
+    }
+    for (db_path_string, session_ids) in db_paths_by_path {
+        let db_path = PathBuf::from(db_path_string);
         if let Ok(conn) = Connection::open_with_flags(
             &db_path,
             OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -47,15 +57,24 @@ pub(in crate::session) fn build_session_data_from_messages(
                 required_message_columns,
             );
             if mode == OpenCodeSchemaMode::Full {
-                session_rows = query_session_rows(&conn);
+                let rows = query_session_rows(&conn);
+                for session_id in &session_ids {
+                    if let Some(row) = rows.get(session_id) {
+                        rows_by_session.insert(session_id.clone(), row.clone());
+                    }
+                    schema_mode_by_session.insert(session_id.clone(), mode);
+                }
+            } else {
+                for session_id in &session_ids {
+                    schema_mode_by_session.insert(session_id.clone(), mode);
+                }
             }
-            mode
         } else {
-            OpenCodeSchemaMode::Incompatible
-        }
-    } else {
-        OpenCodeSchemaMode::MessageOnly
-    };
+            for session_id in &session_ids {
+                schema_mode_by_session.insert(session_id.clone(), OpenCodeSchemaMode::Incompatible);
+            }
+        };
+    }
 
     let mut session_ids: Vec<String> = message_by_session.keys().cloned().collect();
     session_ids.sort();
@@ -68,10 +87,17 @@ pub(in crate::session) fn build_session_data_from_messages(
             Some(build_single_session_data(
                 &canonical_session_id,
                 snapshots,
-                session_rows.get(&canonical_session_id),
+                rows_by_session.get(&canonical_session_id),
                 &raw_message_id_sessions,
                 &source_kinds,
-                schema_mode,
+                schema_mode_by_session
+                    .get(&canonical_session_id)
+                    .copied()
+                    .unwrap_or(OpenCodeSchemaMode::MessageOnly),
+                session_source_paths
+                    .get(&canonical_session_id)
+                    .cloned()
+                    .unwrap_or_else(|| format!("opencode://{}", canonical_session_id)),
             ))
         })
         .collect()
@@ -84,6 +110,7 @@ fn build_single_session_data(
     raw_message_id_sessions: &HashMap<String, HashSet<String>>,
     source_kinds: &HashSet<&'static str>,
     schema_mode: OpenCodeSchemaMode,
+    source_locator: String,
 ) -> OpenCodeSessionData {
     let cwd = session_row
         .map(|row| row.directory.clone())
@@ -236,12 +263,6 @@ fn build_single_session_data(
     };
 
     let fingerprint = compute_session_fingerprint(canonical_session_id, &requests);
-    let source_locator = if source.starts_with("opencode_file") {
-        format!("opencode-file://{}", canonical_session_id)
-    } else {
-        format!("opencode-db://{}", canonical_session_id)
-    };
-
     OpenCodeSessionData {
         meta: SessionMeta {
             session_id: canonical_session_id.to_string(),

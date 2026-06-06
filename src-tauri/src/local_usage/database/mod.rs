@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 static GLOBAL_LOCAL_USAGE_DB: OnceLock<Arc<LocalUsageDatabase>> = OnceLock::new();
 const LOCAL_SYNC_THROTTLE_INTERVAL: Duration = Duration::from_secs(3);
 const OPENCODE_DB_SYNC_STATE_PREFIX: &str = "opencode_db_";
+const OPENCODE_DB_SYNC_STATES_V2_KEY: &str = "opencode_db_scan_states_v2";
 const OPENCODE_MESSAGE_ID_CONFLICT_PREFIX: &str = "opencode_message_id_conflict_";
 
 mod maintenance;

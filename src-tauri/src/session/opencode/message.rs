@@ -2,6 +2,8 @@ use crate::session::opencode_reader::OpenCodeMessageSnapshot;
 use serde_json::Value;
 
 pub(in crate::session) fn parse_message_snapshot(
+    storage_id: &str,
+    source_path: &str,
     raw_session_id: &str,
     raw_message_id: &str,
     data: &Value,
@@ -16,7 +18,8 @@ pub(in crate::session) fn parse_message_snapshot(
         return None;
     }
 
-    let canonical_session_id = canonical_opencode_session_id(raw_session_id);
+    let canonical_session_id =
+        canonical_opencode_session_id_for_storage(storage_id, raw_session_id);
     let message_id = if raw_message_id.is_empty() {
         data.get("id")
             .or_else(|| data.get("messageID"))
@@ -86,6 +89,7 @@ pub(in crate::session) fn parse_message_snapshot(
         .map(str::to_string);
 
     Some(OpenCodeMessageSnapshot {
+        source_path: source_path.to_string(),
         canonical_session_id,
         raw_message_id: message_id,
         timestamp_sec,
@@ -113,11 +117,26 @@ pub(in crate::session) fn normalize_model_string(
     }
 }
 
+#[allow(dead_code)]
 pub(in crate::session) fn canonical_opencode_session_id(raw_session_id: &str) -> String {
-    if raw_session_id.starts_with("opencode::") {
-        raw_session_id.to_string()
+    canonical_opencode_session_id_for_storage("native", raw_session_id)
+}
+
+pub(in crate::session) fn canonical_opencode_session_id_for_storage(
+    storage_id: &str,
+    raw_session_id: &str,
+) -> String {
+    let storage_id = if storage_id.trim().is_empty() {
+        "native"
     } else {
-        format!("opencode::{}", raw_session_id)
+        storage_id.trim()
+    };
+    if raw_session_id.starts_with(&format!("opencode::{storage_id}::")) {
+        raw_session_id.to_string()
+    } else if let Some(legacy) = raw_session_id.strip_prefix("opencode::") {
+        format!("opencode::{}::{}", storage_id, legacy)
+    } else {
+        format!("opencode::{}::{}", storage_id, raw_session_id)
     }
 }
 

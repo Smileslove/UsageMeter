@@ -1,7 +1,7 @@
 use super::ProxyDatabase;
 use crate::models::ModelPricingConfig;
 use chrono::{Local, TimeZone};
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -271,7 +271,107 @@ impl ProxyDatabase {
         if !Self::usage_records_has_storage_dedupe_unique(conn) {
             Self::rebuild_usage_records_table(conn)?;
         }
+        Self::normalize_legacy_opencode_native_session_ids(conn)?;
 
+        Ok(())
+    }
+
+    fn normalize_legacy_opencode_native_session_ids(conn: &Connection) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to start OpenCode session id normalization: {}", e))?;
+
+        let updated_records = tx
+            .execute(
+                r#"
+                UPDATE usage_records
+                SET session_id = 'opencode::native::' || substr(session_id, length('opencode::') + 1),
+                    updated_at = ?1
+                WHERE COALESCE(client_tool, '') = 'opencode'
+                  AND session_id LIKE 'opencode::%'
+                  AND session_id NOT LIKE 'opencode::native::%'
+                  AND session_id NOT LIKE 'opencode::wsl:%::%'
+                "#,
+                params![now],
+            )
+            .map_err(|e| format!("Failed to normalize OpenCode session ids: {}", e))?;
+
+        let updated_keys = tx
+            .execute(
+                r#"
+                UPDATE usage_records
+                SET canonical_request_key = 'opencode:opencode::native::'
+                    || substr(canonical_request_key, length('opencode:opencode::') + 1),
+                    updated_at = ?1
+                WHERE COALESCE(client_tool, '') = 'opencode'
+                  AND canonical_request_key LIKE 'opencode:opencode::%|%'
+                  AND canonical_request_key NOT LIKE 'opencode:opencode::native::%|%'
+                  AND canonical_request_key NOT LIKE 'opencode:opencode::wsl:%::%|%'
+                "#,
+                params![now],
+            )
+            .map_err(|e| format!("Failed to normalize OpenCode canonical request keys: {}", e))?;
+
+        if updated_records > 0 || updated_keys > 0 {
+            Self::rebuild_opencode_session_stats_after_session_id_normalization(&tx, now)?;
+        }
+
+        tx.commit()
+            .map_err(|e| format!("Failed to commit OpenCode session id normalization: {}", e))?;
+        Ok(())
+    }
+
+    fn rebuild_opencode_session_stats_after_session_id_normalization(
+        tx: &rusqlite::Transaction<'_>,
+        now: i64,
+    ) -> Result<(), String> {
+        tx.execute(
+            "DELETE FROM session_stats WHERE session_id LIKE 'opencode::%'",
+            [],
+        )
+        .map_err(|e| format!("Failed to clear OpenCode session stats: {}", e))?;
+
+        tx.execute(
+            r#"
+            INSERT INTO session_stats (
+                session_id, total_duration_ms, avg_output_tokens_per_second, avg_ttft_ms,
+                proxy_request_count, success_requests, error_requests,
+                total_input_tokens, total_output_tokens, total_cache_create_tokens,
+                total_cache_read_tokens, models, first_request_time, last_request_time,
+                estimated_cost, last_updated
+            )
+            SELECT
+                session_id,
+                COALESCE(SUM(duration_ms), 0),
+                CASE
+                    WHEN COALESCE(SUM(duration_ms), 0) > 0
+                    THEN COALESCE(SUM(output_tokens), 0) * 1000.0 / COALESCE(SUM(duration_ms), 0)
+                    ELSE 0
+                END,
+                COALESCE(AVG(ttft_ms), 0),
+                COUNT(*),
+                COALESCE(SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(cache_create_tokens), 0),
+                COALESCE(SUM(cache_read_tokens), 0),
+                GROUP_CONCAT(DISTINCT model),
+                MIN(request_start_time),
+                MAX(request_end_time),
+                COALESCE(SUM(estimated_cost), 0),
+                ?1
+            FROM usage_records
+            WHERE COALESCE(client_tool, '') = 'opencode'
+              AND session_id IS NOT NULL
+              AND session_id != ''
+              AND session_id != ?2
+            GROUP BY session_id
+            "#,
+            params![now, super::LEGACY_UNMATCHED_SESSION_ID],
+        )
+        .map_err(|e| format!("Failed to rebuild OpenCode session stats: {}", e))?;
         Ok(())
     }
 

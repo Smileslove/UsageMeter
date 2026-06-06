@@ -555,4 +555,128 @@ mod tests {
         assert_eq!(stats.tool, "mixed");
         assert!((stats.estimated_cost - 3.0).abs() < f64::EPSILON);
     }
+
+    #[test]
+    fn migration_normalizes_legacy_opencode_native_session_ids() {
+        let (_tmp, db) = temp_db();
+        insert_usage_record(
+            &db,
+            &UsageRecord {
+                timestamp: 1_715_000_000_000,
+                message_id: "msg-conflict".to_string(),
+                canonical_request_key: Some("opencode:opencode::sess-old|msg-conflict".to_string()),
+                model: "gpt-4.1".to_string(),
+                session_id: Some("opencode::sess-old".to_string()),
+                input_tokens: 10,
+                output_tokens: 20,
+                estimated_cost: 0.5,
+                client_tool: "opencode".to_string(),
+                duration_ms: 1000,
+                request_start_time: 1_715_000_000_000,
+                request_end_time: 1_715_000_001_000,
+                ..Default::default()
+            },
+            "known",
+        );
+        insert_usage_record(
+            &db,
+            &UsageRecord {
+                timestamp: 1_715_000_002_000,
+                message_id: "msg-new".to_string(),
+                canonical_request_key: Some(
+                    "opencode:opencode::native::sess-old|msg-new".to_string(),
+                ),
+                model: "gpt-4.1".to_string(),
+                session_id: Some("opencode::native::sess-old".to_string()),
+                input_tokens: 5,
+                output_tokens: 7,
+                estimated_cost: 0.25,
+                client_tool: "opencode".to_string(),
+                duration_ms: 500,
+                request_start_time: 1_715_000_002_000,
+                request_end_time: 1_715_000_002_500,
+                ..Default::default()
+            },
+            "known",
+        );
+
+        {
+            let conn = db.conn.lock().expect("lock conn");
+            conn.execute(
+                "INSERT INTO session_stats (
+                    session_id, total_duration_ms, avg_output_tokens_per_second, avg_ttft_ms,
+                    proxy_request_count, success_requests, error_requests, total_input_tokens,
+                    total_output_tokens, total_cache_create_tokens, total_cache_read_tokens,
+                    models, first_request_time, last_request_time, estimated_cost, last_updated
+                 ) VALUES ('opencode::sess-old', 1000, 20.0, 0, 1, 1, 0, 10, 20, 0, 0, 'gpt-4.1', 1, 2, 0.5, 1)",
+                [],
+            )
+            .expect("insert old session stats");
+            conn.execute(
+                "INSERT INTO session_stats (
+                    session_id, total_duration_ms, avg_output_tokens_per_second, avg_ttft_ms,
+                    proxy_request_count, success_requests, error_requests, total_input_tokens,
+                    total_output_tokens, total_cache_create_tokens, total_cache_read_tokens,
+                    models, first_request_time, last_request_time, estimated_cost, last_updated
+                 ) VALUES ('opencode::native::sess-old', 500, 14.0, 0, 1, 1, 0, 5, 7, 0, 0, 'gpt-4.1', 3, 4, 0.25, 1)",
+                [],
+            )
+            .expect("insert new session stats");
+
+            ProxyDatabase::migrate_schema(&conn).expect("rerun migration");
+        }
+
+        let conn = db.conn.lock().expect("lock conn");
+        let legacy_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM usage_records WHERE session_id = 'opencode::sess-old'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count legacy records");
+        assert_eq!(legacy_count, 0);
+
+        let normalized_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM usage_records WHERE session_id = 'opencode::native::sess-old'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count normalized records");
+        assert_eq!(normalized_count, 2);
+
+        let canonical_key: String = conn
+            .query_row(
+                "SELECT canonical_request_key FROM usage_records WHERE message_id = 'msg-conflict'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read normalized key");
+        assert_eq!(
+            canonical_key,
+            "opencode:opencode::native::sess-old|msg-conflict"
+        );
+
+        let old_stats_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_stats WHERE session_id = 'opencode::sess-old'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count old stats");
+        assert_eq!(old_stats_count, 0);
+
+        let (request_count, input_tokens, output_tokens, estimated_cost): (i64, i64, i64, f64) = conn
+            .query_row(
+                "SELECT proxy_request_count, total_input_tokens, total_output_tokens, estimated_cost
+                 FROM session_stats WHERE session_id = 'opencode::native::sess-old'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("read rebuilt stats");
+        assert_eq!(request_count, 2);
+        assert_eq!(input_tokens, 15);
+        assert_eq!(output_tokens, 27);
+        assert!((estimated_cost - 0.75).abs() < f64::EPSILON);
+    }
 }

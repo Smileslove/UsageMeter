@@ -1,7 +1,8 @@
 use rusqlite::{params, OptionalExtension};
 
 use super::{
-    LocalUsageDatabase, OPENCODE_DB_SYNC_STATE_PREFIX, OPENCODE_MESSAGE_ID_CONFLICT_PREFIX,
+    LocalUsageDatabase, OPENCODE_DB_SYNC_STATES_V2_KEY, OPENCODE_DB_SYNC_STATE_PREFIX,
+    OPENCODE_MESSAGE_ID_CONFLICT_PREFIX,
 };
 
 impl LocalUsageDatabase {
@@ -96,6 +97,32 @@ impl LocalUsageDatabase {
         })
     }
 
+    pub(super) fn load_opencode_db_scan_states(
+        &self,
+    ) -> Result<crate::session::opencode_reader::OpenCodeDbScanStates, String> {
+        if let Some(raw) = self.get_local_sync_state(OPENCODE_DB_SYNC_STATES_V2_KEY)? {
+            if let Ok(states) =
+                serde_json::from_str::<crate::session::opencode_reader::OpenCodeDbScanStates>(&raw)
+            {
+                return Ok(states);
+            }
+        }
+
+        let legacy = self.load_opencode_db_scan_state()?;
+        let mut states = crate::session::opencode_reader::OpenCodeDbScanStates::default();
+        if legacy.storage_signature_hash != 0
+            || legacy.file_size != 0
+            || legacy.schema_fingerprint != 0
+            || legacy.assistant_row_count != 0
+            || legacy.last_time_updated_ms != 0
+            || legacy.last_rowid != 0
+            || legacy.last_full_reconcile_at_ms != 0
+        {
+            states.stores.insert("native".to_string(), legacy);
+        }
+        Ok(states)
+    }
+
     pub(super) fn persist_opencode_db_scan_state_tx(
         tx: &rusqlite::Transaction<'_>,
         state: &crate::session::opencode_reader::OpenCodeDbScanState,
@@ -149,6 +176,20 @@ impl LocalUsageDatabase {
             &state.schema_mode,
             now,
         )?;
+        Ok(())
+    }
+
+    pub(super) fn persist_opencode_db_scan_states_tx(
+        tx: &rusqlite::Transaction<'_>,
+        states: &crate::session::opencode_reader::OpenCodeDbScanStates,
+        now: i64,
+    ) -> Result<(), String> {
+        let raw = serde_json::to_string(states)
+            .map_err(|e| format!("Failed to serialize OpenCode DB scan states: {}", e))?;
+        Self::upsert_sync_state(tx, OPENCODE_DB_SYNC_STATES_V2_KEY, &raw, now)?;
+        if let Some(native) = states.stores.get("native") {
+            Self::persist_opencode_db_scan_state_tx(tx, native, now)?;
+        }
         Ok(())
     }
 

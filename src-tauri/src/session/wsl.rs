@@ -5,8 +5,8 @@
 //! `\\wsl$\<distro>\home\<user>\...` 被 Windows 侧直接读取（格式与原生完全相同）。
 //!
 //! 本模块负责：枚举发行版 → 解析各发行版 `$HOME` → 拼出 UNC 扫描根，供
-//! `claude_reader` / `codex_reader` 的 `scan()` 追加扫描。核心逻辑仅在 Windows 编译；
-//! 纯字符串辅助函数同时在 `test` 下编译以便跨平台单测。
+//! `claude_reader` / `codex_reader` / `opencode_reader` 的 `scan()` 追加扫描。
+//! 核心逻辑仅在 Windows 编译；纯字符串辅助函数同时在 `test` 下编译以便跨平台单测。
 
 // === 纯辅助函数（windows 实现与单测共享，故 cfg(any(windows, test))）===
 
@@ -96,6 +96,11 @@ mod platform {
     /// 所有 WSL 发行版下的 Codex `sessions` 根。
     pub fn codex_session_roots(cfg: &WslScanSettings) -> Vec<PathBuf> {
         roots_for(cfg, &[".codex", "sessions"])
+    }
+
+    /// 所有 WSL 发行版下的 OpenCode 数据根。
+    pub fn opencode_home_roots(cfg: &WslScanSettings) -> Vec<PathBuf> {
+        roots_for(cfg, &[".local", "share", "opencode"])
     }
 
     fn roots_for(cfg: &WslScanSettings, tail: &[&str]) -> Vec<PathBuf> {
@@ -203,7 +208,9 @@ mod platform {
 }
 
 #[cfg(windows)]
-pub use platform::{claude_projects_roots, codex_session_roots, scan_config_if_enabled};
+pub use platform::{
+    claude_projects_roots, codex_session_roots, opencode_home_roots, scan_config_if_enabled,
+};
 
 #[cfg(test)]
 mod tests {
@@ -253,6 +260,17 @@ mod tests {
         assert_eq!(
             append_tail(r"\\wsl$\Ubuntu\home\alice\", &[".claude", "projects"]),
             std::path::PathBuf::from(r"\\wsl$\Ubuntu\home\alice\.claude\projects"),
+        );
+    }
+
+    #[test]
+    fn opencode_home_tail_builds_expected_path() {
+        assert_eq!(
+            append_tail(
+                r"\\wsl$\Ubuntu\home\alice",
+                &[".local", "share", "opencode"]
+            ),
+            std::path::PathBuf::from(r"\\wsl$\Ubuntu\home\alice\.local\share\opencode"),
         );
     }
 }

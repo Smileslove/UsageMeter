@@ -13,7 +13,7 @@
 use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
 use super::source::{ParsedSessionData, SessionSource, SourceSnapshot, SourceUpdateMode};
 use rusqlite::{Connection, OpenFlags};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -95,6 +95,7 @@ pub struct OpenCodeSessionData {
 
 #[derive(Debug, Clone)]
 pub(in crate::session) struct OpenCodeMessageSnapshot {
+    pub source_path: String,
     pub canonical_session_id: String,
     pub raw_message_id: String,
     pub timestamp_sec: i64,
@@ -138,7 +139,8 @@ pub(in crate::session) struct OpenCodeDbCacheState {
     pub messages: HashMap<String, OpenCodeMessageSnapshot>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OpenCodeDbScanState {
     pub storage_signature_hash: u64,
     pub file_size: u64,
@@ -148,6 +150,21 @@ pub struct OpenCodeDbScanState {
     pub last_rowid: i64,
     pub last_full_reconcile_at_ms: i64,
     pub schema_mode: String,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenCodeDbScanStates {
+    #[serde(default)]
+    pub stores: HashMap<String, OpenCodeDbScanState>,
+}
+
+#[derive(Debug, Clone)]
+pub(in crate::session) struct OpenCodeStorageRoot {
+    pub id: String,
+    pub home: PathBuf,
+    pub db_path: PathBuf,
+    pub message_root: PathBuf,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -188,6 +205,11 @@ pub(in crate::session) struct OpenCodeFileCacheState {
 
 #[derive(Debug, Clone, Default)]
 struct OpenCodeScanCache {
+    stores: HashMap<String, OpenCodeStoreCacheState>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OpenCodeStoreCacheState {
     db_state: OpenCodeDbCacheState,
     file_state: OpenCodeFileCacheState,
 }
@@ -248,15 +270,7 @@ fn get_scan_cache() -> &'static Arc<Mutex<OpenCodeScanCache>> {
 }
 
 pub fn find_opencode_db() -> Option<PathBuf> {
-    if let Ok(v) = std::env::var("OPENCODE_DB") {
-        let path = PathBuf::from(v);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    let path = resolve_opencode_home().join("opencode.db");
-    path.exists().then_some(path)
+    native_opencode_storage_root().and_then(|root| root.db_path.exists().then_some(root.db_path))
 }
 
 fn resolve_opencode_home() -> PathBuf {
@@ -279,6 +293,91 @@ fn resolve_opencode_home() -> PathBuf {
 
 pub(in crate::session) fn opencode_message_storage_root() -> PathBuf {
     resolve_opencode_home().join("storage").join("message")
+}
+
+fn native_opencode_storage_root() -> Option<OpenCodeStorageRoot> {
+    if let Ok(v) = std::env::var("OPENCODE_DB") {
+        let db_path = PathBuf::from(v);
+        if db_path.exists() {
+            let home = db_path
+                .parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(resolve_opencode_home);
+            return Some(OpenCodeStorageRoot {
+                id: "native".to_string(),
+                db_path,
+                message_root: home.join("storage").join("message"),
+                home,
+            });
+        }
+    }
+
+    let home = resolve_opencode_home();
+    Some(OpenCodeStorageRoot {
+        id: "native".to_string(),
+        db_path: home.join("opencode.db"),
+        message_root: home.join("storage").join("message"),
+        home,
+    })
+}
+
+fn discover_opencode_storage_roots() -> Vec<OpenCodeStorageRoot> {
+    let mut roots = Vec::new();
+    if let Some(native) = native_opencode_storage_root() {
+        roots.push(native);
+    }
+
+    #[cfg(windows)]
+    if let Some(cfg) = super::wsl::scan_config_if_enabled() {
+        for home in super::wsl::opencode_home_roots(&cfg) {
+            let db_path = home.join("opencode.db");
+            let message_root = home.join("storage").join("message");
+            if !db_path.exists() && !message_root.exists() {
+                continue;
+            }
+            let distro = super::meta::wsl_distro_from_path(&home.to_string_lossy())
+                .unwrap_or_else(|| "unknown".to_string());
+            roots.push(OpenCodeStorageRoot {
+                id: format!("wsl:{}", sanitize_storage_id_segment(&distro)),
+                home,
+                db_path,
+                message_root,
+            });
+        }
+    }
+
+    dedupe_storage_roots(roots)
+}
+
+fn dedupe_storage_roots(roots: Vec<OpenCodeStorageRoot>) -> Vec<OpenCodeStorageRoot> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for root in roots {
+        let key = root.home.to_string_lossy().to_ascii_lowercase();
+        if seen.insert(key) {
+            out.push(root);
+        }
+    }
+    out
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn sanitize_storage_id_segment(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "unknown".to_string()
+    } else {
+        sanitized
+    }
 }
 
 #[allow(dead_code)]
@@ -363,52 +462,115 @@ pub fn check_opencode_schema() -> OpenCodeSchemaStatus {
 
 pub fn scan_opencode_sessions() -> Vec<OpenCodeSessionData> {
     let mut cache = get_scan_cache().lock().unwrap();
-    let db_messages = super::opencode::db_scan::refresh_db_messages(&mut cache.db_state);
-    let file_messages =
-        super::opencode::legacy_scan::refresh_legacy_file_messages(&mut cache.file_state);
+    let roots = discover_opencode_storage_roots();
+    let current_ids: HashSet<String> = roots.iter().map(|root| root.id.clone()).collect();
+    cache.stores.retain(|id, _| current_ids.contains(id));
 
     let mut combined: HashMap<String, OpenCodeMessageSnapshot> = HashMap::new();
-    for (key, snapshot) in file_messages {
-        combined.insert(key, snapshot);
-    }
-    for (key, snapshot) in db_messages {
-        combined.insert(key, snapshot);
+    let mut session_db_paths: HashMap<String, PathBuf> = HashMap::new();
+    let mut session_source_paths: HashMap<String, String> = HashMap::new();
+
+    for root in &roots {
+        let store_cache = cache.stores.entry(root.id.clone()).or_default();
+        let db_messages =
+            super::opencode::db_scan::refresh_db_messages_for_path(&mut store_cache.db_state, root);
+        let file_messages = super::opencode::legacy_scan::refresh_legacy_file_messages_for_root(
+            &mut store_cache.file_state,
+            root,
+        );
+
+        if root.db_path.exists() {
+            for snapshot in db_messages.values() {
+                session_db_paths
+                    .entry(snapshot.canonical_session_id.clone())
+                    .or_insert_with(|| root.db_path.clone());
+            }
+        }
+        for (key, snapshot) in file_messages.into_iter().chain(db_messages.into_iter()) {
+            session_source_paths
+                .entry(snapshot.canonical_session_id.clone())
+                .or_insert_with(|| snapshot.source_path.clone());
+            combined.insert(key, snapshot);
+        }
     }
     drop(cache);
 
     super::opencode::session_aggregate::build_session_data_from_messages(
         combined,
-        find_opencode_db,
+        session_db_paths,
+        session_source_paths,
         REQUIRED_SESSION_COLUMNS,
         REQUIRED_MESSAGE_COLUMNS,
         query_session_rows,
     )
 }
 
+#[allow(dead_code)]
 pub fn get_opencode_db_scan_state() -> OpenCodeDbScanState {
     let cache = get_scan_cache().lock().unwrap();
-    OpenCodeDbScanState {
-        storage_signature_hash: cache.db_state.storage_signature_hash,
-        file_size: cache.db_state.file_size,
-        schema_fingerprint: cache.db_state.schema_fingerprint,
-        assistant_row_count: cache.db_state.assistant_row_count,
-        last_time_updated_ms: cache.db_state.last_time_updated_ms,
-        last_rowid: cache.db_state.last_rowid,
-        last_full_reconcile_at_ms: cache.db_state.last_full_reconcile_at_ms,
-        schema_mode: cache.db_state.schema_mode(),
+    cache
+        .stores
+        .get("native")
+        .map(|store| db_cache_state_to_scan_state(&store.db_state))
+        .unwrap_or_default()
+}
+
+pub fn get_opencode_db_scan_states() -> OpenCodeDbScanStates {
+    let cache = get_scan_cache().lock().unwrap();
+    OpenCodeDbScanStates {
+        stores: cache
+            .stores
+            .iter()
+            .map(|(id, store)| (id.clone(), db_cache_state_to_scan_state(&store.db_state)))
+            .collect(),
     }
 }
 
+#[allow(dead_code)]
 pub fn hydrate_opencode_db_scan_state(state: &OpenCodeDbScanState) {
     let mut cache = get_scan_cache().lock().unwrap();
-    cache.db_state.storage_signature_hash = state.storage_signature_hash;
-    cache.db_state.file_size = state.file_size;
-    cache.db_state.schema_fingerprint = state.schema_fingerprint;
-    cache.db_state.assistant_row_count = state.assistant_row_count;
-    cache.db_state.last_time_updated_ms = state.last_time_updated_ms;
-    cache.db_state.last_rowid = state.last_rowid;
-    cache.db_state.last_full_reconcile_at_ms = state.last_full_reconcile_at_ms;
-    cache.db_state.schema_mode = OpenCodeSchemaMode::from_str(&state.schema_mode);
+    hydrate_db_state(
+        &mut cache
+            .stores
+            .entry("native".to_string())
+            .or_default()
+            .db_state,
+        state,
+    );
+}
+
+pub fn hydrate_opencode_db_scan_states(states: &OpenCodeDbScanStates) {
+    let mut cache = get_scan_cache().lock().unwrap();
+    for (id, state) in &states.stores {
+        hydrate_db_state(
+            &mut cache.stores.entry(id.clone()).or_default().db_state,
+            state,
+        );
+    }
+}
+
+fn hydrate_db_state(state: &mut OpenCodeDbCacheState, scan_state: &OpenCodeDbScanState) {
+    state.storage_signature_hash = scan_state.storage_signature_hash;
+    state.file_size = scan_state.file_size;
+    state.schema_fingerprint = scan_state.schema_fingerprint;
+    state.assistant_row_count = scan_state.assistant_row_count;
+    state.last_time_updated_ms = scan_state.last_time_updated_ms;
+    state.last_rowid = scan_state.last_rowid;
+    state.last_full_reconcile_at_ms = scan_state.last_full_reconcile_at_ms;
+    state.schema_mode = OpenCodeSchemaMode::from_str(&scan_state.schema_mode);
+}
+
+fn db_cache_state_to_scan_state(state: &OpenCodeDbCacheState) -> OpenCodeDbScanState {
+    OpenCodeDbScanState {
+        storage_signature_hash: state.storage_signature_hash,
+        file_size: state.file_size,
+        schema_fingerprint: state.schema_fingerprint,
+        assistant_row_count: state.assistant_row_count,
+        last_time_updated_ms: state.last_time_updated_ms,
+        last_rowid: state.last_rowid,
+        last_full_reconcile_at_ms: state.last_full_reconcile_at_ms,
+        schema_mode: state.schema_mode(),
+    }
 }
 
 impl OpenCodeDbCacheState {
@@ -504,11 +666,15 @@ mod tests {
     fn canonical_opencode_session_id_adds_tool_namespace_once() {
         assert_eq!(
             canonical_opencode_session_id("sess_abc"),
-            "opencode::sess_abc"
+            "opencode::native::sess_abc"
         );
         assert_eq!(
             canonical_opencode_session_id("opencode::sess_abc"),
-            "opencode::sess_abc"
+            "opencode::native::sess_abc"
+        );
+        assert_eq!(
+            canonical_opencode_session_id("opencode::native::sess_abc"),
+            "opencode::native::sess_abc"
         );
     }
 
@@ -564,13 +730,108 @@ mod tests {
             }
         });
 
-        let snapshot =
-            parse_message_snapshot("sess_1", "msg_1", &data, 0, "opencode_db").expect("snapshot");
+        let snapshot = parse_message_snapshot(
+            "native",
+            "/tmp/opencode.db",
+            "sess_1",
+            "msg_1",
+            &data,
+            0,
+            "opencode_db",
+        )
+        .expect("snapshot");
 
         assert_eq!(snapshot.timestamp_sec, 2);
+        assert_eq!(snapshot.canonical_session_id, "opencode::native::sess_1");
         assert_eq!(snapshot.model, "glm-4.7-free");
         assert_eq!(snapshot.cwd.as_deref(), Some("/Users/me/demo"));
         assert_eq!(snapshot.total_tokens, 20);
+    }
+
+    #[test]
+    fn parse_message_snapshot_namespaces_sessions_by_storage_root() {
+        let data = serde_json::json!({
+            "id": "msg_same",
+            "sessionID": "sess_same",
+            "model": "gpt-4o",
+            "role": "assistant",
+            "time": { "completed": 2000 },
+            "tokens": { "input": 1, "output": 1 }
+        });
+
+        let native = parse_message_snapshot(
+            "native",
+            "/tmp/native/opencode.db",
+            "sess_same",
+            "msg_same",
+            &data,
+            0,
+            "opencode_db",
+        )
+        .expect("native snapshot");
+        let wsl = parse_message_snapshot(
+            "wsl:Ubuntu",
+            r"\\wsl$\Ubuntu\home\alice\.local\share\opencode\opencode.db",
+            "sess_same",
+            "msg_same",
+            &data,
+            0,
+            "opencode_db",
+        )
+        .expect("wsl snapshot");
+
+        assert_eq!(native.canonical_session_id, "opencode::native::sess_same");
+        assert_eq!(wsl.canonical_session_id, "opencode::wsl:Ubuntu::sess_same");
+        assert_ne!(native.message_identity_key(), wsl.message_identity_key());
+        assert!(wsl.source_path.starts_with(r"\\wsl$\Ubuntu\"));
+    }
+
+    #[test]
+    fn scan_fingerprint_and_meta_preserve_wsl_source_path() {
+        let data = serde_json::json!({
+            "id": "msg_wsl",
+            "sessionID": "sess_wsl",
+            "model": "gpt-4o",
+            "path": { "cwd": "/home/alice/project" },
+            "role": "assistant",
+            "time": { "completed": 2000 },
+            "tokens": { "input": 1, "output": 1 }
+        });
+        let source_path = r"\\wsl$\Ubuntu\home\alice\.local\share\opencode\opencode.db";
+        let snapshot = parse_message_snapshot(
+            "wsl:Ubuntu",
+            source_path,
+            "sess_wsl",
+            "msg_wsl",
+            &data,
+            0,
+            "opencode_db",
+        )
+        .expect("snapshot");
+        let mut combined = HashMap::new();
+        combined.insert(snapshot.message_identity_key(), snapshot);
+        let mut session_source_paths = HashMap::new();
+        session_source_paths.insert(
+            "opencode::wsl:Ubuntu::sess_wsl".to_string(),
+            source_path.to_string(),
+        );
+
+        let sessions =
+            crate::session::opencode::session_aggregate::build_session_data_from_messages(
+                combined,
+                HashMap::new(),
+                session_source_paths,
+                REQUIRED_SESSION_COLUMNS,
+                REQUIRED_MESSAGE_COLUMNS,
+                |_| HashMap::new(),
+            );
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].meta.file_path, source_path);
+        assert_eq!(
+            crate::session::meta::wsl_distro_from_path(&sessions[0].meta.file_path),
+            Some("Ubuntu".to_string())
+        );
     }
 
     #[test]
@@ -622,7 +883,7 @@ mod tests {
         let first = scan_opencode_sessions();
         let first_session = first
             .iter()
-            .find(|session| session.meta.session_id == "opencode::sess_test")
+            .find(|session| session.meta.session_id == "opencode::native::sess_test")
             .expect("find target session");
         assert_eq!(first_session.requests.len(), 1);
 
@@ -630,7 +891,7 @@ mod tests {
         let corrupted = scan_opencode_sessions();
         let corrupted_session = corrupted
             .iter()
-            .find(|session| session.meta.session_id == "opencode::sess_test")
+            .find(|session| session.meta.session_id == "opencode::native::sess_test")
             .expect("preserve target session during corruption");
         assert_eq!(corrupted_session.requests[0].input_tokens, 4);
         assert_eq!(corrupted_session.requests[0].output_tokens, 1);
@@ -652,7 +913,7 @@ mod tests {
         let recovered = scan_opencode_sessions();
         let recovered_session = recovered
             .iter()
-            .find(|session| session.meta.session_id == "opencode::sess_test")
+            .find(|session| session.meta.session_id == "opencode::native::sess_test")
             .expect("find recovered target session");
         assert_eq!(recovered_session.requests[0].input_tokens, 8);
         assert_eq!(recovered_session.requests[0].output_tokens, 3);

@@ -1,22 +1,42 @@
 use crate::session::opencode_reader::{
     opencode_message_storage_root, OpenCodeFileCacheState, OpenCodeFileEntryState,
-    OpenCodeMessageSnapshot,
+    OpenCodeMessageSnapshot, OpenCodeStorageRoot,
 };
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+#[allow(dead_code)]
 pub(in crate::session) fn refresh_legacy_file_messages(
     state: &mut OpenCodeFileCacheState,
 ) -> std::collections::HashMap<String, OpenCodeMessageSnapshot> {
     let root = opencode_message_storage_root();
+    let home = root
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let storage_root = OpenCodeStorageRoot {
+        id: "native".to_string(),
+        db_path: home.join("opencode.db"),
+        message_root: root,
+        home,
+    };
+    refresh_legacy_file_messages_for_root(state, &storage_root)
+}
+
+pub(in crate::session) fn refresh_legacy_file_messages_for_root(
+    state: &mut OpenCodeFileCacheState,
+    storage_root: &OpenCodeStorageRoot,
+) -> std::collections::HashMap<String, OpenCodeMessageSnapshot> {
+    let root = &storage_root.message_root;
     if !root.exists() {
         state.files.clear();
         state.messages.clear();
         return state.messages.clone();
     }
 
-    let files = collect_legacy_message_files(&root);
+    let files = collect_legacy_message_files(root);
     let current_paths: HashSet<String> = files
         .iter()
         .map(|path| path.to_string_lossy().to_string())
@@ -100,6 +120,8 @@ pub(in crate::session) fn refresh_legacy_file_messages(
             .unwrap_or_default();
 
         let snapshot = super::message::parse_message_snapshot(
+            &storage_root.id,
+            &path_string,
             raw_session_id,
             raw_message_id,
             &json,

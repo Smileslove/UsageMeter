@@ -455,7 +455,6 @@ impl OpenCodeConfigManager {
         Self::build_effective_config_from_layers(&[OpenCodeLoadedLayer {
             kind,
             path: Some(self.config_path.clone()),
-            safe_for_takeover: true,
             json,
         }])
     }

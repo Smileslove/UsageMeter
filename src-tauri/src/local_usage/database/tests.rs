@@ -150,6 +150,10 @@ fn opencode_db_checkpoint_persists_across_reopen() {
 
     let first_state = db.load_opencode_db_scan_state().expect("load scan state");
     assert!(first_state.last_rowid > 0);
+    let first_states = db
+        .load_opencode_db_scan_states()
+        .expect("load v2 scan states");
+    assert!(first_states.stores.contains_key("native"));
 
     let conn = Connection::open(&db_path).expect("reopen opencode db");
     conn.execute(
@@ -186,6 +190,9 @@ fn opencode_db_checkpoint_persists_across_reopen() {
         .get_request_records_in_range(0, i64::MAX, &ToolFilter::Tool("opencode".to_string()))
         .expect("load opencode facts");
     assert_eq!(records.len(), 2);
+    assert!(records
+        .iter()
+        .all(|record| record.session_id == "opencode::native::sess_1"));
 
     match old_xdg_data_home {
         Some(value) => std::env::set_var("XDG_DATA_HOME", value),

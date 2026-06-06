@@ -1,6 +1,6 @@
 use crate::session::opencode_reader::{
-    find_opencode_db, OpenCodeDbCacheState, OpenCodeDbCheckpoint, OpenCodeMessageSnapshot,
-    OpenCodePathSignature, OpenCodeSchemaMode, OpenCodeStorageSignature,
+    OpenCodeDbCacheState, OpenCodeDbCheckpoint, OpenCodeMessageSnapshot, OpenCodePathSignature,
+    OpenCodeSchemaMode, OpenCodeStorageRoot, OpenCodeStorageSignature,
     OPENCODE_DB_FULL_RECONCILE_INTERVAL_SECS, REQUIRED_MESSAGE_COLUMNS, REQUIRED_SESSION_COLUMNS,
 };
 use rusqlite::{params, Connection, OpenFlags};
@@ -18,28 +18,42 @@ struct DbMessageRow {
     data: Value,
 }
 
+#[allow(dead_code)]
 pub(in crate::session) fn refresh_db_messages(
     state: &mut OpenCodeDbCacheState,
 ) -> HashMap<String, OpenCodeMessageSnapshot> {
-    let Some(db_path) = find_opencode_db() else {
-        state.messages.clear();
-        state.storage_signature_hash = 0;
-        state.file_size = 0;
-        state.schema_fingerprint = 0;
-        state.assistant_row_count = 0;
-        state.last_time_updated_ms = 0;
-        state.last_rowid = 0;
-        state.last_full_reconcile_at_ms = 0;
-        state.schema_mode = OpenCodeSchemaMode::Incompatible;
+    let Some(db_path) = crate::session::opencode_reader::find_opencode_db() else {
+        clear_missing_db_state(state);
         return state.messages.clone();
     };
+    let home = db_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| Path::new(".").to_path_buf());
+    let root = OpenCodeStorageRoot {
+        id: "native".to_string(),
+        message_root: home.join("storage").join("message"),
+        home,
+        db_path,
+    };
+    refresh_db_messages_for_path(state, &root)
+}
 
-    let storage_signature = compute_opencode_db_storage_signature(&db_path);
+pub(in crate::session) fn refresh_db_messages_for_path(
+    state: &mut OpenCodeDbCacheState,
+    root: &OpenCodeStorageRoot,
+) -> HashMap<String, OpenCodeMessageSnapshot> {
+    if !root.db_path.exists() {
+        clear_missing_db_state(state);
+        return state.messages.clone();
+    }
+
+    let storage_signature = compute_opencode_db_storage_signature(&root.db_path);
     let storage_signature_hash = storage_signature.hash();
     let storage_signature_changed = storage_signature_hash != state.storage_signature_hash;
 
     let file_size = storage_signature.db.size;
-    let conn = match open_opencode_db_read_only(&db_path) {
+    let conn = match open_opencode_db_read_only(&root.db_path) {
         Ok(c) => c,
         Err(_) => return state.messages.clone(),
     };
@@ -119,6 +133,8 @@ pub(in crate::session) fn refresh_db_messages(
         max_time_updated_ms = max_time_updated_ms.max(row.time_updated_ms);
         max_rowid = max_rowid.max(row.rowid);
         if let Some(snapshot) = super::message::parse_message_snapshot(
+            &root.id,
+            &root.db_path.to_string_lossy(),
             &row.session_id,
             &row.id,
             &row.data,
@@ -143,6 +159,18 @@ pub(in crate::session) fn refresh_db_messages(
     }
 
     state.messages.clone()
+}
+
+fn clear_missing_db_state(state: &mut OpenCodeDbCacheState) {
+    state.messages.clear();
+    state.storage_signature_hash = 0;
+    state.file_size = 0;
+    state.schema_fingerprint = 0;
+    state.assistant_row_count = 0;
+    state.last_time_updated_ms = 0;
+    state.last_rowid = 0;
+    state.last_full_reconcile_at_ms = 0;
+    state.schema_mode = OpenCodeSchemaMode::Incompatible;
 }
 
 fn query_db_message_rows(

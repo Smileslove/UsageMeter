@@ -574,7 +574,7 @@ pub struct AppSettings {
 /// WSL 被动扫描设置（仅在 Windows 上生效）。
 ///
 /// 开启后，UsageMeter 会经 UNC 路径 `\\wsl$\<distro>\home\<user>\...` 额外扫描
-/// WSL 发行版内的 Claude Code / Codex transcript，纳入统计。默认关闭，避免无 WSL
+/// WSL 发行版内的 Claude Code / Codex transcript 以及 OpenCode 本地数据，纳入统计。默认关闭，避免无 WSL
 /// 用户每次刷新都唤醒发行版。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

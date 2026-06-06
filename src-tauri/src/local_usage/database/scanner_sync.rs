@@ -58,8 +58,10 @@ impl LocalUsageDatabase {
     }
 
     pub fn sync_from_scanner(&self) -> Result<(), String> {
-        let persisted_opencode_state = self.load_opencode_db_scan_state()?;
-        crate::session::opencode_reader::hydrate_opencode_db_scan_state(&persisted_opencode_state);
+        let persisted_opencode_states = self.load_opencode_db_scan_states()?;
+        crate::session::opencode_reader::hydrate_opencode_db_scan_states(
+            &persisted_opencode_states,
+        );
 
         let scanned = scan_file_backed_session_files();
         let mut reasonix_local_sessions: Vec<crate::session::SessionMeta> = Vec::new();
@@ -133,14 +135,14 @@ impl LocalUsageDatabase {
             let _ = proxy_db.reconcile_opencode_records(&opencode_local_records);
         }
 
-        let opencode_state = crate::session::opencode_reader::get_opencode_db_scan_state();
+        let opencode_states = crate::session::opencode_reader::get_opencode_db_scan_states();
         let opencode_schema_status = crate::session::opencode_reader::check_opencode_schema();
         let now = chrono::Utc::now().timestamp();
         let conn = self.conn.lock().unwrap();
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| format!("Failed to start OpenCode DB sync state transaction: {}", e))?;
-        Self::persist_opencode_db_scan_state_tx(&tx, &opencode_state, now)?;
+        Self::persist_opencode_db_scan_states_tx(&tx, &opencode_states, now)?;
         Self::persist_opencode_message_id_conflict_tx(
             &tx,
             &opencode_schema_status.message_id_conflict,
