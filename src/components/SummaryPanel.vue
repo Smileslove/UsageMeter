@@ -6,6 +6,7 @@ import { MessageSquare, Sigma, CircleDollarSign, Database } from 'lucide-vue-nex
 import { formatRequestCount, formatTokenValue, formatCost } from '../utils/format'
 import { WINDOW_ORDER, type WindowName } from '../types'
 import SubscriptionQuotaCard from './SubscriptionQuotaCard.vue'
+import GeminiSubscriptionQuotaCard from './GeminiSubscriptionQuotaCard.vue'
 
 const store = useMonitorStore()
 
@@ -352,6 +353,9 @@ function detailPairSizeClass(first: string, second: string): string {
 
     <!-- 订阅配额卡片（仅在 ChatGPT OAuth 模式下显示） -->
     <SubscriptionQuotaCard v-if="store.hasChatGptOAuth" />
+
+    <!-- Gemini 额度卡片（仅在检测到 Gemini CLI OAuth 凭据时显示） -->
+    <GeminiSubscriptionQuotaCard v-if="store.hasGeminiOAuth" />
   </div>
 </template>
 

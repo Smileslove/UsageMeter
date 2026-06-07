@@ -320,6 +320,18 @@ pub fn default_client_tool_profiles() -> Vec<ClientToolProfile> {
             last_seen_ms: now,
             icon: Some("reasonix".to_string()),
         },
+        ClientToolProfile {
+            id: "gemini".to_string(),
+            tool: "gemini".to_string(),
+            display_name: Some("Gemini CLI".to_string()),
+            path_prefix: "gemini".to_string(),
+            target_base_url: None,
+            enabled: false,
+            auto_detected: false,
+            first_seen_ms: now,
+            last_seen_ms: now,
+            icon: Some("geminicli".to_string()),
+        },
     ]
 }
 

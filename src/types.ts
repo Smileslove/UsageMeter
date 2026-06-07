@@ -619,6 +619,10 @@ export interface SubscriptionQuota {
   updatedAt: number
   fromCache: boolean
   error?: string
+  /** Plan / tier label (Gemini), e.g. "Free" / "Pro" */
+  planLabel?: string
+  /** Account label such as email or project id (Gemini) */
+  accountLabel?: string
 }
 
 /// Credential status for subscription queries

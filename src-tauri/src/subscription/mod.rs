@@ -2,10 +2,12 @@
 //!
 //! Provides subscription quota queries for official providers (GPT, Claude, etc.)
 
+mod gemini;
 mod gpt;
 mod token_cache;
 mod types;
 
+pub use gemini::GeminiSubscriptionProvider;
 pub use gpt::*;
 pub use token_cache::TokenCache;
 
@@ -23,6 +25,8 @@ pub struct SubscriptionState {
     token_cache: Arc<TokenCache>,
     /// GPT provider instance (singleton)
     gpt_provider: Arc<RwLock<Option<GptSubscriptionProvider>>>,
+    /// Gemini provider instance (singleton, keeps in-memory token cache)
+    gemini_provider: Arc<RwLock<Option<GeminiSubscriptionProvider>>>,
 }
 
 /// Cached subscription data with timestamp
@@ -47,6 +51,15 @@ impl SubscriptionState {
             *provider = Some(GptSubscriptionProvider::with_token_cache(
                 self.token_cache.clone(),
             ));
+        }
+        provider.clone().unwrap()
+    }
+
+    /// Get or create the Gemini provider instance (preserves token cache)
+    pub async fn get_gemini_provider(&self) -> GeminiSubscriptionProvider {
+        let mut provider = self.gemini_provider.write().await;
+        if provider.is_none() {
+            *provider = Some(GeminiSubscriptionProvider::new());
         }
         provider.clone().unwrap()
     }

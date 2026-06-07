@@ -62,6 +62,16 @@ pub async fn has_chatgpt_oauth() -> bool {
     .unwrap_or(false)
 }
 
+/// Check if Gemini CLI OAuth credentials are present
+#[tauri::command]
+pub async fn has_gemini_oauth() -> bool {
+    tokio::task::spawn_blocking(|| {
+        crate::subscription::GeminiSubscriptionProvider::new().has_gemini_oauth()
+    })
+    .await
+    .unwrap_or(false)
+}
+
 /// Clear subscription cache
 #[tauri::command]
 pub async fn clear_subscription_cache(
@@ -84,6 +94,10 @@ async fn fetch_provider_quota(
         "gpt" => {
             let gpt_provider = state.get_gpt_provider().await;
             gpt_provider.fetch_quota().await
+        }
+        "gemini" => {
+            let gemini_provider = state.get_gemini_provider().await;
+            gemini_provider.fetch_quota().await
         }
         _ => SubscriptionQueryResult::error(
             provider,

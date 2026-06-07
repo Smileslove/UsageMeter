@@ -256,6 +256,8 @@ impl GptSubscriptionProvider {
             updated_at: chrono::Utc::now().timestamp_millis(),
             from_cache: false,
             error: None,
+            plan_label: None,
+            account_label: None,
         })
     }
 

@@ -1,3 +1,4 @@
+use super::gemini_forwarder::GeminiForwarder;
 use super::openai_forwarder::OpenAiForwarder;
 use super::source_detector::{
     detect_source_info, normalize_base_url, register_source_to_settings, SourceRegistrationResult,
@@ -69,7 +70,7 @@ pub(crate) fn settings_file_mtime() -> Option<SystemTime> {
 }
 
 pub(crate) fn detect_client_route(path: &str, settings: &AppSettings) -> ClientRoute {
-    for tool in ["claude-code", "codex", "opencode", "reasonix"] {
+    for tool in ["claude-code", "codex", "opencode", "reasonix", "gemini"] {
         if let Some(normalized_path) = strip_known_usagemeter_tool_prefix(path, tool) {
             let (normalized_path, provider_id, source_id, detection_method) = if tool == "opencode"
             {
@@ -405,6 +406,22 @@ pub(crate) async fn get_openai_forwarder(
             StatusCode::INTERNAL_SERVER_ERROR,
             "proxy_error",
             "OpenAI forwarder not initialized",
+        ))
+    })
+}
+
+pub(crate) async fn get_gemini_forwarder(
+    state: &Arc<ProxyState>,
+) -> Result<Arc<GeminiForwarder>, ProxyErrorResponse> {
+    let gemini_forwarder = {
+        let guard = state.gemini_forwarder.read().await;
+        guard.clone()
+    };
+    gemini_forwarder.ok_or_else(|| {
+        Box::new(json_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "proxy_error",
+            "Gemini forwarder not initialized",
         ))
     })
 }

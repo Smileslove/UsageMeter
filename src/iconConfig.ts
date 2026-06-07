@@ -205,6 +205,7 @@ export const TOOL_LOBE_ICONS: Record<string, string> = {
   cursor: 'cursor',
   opencode: 'opencode',
   reasonix: 'reasonix',
+  gemini: 'geminicli',
 }
 
 const TOOL_ICON_ALIASES: Record<string, string> = {
