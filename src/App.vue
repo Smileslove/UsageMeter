@@ -14,7 +14,7 @@ import SourceSelector from './components/SourceSelector.vue'
 import ToolSelector from './components/ToolSelector.vue'
 import ThemeSelector from './components/ThemeSelector.vue'
 import { applyResolvedTheme } from './theme'
-import { RefreshCw, ArrowLeftRight } from 'lucide-vue-next'
+import { RefreshCw, ArrowLeftRight, Share2 } from 'lucide-vue-next'
 import { t } from './i18n'
 
 const store = useMonitorStore()
@@ -68,6 +68,10 @@ function dismissConfigNotification() {
 
 function dismissTakeoverConflictNotification() {
   takeoverConflictNotification.value = null
+}
+
+async function openSharePanel() {
+  await invoke('open_share_window')
 }
 
 async function resolveTakeoverConflict(action: 'force_reclaim' | 'pause' | 'disable_takeover') {
@@ -183,6 +187,9 @@ onUnmounted(() => {
         <div class="flex items-center gap-1 shrink-0 drag-region-none" style="-webkit-app-region: no-drag; app-region: no-drag">
           <SourceSelector />
           <ToolSelector />
+          <button @click="openSharePanel()" class="theme-icon-button p-1.5 rounded-full transition-all select-none" :title="t(store.settings.locale, 'statistics.share')">
+            <Share2 class="w-3.5 h-3.5" />
+          </button>
           <button @click="store.refreshUsageAndSessionViews()" class="theme-icon-button p-1.5 rounded-full transition-all select-none" :title="t(store.settings.locale, 'common.refresh')">
             <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': store.loading }" />
           </button>

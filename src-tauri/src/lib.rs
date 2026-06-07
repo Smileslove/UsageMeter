@@ -98,11 +98,15 @@ pub fn run() {
         .manage(subscription::SubscriptionState::new())
         .on_window_event(|window, event| match event {
             WindowEvent::Focused(false) => {
-                let _ = window.hide();
+                if window.label() == "main" {
+                    let _ = window.hide();
+                }
             }
             WindowEvent::CloseRequested { api, .. } => {
-                api.prevent_close();
-                let _ = window.hide();
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
             _ => {}
         })
@@ -456,6 +460,8 @@ pub fn run() {
             commands::check_for_update,
             commands::download_and_install_update,
             commands::skip_update_version,
+            // 窗口命令
+            commands::open_share_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

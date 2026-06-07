@@ -222,6 +222,7 @@ onMounted(() => {
   // 延迟设置初始化标志，确保初始加载完成后才响应用户操作
   initialized.value = true
 })
+
 </script>
 
 <template>

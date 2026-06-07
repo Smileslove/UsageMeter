@@ -11,6 +11,7 @@ mod subscription;
 mod sync;
 mod updater;
 mod usage;
+mod window;
 
 pub use autostart::*;
 pub use currency::*;
@@ -23,3 +24,4 @@ pub use subscription::*;
 pub use sync::*;
 pub use updater::*;
 pub use usage::*;
+pub use window::*;
