@@ -230,6 +230,7 @@ impl GptSubscriptionProvider {
                         .map(|dt| dt.to_rfc3339())
                         .unwrap_or_default()
                 }),
+                ..Default::default()
             });
         }
 
@@ -243,12 +244,14 @@ impl GptSubscriptionProvider {
                         .map(|dt| dt.to_rfc3339())
                         .unwrap_or_default()
                 }),
+                ..Default::default()
             });
         }
 
         Ok(SubscriptionQuota {
             provider: PROVIDER_ID.to_string(),
             tool: "codex_oauth".to_string(),
+            source_tool: None,
             credential_status: "valid".to_string(),
             credential_message: None,
             success: true,

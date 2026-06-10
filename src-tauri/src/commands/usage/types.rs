@@ -1,3 +1,4 @@
+use super::survival::LimitSurvivalSnapshot;
 use crate::models::{StatusCodeCount, UsageSnapshot, WindowRateSummary};
 use crate::proxy::ProxyServer;
 use crate::unified_usage::MergedRequestFact;
@@ -213,6 +214,7 @@ pub struct UsageRefreshBundle {
     pub snapshot: UsageSnapshot,
     pub rate_summary: WindowRateSummary,
     pub overview_breakdown: OverviewBreakdown,
+    pub limit_survival: LimitSurvivalSnapshot,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]

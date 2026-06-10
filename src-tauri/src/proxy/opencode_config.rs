@@ -433,9 +433,29 @@ impl OpenCodeConfigManager {
         Ok(OpenCodeRouteState { providers })
     }
 
+    /// 从合并后的有效配置读取 provider 级 `options.apiKey`。
+    pub fn read_provider_api_key(&self, provider_id: &str) -> Result<Option<String>, String> {
+        let config = self.read_effective_merged_json()?;
+        Ok(config
+            .pointer(&format!("/provider/{provider_id}/options/apiKey"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string))
+    }
+
     fn read_effective_config(&self) -> Result<OpenCodeEffectiveConfig, String> {
         let layers = load_opencode_config_layers()?;
         Self::build_effective_config_from_layers(&layers)
+    }
+
+    fn read_effective_merged_json(&self) -> Result<serde_json::Value, String> {
+        let layers = load_opencode_config_layers()?;
+        let mut merged = serde_json::json!({});
+        for layer in layers {
+            merge_json_values(&mut merged, layer.json);
+        }
+        Ok(merged)
     }
 
     #[cfg(test)]
@@ -1554,6 +1574,70 @@ mod tests {
             .collect();
 
         assert_eq!(provider_ids, vec!["anthropic"]);
+    }
+
+    #[test]
+    fn read_provider_api_key_reads_from_effective_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("opencode");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("opencode.json"),
+            r#"{
+              "provider": {
+                "deepseek": {
+                  "options": {
+                    "apiKey": "sk-config-123",
+                    "baseURL": "https://api.deepseek.com/v1"
+                  }
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        with_clean_opencode_env(dir.path(), || {
+            let manager = OpenCodeConfigManager::new();
+            assert_eq!(
+                manager
+                    .read_provider_api_key("deepseek")
+                    .unwrap()
+                    .as_deref(),
+                Some("sk-config-123")
+            );
+        });
+    }
+
+    #[test]
+    fn read_provider_api_key_rejects_blank_or_missing_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("opencode");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("opencode.json"),
+            r#"{
+              "provider": {
+                "blank": {
+                  "options": {
+                    "apiKey": "   ",
+                    "baseURL": "https://api.blank.example/v1"
+                  }
+                },
+                "missing_options": {}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        with_clean_opencode_env(dir.path(), || {
+            let manager = OpenCodeConfigManager::new();
+            assert_eq!(manager.read_provider_api_key("blank").unwrap(), None);
+            assert_eq!(
+                manager.read_provider_api_key("missing_options").unwrap(),
+                None
+            );
+            assert_eq!(manager.read_provider_api_key("missing").unwrap(), None);
+        });
     }
 
     #[test]

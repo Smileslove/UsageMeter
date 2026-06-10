@@ -299,6 +299,7 @@ mod tests {
             color: "#112233".to_string(),
             icon: Some("bot".to_string()),
             auto_detected: false,
+            quota_query: None,
             first_seen_ms: 1,
             last_seen_ms: 1,
         }];

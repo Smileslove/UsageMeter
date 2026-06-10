@@ -2,8 +2,8 @@
 import { ref, computed } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
-import type { ApiSource } from '../types'
-import { Pencil, Trash2, Merge, Key, Clock, ExternalLink, AlertTriangle, Check, X, ChevronLeft } from 'lucide-vue-next'
+import type { ApiSource, SourceQuotaQueryConfig } from '../types'
+import { Pencil, Trash2, Merge, Key, Clock, ExternalLink, AlertTriangle, Check, X, ChevronLeft, Wallet, LoaderCircle } from 'lucide-vue-next'
 import LobeIcon from './LobeIcon.vue'
 import { SOURCE_ICON_CATEGORIES } from '../iconConfig'
 
@@ -36,6 +36,9 @@ const mergeTargetId = ref<string | null>(null)
 const showDeleteDialog = ref(false)
 const deleteSourceId = ref<string | null>(null)
 const deleteWithRecords = ref(false)
+const quotaEditorSourceId = ref<string | null>(null)
+const quotaSavingSourceId = ref<string | null>(null)
+const quotaDrafts = ref<Record<string, SourceQuotaQueryConfig>>({})
 
 const sources = computed(() => store.settings.sourceAware.sources)
 const hasNewSources = computed(() => sources.value.some(s => s.autoDetected && !s.displayName))
@@ -177,6 +180,82 @@ const prefixTitle = (prefix: string) => {
   return t(store.settings.locale, 'sources.keyPrefixTruncated', { prefix })
 }
 
+const defaultQuotaDraft = (): SourceQuotaQueryConfig => ({
+  enabled: false,
+  queryType: 'generic_balance',
+  accessToken: '',
+  userId: '',
+})
+
+const ensureQuotaDraft = (source: ApiSource) => {
+  if (!quotaDrafts.value[source.id]) {
+    const existing = source.quotaQuery
+    quotaDrafts.value[source.id] = existing
+      ? {
+          enabled: existing.enabled,
+          queryType: existing.queryType,
+          accessToken: existing.queryType === 'generic_balance'
+            ? (source.apiKeyNotes?.__quota_api_key || '')
+            : (existing.accessToken || ''),
+          userId: existing.userId || '',
+        }
+      : defaultQuotaDraft()
+  }
+  return quotaDrafts.value[source.id]
+}
+
+const toggleQuotaEditor = (source: ApiSource) => {
+  if (quotaEditorSourceId.value === source.id) {
+    quotaEditorSourceId.value = null
+    return
+  }
+  ensureQuotaDraft(source)
+  quotaEditorSourceId.value = source.id
+}
+
+const saveQuotaQuery = async (source: ApiSource) => {
+  const draft = ensureQuotaDraft(source)
+  quotaSavingSourceId.value = source.id
+  try {
+    const trimmedAccessToken = draft.accessToken?.trim() || ''
+    const trimmedUserId = draft.userId?.trim() || ''
+    if (!source.apiKeyNotes) source.apiKeyNotes = {}
+    if (draft.queryType === 'generic_balance') {
+      if (trimmedAccessToken) {
+        source.apiKeyNotes.__quota_api_key = trimmedAccessToken
+      } else {
+        delete source.apiKeyNotes.__quota_api_key
+      }
+    }
+    const quotaQuery = draft.enabled
+      ? {
+          enabled: true,
+          queryType: draft.queryType,
+          accessToken: draft.queryType === 'new_api' ? trimmedAccessToken : undefined,
+          userId: draft.queryType === 'new_api' ? trimmedUserId : undefined,
+        }
+      : null
+    await store.updateSourceQuotaQuery(source.id, quotaQuery)
+    quotaEditorSourceId.value = null
+  } finally {
+    quotaSavingSourceId.value = null
+  }
+}
+
+const clearQuotaQuery = async (source: ApiSource) => {
+  quotaSavingSourceId.value = source.id
+  try {
+    quotaDrafts.value[source.id] = defaultQuotaDraft()
+    if (source.apiKeyNotes) {
+      delete source.apiKeyNotes.__quota_api_key
+    }
+    await store.updateSourceQuotaQuery(source.id, null)
+    quotaEditorSourceId.value = null
+  } finally {
+    quotaSavingSourceId.value = null
+  }
+}
+
 const deletingSource = computed(() => {
   if (!deleteSourceId.value) return null
   return sources.value.find(s => s.id === deleteSourceId.value)
@@ -300,6 +379,13 @@ defineProps<{
             >
               <Trash2 class="w-3.5 h-3.5" />
             </button>
+            <button
+              :title="t(store.settings.locale, 'sources.quotaQueryTitle')"
+              @click="toggleQuotaEditor(source)"
+              class="shrink-0 p-0.5 text-[var(--theme-text-tertiary)] transition-colors hover:text-[var(--theme-text-primary)]"
+            >
+              <Wallet class="w-3.5 h-3.5" />
+            </button>
           </template>
         </div>
 
@@ -328,6 +414,94 @@ defineProps<{
             @blur="saveKeyNote(source, prefix)"
             @keyup.enter="saveKeyNote(source, prefix)"
           />
+        </div>
+
+        <div v-if="source.quotaQuery?.enabled" class="mt-1 flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+          <Wallet class="w-3.5 h-3.5 shrink-0" />
+          <span>{{ t(store.settings.locale, 'sources.quotaQueryEnabledBadge') }}</span>
+        </div>
+
+        <div
+          v-if="quotaEditorSourceId === source.id"
+          class="theme-surface-muted mt-1.5 rounded-lg border p-2 space-y-2"
+        >
+          <div class="flex items-center justify-between gap-2">
+            <div>
+              <p class="text-xs font-semibold text-[var(--theme-text-primary)]">
+                {{ t(store.settings.locale, 'sources.quotaQueryTitle') }}
+              </p>
+              <p class="mt-0.5 text-[11px] text-[var(--theme-text-tertiary)]">
+                {{ t(store.settings.locale, 'sources.quotaQueryDesc') }}
+              </p>
+            </div>
+            <label class="flex items-center gap-1.5 text-[11px] text-[var(--theme-text-secondary)]">
+              <input
+                v-model="ensureQuotaDraft(source).enabled"
+                type="checkbox"
+                class="w-3.5 h-3.5 rounded border-gray-300"
+              />
+              <span>{{ t(store.settings.locale, 'common.enabled') }}</span>
+            </label>
+          </div>
+
+          <div class="space-y-1.5">
+            <div>
+              <label class="mb-1 block text-[11px] font-medium text-[var(--theme-text-secondary)]">
+                {{ t(store.settings.locale, 'sources.quotaQueryMode') }}
+              </label>
+              <select
+                v-model="ensureQuotaDraft(source).queryType"
+                class="theme-input w-full rounded px-2 py-1 text-xs"
+              >
+                <option value="generic_balance">{{ t(store.settings.locale, 'sources.quotaQueryModeGeneric') }}</option>
+                <option value="new_api">{{ t(store.settings.locale, 'sources.quotaQueryModeNewApi') }}</option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-1 block text-[11px] font-medium text-[var(--theme-text-secondary)]">
+                {{ ensureQuotaDraft(source).queryType === 'new_api'
+                  ? t(store.settings.locale, 'sources.quotaAccessToken')
+                  : t(store.settings.locale, 'sources.quotaApiKey') }}
+              </label>
+              <input
+                v-model="ensureQuotaDraft(source).accessToken"
+                type="password"
+                class="theme-input w-full rounded px-2 py-1 text-xs"
+                :placeholder="ensureQuotaDraft(source).queryType === 'new_api'
+                  ? t(store.settings.locale, 'sources.quotaAccessTokenPlaceholder')
+                  : t(store.settings.locale, 'sources.quotaApiKeyPlaceholder')"
+              />
+            </div>
+            <div v-if="ensureQuotaDraft(source).queryType === 'new_api'">
+              <label class="mb-1 block text-[11px] font-medium text-[var(--theme-text-secondary)]">
+                {{ t(store.settings.locale, 'sources.quotaUserId') }}
+              </label>
+              <input
+                v-model="ensureQuotaDraft(source).userId"
+                type="text"
+                class="theme-input w-full rounded px-2 py-1 text-xs"
+                :placeholder="t(store.settings.locale, 'sources.quotaUserIdPlaceholder')"
+              />
+            </div>
+          </div>
+
+          <div class="flex items-center justify-end gap-2">
+            <button
+              @click="clearQuotaQuery(source)"
+              class="theme-button-secondary rounded-lg px-2 py-1 text-[11px]"
+              :disabled="quotaSavingSourceId === source.id"
+            >
+              {{ t(store.settings.locale, 'sources.quotaClear') }}
+            </button>
+            <button
+              @click="saveQuotaQuery(source)"
+              class="theme-button-accent rounded-lg px-2 py-1 text-[11px] flex items-center gap-1"
+              :disabled="quotaSavingSourceId === source.id"
+            >
+              <LoaderCircle v-if="quotaSavingSourceId === source.id" class="w-3 h-3 animate-spin" />
+              <span>{{ t(store.settings.locale, 'sources.quotaSave') }}</span>
+            </button>
+          </div>
         </div>
 
         <!-- Icon picker -->

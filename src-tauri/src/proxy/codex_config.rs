@@ -333,6 +333,19 @@ impl CodexConfigManager {
         url_identity::extract_source_id_from_proxy_url(base_url, &["codex"])
     }
 
+    /// 读取 Codex 在 `auth.json` 中保存的完整 API key（ApiKey 模式）。
+    ///
+    /// 仅返回非空 `OPENAI_API_KEY`；ChatGPT(OAuth) 模式或缺失时返回 None。
+    /// 用于多工具中转额度查询，读取后即时使用、不持久化。
+    pub fn read_api_key(&self) -> Option<String> {
+        let auth = self.read_auth_json().ok()??;
+        auth.get("OPENAI_API_KEY")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    }
+
     fn read_auth_json(&self) -> Result<Option<serde_json::Value>, String> {
         if !self.auth_path.exists() {
             return Ok(None);

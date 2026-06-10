@@ -2,10 +2,15 @@
 //!
 //! Provides subscription quota queries for official providers (GPT, Claude, etc.)
 
+mod claude;
 mod gpt;
+pub mod relay;
+pub mod source_quota;
+pub mod source_resolver;
 mod token_cache;
 mod types;
 
+pub use claude::ClaudeSubscriptionProvider;
 pub use gpt::*;
 pub use token_cache::TokenCache;
 

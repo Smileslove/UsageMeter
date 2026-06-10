@@ -4,26 +4,56 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Quota tier for a time window (5h or 7d)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// 配额类型：时间窗口利用率 vs 余额。
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum QuotaKind {
+    /// 时间窗口型（5h/周等），主指标是 utilization。
+    #[default]
+    Window,
+    /// 余额型（中转 $ 余额/积分），主指标是 remaining_value。
+    Balance,
+}
+
+/// Quota tier for a time window (5h or 7d) or a balance.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaTier {
-    /// Tier name: "five_hour" or "seven_day"
+    /// Tier name: "five_hour" / "seven_day" / 余额币种等
     pub name: String,
-    /// Usage percentage (0-100)
+    /// 配额类型（默认窗口型）
+    #[serde(default)]
+    pub kind: QuotaKind,
+    /// Usage percentage (0-100)；余额型可为 0
     pub utilization: f64,
     /// Reset time in ISO 8601 format
     pub resets_at: Option<String>,
+    /// 余额型：剩余额度/余额
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_value: Option<f64>,
+    /// 余额型/套餐：上限/总额
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_value: Option<f64>,
+    /// 金额单位：USD / CNY / credits
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    /// 是否已触顶
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_reached: Option<bool>,
 }
 
 /// Subscription quota data for different providers
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionQuota {
-    /// Provider identifier ("gpt", "claude", etc.)
+    /// Provider identifier ("gpt", "claude", "relay" 等)
     pub provider: String,
-    /// Tool identifier ("codex" or "codex_oauth")
+    /// Tool identifier：官方为 "codex"/"claude"，中转为供应商 id（如 "deepseek"）
     pub tool: String,
+    /// 来源工具：标识该额度属于哪个工具（"claude-code" / "codex" / "opencode"）。
+    /// 仅已配置来源额度查询会填充；官方 OAuth 查询为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_tool: Option<String>,
     /// Credential status
     pub credential_status: String,
     /// Credential message
@@ -38,6 +68,19 @@ pub struct SubscriptionQuota {
     pub from_cache: bool,
     /// Error message
     pub error: Option<String>,
+}
+
+/// Result of configured source quota refresh.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfiguredSourceQuotaQueryResult {
+    pub quotas: Vec<SubscriptionQuota>,
+    pub attempted_count: usize,
+    pub success_count: usize,
+    pub failed_count: usize,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    pub queried_at: i64,
 }
 
 /// Credential status for subscription queries

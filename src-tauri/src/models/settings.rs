@@ -324,6 +324,25 @@ pub fn default_client_tool_profiles() -> Vec<ClientToolProfile> {
 }
 
 /// 一个自动发现的 API 来源（由 Proxy 实际请求行为触发，非手动创建）
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceQuotaQueryType {
+    NewApi,
+    GenericBalance,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceQuotaQueryConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub query_type: SourceQuotaQueryType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiSource {
@@ -348,6 +367,9 @@ pub struct ApiSource {
     /// true = 自动发现，false = 用户手动编辑过
     #[serde(default)]
     pub auto_detected: bool,
+    /// 可选的来源级额度查询配置。当前仅支持 new-api 风格余额接口。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_query: Option<SourceQuotaQueryConfig>,
     /// 首次发现时间（Unix 毫秒）
     pub first_seen_ms: i64,
     /// 最近使用时间（Unix 毫秒）

@@ -16,7 +16,7 @@ mod response_bridge;
 mod routing;
 pub(crate) mod server;
 mod source_detector;
-mod source_registry;
+pub(crate) mod source_registry;
 mod sse;
 mod stream_processor;
 mod types;

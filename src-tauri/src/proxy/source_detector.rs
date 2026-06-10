@@ -103,6 +103,7 @@ pub fn create_new_source(
         color,
         icon: None,
         auto_detected: true,
+        quota_query: None,
         first_seen_ms: now,
         last_seen_ms: now,
     }
@@ -217,6 +218,7 @@ mod tests {
             color: "#3B82F6".to_string(),
             icon: None,
             auto_detected: true,
+            quota_query: None,
             first_seen_ms: 1000,
             last_seen_ms: 2000,
         }];
@@ -278,6 +280,7 @@ mod tests {
             color: "#3B82F6".to_string(),
             icon: None,
             auto_detected: true,
+            quota_query: None,
             first_seen_ms: 1000,
             last_seen_ms: 1000,
         });

@@ -692,7 +692,21 @@ const messages: Record<AppLocale, TranslationNode> = {
       changeIcon: '更换图标',
       removeIcon: '移除图标',
       searchIcon: '搜索图标...',
-      ranking: '来源排行'
+      ranking: '来源排行',
+      quotaQueryTitle: '额度查询',
+      quotaQueryDesc: '为该来源配置通用余额查询或 New API 查询',
+      quotaQueryEnabledBadge: '已启用额度查询',
+      quotaQueryMode: '查询模式',
+      quotaQueryModeGeneric: '通用余额（GET /v1/usage）',
+      quotaQueryModeNewApi: 'New API（GET /api/user/self）',
+      quotaApiKey: '额度 API Key',
+      quotaApiKeyPlaceholder: '用于 GET /v1/usage 的 Bearer API Key',
+      quotaAccessToken: 'Access Token',
+      quotaAccessTokenPlaceholder: '在服务端安全设置中生成',
+      quotaUserId: '用户 ID',
+      quotaUserIdPlaceholder: '例如：114514',
+      quotaSave: '保存',
+      quotaClear: '清除'
     },
     overview: {
       attribution: '用量归因',
@@ -737,6 +751,25 @@ const messages: Record<AppLocale, TranslationNode> = {
       errorRefreshFailed: '刷新失败，请重新登录',
       errorQueryFailed: '查询失败，请稍后再试',
       errorUnknown: '未知错误'
+    },
+    survival: {
+      title: '限额',
+      window5h: '5h 窗口',
+      localWindow5h: '本地 5h 会话块',
+      weekly: '周限额',
+      used: '已用',
+      resetIn: '{time}后重置',
+      perHour: '{value}/h',
+      burnLabel: '速度',
+      relativeToAvg: '当前为近7日均速的{x}×',
+      projectedEnd: '预计{value}',
+      unlockHint: '继续使用以解锁预测',
+      idle: '窗口空闲',
+      noQuotaHint: '暂无已配置来源额度数据',
+      quotaQuerying: '正在查询已配置来源额度…',
+      avgPace: '近7日均速 {value}/h',
+      sourceSection: '已配置来源',
+      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' }
     }
   },
   'zh-TW': {
@@ -1425,7 +1458,21 @@ const messages: Record<AppLocale, TranslationNode> = {
       changeIcon: '更換圖標',
       removeIcon: '移除圖標',
       searchIcon: '搜尋圖標...',
-      ranking: '來源排行'
+      ranking: '來源排行',
+      quotaQueryTitle: '額度查詢',
+      quotaQueryDesc: '為此來源配置通用餘額查詢或 New API 查詢',
+      quotaQueryEnabledBadge: '已啟用額度查詢',
+      quotaQueryMode: '查詢模式',
+      quotaQueryModeGeneric: '通用餘額（GET /v1/usage）',
+      quotaQueryModeNewApi: 'New API（GET /api/user/self）',
+      quotaApiKey: '額度 API Key',
+      quotaApiKeyPlaceholder: '用於 GET /v1/usage 的 Bearer API Key',
+      quotaAccessToken: 'Access Token',
+      quotaAccessTokenPlaceholder: '在服務端安全設定中產生',
+      quotaUserId: '使用者 ID',
+      quotaUserIdPlaceholder: '例如：114514',
+      quotaSave: '儲存',
+      quotaClear: '清除'
     },
     overview: {
       attribution: '用量歸因',
@@ -1470,6 +1517,25 @@ const messages: Record<AppLocale, TranslationNode> = {
       errorRefreshFailed: '更新失敗，請重新登入',
       errorQueryFailed: '查詢失敗，請稍後再試',
       errorUnknown: '未知錯誤'
+    },
+    survival: {
+      title: '限額',
+      window5h: '5h 視窗',
+      localWindow5h: '本地 5h 會話區塊',
+      weekly: '週限額',
+      used: '已用',
+      resetIn: '{time}後重置',
+      perHour: '{value}/h',
+      burnLabel: '速度',
+      relativeToAvg: '當前為近7日均速的{x}×',
+      projectedEnd: '預計{value}',
+      unlockHint: '繼續使用以解鎖預測',
+      idle: '視窗空閒',
+      noQuotaHint: '暫無已配置來源額度資料',
+      quotaQuerying: '正在查詢已配置來源額度…',
+      avgPace: '近7日均速 {value}/h',
+      sourceSection: '已配置來源',
+      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' }
     }
   },
   'en-US': {
@@ -2158,7 +2224,21 @@ const messages: Record<AppLocale, TranslationNode> = {
       changeIcon: 'Change icon',
       removeIcon: 'Remove icon',
       searchIcon: 'Search icons...',
-      ranking: 'Source Ranking'
+      ranking: 'Source Ranking',
+      quotaQueryTitle: 'Quota Query',
+      quotaQueryDesc: 'Configure either a generic balance query or a New API query for this source',
+      quotaQueryEnabledBadge: 'Quota query enabled',
+      quotaQueryMode: 'Query mode',
+      quotaQueryModeGeneric: 'Generic balance (GET /v1/usage)',
+      quotaQueryModeNewApi: 'New API (GET /api/user/self)',
+      quotaApiKey: 'Quota API Key',
+      quotaApiKeyPlaceholder: 'Bearer API key for GET /v1/usage',
+      quotaAccessToken: 'Access Token',
+      quotaAccessTokenPlaceholder: 'Generate it in your service security settings',
+      quotaUserId: 'User ID',
+      quotaUserIdPlaceholder: 'e.g. 114514',
+      quotaSave: 'Save',
+      quotaClear: 'Clear'
     },
     overview: {
       attribution: 'Usage Attribution',
@@ -2203,6 +2283,25 @@ const messages: Record<AppLocale, TranslationNode> = {
       errorRefreshFailed: 'Refresh failed, please sign in again',
       errorQueryFailed: 'Query failed, try again later',
       errorUnknown: 'Unknown error'
+    },
+    survival: {
+      title: 'Limits',
+      window5h: '5h window',
+      localWindow5h: 'Local 5h session block',
+      weekly: 'Weekly',
+      used: 'Used',
+      resetIn: 'resets in {time}',
+      perHour: '{value}/h',
+      burnLabel: 'Burn',
+      relativeToAvg: 'now at {x}× 7d avg',
+      projectedEnd: 'proj. {value}',
+      unlockHint: 'Keep using to unlock forecast',
+      idle: 'Idle',
+      noQuotaHint: 'No configured-source quota data',
+      quotaQuerying: 'Querying configured-source quotas…',
+      avgPace: '7d avg {value}/h',
+      sourceSection: 'Configured sources',
+      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' }
     }
   }
 }

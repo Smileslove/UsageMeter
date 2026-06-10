@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SyncSettings, NetworkProxyConfig, ThemeSettings, WslScanSettings } from '../types'
+import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SubscriptionQuota, SyncSettings, NetworkProxyConfig, ThemeSettings, WslScanSettings, LimitSurvivalSnapshot, SourceQuotaQueryConfig, ConfiguredSourceQuotaQueryResult } from '../types'
 
 const defaultModelPricing: ModelPricingSettings = {
   matchMode: 'fuzzy',
@@ -54,6 +54,10 @@ const defaultTheme: ThemeSettings = {
   darkPalette: 'midnight'
 }
 
+const CONFIGURED_SOURCE_SUCCESS_REFRESH_MS = 5 * 60 * 1000
+const CONFIGURED_SOURCE_FAILURE_BASE_MS = 2 * 60 * 1000
+const CONFIGURED_SOURCE_FAILURE_MAX_MS = 30 * 60 * 1000
+
 const defaultClientTools: ClientToolSettings = {
   profiles: [
     { id: 'claude_code', tool: 'claude_code', displayName: 'Claude Code', pathPrefix: 'claude-code', enabled: true, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'claudecode' },
@@ -101,7 +105,7 @@ const defaultSettings: AppSettings = {
   networkProxy: defaultNetworkProxy,
   autoCheckUpdate: true,
   skippedUpdateVersion: '',
-  wslScan: defaultWslScan
+  wslScan: defaultWslScan,
 }
 
 export const useMonitorStore = defineStore('monitor', {
@@ -147,7 +151,26 @@ export const useMonitorStore = defineStore('monitor', {
     // 订阅查询
     subscriptionQuota: null as SubscriptionQueryResult | null,
     subscriptionLoading: false,
-    hasChatGptOAuth: false
+    hasChatGptOAuth: false,
+    // Claude 官方配额查询
+    claudeQuota: null as SubscriptionQueryResult | null,
+    claudeLoading: false,
+    hasClaudeOAuth: false,
+    // 各工具已配置来源的第三方中转额度/余额（一行一来源；A 静默降级：空数组表示不可得）
+    configuredSourceQuotas: [] as SubscriptionQuota[],
+    configuredSourceLoading: false,
+    configuredSourceFetchPromise: null as Promise<void> | null,
+    configuredSourceRequestSeq: 0,
+    configuredSourceActiveSeq: 0,
+    configuredSourceQueued: false,
+    configuredSourceLastSuccessAt: null as number | null,
+    configuredSourceLastAttemptAt: null as number | null,
+    configuredSourceLastFailureAt: null as number | null,
+    configuredSourceConsecutiveFailures: 0,
+    configuredSourceNextEligibleAt: 0,
+    configuredSourceLastError: null as string | null,
+    // 限额生存层（本地信号：会话锚定块 / 燃烧速率 / 历史基线）
+    limitSurvival: null as LimitSurvivalSnapshot | null
   }),
   getters: {
     hasData: state => !!state.snapshot,
@@ -176,6 +199,15 @@ export const useMonitorStore = defineStore('monitor', {
       if (this.hasChatGptOAuth) {
         await this.fetchSubscriptionQuota()
       }
+
+      // 检查是否有 Claude OAuth 凭据，如果有则查询官方配额（限额生存 T1）
+      await this.checkClaudeOAuth()
+      if (this.hasClaudeOAuth) {
+        await this.fetchClaudeQuota()
+      }
+
+      // 第三方中转额度查询（已配置来源；静默降级）
+      await this.forceFetchConfiguredSourceQuotas()
     },
     async loadSettings() {
       try {
@@ -208,12 +240,15 @@ export const useMonitorStore = defineStore('monitor', {
       try {
         this.error = ''
 
-        const bundle = await invoke<UsageRefreshBundle>('refresh_usage_bundle', {
-          settings: this.settings
-        })
+        // 来源额度查询与本地快照并行启动，但不阻塞主刷新路径。
+        // 它有独立的 configuredSourceLoading 视觉反馈，不应拖慢核心 usage 刷新。
+        void this.scheduleConfiguredSourceQuotaRefreshIfDue()
+
+        const bundle = await invoke<UsageRefreshBundle>('refresh_usage_bundle', { settings: this.settings })
         this.snapshot = bundle.snapshot
         this.rateSummary = bundle.rateSummary
         this.overviewBreakdown = bundle.overviewBreakdown
+        this.limitSurvival = bundle.limitSurvival
 
         this.lastUpdatedEpoch = this.snapshot.generatedAtEpoch
       } catch (e) {
@@ -684,6 +719,14 @@ export const useMonitorStore = defineStore('monitor', {
       await invoke('update_api_source_key_note', { sourceId, keyPrefix, note })
       await this.loadSettings()
     },
+    async updateSourceQuotaQuery(sourceId: string, quotaQuery: SourceQuotaQueryConfig | null) {
+      const source = this.settings.sourceAware.sources.find(s => s.id === sourceId)
+      if (!source) return
+      source.quotaQuery = quotaQuery ?? undefined
+      source.autoDetected = false
+      await this.saveSettings()
+      await this.forceFetchConfiguredSourceQuotas()
+    },
     // === 订阅查询 ===
     /**
      * 检查是否有 ChatGPT OAuth 配置
@@ -735,6 +778,155 @@ export const useMonitorStore = defineStore('monitor', {
       } finally {
         this.subscriptionLoading = false
       }
+    },
+    /**
+     * 检查是否有 Claude OAuth 凭据
+     */
+    async checkClaudeOAuth() {
+      try {
+        this.hasClaudeOAuth = await invoke<boolean>('has_claude_oauth')
+      } catch (e) {
+        console.error('Failed to check Claude OAuth:', e)
+        this.hasClaudeOAuth = false
+      }
+    },
+    /**
+     * 获取 Claude 官方配额
+     */
+    async fetchClaudeQuota() {
+      this.claudeLoading = true
+      try {
+        this.claudeQuota = await invoke<SubscriptionQueryResult>('get_subscription_quota', { provider: 'claude' })
+      } catch (e) {
+        console.error('Failed to fetch Claude quota:', e)
+        this.claudeQuota = {
+          success: false,
+          credentialStatus: { queryFailed: { error: String(e) } },
+          error: String(e),
+          queriedAt: Date.now()
+        }
+      } finally {
+        this.claudeLoading = false
+      }
+    },
+    /**
+     * 刷新 Claude 官方配额（强制刷新）
+     */
+    async refreshClaudeQuota() {
+      this.claudeLoading = true
+      try {
+        this.claudeQuota = await invoke<SubscriptionQueryResult>('refresh_subscription_quota', { provider: 'claude' })
+      } catch (e) {
+        console.error('Failed to refresh Claude quota:', e)
+        this.claudeQuota = {
+          success: false,
+          credentialStatus: { queryFailed: { error: String(e) } },
+          error: String(e),
+          queriedAt: Date.now()
+        }
+      } finally {
+        this.claudeLoading = false
+      }
+    },
+    /**
+     * 查询各工具已配置来源的第三方中转额度/余额（一行一来源，A 静默降级）。
+     * 检测到可识别来源且能读到凭据则自动查询；缺凭据/查询失败都静默降级为空数组，不报错。
+     */
+    async fetchConfiguredSourceQuotas() {
+      return this.fetchConfiguredSourceQuotasInternal(false)
+    },
+    async forceFetchConfiguredSourceQuotas() {
+      return this.fetchConfiguredSourceQuotasInternal(true)
+    },
+    async scheduleConfiguredSourceQuotaRefreshIfDue() {
+      const now = Date.now()
+      if (this.configuredSourceFetchPromise) {
+        this.configuredSourceQueued = true
+        return this.configuredSourceFetchPromise
+      }
+      if (now < this.configuredSourceNextEligibleAt) {
+        return
+      }
+      return this.fetchConfiguredSourceQuotasInternal(false)
+    },
+    async fetchConfiguredSourceQuotasInternal(force: boolean) {
+      const now = Date.now()
+      if (!force && !this.configuredSourceFetchPromise && now < this.configuredSourceNextEligibleAt) {
+        return
+      }
+
+      const wantedSeq = this.configuredSourceRequestSeq + 1
+      this.configuredSourceRequestSeq = wantedSeq
+
+      if (this.configuredSourceFetchPromise) {
+        this.configuredSourceQueued = true
+        return this.configuredSourceFetchPromise
+      }
+
+      this.configuredSourceLoading = true
+      const runLatest = async (): Promise<void> => {
+        const activeSeq = this.configuredSourceRequestSeq
+        this.configuredSourceActiveSeq = activeSeq
+        this.configuredSourceLastAttemptAt = Date.now()
+        try {
+          const result = await invoke<ConfiguredSourceQuotaQueryResult>('get_configured_source_quotas')
+          // 仅最新请求可落地结果，避免初始化/旧刷新覆盖更新后的来源状态。
+          if (activeSeq === this.configuredSourceRequestSeq) {
+            if (result.attemptedCount === 0) {
+              this.configuredSourceQuotas = []
+              this.configuredSourceLastSuccessAt = result.queriedAt
+              this.configuredSourceLastError = null
+              this.configuredSourceConsecutiveFailures = 0
+              this.configuredSourceLastFailureAt = null
+              this.configuredSourceNextEligibleAt = result.queriedAt + CONFIGURED_SOURCE_SUCCESS_REFRESH_MS
+            } else if (result.successCount > 0) {
+              this.configuredSourceQuotas = result.quotas
+              this.configuredSourceLastSuccessAt = result.queriedAt
+              this.configuredSourceConsecutiveFailures = 0
+              this.configuredSourceLastFailureAt = null
+              this.configuredSourceLastError = result.failedCount > 0
+                ? result.errors.join(' | ')
+                : null
+              this.configuredSourceNextEligibleAt = result.queriedAt + CONFIGURED_SOURCE_SUCCESS_REFRESH_MS
+            } else {
+              this.configuredSourceConsecutiveFailures += 1
+              this.configuredSourceLastFailureAt = result.queriedAt
+              this.configuredSourceLastError = result.errors.join(' | ') || 'Configured source quota query failed'
+              const backoffMs = Math.min(
+                CONFIGURED_SOURCE_FAILURE_BASE_MS * (2 ** (this.configuredSourceConsecutiveFailures - 1)),
+                CONFIGURED_SOURCE_FAILURE_MAX_MS
+              )
+              this.configuredSourceNextEligibleAt = result.queriedAt + backoffMs
+            }
+          }
+        } catch (e) {
+          console.error('Failed to fetch configured source quotas:', e)
+          if (activeSeq === this.configuredSourceRequestSeq) {
+            this.configuredSourceConsecutiveFailures += 1
+            this.configuredSourceLastFailureAt = Date.now()
+            this.configuredSourceLastError = String(e)
+            const backoffMs = Math.min(
+              CONFIGURED_SOURCE_FAILURE_BASE_MS * (2 ** (this.configuredSourceConsecutiveFailures - 1)),
+              CONFIGURED_SOURCE_FAILURE_MAX_MS
+            )
+            this.configuredSourceNextEligibleAt = Date.now() + backoffMs
+          }
+        }
+      }
+
+      this.configuredSourceFetchPromise = (async () => {
+        try {
+          do {
+            this.configuredSourceQueued = false
+            await runLatest()
+          } while (this.configuredSourceQueued || this.configuredSourceActiveSeq !== this.configuredSourceRequestSeq)
+        } finally {
+          this.configuredSourceLoading = false
+          this.configuredSourceFetchPromise = null
+        }
+      })()
+
+      return this.configuredSourceFetchPromise
     }
   }
 })

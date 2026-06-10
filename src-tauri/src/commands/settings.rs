@@ -91,6 +91,7 @@ fn normalize_settings(settings: &mut AppSettings) -> Result<(), String> {
     migrate_model_pricing(settings);
     migrate_currency(settings);
     migrate_client_tools(settings);
+    migrate_api_sources(settings);
     migrate_sync(settings)?;
     Ok(())
 }
@@ -169,6 +170,23 @@ fn migrate_client_tools(settings: &mut AppSettings) {
         .any(|profile| profile.enabled)
     {
         settings.proxy.enabled = true;
+    }
+}
+
+fn migrate_api_sources(settings: &mut AppSettings) {
+    for source in &mut settings.source_aware.sources {
+        if let Some(quota_query) = &mut source.quota_query {
+            quota_query.access_token = quota_query
+                .access_token
+                .as_ref()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty());
+            quota_query.user_id = quota_query
+                .user_id
+                .as_ref()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty());
+        }
     }
 }
 

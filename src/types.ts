@@ -137,8 +137,18 @@ export interface ApiSource {
   color: string
   icon?: string
   autoDetected: boolean
+  quotaQuery?: SourceQuotaQueryConfig
   firstSeenMs: number
   lastSeenMs: number
+}
+
+export type SourceQuotaQueryType = 'new_api' | 'generic_balance'
+
+export interface SourceQuotaQueryConfig {
+  enabled: boolean
+  queryType: SourceQuotaQueryType
+  accessToken?: string
+  userId?: string
 }
 
 // 来源感知设置
@@ -279,6 +289,45 @@ export interface UsageRefreshBundle {
   snapshot: UsageSnapshot
   rateSummary: WindowRateSummary
   overviewBreakdown: OverviewBreakdown
+  limitSurvival: LimitSurvivalSnapshot
+}
+
+// ============ Limit Survival Types ============
+
+export type SurvivalConfidence = 'high' | 'medium' | 'low'
+export type SurvivalSourceKind = 'baseline' | 'none'
+
+/** 会话锚定的当前 5h 块 */
+export interface AnchoredBlock {
+  startEpoch: number
+  resetsAtEpoch: number
+  usedTokens: number
+  usedRequests: number
+  elapsedSeconds: number
+  remainingSeconds: number
+  projectedEndTokens: number
+}
+
+export interface BurnRate {
+  tokensPerHour: number
+  requestsPerHour: number
+  sampleSeconds: number
+  sampleRequests: number
+  confidence: SurvivalConfidence
+}
+
+export interface SurvivalBaseline {
+  avgTokensPerHour: number
+  relativeToBaseline: number | null
+}
+
+/** 限额生存层本地信号（真实配额 T1 由前端用 subscriptionQuota 叠加） */
+export interface LimitSurvivalSnapshot {
+  generatedAtEpoch: number
+  sourceKind: SurvivalSourceKind
+  block: AnchoredBlock | null
+  burn: BurnRate
+  baseline: SurvivalBaseline | null
 }
 
 // 代理相关类型
@@ -601,17 +650,25 @@ export interface YearActivity {
 
 // ============ Subscription Types ============
 
-/// Quota tier for a time window (5h or 7d)
+export type QuotaKind = 'window' | 'balance'
+
+/// Quota tier for a time window (5h or 7d) or a balance
 export interface QuotaTier {
-  name: string           // "five_hour" or "seven_day"
-  utilization: number    // Usage percentage 0-100
+  name: string           // "five_hour" / "seven_day" / 余额币种
+  kind?: QuotaKind       // 默认 window
+  utilization: number    // Usage percentage 0-100（余额型可为 0）
   resetsAt?: string      // ISO 8601 format reset time
+  remainingValue?: number | null  // 余额型：剩余额度
+  maxValue?: number | null         // 余额型/套餐：上限
+  currency?: string | null         // USD / CNY / credits
+  limitReached?: boolean | null
 }
 
 /// Subscription quota data for different providers
 export interface SubscriptionQuota {
   provider: string
-  tool: string           // "codex" or "codex_oauth"
+  tool: string           // 官方："codex"/"claude_oauth"；中转：供应商 id（如 "deepseek"）
+  sourceTool?: string     // 来源工具："claude-code" / "codex" / "opencode"（仅已配置来源额度查询填充）
   credentialStatus: string
   credentialMessage?: string
   success: boolean
@@ -635,5 +692,14 @@ export interface SubscriptionQueryResult {
   quota?: SubscriptionQuota
   credentialStatus: CredentialStatus
   error?: string
+  queriedAt: number
+}
+
+export interface ConfiguredSourceQuotaQueryResult {
+  quotas: SubscriptionQuota[]
+  attemptedCount: number
+  successCount: number
+  failedCount: number
+  errors: string[]
   queriedAt: number
 }

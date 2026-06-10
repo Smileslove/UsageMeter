@@ -96,6 +96,7 @@ const openCurrency = () => {
         />
       </section>
 
+
       <section class="space-y-1.5">
         <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">
           {{ t(store.settings.locale, 'settings.networkSection') }}

@@ -7,6 +7,7 @@ mod overview;
 mod requests;
 mod sessions;
 mod statistics;
+mod survival;
 mod types;
 
 pub use maintenance::*;

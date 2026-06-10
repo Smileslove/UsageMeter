@@ -285,10 +285,16 @@ pub(super) fn build_usage_refresh_bundle_from_prepared(
         summary_facts,
     );
 
+    let limit_survival = crate::commands::usage::survival::build_limit_survival(
+        &prepared.facts,
+        epoch_u64_to_i64_saturating(prepared.generated_at_epoch),
+    );
+
     UsageRefreshBundle {
         generated_at_epoch: prepared.generated_at_epoch,
         snapshot,
         rate_summary,
         overview_breakdown,
+        limit_survival,
     }
 }

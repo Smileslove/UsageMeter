@@ -455,6 +455,8 @@ pub fn run() {
             commands::get_subscription_quota,
             commands::refresh_subscription_quota,
             commands::has_chatgpt_oauth,
+            commands::has_claude_oauth,
+            commands::get_configured_source_quotas,
             commands::clear_subscription_cache,
             // 更新命令
             commands::check_for_update,

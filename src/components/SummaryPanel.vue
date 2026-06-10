@@ -5,7 +5,7 @@ import { t, windowNameLabel } from '../i18n'
 import { MessageSquare, Sigma, CircleDollarSign, Database } from 'lucide-vue-next'
 import { formatRequestCount, formatTokenValue, formatCost } from '../utils/format'
 import { WINDOW_ORDER, type WindowName } from '../types'
-import SubscriptionQuotaCard from './SubscriptionQuotaCard.vue'
+import LimitSurvivalCard from './overview/LimitSurvivalCard.vue'
 
 const store = useMonitorStore()
 
@@ -350,8 +350,8 @@ function detailPairSizeClass(first: string, second: string): string {
       </div>
     </div>
 
-    <!-- 订阅配额卡片（仅在 ChatGPT OAuth 模式下显示） -->
-    <SubscriptionQuotaCard v-if="store.hasChatGptOAuth" />
+    <!-- 限额生存卡（真实配额 T1 + 燃烧速率 / 会话锚定块 / 历史基线） -->
+    <LimitSurvivalCard />
   </div>
 </template>
 
