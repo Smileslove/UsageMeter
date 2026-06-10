@@ -16,6 +16,7 @@ import ThemeSelector from './components/ThemeSelector.vue'
 import { applyResolvedTheme } from './theme'
 import { RefreshCw, ArrowLeftRight, Share2 } from 'lucide-vue-next'
 import { t } from './i18n'
+import { quitApplication } from './utils/appExit'
 
 const store = useMonitorStore()
 const updaterStore = useUpdaterStore()
@@ -106,12 +107,11 @@ onMounted(async () => {
 
   // 监听退出请求事件
   unlistenQuit = await listen('app-quit-requested', async () => {
-    // 停止自动刷新
-    store.stopAutoRefresh()
-    // 准备退出（停止代理、恢复配置）
-    await store.prepareExit()
-    // 通知后端可以退出了
-    await invoke('confirm_exit')
+    try {
+      await quitApplication(store)
+    } catch (error) {
+      console.error('[App] Failed to quit app from tray event:', error)
+    }
   })
 
   // 监听新来源检测事件

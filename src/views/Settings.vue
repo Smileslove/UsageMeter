@@ -11,13 +11,18 @@ import ProxyControlPanel from '../components/settings/ProxyControlPanel.vue'
 import NetworkProxyPanel from '../components/settings/NetworkProxyPanel.vue'
 import SyncSettingsPanel from '../components/settings/SyncSettingsPanel.vue'
 import WslScanPanel from '../components/settings/WslScanPanel.vue'
+import ConfirmDialog from '../components/settings/ConfirmDialog.vue'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
+import { quitApplication } from '../utils/appExit'
 
 const store = useMonitorStore()
 
 const subView = ref<'main' | 'model-pricing' | 'api-sources' | 'currency'>('main')
 const modelPricingKey = ref(0)
+const quitDialogOpen = ref(false)
+const quitBusy = ref(false)
+const quitFailed = ref(false)
 
 watch(subView, (newVal) => {
   if (newVal === 'model-pricing') {
@@ -39,6 +44,31 @@ const openApiSources = () => {
 
 const openCurrency = () => {
   subView.value = 'currency'
+}
+
+const openQuitDialog = () => {
+  quitFailed.value = false
+  quitDialogOpen.value = true
+}
+
+const closeQuitDialog = () => {
+  if (quitBusy.value) return
+  quitDialogOpen.value = false
+}
+
+const confirmQuit = async () => {
+  if (quitBusy.value) return
+  quitBusy.value = true
+  quitFailed.value = false
+
+  try {
+    await quitApplication(store)
+  } catch (error) {
+    console.error('[Settings] Failed to quit app:', error)
+    quitFailed.value = true
+  } finally {
+    quitBusy.value = false
+  }
 }
 </script>
 
@@ -106,6 +136,34 @@ const openCurrency = () => {
         </div>
       </section>
 
+      <section class="space-y-1.5">
+        <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">
+          {{ t(store.settings.locale, 'settings.appActionsSection') }}
+        </h3>
+        <div class="overflow-hidden rounded-xl border border-red-100/80 bg-white shadow-sm dark:border-red-500/20 dark:bg-[#1C1C1E]">
+          <div class="flex items-center justify-between gap-3 px-4 py-3">
+            <div class="min-w-0">
+              <div class="text-[11px] font-medium text-gray-800 dark:text-gray-100">
+                {{ t(store.settings.locale, 'settings.quitApp') }}
+              </div>
+              <div class="mt-0.5 text-[10px] leading-relaxed text-gray-400 dark:text-gray-500">
+                {{ t(store.settings.locale, 'settings.quitAppDesc') }}
+              </div>
+            </div>
+            <button
+              class="shrink-0 rounded-xl border border-red-200 bg-red-50 px-3 py-1.5 text-[11px] font-semibold text-red-600 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-red-500/20 dark:bg-red-500/10 dark:text-red-300 dark:hover:bg-red-500/15"
+              :disabled="quitBusy"
+              @click="openQuitDialog"
+            >
+              {{ t(store.settings.locale, 'settings.quitApp') }}
+            </button>
+          </div>
+        </div>
+        <div v-if="quitFailed" class="px-1 text-xs text-red-500">
+          {{ t(store.settings.locale, 'settings.quitAppFailed') }}
+        </div>
+      </section>
+
       <div v-if="store.saving" class="text-center text-xs text-gray-400">
         {{ t(store.settings.locale, 'common.saving') }}
       </div>
@@ -114,4 +172,16 @@ const openCurrency = () => {
       </div>
     </div>
   </div>
+
+  <ConfirmDialog
+    :open="quitDialogOpen"
+    :title="t(store.settings.locale, 'settings.quitAppConfirmTitle')"
+    :body="t(store.settings.locale, 'settings.quitAppConfirmBody')"
+    :confirm-label="t(store.settings.locale, 'settings.quitApp')"
+    :cancel-label="t(store.settings.locale, 'common.cancel')"
+    :busy="quitBusy"
+    tone="danger"
+    @cancel="closeQuitDialog"
+    @confirm="confirmQuit"
+  />
 </template>

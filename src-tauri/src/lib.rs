@@ -16,7 +16,7 @@ mod utils;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
-use tauri::{PhysicalPosition, Position, WindowEvent};
+use tauri::{PhysicalPosition, PhysicalSize, Position, Rect, Size, WindowEvent};
 
 #[cfg(target_os = "macos")]
 use tauri::ActivationPolicy;
@@ -27,6 +27,120 @@ fn menu_labels(locale: &str) -> (&'static str, &'static str) {
     } else {
         ("打开面板", "退出")
     }
+}
+
+fn show_main_window(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
+    if let Some(window) = app.get_webview_window("main") {
+        #[cfg(target_os = "macos")]
+        {
+            make_window_rounded(&window);
+        }
+
+        let _ = window.set_always_on_top(true);
+
+        if let Some(rect) = tray_rect {
+            let rect_position = match rect.position {
+                Position::Physical(position) => position,
+                Position::Logical(position) => {
+                    PhysicalPosition::new(position.x.round() as i32, position.y.round() as i32)
+                }
+            };
+            let rect_size = match rect.size {
+                Size::Physical(size) => size,
+                Size::Logical(size) => {
+                    PhysicalSize::new(size.width.round() as u32, size.height.round() as u32)
+                }
+            };
+            let size = window.outer_size().ok();
+            let popup_width = size.map(|s| s.width as f64).unwrap_or(420.0);
+            #[cfg(not(target_os = "macos"))]
+            let popup_height = size.map(|s| s.height as f64).unwrap_or(560.0);
+
+            let anchor_x = rect_position.x as f64 + rect_size.width as f64 / 2.0;
+            let desired_x = anchor_x - (popup_width / 2.0);
+
+            let monitor = app.available_monitors().ok().and_then(|monitors| {
+                let tray_x = anchor_x.round() as i32;
+                let tray_y = rect_position.y + rect_size.height as i32 / 2;
+
+                monitors.into_iter().find(|m| {
+                    let monitor_pos = m.position();
+                    let monitor_size = m.size();
+                    tray_x >= monitor_pos.x
+                        && tray_x < monitor_pos.x + monitor_size.width as i32
+                        && tray_y >= monitor_pos.y
+                        && tray_y < monitor_pos.y + monitor_size.height as i32
+                })
+            });
+
+            let (x, y) = if let Some(monitor) = monitor {
+                let work_area = monitor.work_area();
+                let min_x = work_area.position.x as f64;
+                let max_x =
+                    (work_area.position.x + work_area.size.width as i32) as f64 - popup_width;
+                let clamped_x = desired_x.clamp(min_x, max_x.max(min_x));
+
+                #[cfg(target_os = "macos")]
+                let clamped_y = ((rect_position.y + rect_size.height as i32) as f64 + 6.0)
+                    .max(work_area.position.y as f64 + 4.0);
+
+                #[cfg(not(target_os = "macos"))]
+                let clamped_y = {
+                    const WORKAREA_MARGIN: f64 = 2.0;
+                    (work_area.position.y + work_area.size.height as i32) as f64
+                        - popup_height
+                        - WORKAREA_MARGIN
+                };
+
+                (clamped_x, clamped_y)
+            } else {
+                eprintln!(
+                    "[UsageMeter] Warning: No monitor found for tray rect at ({}, {})",
+                    rect_position.x, rect_position.y
+                );
+
+                #[cfg(target_os = "macos")]
+                let fallback_y = (rect_position.y + rect_size.height as i32) as f64 + 6.0;
+
+                #[cfg(not(target_os = "macos"))]
+                let fallback_y = rect_position.y as f64 - popup_height;
+
+                (desired_x, fallback_y)
+            };
+
+            let (x, y): (f64, f64) = (x, y);
+            let _ = window.set_position(Position::Physical(PhysicalPosition::new(
+                x.round() as i32,
+                y.round() as i32,
+            )));
+        }
+
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn popup_tray_menu(tray: &tauri::tray::TrayIcon, menu: &Menu<tauri::Wry>) {
+    use objc2::runtime::AnyObject;
+    use objc2::MainThreadMarker;
+
+    let _ = tray.set_menu(Some(menu.clone()));
+    let _ = tray.set_show_menu_on_left_click(false);
+
+    let _ = tray.with_inner_tray_icon(|inner| {
+        if let Some(status_item) = inner.ns_status_item() {
+            let mtm = MainThreadMarker::new().expect("tray menu must be shown on main thread");
+            if let Some(button) = status_item.button(mtm) {
+                unsafe {
+                    button.performClick(None::<&AnyObject>);
+                }
+            }
+        }
+    });
+
+    let _ = tray.set_menu(None::<Menu<tauri::Wry>>);
 }
 
 #[cfg(target_os = "macos")]
@@ -220,27 +334,17 @@ pub fn run() {
             let show_item = MenuItem::with_id(app, "show", show_label, true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", quit_label, true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
-
-            let _tray = TrayIconBuilder::new()
+            let tray_menu = menu.clone();
+            let tray_builder = TrayIconBuilder::with_id("main-tray")
                 .icon(
                     app.default_window_icon()
                         .ok_or("ERR_MISSING_DEFAULT_APP_ICON")?
                         .clone(),
                 )
-                .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            #[cfg(target_os = "macos")]
-                            {
-                                make_window_rounded(&window);
-                            }
-                            let _ = window.set_always_on_top(true);
-                            let _ = window.show();
-                            let _ = window.unminimize();
-                            let _ = window.set_focus();
-                        }
+                        show_main_window(app, None);
                     }
                     "quit" => {
                         // 发送事件给前端，让前端处理清理后再退出
@@ -248,11 +352,22 @@ pub fn run() {
                     }
                     _ => {}
                 })
-                .on_tray_icon_event(|tray, event| {
+                .on_tray_icon_event(move |tray, event| {
+                    #[cfg(target_os = "macos")]
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Right,
+                        button_state: MouseButtonState::Down,
+                        ..
+                    } = event
+                    {
+                        popup_tray_menu(tray, &tray_menu);
+                        return;
+                    }
+
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
-                        position,
+                        rect,
                         ..
                     } = event
                     {
@@ -262,72 +377,18 @@ pub fn run() {
                             if visible {
                                 let _ = window.hide();
                             } else {
-                                #[cfg(target_os = "macos")]
-                                {
-                                    make_window_rounded(&window);
-                                }
-                                let _ = window.set_always_on_top(true);
-                                let size = window.outer_size().ok();
-                                let popup_width = size.map(|s| s.width as f64).unwrap_or(420.0);
-                                let x = position.x - (popup_width / 2.0);
-
-                                // macOS: 托盘在屏幕顶部，窗口向下弹出
-                                // Windows: 托盘在屏幕底部，窗口向上弹出，底部贴着工作区底部
-                                #[cfg(target_os = "macos")]
-                                let y = position.y + 10.0;
-                                #[cfg(not(target_os = "macos"))]
-                                let y = {
-                                    const WORKAREA_MARGIN: f64 = 2.0; // 窗口底部与工作区底部的间距（像素）
-                                    let popup_height =
-                                        size.map(|s| s.height as f64).unwrap_or(600.0);
-
-                                    let workarea_bottom = app
-                                        .available_monitors()
-                                        .ok()
-                                        .and_then(|monitors| {
-                                            monitors.into_iter().find_map(|m| {
-                                                let monitor_pos = m.position();
-                                                let monitor_size = m.size();
-                                                let tray_x = position.x as i32;
-                                                let tray_y = position.y as i32;
-
-                                                // 检查托盘图标是否在这个显示器的整体范围内
-                                                let in_monitor = tray_x >= monitor_pos.x
-                                                    && tray_x < monitor_pos.x + monitor_size.width as i32
-                                                    && tray_y >= monitor_pos.y
-                                                    && tray_y < monitor_pos.y + monitor_size.height as i32;
-
-                                                if in_monitor {
-                                                    let work_area = m.work_area();
-                                                    let bottom = work_area.position.y
-                                                        + work_area.size.height as i32;
-                                                    Some(bottom as f64)
-                                                } else {
-                                                    None
-                                                }
-                                            })
-                                        })
-                                        .unwrap_or_else(|| {
-                                            eprintln!(
-                                                "[UsageMeter] Warning: No monitor found for tray at ({}, {})",
-                                                position.x, position.y
-                                            );
-                                            position.y
-                                        });
-
-                                    workarea_bottom - popup_height - WORKAREA_MARGIN
-                                };
-
-                                let _ = window.set_position(Position::Physical(
-                                    PhysicalPosition::new(x.round() as i32, y.round() as i32),
-                                ));
-                                let _ = window.show();
-                                let _ = window.unminimize();
-                                let _ = window.set_focus();
+                                show_main_window(app, Some(rect));
                             }
+                        } else {
+                            show_main_window(app, Some(rect));
                         }
                     }
-                })
+                });
+
+            #[cfg(not(target_os = "macos"))]
+            let tray_builder = tray_builder.menu(&menu);
+
+            let _tray = tray_builder
                 .build(app)?;
 
             // 启动后延迟 10 秒静默检查更新，避免与其他初始化任务竞争资源
