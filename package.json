@@ -1,6 +1,6 @@
 {
   "name": "usagemeter",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "A lightweight tray application for monitoring Claude Code usage",
   "author": "Smileslove",
   "license": "MIT",

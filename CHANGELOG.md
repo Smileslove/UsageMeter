@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.3] - 2026-06-10
+
+### Added
+
+- **Limit Survival Forecast**: Added an overview survival card with source-aware quota lookup for Claude and GPT subscriptions so remaining runway is visible directly from the dashboard
+- **Usage Share Posters**: Added themed usage poster export from the statistics view for sharing current usage snapshots
+- **Recent Requests Panel**: Added recent request activity in sessions so the latest requests are visible alongside session details
+
+---
+
+### 新增
+
+- **限额生存预测**：概览面板新增限额生存卡，并支持面向 Claude 与 GPT 订阅的来源额度查询，可直接在仪表盘查看剩余可持续时间
+- **用量分享海报**：统计视图新增主题化用量海报导出能力，便于分享当前用量快照
+- **最近请求面板**：会话视图新增最近请求活动展示，可在会话详情旁直接查看最新请求
+
+---
+
+### Fixed
+
+- **macOS Tray Interaction**: Fixed macOS menu bar interaction and unified app exit handling for more reliable tray behavior and quitting
+
+---
+
+### 修复
+
+- **macOS 菜单栏交互**：修复 macOS 菜单栏交互并统一应用退出流程，使托盘行为和退出流程更稳定
+
+---
+
 ## [0.7.2] - 2026-06-06
 
 ### Added
@@ -663,8 +693,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[0.7.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.1
+[0.7.3]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.3
 [0.7.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.2
+[0.7.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.1
 [0.7.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.0
 [0.6.4]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.4
 [0.6.3]: https://github.com/smileslove/UsageMeter/releases/tag/v0.6.3
