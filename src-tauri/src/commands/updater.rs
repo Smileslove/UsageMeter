@@ -226,8 +226,8 @@ pub fn build_dto(update: &tauri_plugin_updater::Update) -> UpdateInfoDto {
         version: update.version.clone(),
         current_version: update.current_version.clone(),
         body: update.body.clone(),
-        // OffsetDateTime 的 Display 实现输出 ISO 8601 格式，直接转字符串
-        date: update.date.map(|d| d.to_string()),
+        // 仅返回稳定的日级日期字符串，避免不同平台对时区日期的解析差异。
+        date: update.date.map(|d| d.date().to_string()),
     }
 }
 
