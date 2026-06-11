@@ -39,7 +39,8 @@ pub async fn get_overview_breakdown(
 ) -> Result<OverviewBreakdown, String> {
     let now = chrono::Utc::now().timestamp();
     let include_errors = settings.proxy.include_error_requests;
-    let cutoff_ms = crate::proxy::UsageCollector::calculate_window_cutoff_public(&window);
+    let cutoff_ms =
+        crate::utils::business_time::business_window_cutoff_epoch(&window, &settings) * 1000;
     let (facts, _) = crate::unified_usage::get_merged_request_facts(
         &settings,
         Some(cutoff_ms / 1000),
@@ -58,7 +59,8 @@ pub async fn get_window_rate_summary(
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<WindowRateSummary, String> {
     let settings = crate::commands::load_settings()?;
-    let cutoff_ms = crate::proxy::UsageCollector::calculate_window_cutoff_public(&window);
+    let cutoff_ms =
+        crate::utils::business_time::business_window_cutoff_epoch(&window, &settings) * 1000;
     let include_errors = settings.proxy.include_error_requests;
     let (facts, _) = crate::unified_usage::get_merged_request_facts(
         &settings,

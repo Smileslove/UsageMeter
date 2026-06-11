@@ -130,6 +130,22 @@ impl ProxyDatabase {
         conn: &Connection,
         date: &str,
     ) -> Result<(), String> {
+        let settings = crate::commands::load_settings().unwrap_or_default();
+        let current_mode =
+            crate::utils::business_time::normalize_day_boundary_mode(&settings.day_boundary_mode);
+        let stored_mode = Self::stored_day_boundary_mode_conn(conn)?;
+        if stored_mode.as_deref() != Some(current_mode.as_str()) {
+            conn.execute("DELETE FROM daily_summary", [])
+                .map_err(|e| format!("Failed to clear daily summary: {}", e))?;
+            conn.execute("DELETE FROM model_usage", [])
+                .map_err(|e| format!("Failed to clear model usage: {}", e))?;
+            Self::set_day_boundary_mode_conn(conn, &current_mode)?;
+        }
+        let (start_epoch, end_epoch) =
+            crate::utils::business_time::business_date_epoch_bounds(date, &settings)?;
+        let start_ms = start_epoch.saturating_mul(1000);
+        let end_ms = end_epoch.saturating_mul(1000);
+
         conn.execute("DELETE FROM daily_summary WHERE date = ?1", [date])
             .map_err(|e| format!("Failed to clear daily summary: {}", e))?;
         conn.execute("DELETE FROM model_usage WHERE date = ?1", [date])
@@ -165,10 +181,10 @@ impl ProxyDatabase {
                 COALESCE(SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END), 0),
                 ?2
             FROM usage_records
-            WHERE date(timestamp / 1000, 'unixepoch', 'localtime') = ?1
+            WHERE timestamp >= ?3 AND timestamp < ?4
             HAVING COUNT(*) > 0
             "#,
-            rusqlite::params![date, chrono::Utc::now().timestamp_millis()],
+            rusqlite::params![date, chrono::Utc::now().timestamp_millis(), start_ms, end_ms],
         )
         .map_err(|e| format!("Failed to refresh daily summary: {}", e))?;
 
@@ -193,10 +209,10 @@ impl ProxyDatabase {
                 COALESCE(SUM(CASE WHEN status_code >= 400 AND status_code < 500 THEN 1 ELSE 0 END), 0),
                 COALESCE(SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END), 0)
             FROM usage_records
-            WHERE date(timestamp / 1000, 'unixepoch', 'localtime') = ?1
+            WHERE timestamp >= ?2 AND timestamp < ?3
             GROUP BY model
             "#,
-            [date],
+            rusqlite::params![date, start_ms, end_ms],
         )
         .map_err(|e| format!("Failed to refresh model usage: {}", e))?;
 

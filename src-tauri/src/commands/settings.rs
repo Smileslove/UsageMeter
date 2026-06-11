@@ -67,6 +67,7 @@ impl std::fmt::Display for SaveSettingsError {
 /// 真正的保存逻辑。供非 Tauri 上下文（后台同步、代理服务器内部）复用。
 pub fn save_settings_internal(settings: AppSettings) -> Result<(), SaveSettingsError> {
     let mut settings = settings;
+    let previous_settings = load_settings().unwrap_or_default();
     normalize_settings(&mut settings).map_err(SaveSettingsError::Other)?;
     let path = AppSettings::settings_path().map_err(SaveSettingsError::Other)?;
     if let Some(parent) = path.parent() {
@@ -78,6 +79,10 @@ pub fn save_settings_internal(settings: AppSettings) -> Result<(), SaveSettingsE
         .map_err(|e| SaveSettingsError::Other(format!("ERR_SERIALIZE_SETTINGS: {e}")))?;
     fs::write(path, content)
         .map_err(|e| SaveSettingsError::Other(format!("ERR_WRITE_SETTINGS: {e}")))?;
+
+    if previous_settings.day_boundary_mode != settings.day_boundary_mode {
+        reset_day_boundary_caches().map_err(SaveSettingsError::Other)?;
+    }
 
     if let Err(err) = HttpClientFactory::global().reload(&settings.network_proxy) {
         eprintln!("[UsageMeter] {err}");
@@ -93,6 +98,7 @@ fn normalize_settings(settings: &mut AppSettings) -> Result<(), String> {
     migrate_client_tools(settings);
     migrate_api_sources(settings);
     migrate_sync(settings)?;
+    migrate_day_boundary(settings);
     Ok(())
 }
 
@@ -205,6 +211,22 @@ fn migrate_sync(settings: &mut AppSettings) -> Result<(), String> {
     };
     crate::models::validate_sync_device_id(&settings.sync.device_id)?;
     settings.sync.include_session_text = false;
+    Ok(())
+}
+
+fn migrate_day_boundary(settings: &mut AppSettings) {
+    settings.day_boundary_mode =
+        crate::utils::business_time::normalize_day_boundary_mode(&settings.day_boundary_mode);
+}
+
+fn reset_day_boundary_caches() -> Result<(), String> {
+    if let Ok(local_db) = crate::local_usage::LocalUsageDatabase::get_global() {
+        local_db.clear_unified_materialization()?;
+    }
+    if let Some(proxy_db) = crate::proxy::ProxyDatabase::get_global() {
+        proxy_db.clear_daily_rollups()?;
+    }
+    crate::unified_usage::clear_runtime_caches();
     Ok(())
 }
 

@@ -20,9 +20,10 @@ impl LocalUsageDatabase {
 
     pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 12 {
+        if schema_version >= 13 {
             return Ok(());
         }
+        let mut cleared_runtime_caches = false;
 
         if schema_version < 2 {
             let tx = conn
@@ -300,6 +301,7 @@ impl LocalUsageDatabase {
                 .map_err(|e| format!("Failed to clear v9 daily summary: {}", e))?;
             tx.execute("DELETE FROM unified_daily_model_summary", [])
                 .map_err(|e| format!("Failed to clear v9 model summary: {}", e))?;
+            cleared_runtime_caches = true;
             tx.execute(
                 "INSERT INTO local_sync_state (state_key, state_value, updated_at)
                  VALUES ('schema_version', '9', ?1)
@@ -367,6 +369,7 @@ impl LocalUsageDatabase {
             )?;
             tx.execute("DELETE FROM unified_daily_model_summary", [])
                 .map_err(|e| format!("Failed to clear v11 model summary: {}", e))?;
+            cleared_runtime_caches = true;
             tx.execute(
                 "INSERT INTO local_sync_state (state_key, state_value, updated_at)
                  VALUES ('schema_version', '11', ?1)
@@ -402,6 +405,41 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to update v12 schema version: {}", e))?;
             tx.commit()
                 .map_err(|e| format!("Failed to commit v12 schema migration: {}", e))?;
+        }
+
+        if schema_version < 13 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v13 schema migration: {}", e))?;
+
+            Self::add_column_if_missing(
+                &tx,
+                "unified_daily_materialization_state",
+                "day_boundary_mode",
+                "TEXT NOT NULL DEFAULT 'standard'",
+            )?;
+            tx.execute("DELETE FROM unified_daily_materialization_state", [])
+                .map_err(|e| format!("Failed to clear v13 materialization state: {}", e))?;
+            tx.execute("DELETE FROM unified_daily_summary", [])
+                .map_err(|e| format!("Failed to clear v13 daily summary: {}", e))?;
+            tx.execute("DELETE FROM unified_daily_model_summary", [])
+                .map_err(|e| format!("Failed to clear v13 model summary: {}", e))?;
+            cleared_runtime_caches = true;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '13', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v13 schema version: {}", e))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v13 schema migration: {}", e))?;
+        }
+
+        if cleared_runtime_caches {
+            crate::unified_usage::clear_runtime_caches();
         }
 
         Ok(())

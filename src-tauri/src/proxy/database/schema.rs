@@ -1,6 +1,5 @@
 use super::ProxyDatabase;
 use crate::models::ModelPricingConfig;
-use chrono::{Local, TimeZone};
 use rusqlite::{params, Connection};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -96,6 +95,12 @@ impl ProxyDatabase {
                 client_error_requests INTEGER NOT NULL DEFAULT 0,
                 server_error_requests INTEGER NOT NULL DEFAULT 0,
                 finalized_at INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS daily_rollup_state (
+                state_key TEXT PRIMARY KEY,
+                state_value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS model_usage (
@@ -265,6 +270,12 @@ impl ProxyDatabase {
         );
         let _ = conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_usage_canonical_key ON usage_records(canonical_request_key)",
+            [],
+        );
+        let _ = conn.execute(
+            "INSERT INTO daily_rollup_state (state_key, state_value, updated_at)
+             VALUES ('day_boundary_mode', 'standard', strftime('%s', 'now'))
+             ON CONFLICT(state_key) DO NOTHING",
             [],
         );
 
@@ -506,15 +517,28 @@ impl ProxyDatabase {
     }
 
     pub(super) fn record_local_date(timestamp_ms: i64) -> String {
-        Local
-            .timestamp_opt(timestamp_ms / 1000, 0)
-            .single()
-            .unwrap_or_else(Local::now)
-            .format("%Y-%m-%d")
-            .to_string()
+        let settings = crate::commands::load_settings().unwrap_or_default();
+        Self::record_local_date_with_settings(timestamp_ms, &settings)
     }
 
     pub(super) fn today_local_date() -> String {
-        Local::now().format("%Y-%m-%d").to_string()
+        let settings = crate::commands::load_settings().unwrap_or_default();
+        Self::today_local_date_with_settings(&settings)
+    }
+
+    pub(super) fn record_local_date_with_settings(
+        timestamp_ms: i64,
+        settings: &crate::models::AppSettings,
+    ) -> String {
+        crate::utils::business_time::business_date_for_timestamp_ms(timestamp_ms, settings)
+    }
+
+    pub(super) fn today_local_date_with_settings(settings: &crate::models::AppSettings) -> String {
+        crate::utils::business_time::current_business_date(settings)
+    }
+
+    pub(super) fn current_day_boundary_mode() -> String {
+        let settings = crate::commands::load_settings().unwrap_or_default();
+        crate::utils::business_time::normalize_day_boundary_mode(&settings.day_boundary_mode)
     }
 }

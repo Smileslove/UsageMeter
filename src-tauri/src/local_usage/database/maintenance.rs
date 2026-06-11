@@ -1,6 +1,6 @@
 use rusqlite::params;
 
-use super::LocalUsageDatabase;
+use super::{LocalUsageDatabase, TimestampSqlColumn};
 
 impl LocalUsageDatabase {
     pub fn clear_imported_remote_data(&self) -> Result<(), String> {
@@ -60,13 +60,17 @@ impl LocalUsageDatabase {
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| format!("Failed to start orphan purge transaction: {}", e))?;
+        let settings = crate::commands::load_settings().unwrap_or_default();
+        let today = Self::today_local_date_with_settings(&settings);
+        let date_expr =
+            Self::business_date_sql_expr_for_timestamp(&settings, TimestampSqlColumn::Timestamp);
         let touched_history_dates: Vec<String> = {
             let mut stmt = tx
-                .prepare(
-                    "SELECT DISTINCT strftime('%Y-%m-%d', timestamp, 'unixepoch', 'localtime')
+                .prepare(&format!(
+                    "SELECT DISTINCT {date_expr} AS business_date
                      FROM local_request_facts
-                     WHERE source_file_present = 0 AND created_at <= ?1",
-                )
+                     WHERE source_file_present = 0 AND created_at <= ?1"
+                ))
                 .map_err(|e| format!("Failed to prepare orphan day query: {}", e))?;
             let rows = stmt
                 .query_map(params![cutoff], |row| row.get::<_, String>(0))
@@ -74,7 +78,7 @@ impl LocalUsageDatabase {
             let mut dates = Vec::new();
             for row in rows {
                 let date = row.map_err(|e| format!("Failed to read orphan day row: {}", e))?;
-                if date < Self::today_local_date() {
+                if date < today {
                     dates.push(date);
                 }
             }

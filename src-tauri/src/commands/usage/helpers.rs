@@ -1,7 +1,7 @@
-use crate::unified_usage::MergedRequestFact;
+use crate::{models::AppSettings, unified_usage::MergedRequestFact};
 
-pub(crate) fn usage_window_cutoff_epoch(window: &str) -> i64 {
-    crate::proxy::UsageCollector::calculate_window_cutoff_public(window) / 1000
+pub(crate) fn usage_window_cutoff_epoch(window: &str, settings: &AppSettings) -> i64 {
+    crate::utils::business_time::business_window_cutoff_epoch(window, settings)
 }
 
 pub(crate) fn perf_logging_enabled() -> bool {

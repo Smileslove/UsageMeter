@@ -1,5 +1,5 @@
+use crate::models::AppSettings;
 use crate::session::{LocalRequestRecord, SessionMeta};
-use chrono::{Local, LocalResult, NaiveDate, TimeZone};
 use rusqlite::Connection;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
@@ -25,6 +25,19 @@ mod tests;
 mod types;
 
 pub use types::*;
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum TimestampSqlColumn {
+    Timestamp,
+}
+
+impl TimestampSqlColumn {
+    fn as_sql_identifier(self) -> &'static str {
+        match self {
+            Self::Timestamp => "timestamp",
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 struct DirtySessionSync {
@@ -124,34 +137,40 @@ impl LocalUsageDatabase {
     }
 
     pub fn today_local_date() -> String {
-        Local::now().format("%Y-%m-%d").to_string()
+        let settings = crate::commands::load_settings().unwrap_or_default();
+        Self::today_local_date_with_settings(&settings)
     }
 
+    #[allow(dead_code)]
     pub fn local_date_epoch_bounds(local_date: &str) -> Result<(i64, i64), String> {
-        let date = NaiveDate::parse_from_str(local_date, "%Y-%m-%d")
-            .map_err(|e| format!("Invalid local date `{local_date}`: {e}"))?;
-        let next_date = date
-            .succ_opt()
-            .ok_or_else(|| format!("Invalid local date `{local_date}`"))?;
-        let start = Self::resolve_local_day_boundary(date, local_date)?;
-        let end = Self::resolve_local_day_boundary(next_date, local_date)?;
-        Ok((start, end))
+        let settings = crate::commands::load_settings().unwrap_or_default();
+        Self::local_date_epoch_bounds_with_settings(local_date, &settings)
     }
 
-    fn resolve_local_day_boundary(date: NaiveDate, label: &str) -> Result<i64, String> {
-        for hour in 0..24 {
-            let Some(naive) = date.and_hms_opt(hour, 0, 0) else {
-                continue;
-            };
-            match Local.from_local_datetime(&naive) {
-                LocalResult::Single(dt) => return Ok(dt.timestamp()),
-                LocalResult::Ambiguous(earliest, _) => return Ok(earliest.timestamp()),
-                LocalResult::None => continue,
-            }
+    pub fn today_local_date_with_settings(settings: &AppSettings) -> String {
+        crate::utils::business_time::current_business_date(settings)
+    }
+
+    pub fn local_date_epoch_bounds_with_settings(
+        local_date: &str,
+        settings: &AppSettings,
+    ) -> Result<(i64, i64), String> {
+        crate::utils::business_time::business_date_epoch_bounds(local_date, settings)
+    }
+
+    pub(super) fn business_date_sql_expr_for_timestamp(
+        settings: &AppSettings,
+        timestamp_column: TimestampSqlColumn,
+    ) -> String {
+        let timestamp_column = timestamp_column.as_sql_identifier();
+        match crate::utils::business_time::business_day_start_hour(settings) {
+            0 => format!(
+                "strftime('%Y-%m-%d', {timestamp_column}, 'unixepoch', 'localtime')"
+            ),
+            hour => format!(
+                "strftime('%Y-%m-%d', {timestamp_column}, 'unixepoch', 'localtime', '-{hour} hours')"
+            ),
         }
-        Err(format!(
-            "Failed to resolve local day boundary for `{label}` in local timezone"
-        ))
     }
 }
 

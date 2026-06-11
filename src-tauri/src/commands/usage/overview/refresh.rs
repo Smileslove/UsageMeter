@@ -30,7 +30,12 @@ pub(super) async fn prepare_usage_refresh_data(
     let include_errors = settings.proxy.include_error_requests;
     let mut window_cutoffs: Vec<(String, i64)> = USAGE_WINDOWS
         .iter()
-        .map(|window| ((*window).to_string(), usage_window_cutoff_epoch(window)))
+        .map(|window| {
+            (
+                (*window).to_string(),
+                usage_window_cutoff_epoch(window, settings),
+            )
+        })
         .collect();
     let summary_window = settings.summary_window.clone();
     if !window_cutoffs
@@ -39,7 +44,7 @@ pub(super) async fn prepare_usage_refresh_data(
     {
         window_cutoffs.push((
             summary_window.clone(),
-            usage_window_cutoff_epoch(&summary_window),
+            usage_window_cutoff_epoch(&summary_window, settings),
         ));
     }
 

@@ -3,7 +3,6 @@
 use super::database::{ProxyDatabase, WindowRateStats};
 use super::types::{SessionStats, UsageRecord, WindowStats};
 use crate::models::ModelPricingConfig;
-use chrono::{Datelike, Duration, Local, TimeZone};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -211,61 +210,9 @@ impl UsageCollector {
     ///
     /// 返回窗口开始时间的 Unix 时间戳（毫秒）
     pub fn calculate_window_cutoff_public(window: &str) -> i64 {
-        let now = Local::now();
-
-        match window {
-            "5h" => {
-                // 滑动窗口：当前时间往前推 5 小时
-                let cutoff = now - Duration::hours(5);
-                cutoff.timestamp_millis()
-            }
-            "24h" => {
-                // 滑动窗口：当前时间往前推 24 小时
-                let cutoff = now - Duration::hours(24);
-                cutoff.timestamp_millis()
-            }
-            "today" => {
-                // 自然日：今天 00:00:00
-                let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
-                Local
-                    .from_local_datetime(&today_start)
-                    .unwrap()
-                    .timestamp_millis()
-            }
-            "7d" => {
-                // 自然周：本周一 00:00:00
-                let weekday = now.weekday().num_days_from_monday();
-                let monday = now.date_naive() - Duration::days(weekday as i64);
-                let week_start = monday.and_hms_opt(0, 0, 0).unwrap();
-                Local
-                    .from_local_datetime(&week_start)
-                    .unwrap()
-                    .timestamp_millis()
-            }
-            "30d" => {
-                // 滑动窗口：当前时间往前推 30 天
-                let cutoff = now - Duration::days(30);
-                cutoff.timestamp_millis()
-            }
-            "current_month" => {
-                // 自然月：本月 1 日 00:00:00
-                let month_start = now
-                    .date_naive()
-                    .with_day(1)
-                    .unwrap()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap();
-                Local
-                    .from_local_datetime(&month_start)
-                    .unwrap()
-                    .timestamp_millis()
-            }
-            _ => {
-                // 默认：24 小时滑动窗口
-                let cutoff = now - Duration::hours(24);
-                cutoff.timestamp_millis()
-            }
-        }
+        let settings = crate::commands::load_settings().unwrap_or_default();
+        crate::utils::business_time::business_window_cutoff_epoch(window, &settings)
+            .saturating_mul(1000)
     }
 
     /// 获取所有时间窗口的统计数据
@@ -422,11 +369,13 @@ impl Default for UsageCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Datelike, Duration, Local, TimeZone};
 
     #[test]
     fn test_window_cutoff_calculation() {
         // 测试窗口截止时间计算是否正确
         let now = Local::now();
+        let settings = crate::commands::load_settings().unwrap_or_default();
 
         // 5h 滑动窗口：应该约为 5 小时前
         let cutoff_5h = UsageCollector::calculate_window_cutoff("5h");
@@ -439,13 +388,10 @@ mod tests {
         let expected_24h = (now - Duration::hours(24)).timestamp_millis();
         assert!((cutoff_24h - expected_24h).abs() < 1000);
 
-        // today 自然日：应该是今天 00:00:00
+        // today 业务日：应该与业务日边界一致
         let cutoff_today = UsageCollector::calculate_window_cutoff("today");
-        let today_start = now.date_naive().and_hms_opt(0, 0, 0).unwrap();
-        let expected_today = Local
-            .from_local_datetime(&today_start)
-            .unwrap()
-            .timestamp_millis();
+        let expected_today =
+            crate::utils::business_time::business_window_cutoff_epoch("today", &settings) * 1000;
         assert_eq!(cutoff_today, expected_today);
 
         // 7d 自然周：应该是本周一 00:00:00
@@ -464,18 +410,11 @@ mod tests {
         let expected_30d = (now - Duration::days(30)).timestamp_millis();
         assert!((cutoff_30d - expected_30d).abs() < 1000);
 
-        // current_month 自然月：应该是本月 1 日 00:00:00
+        // current_month 业务月：应该与业务月边界一致
         let cutoff_current_month = UsageCollector::calculate_window_cutoff("current_month");
-        let month_start = now
-            .date_naive()
-            .with_day(1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let expected_current_month = Local
-            .from_local_datetime(&month_start)
-            .unwrap()
-            .timestamp_millis();
+        let expected_current_month =
+            crate::utils::business_time::business_window_cutoff_epoch("current_month", &settings)
+                * 1000;
         assert_eq!(cutoff_current_month, expected_current_month);
     }
 

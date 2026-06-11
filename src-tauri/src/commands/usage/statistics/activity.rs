@@ -7,7 +7,7 @@ use super::shared::{
     collect_day_activity_from_facts, month_day_count, to_date_key, DayAccumulatorMap,
 };
 use crate::models::AppSettings;
-use chrono::{Local, NaiveDate, TimeZone};
+use chrono::{Local, NaiveDate};
 use std::collections::HashMap;
 
 async fn load_activity_day_map(
@@ -40,7 +40,7 @@ async fn load_activity_day_map(
     )
     .await?;
     let facts_count = facts.len();
-    collect_day_activity_from_facts(facts, &mut day_map);
+    collect_day_activity_from_facts(facts, &mut day_map, settings);
     let mut days_by_date = HashMap::new();
     for (date, (acc, models)) in day_map {
         let error_requests = acc.client_error_requests + acc.server_error_requests;
@@ -73,21 +73,23 @@ pub(super) async fn get_month_activity_impl(
 ) -> Result<MonthActivity, String> {
     let started_at = std::time::Instant::now();
     let day_count = month_day_count(year, month);
-    let month_start = Local
-        .with_ymd_and_hms(year, month as u32, 1, 0, 0, 0)
-        .single()
-        .unwrap_or_else(Local::now)
-        .timestamp();
+    let month_start = crate::utils::business_time::business_date_epoch_bounds(
+        &format!("{year}-{month:02}-01"),
+        &settings,
+    )
+    .map(|(start, _)| start)
+    .unwrap_or_else(|_| Local::now().timestamp());
     let next_month = if month == 12 {
         (year + 1, 1)
     } else {
         (year, month as u32 + 1)
     };
-    let month_end = Local
-        .with_ymd_and_hms(next_month.0, next_month.1, 1, 0, 0, 0)
-        .single()
-        .unwrap_or_else(Local::now)
-        .timestamp();
+    let month_end = crate::utils::business_time::business_date_epoch_bounds(
+        &format!("{}-{:02}-01", next_month.0, next_month.1),
+        &settings,
+    )
+    .map(|(start, _)| start)
+    .unwrap_or_else(|_| Local::now().timestamp());
 
     let include_errors = settings.proxy.include_error_requests;
     let aggregate_started_at = std::time::Instant::now();
@@ -109,11 +111,11 @@ pub(super) async fn get_month_activity_impl(
     let activity = MonthActivity {
         year,
         month,
-        timezone: settings.timezone,
+        timezone: settings.timezone.clone(),
         metric,
         days,
     };
-    let today_key = to_date_key(Local::now().timestamp());
+    let today_key = to_date_key(Local::now().timestamp(), &settings);
     let today_requests = activity
         .days
         .iter()
@@ -143,16 +145,18 @@ pub(super) async fn get_year_activity_impl(
     settings: AppSettings,
 ) -> Result<YearActivity, String> {
     let started_at = std::time::Instant::now();
-    let year_start = Local
-        .with_ymd_and_hms(year, 1, 1, 0, 0, 0)
-        .single()
-        .unwrap_or_else(Local::now)
-        .timestamp();
-    let year_end = Local
-        .with_ymd_and_hms(year + 1, 1, 1, 0, 0, 0)
-        .single()
-        .unwrap_or_else(Local::now)
-        .timestamp();
+    let year_start = crate::utils::business_time::business_date_epoch_bounds(
+        &format!("{year}-01-01"),
+        &settings,
+    )
+    .map(|(start, _)| start)
+    .unwrap_or_else(|_| Local::now().timestamp());
+    let year_end = crate::utils::business_time::business_date_epoch_bounds(
+        &format!("{}-01-01", year + 1),
+        &settings,
+    )
+    .map(|(start, _)| start)
+    .unwrap_or_else(|_| Local::now().timestamp());
 
     let include_errors = settings.proxy.include_error_requests;
     let aggregate_started_at = std::time::Instant::now();
@@ -191,11 +195,11 @@ pub(super) async fn get_year_activity_impl(
 
     let activity = YearActivity {
         year,
-        timezone: settings.timezone,
+        timezone: settings.timezone.clone(),
         metric,
         days,
     };
-    let today_key = to_date_key(Local::now().timestamp());
+    let today_key = to_date_key(Local::now().timestamp(), &settings);
     let today_requests = activity
         .days
         .iter()

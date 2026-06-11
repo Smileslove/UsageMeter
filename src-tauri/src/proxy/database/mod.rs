@@ -1,6 +1,6 @@
 //! SQLite 数据库，用于持久化代理使用数据
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,6 +45,47 @@ pub struct ProxyDatabase {
 }
 
 impl ProxyDatabase {
+    fn stored_day_boundary_mode_conn(conn: &Connection) -> Result<Option<String>, String> {
+        conn.query_row(
+            "SELECT state_value FROM daily_rollup_state WHERE state_key = 'day_boundary_mode'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to load proxy daily rollup state: {}", e))
+    }
+
+    fn set_day_boundary_mode_conn(conn: &Connection, mode: &str) -> Result<(), String> {
+        conn.execute(
+            "INSERT INTO daily_rollup_state (state_key, state_value, updated_at)
+             VALUES ('day_boundary_mode', ?1, ?2)
+             ON CONFLICT(state_key) DO UPDATE
+             SET state_value = excluded.state_value,
+                 updated_at = excluded.updated_at",
+            rusqlite::params![mode, chrono::Utc::now().timestamp()],
+        )
+        .map_err(|e| format!("Failed to store proxy day boundary mode: {}", e))?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub fn ensure_daily_rollup_mode_current(&self) -> Result<(), String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+        let current_mode = Self::current_day_boundary_mode();
+        let stored_mode = Self::stored_day_boundary_mode_conn(&conn)?;
+        if stored_mode.as_deref() != Some(current_mode.as_str()) {
+            conn.execute("DELETE FROM daily_summary", [])
+                .map_err(|e| format!("Failed to clear proxy daily summary: {}", e))?;
+            conn.execute("DELETE FROM model_usage", [])
+                .map_err(|e| format!("Failed to clear proxy model usage: {}", e))?;
+            Self::set_day_boundary_mode_conn(&conn, &current_mode)?;
+        }
+        Ok(())
+    }
+
     /// 获取全局数据库实例（用于查询操作）
     /// 如果数据库文件存在，返回共享的数据库实例
     /// 如果不存在，返回 None
@@ -112,6 +153,19 @@ impl ProxyDatabase {
         } else {
             v as u64
         }
+    }
+
+    pub fn clear_daily_rollups(&self) -> Result<(), String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {}", e))?;
+        conn.execute("DELETE FROM daily_summary", [])
+            .map_err(|e| format!("Failed to clear proxy daily summary: {}", e))?;
+        conn.execute("DELETE FROM model_usage", [])
+            .map_err(|e| format!("Failed to clear proxy model usage: {}", e))?;
+        Self::set_day_boundary_mode_conn(&conn, &Self::current_day_boundary_mode())?;
+        Ok(())
     }
 }
 

@@ -620,14 +620,18 @@ impl ProxyDatabase {
 
         let pricings = vec![pricing.clone()];
         let snapshot_id = Self::pricing_snapshot_id(&pricings, "exact");
+        let settings = crate::commands::load_settings().unwrap_or_default();
+        let today = Self::today_local_date_with_settings(&settings);
 
         let touched_dates: std::collections::HashSet<String> = records
             .iter()
             .filter(|(_, timestamp, _, _, _, _, _)| {
-                let date = Self::record_local_date(*timestamp);
-                date < Self::today_local_date()
+                let date = Self::record_local_date_with_settings(*timestamp, &settings);
+                date < today
             })
-            .map(|(_, timestamp, _, _, _, _, _)| Self::record_local_date(*timestamp))
+            .map(|(_, timestamp, _, _, _, _, _)| {
+                Self::record_local_date_with_settings(*timestamp, &settings)
+            })
             .collect();
 
         let tx = conn

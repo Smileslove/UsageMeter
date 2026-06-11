@@ -1,6 +1,8 @@
 use super::*;
 use crate::models::ToolFilter;
+use crate::unified_usage;
 use crate::unified_usage::{CoverageOrigin, MergedRequestFact};
+use chrono::TimeZone;
 use rusqlite::{params, Connection};
 use std::fs;
 use std::sync::{Mutex, MutexGuard, OnceLock};
@@ -933,6 +935,7 @@ fn unified_materialized_facts_round_trip() {
     };
     let state = UnifiedDayMaterializationState {
         local_date: local_date.clone(),
+        day_boundary_mode: "standard".to_string(),
         fact_count: 1,
         local_request_count: 1,
         local_max_sync_version: 7,
@@ -963,6 +966,7 @@ fn unified_materialized_facts_round_trip() {
         .expect("load state")
         .expect("state exists");
     assert_eq!(loaded_state, state);
+    assert_eq!(loaded_state.day_boundary_mode, "standard");
 
     let loaded = db
         .get_unified_facts_for_dates(std::slice::from_ref(&local_date), &ToolFilter::All)
@@ -988,6 +992,343 @@ fn unified_materialized_facts_round_trip() {
     assert_eq!(summaries[0].success_request_count, 1);
     assert_eq!(summaries[0].model_count, 1);
     assert_eq!(summaries[0].success_model_count, 1);
+}
+
+#[test]
+fn unified_materialization_state_persists_day_boundary_mode() {
+    let (_tmp, db) = temp_db();
+    let local_date = "2026-05-27".to_string();
+    let fact = MergedRequestFact {
+        canonical_request_key: "claude_code:msg-night".to_string(),
+        session_id: "sess-night".to_string(),
+        project_name: None,
+        project_path: None,
+        api_key_prefix: None,
+        request_base_url: None,
+        tool: "claude_code".to_string(),
+        timestamp_sec: 1_779_897_600,
+        timestamp_ms: 1_779_897_600_123,
+        model: "claude-sonnet-4".to_string(),
+        input_tokens: 8,
+        output_tokens: 12,
+        cache_create_tokens: 0,
+        cache_read_tokens: 0,
+        total_tokens: 20,
+        estimated_cost: 0.8,
+        coverage_origin: CoverageOrigin::LocalOnly,
+        status_code: Some(200),
+        duration_ms: None,
+        output_tokens_per_second: None,
+        ttft_ms: None,
+        source_label: None,
+    };
+
+    db.replace_unified_day_materialization(
+        &local_date,
+        &[(String::from("claude_code:msg-night"), fact)],
+        &UnifiedDayMaterializationState {
+            local_date: local_date.clone(),
+            day_boundary_mode: "night_owl".to_string(),
+            fact_count: 1,
+            local_request_count: 1,
+            local_max_sync_version: 1,
+            local_max_timestamp: 1_779_897_600,
+            remote_request_count: 0,
+            remote_max_export_seq: 0,
+            remote_max_timestamp: 0,
+            proxy_record_count: 0,
+            proxy_all_record_count: 0,
+            proxy_max_timestamp_ms: 0,
+            proxy_max_updated_at: 0,
+            max_fact_timestamp_ms: 1_779_897_600_123,
+            pricing_fingerprint: 7,
+            is_finalized: true,
+            finalized_at: Some(300),
+            materialized_at: 300,
+        },
+    )
+    .unwrap();
+
+    let state = db
+        .get_unified_day_materialization_state(&local_date)
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.day_boundary_mode, "night_owl");
+}
+
+#[test]
+fn unified_day_local_snapshot_with_settings_uses_passed_day_boundary_mode() {
+    let (_tmp, db) = temp_db();
+    let tmp_home = tempfile::tempdir().expect("create temp home");
+    let old_home = std::env::var_os("HOME");
+    std::env::set_var("HOME", tmp_home.path());
+
+    let settings_dir = tmp_home.path().join(".usagemeter");
+    fs::create_dir_all(&settings_dir).expect("create settings dir");
+    fs::write(
+        settings_dir.join("settings.json"),
+        serde_json::json!({
+            "dayBoundaryMode": "night_owl"
+        })
+        .to_string(),
+    )
+    .expect("write settings");
+
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO local_request_facts (
+                request_id, session_id, tool, project_key, timestamp, message_id, dedupe_key,
+                request_key, model, input_tokens, output_tokens, cache_create_tokens,
+                cache_read_tokens, total_tokens, source_file_path, source_file_present,
+                created_at, raw_event_kind, sync_version, is_subagent
+             ) VALUES (
+                'rid-1', 'sess-1', 'claude_code', 'p', ?1, 'msg-1', 'sess-1:msg-1',
+                'claude_code:msg-1', 'claude-3', 1, 2, 0, 0, 3, '/tmp/a.jsonl', 1,
+                ?1, 'request', 1, 0
+             )",
+            params![1_779_818_400_i64],
+        )
+        .expect("insert midnight fact");
+    }
+
+    let mut standard_settings = AppSettings::default();
+    standard_settings.day_boundary_mode = "standard".to_string();
+
+    let standard_snapshot = db
+        .get_unified_day_local_snapshot_with_settings("2026-05-27", &standard_settings)
+        .expect("load standard snapshot");
+    let night_owl_snapshot = db
+        .get_unified_day_local_snapshot("2026-05-27")
+        .expect("load global night owl snapshot");
+
+    assert_eq!(standard_snapshot.local_request_count, 1);
+    assert_eq!(night_owl_snapshot.local_request_count, 0);
+
+    match old_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+}
+
+#[test]
+fn v13_migration_clears_runtime_merge_cache() {
+    let (_tmp, db) = temp_db();
+    unified_usage::clear_runtime_caches();
+    unified_usage::seed_runtime_merge_cache_for_test();
+    assert_eq!(unified_usage::runtime_merge_cache_len_for_test(), 1);
+
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE local_sync_state SET state_value = '12' WHERE state_key = 'schema_version'",
+            [],
+        )
+        .expect("degrade schema version");
+    }
+
+    let reopened = LocalUsageDatabase::new_with_path(&_tmp.path().join("local_usage.db"))
+        .expect("reopen and migrate");
+    drop(reopened);
+    assert_eq!(unified_usage::runtime_merge_cache_len_for_test(), 0);
+}
+
+#[test]
+fn today_local_date_with_settings_uses_passed_day_boundary_mode() {
+    let tmp_home = tempfile::tempdir().expect("create temp home");
+    let old_home = std::env::var_os("HOME");
+    std::env::set_var("HOME", tmp_home.path());
+
+    let settings_dir = tmp_home.path().join(".usagemeter");
+    fs::create_dir_all(&settings_dir).expect("create settings dir");
+    fs::write(
+        settings_dir.join("settings.json"),
+        serde_json::json!({
+            "dayBoundaryMode": "night_owl"
+        })
+        .to_string(),
+    )
+    .expect("write settings");
+
+    let mut standard_settings = AppSettings::default();
+    standard_settings.day_boundary_mode = "standard".to_string();
+
+    let standard_today = LocalUsageDatabase::today_local_date_with_settings(&standard_settings);
+    let global_today = LocalUsageDatabase::today_local_date();
+
+    if global_today != standard_today {
+        assert_ne!(global_today, standard_today);
+    }
+
+    match old_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+}
+
+#[test]
+fn collect_history_dates_for_session_uses_sql_business_day_bucketing() {
+    let (_tmp, db) = temp_db();
+    let mut settings = AppSettings::default();
+    settings.day_boundary_mode = "night_owl".to_string();
+
+    let late_night_ts = chrono::Local
+        .with_ymd_and_hms(2026, 6, 12, 1, 30, 0)
+        .single()
+        .expect("build late night ts")
+        .timestamp();
+    let morning_ts = chrono::Local
+        .with_ymd_and_hms(2026, 6, 12, 9, 0, 0)
+        .single()
+        .expect("build morning ts")
+        .timestamp();
+
+    insert_request_fact(
+        &db,
+        "sess-night",
+        "msg-1",
+        "/tmp/night.jsonl",
+        true,
+        late_night_ts,
+    );
+    insert_request_fact(
+        &db,
+        "sess-night",
+        "msg-2",
+        "/tmp/night.jsonl",
+        true,
+        morning_ts,
+    );
+
+    let conn = db.conn.lock().unwrap();
+    let tx = conn.unchecked_transaction().expect("open tx");
+    let dates = LocalUsageDatabase::collect_history_dates_for_session_tx(
+        &tx,
+        "sess-night",
+        &settings,
+        "2026-06-13",
+    )
+    .expect("collect history dates");
+    drop(tx);
+
+    assert_eq!(dates.len(), 2);
+    assert!(dates.contains("2026-06-11"));
+    assert!(dates.contains("2026-06-12"));
+}
+
+#[test]
+fn business_date_sql_expr_uses_whitelisted_timestamp_columns() {
+    let standard = AppSettings::default();
+    assert_eq!(
+        LocalUsageDatabase::business_date_sql_expr_for_timestamp(
+            &standard,
+            TimestampSqlColumn::Timestamp,
+        ),
+        "strftime('%Y-%m-%d', timestamp, 'unixepoch', 'localtime')"
+    );
+
+    let mut night_owl = AppSettings::default();
+    night_owl.day_boundary_mode = "night_owl".to_string();
+    assert_eq!(
+        LocalUsageDatabase::business_date_sql_expr_for_timestamp(
+            &night_owl,
+            TimestampSqlColumn::Timestamp,
+        ),
+        "strftime('%Y-%m-%d', timestamp, 'unixepoch', 'localtime', '-4 hours')"
+    );
+}
+
+#[test]
+fn purge_orphan_uses_business_day_bucketing_for_invalidated_dates() {
+    let (_tmp, db) = temp_db();
+    let mut settings = AppSettings::default();
+    settings.day_boundary_mode = "night_owl".to_string();
+    let orphan_ts = (chrono::Local::now() - chrono::Duration::hours(30)).timestamp();
+    let local_date = crate::utils::business_time::business_date_for_timestamp(orphan_ts, &settings);
+    let fact = MergedRequestFact {
+        canonical_request_key: "claude_code:orphan-midnight".to_string(),
+        session_id: "sess-orphan".to_string(),
+        project_name: None,
+        project_path: None,
+        api_key_prefix: None,
+        request_base_url: None,
+        tool: "claude_code".to_string(),
+        timestamp_sec: orphan_ts,
+        timestamp_ms: orphan_ts * 1000 + 123,
+        model: "claude-sonnet-4".to_string(),
+        input_tokens: 1,
+        output_tokens: 2,
+        cache_create_tokens: 0,
+        cache_read_tokens: 0,
+        total_tokens: 3,
+        estimated_cost: 0.1,
+        coverage_origin: CoverageOrigin::LocalOnly,
+        status_code: Some(200),
+        duration_ms: None,
+        output_tokens_per_second: None,
+        ttft_ms: None,
+        source_label: None,
+    };
+    db.replace_unified_day_materialization(
+        &local_date,
+        &[(String::from("claude_code:orphan-midnight"), fact)],
+        &UnifiedDayMaterializationState {
+            local_date: local_date.clone(),
+            day_boundary_mode: "night_owl".to_string(),
+            fact_count: 1,
+            local_request_count: 1,
+            local_max_sync_version: 1,
+            local_max_timestamp: orphan_ts,
+            remote_request_count: 0,
+            remote_max_export_seq: 0,
+            remote_max_timestamp: 0,
+            proxy_record_count: 0,
+            proxy_all_record_count: 0,
+            proxy_max_timestamp_ms: 0,
+            proxy_max_updated_at: 0,
+            max_fact_timestamp_ms: orphan_ts * 1000 + 123,
+            pricing_fingerprint: 7,
+            is_finalized: true,
+            finalized_at: Some(300),
+            materialized_at: 300,
+        },
+    )
+    .unwrap();
+
+    let tmp_home = tempfile::tempdir().expect("create temp home");
+    let old_home = std::env::var_os("HOME");
+    std::env::set_var("HOME", tmp_home.path());
+    let settings_dir = tmp_home.path().join(".usagemeter");
+    fs::create_dir_all(&settings_dir).expect("create settings dir");
+    fs::write(
+        settings_dir.join("settings.json"),
+        serde_json::json!({
+            "dayBoundaryMode": "night_owl"
+        })
+        .to_string(),
+    )
+    .expect("write settings");
+
+    insert_request_fact(
+        &db,
+        "sess-orphan",
+        "msg-orphan",
+        "/tmp/orphan.jsonl",
+        false,
+        orphan_ts,
+    );
+
+    let removed = db.purge_orphan_facts(0).unwrap();
+    assert_eq!(removed, 1);
+    assert!(db
+        .get_unified_day_materialization_state(&local_date)
+        .unwrap()
+        .is_none());
+
+    match old_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
 }
 
 #[test]
@@ -1023,6 +1364,7 @@ fn invalidate_unified_materialization_clears_rows_and_bumps_version() {
         &[(String::from("claude_code:msg-1"), fact)],
         &UnifiedDayMaterializationState {
             local_date: local_date.clone(),
+            day_boundary_mode: "standard".to_string(),
             fact_count: 1,
             local_request_count: 1,
             local_max_sync_version: 1,
@@ -1108,6 +1450,7 @@ fn unified_visible_counts_exclude_3xx_statuses() {
         ],
         &UnifiedDayMaterializationState {
             local_date: local_date.clone(),
+            day_boundary_mode: "standard".to_string(),
             fact_count: 2,
             local_request_count: 0,
             local_max_sync_version: 0,
@@ -1177,6 +1520,7 @@ fn unified_local_only_day_is_not_marked_partial() {
         &[(String::from("claude_code:msg-local"), local_only_fact)],
         &UnifiedDayMaterializationState {
             local_date: local_date.clone(),
+            day_boundary_mode: "standard".to_string(),
             fact_count: 1,
             local_request_count: 1,
             local_max_sync_version: 1,
@@ -1266,6 +1610,7 @@ fn unified_mixed_day_is_marked_partial() {
         ],
         &UnifiedDayMaterializationState {
             local_date: local_date.clone(),
+            day_boundary_mode: "standard".to_string(),
             fact_count: 2,
             local_request_count: 1,
             local_max_sync_version: 1,

@@ -39,6 +39,7 @@ const previewScale = computed(() => {
 })
 
 const locale = computed<AppLocale>(() => store.settings.locale)
+const dayBoundaryHour = computed(() => store.settings.dayBoundaryMode === 'night_owl' ? 4 : 0)
 const themes = SHARE_THEMES
 const activeTheme = computed(() => SHARE_THEMES.find(theme => theme.id === themeId.value) ?? SHARE_THEMES[0])
 const panelThemeVars = computed(() => ({
@@ -57,8 +58,17 @@ const rangeOptions: Array<{ value: SharePreset; key: string }> = [
   { value: '1y', key: 'statistics.range1y' }
 ]
 
-function startOfLocalDay(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0)
+function startOfBusinessDay(date: Date): Date {
+  const candidate = new Date(date.getFullYear(), date.getMonth(), date.getDate(), dayBoundaryHour.value, 0, 0, 0)
+  if (date.getHours() < dayBoundaryHour.value) {
+    candidate.setDate(candidate.getDate() - 1)
+  }
+  return candidate
+}
+
+function businessDayStartFromLabel(dateStr: string): Date {
+  const [year, month, day] = dateStr.split('-').map(Number)
+  return new Date(year, (month || 1) - 1, day || 1, dayBoundaryHour.value, 0, 0, 0)
 }
 
 function addDays(date: Date, days: number): Date {
@@ -70,13 +80,13 @@ function addDays(date: Date, days: number): Date {
 function presetRangeDates(value: SharePreset): { start: Date; end: Date } {
   const now = new Date()
   if (value === '5h') return { start: new Date(now.getTime() - 5 * 60 * 60 * 1000), end: now }
-  if (value === 'today') return { start: startOfLocalDay(now), end: now }
+  if (value === 'today') return { start: startOfBusinessDay(now), end: now }
   if (value === '1d') return { start: new Date(now.getTime() - 24 * 60 * 60 * 1000), end: now }
-  if (value === '7d') return { start: addDays(startOfLocalDay(now), -6), end: now }
-  if (value === '30d') return { start: addDays(startOfLocalDay(now), -29), end: now }
-  if (value === 'current_month') return { start: new Date(now.getFullYear(), now.getMonth(), 1), end: now }
-  if (value === '1y') return { start: addDays(startOfLocalDay(now), -364), end: now }
-  return { start: startOfLocalDay(now), end: now }
+  if (value === '7d') return { start: addDays(startOfBusinessDay(now), -6), end: now }
+  if (value === '30d') return { start: addDays(startOfBusinessDay(now), -29), end: now }
+  if (value === 'current_month') return { start: businessDayStartFromLabel(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`), end: now }
+  if (value === '1y') return { start: addDays(startOfBusinessDay(now), -364), end: now }
+  return { start: startOfBusinessDay(now), end: now }
 }
 
 const range = computed(() => {
@@ -103,8 +113,8 @@ const calendarBounds = computed<{ start: number; end: number } | null>(() => {
   if (visualMode.value !== 'calendar') return null
   const now = new Date()
   if (preset.value === 'current_month') {
-    const start = new Date(now.getFullYear(), now.getMonth(), 1)
-    const end = new Date(now.getFullYear(), now.getMonth() + 1, 0) // last day of month
+    const start = businessDayStartFromLabel(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`)
+    const end = businessDayStartFromLabel(`${now.getFullYear()}-${String(now.getMonth() + 2).padStart(2, '0')}-01`)
     return { start: Math.floor(start.getTime() / 1000), end: Math.floor(end.getTime() / 1000) }
   }
   return { start: range.value.start, end: range.value.end }

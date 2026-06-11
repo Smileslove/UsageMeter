@@ -68,6 +68,7 @@ impl LocalUsageDatabase {
 
             CREATE TABLE IF NOT EXISTS unified_daily_materialization_state (
                 local_date TEXT PRIMARY KEY,
+                day_boundary_mode TEXT NOT NULL DEFAULT 'standard',
                 fact_count INTEGER NOT NULL DEFAULT 0,
                 local_request_count INTEGER NOT NULL DEFAULT 0,
                 local_max_sync_version INTEGER NOT NULL DEFAULT 0,

@@ -106,6 +106,7 @@ export interface AppSettings {
   timezone: string
   refreshIntervalSeconds: number
   summaryWindow: WindowName  // 概览面板汇总展示区显示的窗口
+  dayBoundaryMode: 'standard' | 'night_owl'
   proxy: ProxyConfig         // 代理配置
   theme: ThemeSettings       // 主题设置：外观模式 + 色板
   modelPricing: ModelPricingSettings  // 模型价格设置
@@ -119,6 +120,8 @@ export interface AppSettings {
   skippedUpdateVersion: string          // 已跳过的版本号（空字符串表示不跳过）
   wslScan: WslScanSettings              // WSL 被动扫描设置
 }
+
+export type DayBoundaryMode = AppSettings['dayBoundaryMode']
 
 // WSL 被动扫描设置（仅 Windows 生效）
 export interface WslScanSettings {

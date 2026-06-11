@@ -23,6 +23,7 @@ const initialized = ref(false)
 let customRangeTimer: ReturnType<typeof setTimeout> | null = null
 
 const locale = computed(() => store.settings.locale)
+const dayBoundaryHour = computed(() => store.settings.dayBoundaryMode === 'night_owl' ? 4 : 0)
 
 function toDateInput(date: Date): string {
   const year = date.getFullYear()
@@ -42,16 +43,23 @@ function startOfLocalDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0)
 }
 
+function startOfBusinessDay(date: Date): Date {
+  const candidate = new Date(date.getFullYear(), date.getMonth(), date.getDate(), dayBoundaryHour.value, 0, 0, 0)
+  if (date.getHours() < dayBoundaryHour.value) {
+    candidate.setDate(candidate.getDate() - 1)
+  }
+  return candidate
+}
+
+function businessDayStartFromLabel(dateStr: string): Date {
+  const [year, month, day] = dateStr.split('-').map(Number)
+  return new Date(year, (month || 1) - 1, day || 1, dayBoundaryHour.value, 0, 0, 0)
+}
+
 function addDays(date: Date, days: number): Date {
   const next = new Date(date)
   next.setDate(next.getDate() + days)
   return next
-}
-
-function nextDayDateStr(dateStr: string): string {
-  const date = new Date(dateStr)
-  const next = addDays(date, 1)
-  return toDateInput(next)
 }
 
 function presetRangeDates(value: StatisticsRangePreset): { start: Date; end: Date } {
@@ -60,7 +68,7 @@ function presetRangeDates(value: StatisticsRangePreset): { start: Date; end: Dat
     return { start: new Date(now.getTime() - 5 * 60 * 60 * 1000), end: now }
   }
   if (value === 'today') {
-    return { start: startOfLocalDay(now), end: now }
+    return { start: startOfBusinessDay(now), end: now }
   }
   if (value === '1d') {
     return { start: new Date(now.getTime() - 24 * 60 * 60 * 1000), end: now }
@@ -72,7 +80,7 @@ function presetRangeDates(value: StatisticsRangePreset): { start: Date; end: Dat
     return { start: addDays(startOfLocalDay(now), -29), end: now }
   }
   if (value === 'current_month') {
-    return { start: new Date(now.getFullYear(), now.getMonth(), 1), end: now }
+    return { start: businessDayStartFromLabel(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`), end: now }
   }
   const start = customStart.value ? new Date(customStart.value) : addDays(startOfLocalDay(now), -6)
   const end = customEnd.value ? new Date(customEnd.value) : now
@@ -160,11 +168,10 @@ function moveMonth(delta: number) {
 
 function selectDay(day: DayActivity) {
   selectedDate.value = day.date
-  customStart.value = `${day.date}T00:00:00`
-  // 如果是今天，截止时间使用当前时刻，避免展示未来空数据
-  // 后端使用半开区间 [start, end)，所以非今天需要使用次日 00:00:00 来包含当天所有数据
-  const todayStr = toDateInput(new Date())
-  customEnd.value = day.date === todayStr ? toDateTimeInput(new Date()) : `${nextDayDateStr(day.date)}T00:00:00`
+  const dayStart = businessDayStartFromLabel(day.date)
+  customStart.value = toDateTimeInput(dayStart)
+  const todayStr = toDateInput(startOfBusinessDay(new Date()))
+  customEnd.value = day.date === todayStr ? toDateTimeInput(new Date()) : toDateTimeInput(addDays(dayStart, 1))
   preset.value = 'custom'
 }
 
@@ -177,17 +184,16 @@ function updateRangeFromActivityView() {
 
   if (activityView.value === 'year') {
     // 年度视图：设置范围为该年的第一天到次年第一天
-    customStart.value = `${year}-01-01T00:00:00`
-    customEnd.value = `${year + 1}-01-01T00:00:00`
+    customStart.value = toDateTimeInput(businessDayStartFromLabel(`${year}-01-01`))
+    customEnd.value = toDateTimeInput(businessDayStartFromLabel(`${year + 1}-01-01`))
   } else {
     // 月份视图：设置范围为该月的第一天到下月第一天
     const month = currentMonth.value.getMonth() + 1
     const monthStr = String(month).padStart(2, '0')
-    customStart.value = `${year}-${monthStr}-01T00:00:00`
+    customStart.value = toDateTimeInput(businessDayStartFromLabel(`${year}-${monthStr}-01`))
     // 计算下月第一天的日期
     const nextMonthDate = new Date(year, month, 1)
-    const nextMonthStr = toDateInput(nextMonthDate)
-    customEnd.value = `${nextMonthStr}T00:00:00`
+    customEnd.value = toDateTimeInput(businessDayStartFromLabel(toDateInput(nextMonthDate)))
   }
   preset.value = 'custom'
 }
@@ -207,6 +213,7 @@ watch([range, bucket, analysisMetric], scheduleSummaryFetch, { deep: true })
 watch([activityView, monthYear, monthNumber, monthMetric], fetchMonth)
 watch(
   () => [
+    store.settings.dayBoundaryMode,
     store.settings.sourceAware.activeSourceFilter,
     store.settings.clientTools.activeToolFilter
   ],

@@ -1,4 +1,5 @@
 use super::super::types::{StatisticsBucket, StatisticsMetric, StatisticsTrendPoint};
+use crate::models::AppSettings;
 use crate::unified_usage::MergedRequestFact;
 use chrono::{Local, NaiveDate, TimeZone};
 use std::collections::{HashMap, HashSet};
@@ -103,14 +104,11 @@ pub(super) fn value_for_metric(point: &StatisticsTrendPoint, metric: &Statistics
 pub(super) fn collect_day_activity_from_facts(
     facts: Vec<MergedRequestFact>,
     day_map: &mut DayAccumulatorMap,
+    settings: &AppSettings,
 ) {
     for fact in facts {
-        let date = Local
-            .timestamp_opt(fact.timestamp_sec, 0)
-            .single()
-            .unwrap_or_else(Local::now)
-            .format("%Y-%m-%d")
-            .to_string();
+        let date =
+            crate::utils::business_time::business_date_for_timestamp(fact.timestamp_sec, settings);
         let entry = day_map.entry(date).or_default();
         add_fact_to_stat_acc(&mut entry.0, &fact);
         if !fact.model.is_empty() {
@@ -119,13 +117,8 @@ pub(super) fn collect_day_activity_from_facts(
     }
 }
 
-pub(super) fn to_date_key(timestamp_sec: i64) -> String {
-    Local
-        .timestamp_opt(timestamp_sec, 0)
-        .single()
-        .unwrap_or_else(Local::now)
-        .format("%Y-%m-%d")
-        .to_string()
+pub(super) fn to_date_key(timestamp_sec: i64, settings: &AppSettings) -> String {
+    crate::utils::business_time::business_date_for_timestamp(timestamp_sec, settings)
 }
 
 pub(super) fn month_day_count(year: i32, month: u8) -> u32 {
@@ -137,15 +130,8 @@ pub(super) fn month_day_count(year: i32, month: u8) -> u32 {
     30
 }
 
-pub(super) fn local_date_start_epoch(local_date: &str) -> i64 {
-    Local
-        .from_local_datetime(
-            &NaiveDate::parse_from_str(local_date, "%Y-%m-%d")
-                .ok()
-                .and_then(|date| date.and_hms_opt(0, 0, 0))
-                .unwrap_or_else(|| Local::now().date_naive().and_hms_opt(0, 0, 0).unwrap()),
-        )
-        .single()
-        .unwrap_or_else(Local::now)
-        .timestamp()
+pub(super) fn local_date_start_epoch(local_date: &str, settings: &AppSettings) -> i64 {
+    crate::utils::business_time::business_date_epoch_bounds(local_date, settings)
+        .map(|(start, _)| start)
+        .unwrap_or_else(|_| Local::now().timestamp())
 }

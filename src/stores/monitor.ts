@@ -88,6 +88,7 @@ const defaultSettings: AppSettings = {
   timezone: 'Asia/Shanghai',
   refreshIntervalSeconds: 30,
   summaryWindow: '24h',
+  dayBoundaryMode: 'standard',
   proxy: {
     enabled: false,
     port: 18765,

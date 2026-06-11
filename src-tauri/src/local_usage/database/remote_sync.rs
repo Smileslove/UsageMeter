@@ -1,6 +1,5 @@
 use crate::models::ToolFilter;
 use crate::session::{LocalRequestRecord, SessionMeta};
-use chrono::{Local, TimeZone};
 use rusqlite::params;
 use std::collections::HashSet;
 
@@ -122,6 +121,8 @@ impl LocalUsageDatabase {
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| format!("Failed to start remote sync import: {}", e))?;
+        let settings = crate::commands::load_settings().unwrap_or_default();
+        let today = Self::today_local_date_with_settings(&settings);
         let mut touched_history_dates = HashSet::new();
 
         tx.execute(
@@ -186,13 +187,11 @@ impl LocalUsageDatabase {
         }
 
         for request in &data.requests {
-            let date = Local
-                .timestamp_opt(request.timestamp, 0)
-                .single()
-                .unwrap_or_else(Local::now)
-                .format("%Y-%m-%d")
-                .to_string();
-            if date < Self::today_local_date() {
+            let date = crate::utils::business_time::business_date_for_timestamp(
+                request.timestamp,
+                &settings,
+            );
+            if date < today {
                 touched_history_dates.insert(date);
             }
             tx.execute(

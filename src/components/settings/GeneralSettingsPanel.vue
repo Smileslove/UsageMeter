@@ -12,6 +12,7 @@ const updaterStore = useUpdaterStore()
 const appVersion = ref('')
 const localLocale = ref(store.settings.locale)
 const localRefreshInterval = ref(store.settings.refreshIntervalSeconds)
+const dayBoundaryMode = ref(store.settings.dayBoundaryMode)
 const autoStartEnabled = ref(store.settings.autoStart)
 const checkUpdateFlash = ref(false)
 let checkUpdateFlashTimer: ReturnType<typeof setTimeout> | null = null
@@ -24,6 +25,10 @@ watch(() => store.settings.refreshIntervalSeconds, (value) => {
   localRefreshInterval.value = value
 })
 
+watch(() => store.settings.dayBoundaryMode, (value) => {
+  dayBoundaryMode.value = value
+})
+
 const handleLocaleChange = async () => {
   store.settings.locale = localLocale.value
   await store.saveSettings()
@@ -34,6 +39,16 @@ const handleRefreshIntervalChange = async () => {
   localRefreshInterval.value = value
   store.settings.refreshIntervalSeconds = value
   await store.saveSettings()
+}
+
+const handleDayBoundaryModeChange = async () => {
+  store.settings.dayBoundaryMode = dayBoundaryMode.value
+  await store.saveSettings()
+}
+
+const toggleDayBoundaryMode = async () => {
+  dayBoundaryMode.value = dayBoundaryMode.value === 'night_owl' ? 'standard' : 'night_owl'
+  await handleDayBoundaryModeChange()
 }
 
 const toggleAutoStart = async () => {
@@ -155,6 +170,18 @@ onUnmounted(() => {
         />
         <span class="text-[11px] text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'common.seconds') }}</span>
       </div>
+    </div>
+
+    <!-- 统计日边界 -->
+    <div class="flex items-center justify-between py-2 px-4 text-[13px]">
+      <div class="flex max-w-[250px] flex-col">
+        <span class="text-[var(--theme-text-primary)]">{{ t(store.settings.locale, 'settings.dayBoundaryMode') }}</span>
+        <span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.dayBoundaryModeDesc') }}</span>
+      </div>
+      <SettingsSwitch
+        :checked="dayBoundaryMode === 'night_owl'"
+        @toggle="toggleDayBoundaryMode"
+      />
     </div>
 
     <!-- 自动检查更新 -->

@@ -334,6 +334,7 @@ pub fn run() {
             let show_item = MenuItem::with_id(app, "show", show_label, true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", quit_label, true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            #[cfg(target_os = "macos")]
             let tray_menu = menu.clone();
             let tray_builder = TrayIconBuilder::with_id("main-tray")
                 .icon(

@@ -1,4 +1,4 @@
-use crate::models::ToolFilter;
+use crate::models::{AppSettings, ToolFilter};
 use crate::unified_usage::{has_partial_coverage, CoverageOrigin, MergedRequestFact};
 use rusqlite::{params, OptionalExtension};
 use std::collections::{HashMap, HashSet};
@@ -251,11 +251,22 @@ impl LocalUsageDatabase {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_unified_day_local_snapshot(
         &self,
         local_date: &str,
     ) -> Result<UnifiedDayLocalSnapshot, String> {
-        let (start_epoch, end_epoch) = Self::local_date_epoch_bounds(local_date)?;
+        let settings = crate::commands::load_settings().unwrap_or_default();
+        self.get_unified_day_local_snapshot_with_settings(local_date, &settings)
+    }
+
+    pub fn get_unified_day_local_snapshot_with_settings(
+        &self,
+        local_date: &str,
+        settings: &AppSettings,
+    ) -> Result<UnifiedDayLocalSnapshot, String> {
+        let (start_epoch, end_epoch) =
+            Self::local_date_epoch_bounds_with_settings(local_date, settings)?;
         let conn = self.conn.lock().unwrap();
         conn.query_row(
             r#"
@@ -302,6 +313,7 @@ impl LocalUsageDatabase {
             r#"
             SELECT
                 local_date,
+                day_boundary_mode,
                 fact_count,
                 local_request_count,
                 local_max_sync_version,
@@ -325,22 +337,23 @@ impl LocalUsageDatabase {
             |row| {
                 Ok(UnifiedDayMaterializationState {
                     local_date: row.get(0)?,
-                    fact_count: row.get::<_, i64>(1)?.max(0) as u64,
-                    local_request_count: row.get::<_, i64>(2)?.max(0) as u64,
-                    local_max_sync_version: row.get::<_, i64>(3)?,
-                    local_max_timestamp: row.get::<_, i64>(4)?,
-                    remote_request_count: row.get::<_, i64>(5)?.max(0) as u64,
-                    remote_max_export_seq: row.get::<_, i64>(6)?,
-                    remote_max_timestamp: row.get::<_, i64>(7)?,
-                    proxy_record_count: row.get::<_, i64>(8)?.max(0) as u64,
-                    proxy_all_record_count: row.get::<_, i64>(9)?.max(0) as u64,
-                    proxy_max_timestamp_ms: row.get::<_, i64>(10)?,
-                    proxy_max_updated_at: row.get::<_, i64>(11)?,
-                    max_fact_timestamp_ms: row.get(12)?,
-                    pricing_fingerprint: row.get::<_, i64>(13)?.max(0) as u64,
-                    is_finalized: row.get::<_, i64>(14)? != 0,
-                    finalized_at: row.get(15)?,
-                    materialized_at: row.get(16)?,
+                    day_boundary_mode: row.get(1)?,
+                    fact_count: row.get::<_, i64>(2)?.max(0) as u64,
+                    local_request_count: row.get::<_, i64>(3)?.max(0) as u64,
+                    local_max_sync_version: row.get::<_, i64>(4)?,
+                    local_max_timestamp: row.get::<_, i64>(5)?,
+                    remote_request_count: row.get::<_, i64>(6)?.max(0) as u64,
+                    remote_max_export_seq: row.get::<_, i64>(7)?,
+                    remote_max_timestamp: row.get::<_, i64>(8)?,
+                    proxy_record_count: row.get::<_, i64>(9)?.max(0) as u64,
+                    proxy_all_record_count: row.get::<_, i64>(10)?.max(0) as u64,
+                    proxy_max_timestamp_ms: row.get::<_, i64>(11)?,
+                    proxy_max_updated_at: row.get::<_, i64>(12)?,
+                    max_fact_timestamp_ms: row.get(13)?,
+                    pricing_fingerprint: row.get::<_, i64>(14)?.max(0) as u64,
+                    is_finalized: row.get::<_, i64>(15)? != 0,
+                    finalized_at: row.get(16)?,
+                    materialized_at: row.get(17)?,
                 })
             },
         )
@@ -459,18 +472,19 @@ impl LocalUsageDatabase {
         tx.execute(
             r#"
             INSERT INTO unified_daily_materialization_state (
-                local_date, fact_count, local_request_count, local_max_sync_version, local_max_timestamp,
+                local_date, day_boundary_mode, fact_count, local_request_count, local_max_sync_version, local_max_timestamp,
                 remote_request_count, remote_max_export_seq, remote_max_timestamp,
                 proxy_record_count, proxy_all_record_count, proxy_max_timestamp_ms, proxy_max_updated_at,
                 max_fact_timestamp_ms,
                 pricing_fingerprint, is_finalized, finalized_at, materialized_at
             ) VALUES (
-                ?1, ?2, ?3, ?4, ?5,
-                ?6, ?7, ?8,
-                ?9, ?10, ?11, ?12,
-                ?13, ?14, ?15, ?16, ?17
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9,
+                ?10, ?11, ?12, ?13,
+                ?14, ?15, ?16, ?17, ?18
             )
             ON CONFLICT(local_date) DO UPDATE SET
+                day_boundary_mode = excluded.day_boundary_mode,
                 fact_count = excluded.fact_count,
                 local_request_count = excluded.local_request_count,
                 local_max_sync_version = excluded.local_max_sync_version,
@@ -490,6 +504,7 @@ impl LocalUsageDatabase {
             "#,
             params![
                 state.local_date,
+                state.day_boundary_mode,
                 state.fact_count as i64,
                 state.local_request_count as i64,
                 state.local_max_sync_version,

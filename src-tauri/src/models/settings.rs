@@ -576,6 +576,8 @@ pub struct AppSettings {
     pub refresh_interval_seconds: u64,
     #[serde(default = "default_summary_window")]
     pub summary_window: String,
+    #[serde(default = "default_day_boundary_mode")]
+    pub day_boundary_mode: String,
     #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(
@@ -785,6 +787,10 @@ pub fn default_summary_window() -> String {
     "24h".to_string()
 }
 
+pub fn default_day_boundary_mode() -> String {
+    crate::utils::business_time::default_day_boundary_mode()
+}
+
 pub fn default_theme() -> ThemeSettings {
     ThemeSettings::default()
 }
@@ -796,6 +802,7 @@ impl Default for AppSettings {
             timezone: default_timezone(),
             refresh_interval_seconds: default_refresh_interval_seconds(),
             summary_window: default_summary_window(),
+            day_boundary_mode: default_day_boundary_mode(),
             proxy: ProxyConfig::default_config(),
             theme: default_theme(),
             model_pricing: ModelPricingSettings::default(),

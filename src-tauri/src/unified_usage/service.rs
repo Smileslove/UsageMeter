@@ -6,7 +6,6 @@ use crate::models::{AppSettings, ToolFilter, UsageQueryFilter};
 use crate::proxy::ProxyMergeCacheSignature;
 use crate::proxy::{ProjectStats, ProjectToolStats, ProxyDatabase, SessionStats, UsageRecord};
 use crate::session::{wsl_distro_from_path, LocalRequestRecord, SessionMeta};
-use chrono::{Local, TimeZone};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -16,6 +15,7 @@ use std::time::Instant;
 struct MergeCacheKey {
     start_epoch: i64,
     end_epoch: i64,
+    day_boundary_mode: String,
     include_errors: bool,
     source_filter: String,
     tool_filter: String,
@@ -35,6 +35,7 @@ struct MergeCacheEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct HotMergeCacheKey {
     local_date: String,
+    day_boundary_mode: String,
     include_errors: bool,
     source_filter: String,
     tool_filter: String,
@@ -113,6 +114,53 @@ fn hot_merge_cache() -> &'static Mutex<Vec<HotMergeCacheEntry>> {
 
 fn inflight_keys() -> &'static tokio::sync::Mutex<HashSet<String>> {
     UNIFIED_INFLIGHT_KEYS.get_or_init(|| tokio::sync::Mutex::new(HashSet::new()))
+}
+
+fn normalized_day_boundary_mode(settings: &AppSettings) -> String {
+    crate::utils::business_time::normalize_day_boundary_mode(&settings.day_boundary_mode)
+}
+
+pub(crate) fn clear_runtime_caches() {
+    merge_cache().lock().unwrap().clear();
+    hot_merge_cache().lock().unwrap().clear();
+    merged_sessions_cache().lock().unwrap().clear();
+    merged_projects_cache().lock().unwrap().clear();
+}
+
+#[cfg(test)]
+pub(crate) fn seed_runtime_merge_cache_for_test() {
+    clear_runtime_caches();
+    let settings = AppSettings::default();
+    let source_filter = settings.source_aware.build_filter();
+    let tool_filter = settings.client_tools.build_filter();
+    let local_signature = crate::local_usage::LocalMergeCacheSignature {
+        local_request_count: 1,
+        local_max_sync_version: 1,
+        local_max_timestamp: 1,
+        remote_request_count: 0,
+        remote_max_export_seq: 0,
+        remote_max_timestamp: 0,
+        local_session_max_updated_at: 0,
+        remote_session_max_imported_at: 0,
+        unified_materialization_invalidation_version: 1,
+    };
+    let merge_key = build_merge_cache_key(MergeCacheKeyParts {
+        settings: &settings,
+        range_start: 10,
+        range_end: 20,
+        include_errors: true,
+        source_filter: &source_filter,
+        tool_filter: &tool_filter,
+        local_signature,
+        proxy_signature: None,
+        pricings: &[],
+    });
+    store_merge_cache(merge_key, &[], &MergedCoverage::default());
+}
+
+#[cfg(test)]
+pub(crate) fn runtime_merge_cache_len_for_test() -> usize {
+    merge_cache().lock().unwrap().len()
 }
 
 fn cache_key_for_source_filter(filter: &crate::models::SourceFilter) -> String {
@@ -710,29 +758,8 @@ fn build_proxy_request_index(proxy_records: &[UsageRecord]) -> HashMap<String, U
     map
 }
 
-fn enumerate_local_dates(start_epoch: i64, end_epoch: i64) -> Vec<String> {
-    if end_epoch <= start_epoch {
-        return Vec::new();
-    }
-    let mut dates = Vec::new();
-    let mut current = Local
-        .timestamp_opt(start_epoch, 0)
-        .single()
-        .unwrap_or_else(Local::now)
-        .date_naive();
-    let end_date = Local
-        .timestamp_opt(end_epoch.saturating_sub(1), 0)
-        .single()
-        .unwrap_or_else(Local::now)
-        .date_naive();
-    while current <= end_date {
-        dates.push(current.format("%Y-%m-%d").to_string());
-        let Some(next) = current.succ_opt() else {
-            break;
-        };
-        current = next;
-    }
-    dates
+fn enumerate_local_dates(start_epoch: i64, end_epoch: i64, settings: &AppSettings) -> Vec<String> {
+    crate::utils::business_time::enumerate_business_dates(start_epoch, end_epoch, settings)
 }
 
 async fn fetch_proxy_records(
@@ -789,6 +816,7 @@ fn build_merge_cache_key(parts: MergeCacheKeyParts<'_>) -> MergeCacheKey {
     MergeCacheKey {
         start_epoch: parts.range_start,
         end_epoch: parts.range_end,
+        day_boundary_mode: normalized_day_boundary_mode(parts.settings),
         include_errors: parts.include_errors,
         source_filter: cache_key_for_source_filter(parts.source_filter),
         tool_filter: cache_key_for_tool_filter(parts.tool_filter),
@@ -805,6 +833,7 @@ fn build_hot_merge_cache_key(
 ) -> HotMergeCacheKey {
     HotMergeCacheKey {
         local_date,
+        day_boundary_mode: normalized_day_boundary_mode(parts.settings),
         include_errors: parts.include_errors,
         source_filter: cache_key_for_source_filter(parts.source_filter),
         tool_filter: cache_key_for_tool_filter(parts.tool_filter),
@@ -817,9 +846,10 @@ fn build_hot_merge_cache_key(
 
 fn merge_cache_inflight_key(key: &MergeCacheKey) -> String {
     format!(
-        "merge:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        "merge:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
         key.start_epoch,
         key.end_epoch,
+        key.day_boundary_mode,
         key.include_errors,
         key.source_filter,
         key.tool_filter,
@@ -1096,8 +1126,11 @@ fn materialization_state_matches(
     snapshot: &crate::local_usage::UnifiedDayLocalSnapshot,
     proxy_snapshot: crate::proxy::ProxyDayDependencySnapshot,
     pricing_fingerprint: u64,
+    settings: &AppSettings,
 ) -> bool {
     state.is_finalized
+        && state.day_boundary_mode
+            == crate::utils::business_time::normalize_day_boundary_mode(&settings.day_boundary_mode)
         && state.pricing_fingerprint == pricing_fingerprint
         && state.local_request_count == snapshot.local_request_count
         && state.local_max_sync_version == snapshot.local_max_sync_version
@@ -1110,17 +1143,35 @@ fn materialization_state_matches(
         && state.proxy_max_updated_at == proxy_snapshot.max_updated_at
 }
 
-fn build_materialization_state(
-    local_date: &str,
+struct MaterializationStateBuildContext<'a> {
+    local_date: &'a str,
     fact_count: usize,
-    local_snapshot: &crate::local_usage::UnifiedDayLocalSnapshot,
+    local_snapshot: &'a crate::local_usage::UnifiedDayLocalSnapshot,
     proxy_snapshot: crate::proxy::ProxyDayDependencySnapshot,
     pricing_fingerprint: u64,
     max_fact_timestamp_ms: i64,
     materialized_at: i64,
+    settings: &'a AppSettings,
+}
+
+fn build_materialization_state(
+    ctx: MaterializationStateBuildContext<'_>,
 ) -> crate::local_usage::UnifiedDayMaterializationState {
+    let MaterializationStateBuildContext {
+        local_date,
+        fact_count,
+        local_snapshot,
+        proxy_snapshot,
+        pricing_fingerprint,
+        max_fact_timestamp_ms,
+        materialized_at,
+        settings,
+    } = ctx;
     crate::local_usage::UnifiedDayMaterializationState {
         local_date: local_date.to_string(),
+        day_boundary_mode: crate::utils::business_time::normalize_day_boundary_mode(
+            &settings.day_boundary_mode,
+        ),
         fact_count: fact_count as u64,
         local_request_count: local_snapshot.local_request_count,
         local_max_sync_version: local_snapshot.local_max_sync_version,
@@ -1148,9 +1199,9 @@ async fn ensure_materialized_history_for_range(
     pricings: &[crate::models::ModelPricingConfig],
     pricing_match_mode: &str,
 ) -> Result<Vec<String>, String> {
-    let today = crate::local_usage::LocalUsageDatabase::today_local_date();
+    let today = crate::local_usage::LocalUsageDatabase::today_local_date_with_settings(settings);
     let canonical_settings = canonical_history_settings(settings);
-    let materializable_dates: Vec<String> = enumerate_local_dates(range_start, range_end)
+    let materializable_dates: Vec<String> = enumerate_local_dates(range_start, range_end, settings)
         .into_iter()
         .filter(|date| date < &today)
         .collect();
@@ -1160,8 +1211,12 @@ async fn ensure_materialized_history_for_range(
     for local_date in materializable_dates {
         let day_started_at = Instant::now();
         let (day_start, day_end) =
-            crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds(&local_date)?;
-        let local_snapshot = local_db.get_unified_day_local_snapshot(&local_date)?;
+            crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds_with_settings(
+                &local_date,
+                settings,
+            )?;
+        let local_snapshot =
+            local_db.get_unified_day_local_snapshot_with_settings(&local_date, settings)?;
         let proxy_snapshot = ProxyDatabase::get_global()
             .map(|db| {
                 db.get_day_dependency_snapshot(
@@ -1178,6 +1233,7 @@ async fn ensure_materialized_history_for_range(
                 &local_snapshot,
                 proxy_snapshot,
                 pricing_fingerprint,
+                settings,
             ),
             None => true,
         };
@@ -1186,7 +1242,8 @@ async fn ensure_materialized_history_for_range(
             let inflight_key = format!("materialize:{local_date}");
             acquire_inflight_key(&inflight_key).await;
             let latest_state = local_db.get_unified_day_materialization_state(&local_date)?;
-            let latest_local_snapshot = local_db.get_unified_day_local_snapshot(&local_date)?;
+            let latest_local_snapshot =
+                local_db.get_unified_day_local_snapshot_with_settings(&local_date, settings)?;
             let latest_proxy_snapshot = ProxyDatabase::get_global()
                 .map(|db| {
                     db.get_day_dependency_snapshot(
@@ -1202,6 +1259,7 @@ async fn ensure_materialized_history_for_range(
                     &latest_local_snapshot,
                     latest_proxy_snapshot,
                     pricing_fingerprint,
+                    settings,
                 ),
                 None => true,
             };
@@ -1235,15 +1293,16 @@ async fn ensure_materialized_history_for_range(
                     local_db.replace_unified_day_materialization(
                         &local_date,
                         &fact_entries,
-                        &build_materialization_state(
-                            &local_date,
-                            merge.facts.len(),
-                            &latest_local_snapshot,
-                            latest_proxy_snapshot,
+                        &build_materialization_state(MaterializationStateBuildContext {
+                            local_date: &local_date,
+                            fact_count: merge.facts.len(),
+                            local_snapshot: &latest_local_snapshot,
+                            proxy_snapshot: latest_proxy_snapshot,
                             pricing_fingerprint,
                             max_fact_timestamp_ms,
-                            now_ms,
-                        ),
+                            materialized_at: now_ms,
+                            settings,
+                        }),
                     )?;
                     perf_log(
                         "merge_materialize_day",
@@ -1354,8 +1413,11 @@ async fn get_hot_merge_facts(
     local_signature: crate::local_usage::LocalMergeCacheSignature,
     proxy_signature: Option<ProxyMergeCacheSignature>,
 ) -> Result<Vec<MergedRequestFact>, String> {
-    let today = crate::local_usage::LocalUsageDatabase::today_local_date();
-    let today_start = crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds(&today)
+    let today = crate::local_usage::LocalUsageDatabase::today_local_date_with_settings(settings);
+    let today_start =
+        crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds_with_settings(
+            &today, settings,
+        )
         .map(|(start, _)| start)?;
     let tool_filter = settings.client_tools.build_filter();
     let source_filter = settings.source_aware.build_filter();
@@ -1572,8 +1634,11 @@ pub async fn get_merged_request_facts(
         );
 
         let today_start = {
-            let today = crate::local_usage::LocalUsageDatabase::today_local_date();
-            crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds(&today)
+            let today = crate::local_usage::LocalUsageDatabase::today_local_date_with_settings(settings);
+            crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds_with_settings(
+                &today,
+                settings,
+            )
                 .map(|(start, _)| start)?
         };
         let hot_start = range_start.max(today_start);
@@ -2200,4 +2265,124 @@ pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<Proj
     );
     store_projects_cache(project_cache_key, &projects);
     Ok(projects)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_local_signature() -> crate::local_usage::LocalMergeCacheSignature {
+        crate::local_usage::LocalMergeCacheSignature {
+            local_request_count: 1,
+            local_max_sync_version: 1,
+            local_max_timestamp: 1,
+            remote_request_count: 0,
+            remote_max_export_seq: 0,
+            remote_max_timestamp: 0,
+            local_session_max_updated_at: 0,
+            remote_session_max_imported_at: 0,
+            unified_materialization_invalidation_version: 1,
+        }
+    }
+
+    fn sample_settings(mode: &str) -> AppSettings {
+        let mut settings = AppSettings::default();
+        settings.day_boundary_mode = mode.to_string();
+        settings
+    }
+
+    #[test]
+    fn merge_cache_key_includes_day_boundary_mode() {
+        let standard = sample_settings("standard");
+        let night_owl = sample_settings("night_owl");
+        let source_filter = standard.source_aware.build_filter();
+        let tool_filter = standard.client_tools.build_filter();
+        let local_signature = sample_local_signature();
+
+        let standard_key = build_merge_cache_key(MergeCacheKeyParts {
+            settings: &standard,
+            range_start: 100,
+            range_end: 200,
+            include_errors: true,
+            source_filter: &source_filter,
+            tool_filter: &tool_filter,
+            local_signature,
+            proxy_signature: None,
+            pricings: &[],
+        });
+        let night_owl_key = build_merge_cache_key(MergeCacheKeyParts {
+            settings: &night_owl,
+            range_start: 100,
+            range_end: 200,
+            include_errors: true,
+            source_filter: &source_filter,
+            tool_filter: &tool_filter,
+            local_signature,
+            proxy_signature: None,
+            pricings: &[],
+        });
+
+        assert_ne!(standard_key, night_owl_key);
+        assert_eq!(standard_key.day_boundary_mode, "standard");
+        assert_eq!(night_owl_key.day_boundary_mode, "night_owl");
+    }
+
+    #[test]
+    fn clear_runtime_caches_removes_all_cached_entries() {
+        clear_runtime_caches();
+        let settings = sample_settings("standard");
+        let source_filter = settings.source_aware.build_filter();
+        let tool_filter = settings.client_tools.build_filter();
+        let local_signature = sample_local_signature();
+        let merge_key = build_merge_cache_key(MergeCacheKeyParts {
+            settings: &settings,
+            range_start: 10,
+            range_end: 20,
+            include_errors: true,
+            source_filter: &source_filter,
+            tool_filter: &tool_filter,
+            local_signature,
+            proxy_signature: None,
+            pricings: &[],
+        });
+        let hot_key = build_hot_merge_cache_key(
+            MergeCacheKeyParts {
+                settings: &settings,
+                range_start: 10,
+                range_end: 20,
+                include_errors: true,
+                source_filter: &source_filter,
+                tool_filter: &tool_filter,
+                local_signature,
+                proxy_signature: None,
+                pricings: &[],
+            },
+            "2026-06-11".to_string(),
+        );
+        let session_key = SessionDerivedCacheKey {
+            merge_key: merge_key.clone(),
+            limit: 10,
+            offset: 0,
+        };
+        let project_key = ProjectDerivedCacheKey {
+            merge_key: merge_key.clone(),
+        };
+
+        store_merge_cache(merge_key.clone(), &[], &MergedCoverage::default());
+        store_hot_merge_cache(hot_key.clone(), &[]);
+        store_sessions_cache(session_key.clone(), &[]);
+        store_projects_cache(project_key.clone(), &[]);
+
+        assert!(lookup_merge_cache(&merge_key).is_some());
+        assert!(lookup_hot_merge_cache(&hot_key).is_some());
+        assert!(lookup_sessions_cache(&session_key).is_some());
+        assert!(lookup_projects_cache(&project_key).is_some());
+
+        clear_runtime_caches();
+
+        assert!(lookup_merge_cache(&merge_key).is_none());
+        assert!(lookup_hot_merge_cache(&hot_key).is_none());
+        assert!(lookup_sessions_cache(&session_key).is_none());
+        assert!(lookup_projects_cache(&project_key).is_none());
+    }
 }

@@ -1,11 +1,41 @@
 use crate::session::{parse_session_file_for_storage, scan_file_backed_session_files};
-use chrono::{Local, TimeZone};
 use rusqlite::params;
 use std::collections::{HashMap, HashSet};
 
-use super::{outbox, DirtySessionSync, LocalUsageDatabase, SyncExportRequest, SyncExportSession};
+use super::{
+    outbox, DirtySessionSync, LocalUsageDatabase, SyncExportRequest, SyncExportSession,
+    TimestampSqlColumn,
+};
 
 impl LocalUsageDatabase {
+    pub(super) fn collect_history_dates_for_session_tx(
+        tx: &rusqlite::Transaction<'_>,
+        session_id: &str,
+        settings: &crate::models::AppSettings,
+        today: &str,
+    ) -> Result<HashSet<String>, String> {
+        let date_expr =
+            Self::business_date_sql_expr_for_timestamp(settings, TimestampSqlColumn::Timestamp);
+        let mut stmt = tx
+            .prepare(&format!(
+                "SELECT DISTINCT {date_expr} AS business_date
+                 FROM local_request_facts
+                 WHERE session_id = ?1"
+            ))
+            .map_err(|e| format!("Failed to prepare session history day query: {}", e))?;
+        let rows = stmt
+            .query_map(params![session_id], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("Failed to query session history days: {}", e))?;
+        let mut dates = HashSet::new();
+        for row in rows {
+            let date = row.map_err(|e| format!("Failed to read session history day row: {}", e))?;
+            if date.as_str() < today {
+                dates.insert(date);
+            }
+        }
+        Ok(dates)
+    }
+
     fn load_source_fingerprints(
         &self,
         file_role: &str,
@@ -199,26 +229,14 @@ impl LocalUsageDatabase {
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| format!("Failed to start local usage transaction: {}", e))?;
+        let settings = crate::commands::load_settings().unwrap_or_default();
+        let today = Self::today_local_date_with_settings(&settings);
         let mut touched_history_dates: HashSet<String> = HashSet::new();
 
         for session_id in &removed_ids {
-            let mut stmt = tx
-                .prepare(
-                    "SELECT DISTINCT strftime('%Y-%m-%d', timestamp, 'unixepoch', 'localtime')
-                     FROM local_request_facts
-                     WHERE session_id = ?1",
-                )
-                .map_err(|e| format!("Failed to prepare removed session day query: {}", e))?;
-            let rows = stmt
-                .query_map(params![session_id], |row| row.get::<_, String>(0))
-                .map_err(|e| format!("Failed to query removed session days: {}", e))?;
-            for row in rows {
-                let date =
-                    row.map_err(|e| format!("Failed to read removed session day row: {}", e))?;
-                if date < Self::today_local_date() {
-                    touched_history_dates.insert(date);
-                }
-            }
+            touched_history_dates.extend(Self::collect_history_dates_for_session_tx(
+                &tx, session_id, &settings, &today,
+            )?);
             tx.execute(
                 "UPDATE local_request_facts
                  SET source_file_present = 0
@@ -266,32 +284,19 @@ impl LocalUsageDatabase {
                 keys
             };
             {
-                let mut stmt = tx
-                    .prepare(
-                        "SELECT DISTINCT strftime('%Y-%m-%d', timestamp, 'unixepoch', 'localtime')
-                         FROM local_request_facts
-                         WHERE session_id = ?1",
-                    )
-                    .map_err(|e| format!("Failed to prepare dirty session day query: {}", e))?;
-                let rows = stmt
-                    .query_map(params![session_id.as_str()], |row| row.get::<_, String>(0))
-                    .map_err(|e| format!("Failed to query dirty session days: {}", e))?;
-                for row in rows {
-                    let date =
-                        row.map_err(|e| format!("Failed to read dirty session day row: {}", e))?;
-                    if date < Self::today_local_date() {
-                        touched_history_dates.insert(date);
-                    }
-                }
+                touched_history_dates.extend(Self::collect_history_dates_for_session_tx(
+                    &tx,
+                    session_id.as_str(),
+                    &settings,
+                    &today,
+                )?);
             }
             for request in &requests {
-                let date = Local
-                    .timestamp_opt(request.timestamp, 0)
-                    .single()
-                    .unwrap_or_else(Local::now)
-                    .format("%Y-%m-%d")
-                    .to_string();
-                if date < Self::today_local_date() {
+                let date = crate::utils::business_time::business_date_for_timestamp(
+                    request.timestamp,
+                    &settings,
+                );
+                if date < today {
                     touched_history_dates.insert(date);
                 }
             }

@@ -10,8 +10,14 @@ use super::shared::{
 };
 use crate::models::{AppSettings, StatusCodeCount};
 use crate::unified_usage::{has_partial_coverage, CoverageOrigin, MergedRequestFact};
-use chrono::{Local, TimeZone};
 use std::collections::HashMap;
+
+fn next_business_date(date: &str, settings: &AppSettings) -> Result<String, String> {
+    let (_, end_epoch) = crate::utils::business_time::business_date_epoch_bounds(date, settings)?;
+    Ok(crate::utils::business_time::business_date_for_timestamp(
+        end_epoch, settings,
+    ))
+}
 
 pub(super) fn can_use_unified_daily_summary(settings: &AppSettings) -> bool {
     settings.client_tools.active_tool_filter.is_none()
@@ -61,28 +67,19 @@ pub(super) async fn load_day_activity_from_summary_with_hot_overlay(
 ) -> Result<HashMap<String, DayActivity>, String> {
     crate::unified_usage::ensure_materialized_history(settings, start_epoch, end_epoch).await?;
     let local_db = crate::local_usage::ensure_local_usage_synced()?;
-    let start_date = Local
-        .timestamp_opt(start_epoch, 0)
-        .single()
-        .unwrap_or_else(Local::now)
-        .date_naive()
-        .format("%Y-%m-%d")
-        .to_string();
-    let end_date = Local
-        .timestamp_opt(end_epoch.saturating_sub(1), 0)
-        .single()
-        .unwrap_or_else(Local::now)
-        .date_naive()
-        .succ_opt()
-        .unwrap_or_else(|| Local::now().date_naive())
-        .format("%Y-%m-%d")
-        .to_string();
-    let today_date = crate::local_usage::LocalUsageDatabase::today_local_date();
+    let start_date =
+        crate::utils::business_time::business_date_for_timestamp(start_epoch, settings);
+    let end_date = crate::utils::business_time::business_date_for_timestamp(
+        end_epoch.saturating_sub(1),
+        settings,
+    );
+    let today_date =
+        crate::local_usage::LocalUsageDatabase::today_local_date_with_settings(settings);
     let mut by_date = HashMap::new();
 
     if start_date < today_date {
         let summary_end = if end_date < today_date {
-            end_date.clone()
+            next_business_date(&end_date, settings)?
         } else {
             today_date.clone()
         };
@@ -96,7 +93,10 @@ pub(super) async fn load_day_activity_from_summary_with_hot_overlay(
     }
 
     let (today_start, _) =
-        crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds(&today_date)?;
+        crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds_with_settings(
+            &today_date,
+            settings,
+        )?;
     if end_epoch > today_start && start_epoch < end_epoch {
         let hot_start = start_epoch.max(today_start);
         if end_epoch > hot_start {
@@ -108,7 +108,7 @@ pub(super) async fn load_day_activity_from_summary_with_hot_overlay(
             )
             .await?;
             let mut day_map: DayAccumulatorMap = HashMap::new();
-            collect_day_activity_from_facts(facts, &mut day_map);
+            collect_day_activity_from_facts(facts, &mut day_map, settings);
             for (date, (acc, models)) in day_map {
                 let error_requests = acc.client_error_requests + acc.server_error_requests;
                 by_date.insert(
@@ -290,29 +290,20 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
     let include_errors = settings.proxy.include_error_requests;
     let local_db = crate::local_usage::ensure_local_usage_synced()?;
     crate::unified_usage::ensure_materialized_history(settings, start_epoch, end_epoch).await?;
-    let start_date = Local
-        .timestamp_opt(start_epoch, 0)
-        .single()
-        .unwrap_or_else(Local::now)
-        .date_naive()
-        .format("%Y-%m-%d")
-        .to_string();
-    let end_date = Local
-        .timestamp_opt(end_epoch.saturating_sub(1), 0)
-        .single()
-        .unwrap_or_else(Local::now)
-        .date_naive()
-        .succ_opt()
-        .unwrap_or_else(|| Local::now().date_naive())
-        .format("%Y-%m-%d")
-        .to_string();
-    let today_date = crate::local_usage::LocalUsageDatabase::today_local_date();
+    let start_date =
+        crate::utils::business_time::business_date_for_timestamp(start_epoch, settings);
+    let end_date = crate::utils::business_time::business_date_for_timestamp(
+        end_epoch.saturating_sub(1),
+        settings,
+    );
+    let today_date =
+        crate::local_usage::LocalUsageDatabase::today_local_date_with_settings(settings);
 
     let mut daily_rows = Vec::new();
     let mut model_rows = Vec::new();
     if start_date < today_date {
         let history_end = if end_date < today_date {
-            end_date.clone()
+            next_business_date(&end_date, settings)?
         } else {
             today_date.clone()
         };
@@ -322,7 +313,10 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
     }
 
     let (today_start, _) =
-        crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds(&today_date)?;
+        crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds_with_settings(
+            &today_date,
+            settings,
+        )?;
     if end_epoch > today_start {
         let hot_start = start_epoch.max(today_start);
         if end_epoch > hot_start {
@@ -354,13 +348,8 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
     let mut total_client_error_requests = 0_u64;
     let mut total_server_error_requests = 0_u64;
     for point in &mut trend {
-        let date_key = Local
-            .timestamp_opt(point.start_epoch, 0)
-            .single()
-            .unwrap_or_else(Local::now)
-            .date_naive()
-            .format("%Y-%m-%d")
-            .to_string();
+        let date_key =
+            crate::utils::business_time::business_date_for_timestamp(point.start_epoch, settings);
         let Some(row) = row_by_date.get(&date_key) else {
             continue;
         };
@@ -488,7 +477,7 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
             *agg.status_code_counts.entry(status_code).or_insert(0) += count;
         }
 
-        let day_start = local_date_start_epoch(&row.local_date);
+        let day_start = local_date_start_epoch(&row.local_date, settings);
         let point = model_day_map
             .entry(row.model_name.clone())
             .or_default()

@@ -77,6 +77,7 @@ pub struct LocalMergeCacheSignature {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnifiedDayMaterializationState {
     pub local_date: String,
+    pub day_boundary_mode: String,
     pub fact_count: u64,
     pub local_request_count: u64,
     pub local_max_sync_version: i64,

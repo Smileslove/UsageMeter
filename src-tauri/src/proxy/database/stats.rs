@@ -679,4 +679,53 @@ mod tests {
         assert_eq!(output_tokens, 27);
         assert!((estimated_cost - 0.75).abs() < f64::EPSILON);
     }
+
+    #[test]
+    fn ensure_daily_rollup_mode_current_resets_rollups_on_mode_mismatch() {
+        let (_tmp, db) = temp_db();
+        {
+            let conn = db.conn.lock().expect("lock conn");
+            conn.execute(
+                "INSERT INTO daily_summary (date, request_count, finalized_at) VALUES ('2026-06-01', 5, 1)",
+                [],
+            )
+            .expect("insert daily summary");
+            conn.execute(
+                "INSERT INTO model_usage (date, model, request_count) VALUES ('2026-06-01', 'claude-sonnet-4', 5)",
+                [],
+            )
+            .expect("insert model usage");
+            conn.execute(
+                "INSERT INTO daily_rollup_state (state_key, state_value, updated_at)
+                 VALUES ('day_boundary_mode', 'night_owl', 1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                [],
+            )
+            .expect("insert mismatched rollup mode");
+        }
+
+        db.ensure_daily_rollup_mode_current()
+            .expect("ensure current rollup mode");
+
+        let conn = db.conn.lock().expect("lock conn");
+        let summary_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM daily_summary", [], |row| row.get(0))
+            .expect("count daily summary");
+        let model_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM model_usage", [], |row| row.get(0))
+            .expect("count model usage");
+        let stored_mode: String = conn
+            .query_row(
+                "SELECT state_value FROM daily_rollup_state WHERE state_key = 'day_boundary_mode'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("load stored mode");
+
+        assert_eq!(summary_count, 0);
+        assert_eq!(model_count, 0);
+        assert_eq!(stored_mode, "standard");
+    }
 }
