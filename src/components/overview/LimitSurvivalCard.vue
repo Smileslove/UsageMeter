@@ -119,6 +119,11 @@ const avgPaceText = computed(() => {
   if (!avg || avg <= 0) return ''
   return t(locale.value, 'survival.avgPace', { value: formatTokenValue(avg) })
 })
+const localStatusText = computed(() => {
+  if (block.value) return blockResetText.value
+  if (avgPaceText.value) return avgPaceText.value
+  return t(locale.value, 'survival.awaitingActivity')
+})
 
 // ===== 时间格式化 =====
 function formatDurationFromSeconds(seconds: number): string {
@@ -333,6 +338,19 @@ async function refreshReal() {
           </div>
         </template>
 
+        <!-- ===== 占位空闲态（无活跃块/无基线，但仍有来源额度） ===== -->
+        <template v-else-if="configuredSourceQuotas.length">
+          <div class="flex items-center justify-between gap-2 rounded-lg border border-dashed border-gray-200/80 px-2 py-1.5 dark:border-white/10">
+            <div class="flex min-w-0 items-center gap-1.5">
+              <span class="h-1.5 w-1.5 rounded-full shrink-0 bg-gray-300/80 dark:bg-gray-600/70" />
+              <span class="text-[11px] font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">{{ t(locale, 'survival.localWindow5h') }}</span>
+              <span class="text-[10px] text-gray-400">·</span>
+              <span class="truncate text-[10px] text-gray-400 dark:text-gray-500">{{ t(locale, 'survival.idle') }}</span>
+            </div>
+            <span class="shrink-0 text-[10px] font-mono text-gray-400 dark:text-gray-500 whitespace-nowrap">{{ localStatusText }}</span>
+          </div>
+        </template>
+
         <!-- ===== 已配置来源额度（多工具中转，一行一来源，附加展示） ===== -->
         <div
           v-if="configuredSourceQuotas.length"
@@ -390,6 +408,7 @@ async function refreshReal() {
   --metric-separator-strong: color-mix(in srgb, var(--theme-chart-requests) 34%, transparent);
   min-width: 0;
   overflow: hidden;
+  min-height: 0 !important;
   border-radius: 1rem;
   border-width: 1px;
   background: var(--theme-surface-gradient);
@@ -442,10 +461,10 @@ async function refreshReal() {
 .metric-body {
   min-width: 0;
   flex: 1 1 0%;
-  padding: 0.5rem 0.625rem;
+  padding: 0.5rem 0.625rem 0.375rem;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  justify-content: flex-start;
 }
 
 .tier-chip {
