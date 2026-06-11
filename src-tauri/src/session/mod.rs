@@ -5,6 +5,7 @@
 mod claude_reader;
 mod codex_reader;
 mod constants;
+mod gemini_reader;
 mod meta;
 mod opencode;
 pub(crate) mod opencode_reader;

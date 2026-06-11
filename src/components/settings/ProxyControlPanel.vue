@@ -44,7 +44,7 @@ const proxyStatusInfo = computed(() => {
 })
 
 const managedToolProfiles = computed(() => {
-  return store.settings.clientTools.profiles.filter(profile => ['claude_code', 'codex', 'opencode', 'reasonix'].includes(profile.tool))
+  return store.settings.clientTools.profiles.filter(profile => ['claude_code', 'codex', 'opencode', 'reasonix', 'gemini'].includes(profile.tool))
 })
 
 const toolAlerts = computed(() => {
@@ -243,6 +243,8 @@ function toolConfigPaths(profile: ClientToolProfile): string[] {
       return ['~/.config/opencode/opencode.json']
     case 'reasonix':
       return ['~/Library/Application Support/reasonix/config.toml']
+    case 'gemini':
+      return ['~/.gemini/.env']
     default:
       return []
   }

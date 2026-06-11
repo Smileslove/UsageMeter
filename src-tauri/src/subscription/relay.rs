@@ -301,6 +301,8 @@ fn make_quota(provider: &RelayProvider, tiers: Vec<QuotaTier>) -> SubscriptionQu
         updated_at: chrono::Utc::now().timestamp_millis(),
         from_cache: false,
         error: None,
+        plan_label: None,
+        account_label: None,
     }
 }
 
@@ -316,6 +318,8 @@ fn make_error(provider: &str, msg: String) -> SubscriptionQuota {
         updated_at: chrono::Utc::now().timestamp_millis(),
         from_cache: false,
         error: Some(msg),
+        plan_label: None,
+        account_label: None,
     }
 }
 

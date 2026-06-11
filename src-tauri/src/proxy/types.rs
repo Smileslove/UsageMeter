@@ -1,6 +1,7 @@
 //! 代理类型和数据结构定义
 
 use super::collector::UsageCollector;
+use super::gemini_forwarder::GeminiForwarder;
 use super::openai_forwarder::OpenAiForwarder;
 use crate::models::AppSettings;
 use serde::{Deserialize, Serialize};
@@ -428,6 +429,8 @@ pub struct ProxyState {
     pub active_source_id: Arc<RwLock<Option<String>>>,
     /// OpenAI-compatible 转发器（Codex 等），在服务器启动时创建一次并复用。
     pub openai_forwarder: Arc<RwLock<Option<Arc<OpenAiForwarder>>>>,
+    /// Google Generative Language API 转发器（Gemini），在服务器启动时创建一次并复用。
+    pub gemini_forwarder: Arc<RwLock<Option<Arc<GeminiForwarder>>>>,
     /// 代理运行期的设置快照，避免在请求热路径重复读盘。
     pub settings_snapshot: Arc<RwLock<AppSettings>>,
     /// 设置文件最后一次已知修改时间，用于轮询刷新快照。

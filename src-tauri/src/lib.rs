@@ -518,6 +518,7 @@ pub fn run() {
             commands::has_chatgpt_oauth,
             commands::has_claude_oauth,
             commands::get_configured_source_quotas,
+            commands::has_gemini_oauth,
             commands::clear_subscription_cache,
             // 更新命令
             commands::check_for_update,

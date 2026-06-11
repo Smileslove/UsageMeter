@@ -4,6 +4,8 @@ use super::codex_config::{CodexConfigManager, CodexSourceRegistry};
 use super::collector::UsageCollector;
 use super::config_manager::ClaudeConfigManager;
 use super::forwarder::RequestForwarder;
+use super::gemini_config::{GeminiConfigManager, GeminiSourceRegistry};
+use super::gemini_forwarder::GeminiForwarder;
 use super::openai_forwarder::OpenAiForwarder;
 use super::opencode_config::{OpenCodeConfigManager, OpenCodeSourceRegistry};
 use super::reasonix_config::{ReasonixConfigManager, ReasonixSourceRegistry};
@@ -15,7 +17,8 @@ use super::types::{ProxyConfig, ProxyState, ProxyStatus};
 use crate::commands::load_settings;
 use crate::commands::{
     restore_claude_takeover_if_proxy_url_present, restore_codex_takeover_if_proxy_url_present,
-    restore_opencode_takeover_if_proxy_url_present, restore_reasonix_takeover_if_proxy_url_present,
+    restore_gemini_takeover_if_proxy_url_present, restore_opencode_takeover_if_proxy_url_present,
+    restore_reasonix_takeover_if_proxy_url_present,
 };
 use crate::net::HttpClientFactory;
 use hyper::server::conn::http1;
@@ -513,6 +516,64 @@ pub(crate) async fn sync_reasonix_external_config_change(
     .await;
 }
 
+pub(crate) async fn sync_gemini_external_config_change(
+    proxy_port: u16,
+    state: Arc<ProxyState>,
+    mode: ExternalConfigSyncMode,
+) {
+    if mode == ExternalConfigSyncMode::PassiveRecoveryOnly {
+        let _ = restore_gemini_takeover_if_proxy_url_present(proxy_port);
+        return;
+    }
+
+    let settings = get_settings_snapshot(&state).await;
+    let gemini_enabled = settings
+        .client_tools
+        .profiles
+        .iter()
+        .any(|profile| profile.tool == "gemini" && profile.enabled);
+    if !gemini_enabled {
+        return;
+    }
+
+    if is_takeover_conflict_paused(&state, "gemini").await {
+        return;
+    }
+
+    let config_manager = GeminiConfigManager::new();
+
+    // .env 已正确指向代理且带有效 source ID，无需重写。
+    if let Ok(is_active) = config_manager.is_takeover_active(proxy_port) {
+        if is_active && config_manager.active_source_id().is_some() {
+            return;
+        }
+    }
+
+    let snapshot = match config_manager.read_live_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(_) => return,
+    };
+
+    if let Ok(handle) = GeminiSourceRegistry::new().upsert_from_snapshot(snapshot) {
+        if !should_reclaim_external_config(
+            &state,
+            "gemini",
+            config_manager.config_path().display().to_string(),
+            handle.real_base_url.clone(),
+        )
+        .await
+        {
+            return;
+        }
+        if config_manager
+            .takeover_with_source(proxy_port, &handle.id)
+            .is_ok()
+        {
+            mark_takeover_config_write(&state, "gemini").await;
+        }
+    }
+}
+
 /// 代理服务器
 pub struct ProxyServer {
     /// 代理配置
@@ -559,6 +620,7 @@ impl ProxyServer {
             app_handle: Arc::new(RwLock::new(None)),
             active_source_id: Arc::new(RwLock::new(None)),
             openai_forwarder: Arc::new(RwLock::new(None)),
+            gemini_forwarder: Arc::new(RwLock::new(None)),
             settings_snapshot: Arc::new(RwLock::new(initial_settings)),
             settings_file_mtime: Arc::new(RwLock::new(initial_settings_mtime)),
             takeover_conflicts: Arc::new(RwLock::new(Default::default())),
@@ -644,6 +706,17 @@ impl ProxyServer {
         );
         *self.state.openai_forwarder.write().await = Some(openai_forwarder);
 
+        // 创建 Gemini 转发器（Google Generative Language API），一次性创建后复用
+        let gemini_forwarder = Arc::new(
+            GeminiForwarder::new(
+                self.state.usage_collector.clone(),
+                self.config.request_timeout,
+                self.config.streaming_idle_timeout,
+            )
+            .map_err(|e| format!("Failed to create Gemini forwarder: {}", e))?,
+        );
+        *self.state.gemini_forwarder.write().await = Some(gemini_forwarder);
+
         // 代理启动时先登记当前有效来源。这样即使 Claude Code 的入站请求不带
         // x-api-key，设置页也能立即看到本次接管对应的 API 来源。
         // 绑定地址
@@ -691,6 +764,12 @@ impl ProxyServer {
         )
         .await;
         sync_reasonix_external_config_change(
+            self.config.port,
+            self.state.clone(),
+            ExternalConfigSyncMode::RunningTakeover,
+        )
+        .await;
+        sync_gemini_external_config_change(
             self.config.port,
             self.state.clone(),
             ExternalConfigSyncMode::RunningTakeover,
@@ -744,6 +823,12 @@ impl ProxyServer {
                         )
                         .await;
                         sync_reasonix_external_config_change(
+                            proxy_port,
+                            state.clone(),
+                            ExternalConfigSyncMode::RunningTakeover,
+                        )
+                        .await;
+                        sync_gemini_external_config_change(
                             proxy_port,
                             state.clone(),
                             ExternalConfigSyncMode::RunningTakeover,
@@ -847,6 +932,7 @@ impl ProxyServer {
         *self.state.start_time.write().await = None;
         *self.state.active_source_id.write().await = None;
         *self.state.openai_forwarder.write().await = None;
+        *self.state.gemini_forwarder.write().await = None;
 
         Ok(())
     }
@@ -906,6 +992,7 @@ impl ProxyServer {
             "codex" => self.force_reclaim_codex_takeover().await?,
             "opencode" => self.force_reclaim_opencode_takeover().await?,
             "reasonix" => self.force_reclaim_reasonix_takeover().await?,
+            "gemini" => self.force_reclaim_gemini_takeover().await?,
             other => return Err(format!("Unsupported takeover tool: {}", other)),
         };
         clear_takeover_conflict(&self.state, tool).await;
@@ -1028,6 +1115,33 @@ impl ProxyServer {
 
         config_manager.takeover_with_handles(self.config.port, &handles)?;
         mark_takeover_config_write(&self.state, "reasonix").await;
+        Ok(())
+    }
+
+    async fn force_reclaim_gemini_takeover(&self) -> Result<(), String> {
+        let config_manager = GeminiConfigManager::new();
+        let registry = GeminiSourceRegistry::new();
+        let snapshot = config_manager.read_live_snapshot()?;
+        let handle = if GeminiConfigManager::is_usagemeter_proxy_url_for_port(
+            &snapshot.real_base_url,
+            self.config.port,
+        ) {
+            config_manager
+                .active_source_id()
+                .and_then(|source_id| registry.get(&source_id))
+                .or_else(|| {
+                    registry
+                        .list_handles()
+                        .into_iter()
+                        .max_by_key(|handle| handle.last_used_at_ms.max(handle.last_seen_at_ms))
+                })
+                .ok_or_else(|| "Unable to resolve Gemini takeover source".to_string())?
+        } else {
+            registry.upsert_from_snapshot(snapshot)?
+        };
+
+        config_manager.takeover_with_source(self.config.port, &handle.id)?;
+        mark_takeover_config_write(&self.state, "gemini").await;
         Ok(())
     }
 

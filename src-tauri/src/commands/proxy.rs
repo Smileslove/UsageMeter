@@ -2,8 +2,9 @@
 
 use crate::proxy::{
     codex_snapshot_uses_official_provider, request_common, server, ClaudeConfigManager,
-    CodexConfigManager, CodexSourceRegistry, OpenCodeConfigManager, OpenCodeSourceRegistry,
-    ProxyConfig, ProxyServer, ProxyStatus, ReasonixConfigManager, ReasonixSourceRegistry,
+    CodexConfigManager, CodexSourceRegistry, GeminiConfigManager, GeminiSourceRegistry,
+    OpenCodeConfigManager, OpenCodeSourceRegistry, ProxyConfig, ProxyServer, ProxyStatus,
+    ReasonixConfigManager, ReasonixSourceRegistry,
 };
 use tauri::State;
 
@@ -28,6 +29,7 @@ pub async fn ensure_passive_proxy_monitor_started(state: &ProxyState) {
         app_handle: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         active_source_id: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         openai_forwarder: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+        gemini_forwarder: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         settings_snapshot: std::sync::Arc::new(tokio::sync::RwLock::new(
             load_settings().unwrap_or_default(),
         )),
@@ -69,6 +71,12 @@ pub async fn ensure_passive_proxy_monitor_started(state: &ProxyState) {
                     )
                     .await;
                     server::sync_reasonix_external_config_change(
+                        port,
+                        proxy_state.clone(),
+                        server::ExternalConfigSyncMode::PassiveRecoveryOnly,
+                    )
+                    .await;
+                    server::sync_gemini_external_config_change(
                         port,
                         proxy_state.clone(),
                         server::ExternalConfigSyncMode::PassiveRecoveryOnly,
@@ -175,6 +183,7 @@ pub async fn stop_proxy_runtime_only_inner(state: &State<'_, ProxyState>) -> Res
 
     restore_codex_takeover_if_active(port)?;
     restore_opencode_takeover_if_active(port)?;
+    restore_gemini_takeover_if_active(port)?;
 
     Ok(())
 }
@@ -220,6 +229,7 @@ pub async fn set_takeover_for_app(
         "claude_code" | "claude" => set_claude_takeover(enabled, state, app_handle).await,
         "opencode" => set_opencode_takeover(enabled, state, app_handle).await,
         "reasonix" => set_reasonix_takeover(enabled, state, app_handle).await,
+        "gemini" => set_gemini_takeover(enabled, state, app_handle).await,
         other => Err(format!("Unsupported takeover app: {}", other)),
     }
 }
@@ -633,6 +643,110 @@ async fn set_reasonix_takeover(
     Ok(())
 }
 
+pub(crate) fn restore_gemini_takeover_if_active(port: u16) -> Result<(), String> {
+    let manager = GeminiConfigManager::new();
+    if !manager.is_takeover_active(port).unwrap_or(false) {
+        return Ok(());
+    }
+
+    let registry = GeminiSourceRegistry::new();
+    let handle = manager
+        .active_source_id()
+        .and_then(|source_id| registry.get(&source_id))
+        .or_else(|| {
+            registry
+                .list_handles()
+                .into_iter()
+                .max_by_key(|handle| handle.last_used_at_ms.max(handle.last_seen_at_ms))
+        });
+
+    let Some(handle) = handle else {
+        return Err(
+            "Gemini is pointed at UsageMeter, but no restorable source handle was found. \
+             Restore ~/.gemini/.env manually or re-enable takeover after fixing the source registry."
+                .to_string(),
+        );
+    };
+
+    let _ = manager.restore_from_source(&handle.id)?;
+    Ok(())
+}
+
+pub(crate) fn restore_gemini_takeover_if_proxy_url_present(port: u16) -> Result<bool, String> {
+    let manager = GeminiConfigManager::new();
+    let snapshot = match manager.read_live_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(_) => return Ok(false),
+    };
+
+    if !GeminiConfigManager::is_usagemeter_proxy_url_for_port(&snapshot.real_base_url, port) {
+        return Ok(false);
+    }
+
+    restore_gemini_takeover_if_active(port)?;
+    Ok(true)
+}
+
+async fn set_gemini_takeover(
+    enabled: bool,
+    state: State<'_, ProxyState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let settings = load_settings().unwrap_or_default();
+    let port = settings.proxy.port;
+    let manager = GeminiConfigManager::new();
+
+    if enabled {
+        {
+            let server_guard = state.server.read().await;
+            if server_guard.is_none() {
+                drop(server_guard);
+                start_proxy(port, state.clone(), app_handle).await?;
+            }
+        }
+
+        let registry = GeminiSourceRegistry::new();
+        let mut snapshot = manager.read_live_snapshot()?;
+        if GeminiConfigManager::is_usagemeter_proxy_url_for_port(&snapshot.real_base_url, port) {
+            if let Some(handle) = manager
+                .active_source_id()
+                .and_then(|source_id| registry.get(&source_id))
+            {
+                let _ = manager.restore_from_source(&handle.id)?;
+                snapshot = manager.read_live_snapshot()?;
+            } else {
+                return Err(
+                    "Gemini is already pointed at UsageMeter, but no original source handle was found. \
+                     Disable takeover once or restore ~/.gemini/.env manually, then enable it again."
+                        .to_string(),
+                );
+            }
+        }
+        let handle = registry.upsert_from_snapshot(snapshot)?;
+
+        manager.takeover_with_source(port, &handle.id)?;
+        mark_client_tool_enabled("gemini", true)?;
+    } else {
+        restore_gemini_takeover_if_active(port)?;
+        mark_client_tool_enabled("gemini", false)?;
+
+        let settings = load_settings().unwrap_or_default();
+        let any_tool_enabled = settings
+            .client_tools
+            .profiles
+            .iter()
+            .any(|profile| profile.enabled);
+        if !any_tool_enabled {
+            let mut server_guard = state.server.write().await;
+            if let Some(server) = server_guard.take() {
+                server.stop().await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn proxy_config_from_settings(port: u16, settings: &crate::models::AppSettings) -> ProxyConfig {
     ProxyConfig {
         enabled: true,
@@ -744,6 +858,14 @@ pub async fn get_takeover_statuses(
         Some(server) => server.takeover_conflict_external_base_url("reasonix").await,
         None => None,
     };
+    let gemini_conflict_paused = match server {
+        Some(server) => server.is_takeover_conflict_paused("gemini").await,
+        None => false,
+    };
+    let gemini_conflict_external_base_url = match server {
+        Some(server) => server.takeover_conflict_external_base_url("gemini").await,
+        None => None,
+    };
     drop(server_guard);
 
     let codex_manager = CodexConfigManager::new();
@@ -822,6 +944,20 @@ pub async fn get_takeover_statuses(
             Err(e) => (false, None, Some(e)),
         };
 
+    let gemini_manager = GeminiConfigManager::new();
+    let gemini_enabled = settings
+        .client_tools
+        .profiles
+        .iter()
+        .find(|profile| profile.tool == "gemini")
+        .map(|profile| profile.enabled)
+        .unwrap_or(false);
+    let (gemini_active, gemini_source, gemini_error) = match gemini_manager.is_takeover_active(port)
+    {
+        Ok(active) => (active, gemini_manager.active_source_id(), None),
+        Err(e) => (false, None, Some(e)),
+    };
+
     Ok(vec![
         ToolTakeoverStatus {
             tool: "claude_code".to_string(),
@@ -882,6 +1018,21 @@ pub async fn get_takeover_statuses(
             conflict_external_base_url: reasonix_conflict_external_base_url,
             scope_warning_key: Some("settings.reasonixConfigScopeWarning".to_string()),
             last_error: reasonix_error,
+        },
+        ToolTakeoverStatus {
+            tool: "gemini".to_string(),
+            enabled: gemini_enabled,
+            takeover_active: gemini_active,
+            conflict_paused: gemini_conflict_paused,
+            config_path: Some(gemini_manager.config_path().display().to_string()),
+            auth_path: None,
+            auth_mode: Some("api_key".to_string()),
+            official_provider: false,
+            active_source_id: gemini_source,
+            managed_provider_ids: None,
+            conflict_external_base_url: gemini_conflict_external_base_url,
+            scope_warning_key: Some("settings.geminiConfigScopeWarning".to_string()),
+            last_error: gemini_error,
         },
     ])
 }

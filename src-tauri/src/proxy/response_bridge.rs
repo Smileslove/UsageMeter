@@ -1,4 +1,5 @@
 use super::forwarder::{ForwardResult, RequestForwarder};
+use super::gemini_forwarder::{GeminiForwardResult, GeminiForwarder};
 use super::openai_forwarder::{OpenAiForwardResult, OpenAiForwarder};
 use super::request_common::{full, json_error_response, BoxBody, HandlerResult};
 use super::types::{ProxyState, RequestContext};
@@ -119,6 +120,102 @@ pub(crate) async fn forward_codex_with_usage(
                 Ok(build_upstream_response(status_code, headers, full(content)))
             }
         },
+        Err(e) => {
+            record_proxy_failure(state).await;
+            Ok(json_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "proxy_error",
+                &e,
+            ))
+        }
+    }
+}
+
+pub(crate) async fn forward_gemini_passthrough(
+    forwarder: &GeminiForwarder,
+    method: Method,
+    forward_path: &str,
+    request_headers: hyper::HeaderMap,
+    body_bytes: bytes::Bytes,
+    context: RequestContext,
+    state: &Arc<ProxyState>,
+) -> HandlerResult {
+    match forwarder
+        .forward_passthrough(method, forward_path, request_headers, body_bytes, context)
+        .await
+    {
+        Ok(GeminiForwardResult::Streaming {
+            status_code,
+            headers,
+            body,
+        }) => {
+            record_proxy_status(state, status_code).await;
+            Ok(build_upstream_response(status_code, headers, body))
+        }
+        Ok(GeminiForwardResult::NonStreaming {
+            status_code,
+            headers,
+            content,
+        }) => {
+            record_proxy_status(state, status_code).await;
+            Ok(build_upstream_response(status_code, headers, full(content)))
+        }
+        Ok(GeminiForwardResult::UpstreamError {
+            status_code,
+            headers,
+            content,
+        }) => {
+            record_proxy_failure(state).await;
+            Ok(build_upstream_response(status_code, headers, full(content)))
+        }
+        Err(e) => {
+            record_proxy_failure(state).await;
+            Ok(json_error_response(
+                StatusCode::BAD_GATEWAY,
+                "proxy_error",
+                &e,
+            ))
+        }
+    }
+}
+
+pub(crate) async fn forward_gemini_with_usage(
+    forwarder: &GeminiForwarder,
+    method: Method,
+    forward_path: &str,
+    request_headers: hyper::HeaderMap,
+    body_bytes: bytes::Bytes,
+    context: RequestContext,
+    state: &Arc<ProxyState>,
+) -> HandlerResult {
+    match forwarder
+        .forward_with_usage(method, forward_path, request_headers, body_bytes, context)
+        .await
+    {
+        Ok(GeminiForwardResult::Streaming {
+            status_code,
+            headers,
+            body,
+        }) => {
+            record_proxy_status(state, status_code).await;
+            Ok(build_upstream_response(status_code, headers, body))
+        }
+        Ok(GeminiForwardResult::NonStreaming {
+            status_code,
+            headers,
+            content,
+        }) => {
+            record_proxy_status(state, status_code).await;
+            Ok(build_upstream_response(status_code, headers, full(content)))
+        }
+        Ok(GeminiForwardResult::UpstreamError {
+            status_code,
+            headers,
+            content,
+        }) => {
+            record_proxy_failure(state).await;
+            Ok(build_upstream_response(status_code, headers, full(content)))
+        }
         Err(e) => {
             record_proxy_failure(state).await;
             Ok(json_error_response(

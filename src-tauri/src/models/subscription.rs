@@ -68,6 +68,12 @@ pub struct SubscriptionQuota {
     pub from_cache: bool,
     /// Error message
     pub error: Option<String>,
+    /// Plan / tier label (e.g. "Free", "Pro"), provider-specific (Gemini)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_label: Option<String>,
+    /// Account label such as email or project id, provider-specific (Gemini)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_label: Option<String>,
 }
 
 /// Result of configured source quota refresh.

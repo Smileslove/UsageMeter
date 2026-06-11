@@ -73,6 +73,16 @@ pub async fn has_claude_oauth() -> bool {
     .unwrap_or(false)
 }
 
+/// Check if Gemini CLI OAuth credentials are present
+#[tauri::command]
+pub async fn has_gemini_oauth() -> bool {
+    tokio::task::spawn_blocking(|| {
+        crate::subscription::GeminiSubscriptionProvider::new().has_gemini_oauth()
+    })
+    .await
+    .unwrap_or(false)
+}
+
 /// 查询多工具**已配置来源**的第三方中转额度/余额（A 静默降级）。
 ///
 /// 流程：逐工具解析真实上游 base_url + 完整 api_key（Claude Code / Codex / OpenCode）→
@@ -160,7 +170,6 @@ pub async fn get_configured_source_quotas(
         queried_at: chrono::Utc::now().timestamp_millis(),
     })
 }
-
 /// Clear subscription cache
 #[tauri::command]
 pub async fn clear_subscription_cache(
@@ -188,6 +197,10 @@ async fn fetch_provider_quota(
             crate::subscription::ClaudeSubscriptionProvider::new()
                 .fetch_quota()
                 .await
+        }
+        "gemini" => {
+            let gemini_provider = state.get_gemini_provider().await;
+            gemini_provider.fetch_quota().await
         }
         _ => SubscriptionQueryResult::error(
             provider,

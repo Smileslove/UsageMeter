@@ -6,6 +6,9 @@ mod collector;
 mod config_manager;
 mod database;
 mod forwarder;
+mod gemini_api;
+mod gemini_config;
+mod gemini_forwarder;
 mod handlers;
 mod openai_forwarder;
 mod opencode_config;
@@ -31,6 +34,7 @@ pub use database::{
     PreviewPricingApplyResult, PricingMatchFilter, ProxyDatabase, ProxyDayDependencySnapshot,
     ProxyMergeCacheSignature,
 };
+pub use gemini_config::{GeminiConfigManager, GeminiSourceRegistry};
 pub use opencode_config::{OpenCodeConfigManager, OpenCodeSourceRegistry};
 pub use reasonix_config::{ReasonixConfigManager, ReasonixSourceRegistry};
 pub use server::ProxyServer;

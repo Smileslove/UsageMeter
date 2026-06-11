@@ -1,5 +1,5 @@
 use super::forwarder::RequestForwarder;
-use super::handlers::{claude, codex, opencode, reasonix};
+use super::handlers::{claude, codex, gemini, opencode, reasonix};
 use super::request_common::{
     append_query, detect_client_route, full, get_settings_snapshot, HandlerResult,
 };
@@ -82,6 +82,10 @@ pub(crate) async fn handle_request(
                 &state,
             )
             .await
+        }
+        "gemini" => {
+            gemini::handle_gemini_request(method, &path, &forward_path, client_route, req, &state)
+                .await
         }
         "unknown" => Ok(Response::builder()
             .status(StatusCode::NOT_FOUND)

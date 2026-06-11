@@ -103,6 +103,11 @@ mod platform {
         roots_for(cfg, &[".local", "share", "opencode"])
     }
 
+    /// 所有 WSL 发行版下的 Gemini CLI `tmp` 会话根。
+    pub fn gemini_tmp_roots(cfg: &WslScanSettings) -> Vec<PathBuf> {
+        roots_for(cfg, &[".gemini", "tmp"])
+    }
+
     fn roots_for(cfg: &WslScanSettings, tail: &[&str]) -> Vec<PathBuf> {
         let mut roots: Vec<PathBuf> = distro_homes(cfg)
             .into_iter()
@@ -209,7 +214,8 @@ mod platform {
 
 #[cfg(windows)]
 pub use platform::{
-    claude_projects_roots, codex_session_roots, opencode_home_roots, scan_config_if_enabled,
+    claude_projects_roots, codex_session_roots, gemini_tmp_roots, opencode_home_roots,
+    scan_config_if_enabled,
 };
 
 #[cfg(test)]

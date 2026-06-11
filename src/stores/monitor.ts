@@ -64,7 +64,8 @@ const defaultClientTools: ClientToolSettings = {
     { id: 'codex', tool: 'codex', displayName: 'Codex', pathPrefix: 'codex', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'codex' },
     { id: 'cursor', tool: 'cursor', displayName: 'Cursor', pathPrefix: 'cursor', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'cursor' },
     { id: 'opencode', tool: 'opencode', displayName: 'OpenCode', pathPrefix: 'opencode', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'opencode' },
-    { id: 'reasonix', tool: 'reasonix', displayName: 'Reasonix', pathPrefix: 'reasonix', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'reasonix' }
+    { id: 'reasonix', tool: 'reasonix', displayName: 'Reasonix', pathPrefix: 'reasonix', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'reasonix' },
+    { id: 'gemini', tool: 'gemini', displayName: 'Gemini CLI', pathPrefix: 'gemini', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'geminicli' }
   ],
   activeToolFilter: null
 }
@@ -170,7 +171,11 @@ export const useMonitorStore = defineStore('monitor', {
     configuredSourceNextEligibleAt: 0,
     configuredSourceLastError: null as string | null,
     // 限额生存层（本地信号：会话锚定块 / 燃烧速率 / 历史基线）
-    limitSurvival: null as LimitSurvivalSnapshot | null
+    limitSurvival: null as LimitSurvivalSnapshot | null,
+    // Gemini 配额查询
+    geminiQuota: null as SubscriptionQueryResult | null,
+    geminiQuotaLoading: false,
+    hasGeminiOAuth: false
   }),
   getters: {
     hasData: state => !!state.snapshot,
@@ -208,6 +213,12 @@ export const useMonitorStore = defineStore('monitor', {
 
       // 第三方中转额度查询（已配置来源；静默降级）
       await this.forceFetchConfiguredSourceQuotas()
+
+      // 检查是否有 Gemini CLI OAuth 凭据，如果有则查询额度
+      await this.checkGeminiOAuth()
+      if (this.hasGeminiOAuth) {
+        await this.fetchGeminiQuota()
+      }
     },
     async loadSettings() {
       try {
@@ -826,6 +837,56 @@ export const useMonitorStore = defineStore('monitor', {
         }
       } finally {
         this.claudeLoading = false
+      }
+    },
+    // === Gemini 额度查询 ===
+    /**
+     * 检查是否有 Gemini CLI OAuth 凭据
+     */
+    async checkGeminiOAuth() {
+      try {
+        this.hasGeminiOAuth = await invoke<boolean>('has_gemini_oauth')
+      } catch (e) {
+        console.error('Failed to check Gemini OAuth:', e)
+        this.hasGeminiOAuth = false
+      }
+    },
+    /**
+     * 获取 Gemini 额度
+     */
+    async fetchGeminiQuota() {
+      this.geminiQuotaLoading = true
+      try {
+        this.geminiQuota = await invoke<SubscriptionQueryResult>('get_subscription_quota', { provider: 'gemini' })
+      } catch (e) {
+        console.error('Failed to fetch Gemini quota:', e)
+        this.geminiQuota = {
+          success: false,
+          credentialStatus: { queryFailed: { error: String(e) } },
+          error: String(e),
+          queriedAt: Date.now()
+        }
+      } finally {
+        this.geminiQuotaLoading = false
+      }
+    },
+    /**
+     * 刷新 Gemini 额度（强制刷新）
+     */
+    async refreshGeminiQuota() {
+      this.geminiQuotaLoading = true
+      try {
+        this.geminiQuota = await invoke<SubscriptionQueryResult>('refresh_subscription_quota', { provider: 'gemini' })
+      } catch (e) {
+        console.error('Failed to refresh Gemini quota:', e)
+        this.geminiQuota = {
+          success: false,
+          credentialStatus: { queryFailed: { error: String(e) } },
+          error: String(e),
+          queriedAt: Date.now()
+        }
+      } finally {
+        this.geminiQuotaLoading = false
       }
     },
     /**

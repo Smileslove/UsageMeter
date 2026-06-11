@@ -23,11 +23,13 @@ fn make_error(source: &ApiSource, msg: String) -> SubscriptionQuota {
         updated_at: chrono::Utc::now().timestamp_millis(),
         from_cache: false,
         error: Some(msg),
+        plan_label: None,
+        account_label: source.display_name.clone(),
     }
 }
 
 fn make_quota(
-    _source: &ApiSource,
+    source: &ApiSource,
     tiers: Vec<QuotaTier>,
     plan_name: Option<String>,
 ) -> SubscriptionQuota {
@@ -36,12 +38,14 @@ fn make_quota(
         tool: "source-config".to_string(),
         source_tool: None,
         credential_status: "valid".to_string(),
-        credential_message: plan_name,
+        credential_message: plan_name.clone(),
         success: true,
         tiers,
         updated_at: chrono::Utc::now().timestamp_millis(),
         from_cache: false,
         error: None,
+        plan_label: plan_name,
+        account_label: source.display_name.clone(),
     }
 }
 
