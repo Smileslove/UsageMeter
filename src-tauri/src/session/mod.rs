@@ -9,6 +9,7 @@ mod gemini_reader;
 mod meta;
 mod opencode;
 pub(crate) mod opencode_reader;
+pub(crate) mod qoder_ide_reader;
 mod reasonix_reader;
 mod registry;
 mod scanner;

@@ -165,6 +165,36 @@ impl LocalUsageDatabase {
             let _ = proxy_db.reconcile_opencode_records(&opencode_local_records);
         }
 
+        let qoder_sessions = crate::session::qoder_ide_reader::scan_qoder_ide_sessions();
+        let qoder_map: HashMap<String, DirtySessionSync> = qoder_sessions
+            .into_iter()
+            .map(|session| {
+                let project_key = session
+                    .meta
+                    .project_name
+                    .clone()
+                    .or(session.meta.cwd.clone())
+                    .unwrap_or_else(|| "unknown_project".to_string());
+                let key = session.meta.session_id.clone();
+                (
+                    key.clone(),
+                    DirtySessionSync {
+                        session_id: key,
+                        tool: session.meta.tool.clone(),
+                        file_path: session.source_locator.clone(),
+                        file_role: "qoder_ide_session".to_string(),
+                        file_size: session.meta.file_size,
+                        last_modified: session.meta.last_modified,
+                        fingerprint: session.fingerprint.to_string(),
+                        meta: session.meta,
+                        requests: session.requests,
+                        project_key,
+                    },
+                )
+            })
+            .collect();
+        self.sync_dirty_session_map(qoder_map, "qoder_ide_session", Some("qoder_ide"))?;
+
         let opencode_states = crate::session::opencode_reader::get_opencode_db_scan_states();
         let opencode_schema_status = crate::session::opencode_reader::check_opencode_schema();
         let now = chrono::Utc::now().timestamp();

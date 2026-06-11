@@ -285,18 +285,6 @@ pub fn default_client_tool_profiles() -> Vec<ClientToolProfile> {
             icon: Some("codex".to_string()),
         },
         ClientToolProfile {
-            id: "cursor".to_string(),
-            tool: "cursor".to_string(),
-            display_name: Some("Cursor".to_string()),
-            path_prefix: "cursor".to_string(),
-            target_base_url: None,
-            enabled: false,
-            auto_detected: false,
-            first_seen_ms: now,
-            last_seen_ms: now,
-            icon: Some("cursor".to_string()),
-        },
-        ClientToolProfile {
             id: "opencode".to_string(),
             tool: "opencode".to_string(),
             display_name: Some("OpenCode".to_string()),
@@ -331,6 +319,18 @@ pub fn default_client_tool_profiles() -> Vec<ClientToolProfile> {
             first_seen_ms: now,
             last_seen_ms: now,
             icon: Some("geminicli".to_string()),
+        },
+        ClientToolProfile {
+            id: "qoder_ide".to_string(),
+            tool: "qoder_ide".to_string(),
+            display_name: Some("Qoder".to_string()),
+            path_prefix: "qoder".to_string(),
+            target_base_url: None,
+            enabled: false,
+            auto_detected: false,
+            first_seen_ms: now,
+            last_seen_ms: now,
+            icon: Some("qoder".to_string()),
         },
     ]
 }

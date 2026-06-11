@@ -5,20 +5,23 @@ use super::codex_reader::CodexSource;
 use super::gemini_reader::GeminiSource;
 use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
 use super::opencode_reader::OpenCodeSource;
+use super::qoder_ide_reader::QoderIdeSource;
 use super::reasonix_reader::ReasonixSource;
 use super::source::{ParsedSessionData, SessionSource};
 
 static CLAUDE_SOURCE: ClaudeSource = ClaudeSource;
 static CODEX_SOURCE: CodexSource = CodexSource;
 static OPENCODE_SOURCE: OpenCodeSource = OpenCodeSource;
+static QODER_IDE_SOURCE: QoderIdeSource = QoderIdeSource::new();
 static REASONIX_SOURCE: ReasonixSource = ReasonixSource;
 static GEMINI_SOURCE: GeminiSource = GeminiSource;
 
-pub fn all_sources() -> [&'static dyn SessionSource; 5] {
+pub fn all_sources() -> [&'static dyn SessionSource; 6] {
     [
         &CLAUDE_SOURCE,
         &CODEX_SOURCE,
         &OPENCODE_SOURCE,
+        &QODER_IDE_SOURCE,
         &REASONIX_SOURCE,
         &GEMINI_SOURCE,
     ]

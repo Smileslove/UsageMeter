@@ -352,6 +352,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       localScanCodexPath: '~/.codex/sessions/',
       localScanOpenCode: 'OpenCode',
       localScanOpenCodePath: '~/.local/share/opencode/opencode.db（SQLite 数据库，只读）',
+      localScanQoderIde: 'Qoder IDE',
+      localScanQoderIdePath: '~/Library/Application Support/Qoder/SharedClientCache/cache/db/local.db（SQLite 数据库，只读）',
       localScanReasonix: 'Reasonix',
       localScanReasonixPath: '~/Library/Application Support/reasonix/sessions/*.jsonl',
       localScanGemini: 'Gemini CLI',
@@ -676,7 +678,8 @@ const messages: Record<AppLocale, TranslationNode> = {
     },
     tools: {
       all: '全部工具',
-      ranking: '工具排行'
+      ranking: '工具排行',
+      qoder_ide: 'Qoder'
     },
     sources: {
       title: 'API 来源',
@@ -787,7 +790,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       quotaQuerying: '正在查询已配置来源额度…',
       avgPace: '近7日均速 {value}/h',
       sourceSection: '已配置来源',
-      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' }
+      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', qoderIde: 'Qoder' }
     }
   },
   'zh-TW': {
@@ -1137,6 +1140,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       localScanCodexPath: '~/.codex/sessions/',
       localScanOpenCode: 'OpenCode',
       localScanOpenCodePath: '~/.local/share/opencode/opencode.db（SQLite 資料庫，唯讀）',
+      localScanQoderIde: 'Qoder IDE',
+      localScanQoderIdePath: '~/Library/Application Support/Qoder/SharedClientCache/cache/db/local.db（SQLite 資料庫，唯讀）',
       localScanReasonix: 'Reasonix',
       localScanReasonixPath: '~/Library/Application Support/reasonix/sessions/*.jsonl',
       localScanGemini: 'Gemini CLI',
@@ -1460,7 +1465,8 @@ const messages: Record<AppLocale, TranslationNode> = {
     },
     tools: {
       all: '全部工具',
-      ranking: '工具排行'
+      ranking: '工具排行',
+      qoder_ide: 'Qoder'
     },
     sources: {
       title: 'API 來源',
@@ -1571,7 +1577,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       quotaQuerying: '正在查詢已配置來源額度…',
       avgPace: '近7日均速 {value}/h',
       sourceSection: '已配置來源',
-      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' }
+      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', qoderIde: 'Qoder' }
     }
   },
   'en-US': {
@@ -1921,6 +1927,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       localScanCodexPath: '~/.codex/sessions/',
       localScanOpenCode: 'OpenCode',
       localScanOpenCodePath: '~/.local/share/opencode/opencode.db (SQLite database, read-only)',
+      localScanQoderIde: 'Qoder IDE',
+      localScanQoderIdePath: '~/Library/Application Support/Qoder/SharedClientCache/cache/db/local.db (SQLite database, read-only)',
       localScanReasonix: 'Reasonix',
       localScanReasonixPath: '~/Library/Application Support/reasonix/sessions/*.jsonl',
       localScanGemini: 'Gemini CLI',
@@ -2244,7 +2252,8 @@ const messages: Record<AppLocale, TranslationNode> = {
     },
     tools: {
       all: 'All Tools',
-      ranking: 'Tool Ranking'
+      ranking: 'Tool Ranking',
+      qoder_ide: 'Qoder'
     },
     sources: {
       title: 'API Sources',
@@ -2355,7 +2364,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       quotaQuerying: 'Querying configured-source quotas…',
       avgPace: '7d avg {value}/h',
       sourceSection: 'Configured sources',
-      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' }
+      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', qoderIde: 'Qoder' }
     }
   }
 }

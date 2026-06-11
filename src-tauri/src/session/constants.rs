@@ -3,3 +3,4 @@ pub const TOOL_CODEX: &str = "codex";
 pub const TOOL_OPENCODE: &str = "opencode";
 pub const TOOL_REASONIX: &str = "reasonix";
 pub const TOOL_GEMINI: &str = "gemini";
+pub const TOOL_QODER_IDE: &str = "qoder_ide";
