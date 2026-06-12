@@ -180,6 +180,11 @@ fn cache_key_for_tool_filter(filter: &ToolFilter) -> String {
     match filter {
         ToolFilter::All => "all".to_string(),
         ToolFilter::Tool(tool) => format!("tool:{tool}"),
+        ToolFilter::AnyOf(tools) => {
+            let mut sorted = tools.clone();
+            sorted.sort();
+            format!("anyof:{}", sorted.join(","))
+        }
     }
 }
 
@@ -330,6 +335,7 @@ fn local_tool_matches(record: &LocalRequestRecord, tool_filter: &ToolFilter) -> 
         ToolFilter::All => true,
         ToolFilter::Tool(tool) if tool.trim().is_empty() => true,
         ToolFilter::Tool(tool) => record.tool == *tool,
+        ToolFilter::AnyOf(tools) => tools.contains(&record.tool),
     }
 }
 
@@ -338,6 +344,7 @@ fn session_meta_matches(meta: &SessionMeta, tool_filter: &ToolFilter) -> bool {
         ToolFilter::All => true,
         ToolFilter::Tool(tool) if tool.trim().is_empty() => true,
         ToolFilter::Tool(tool) => meta.tool == *tool,
+        ToolFilter::AnyOf(tools) => tools.contains(&meta.tool),
     }
 }
 

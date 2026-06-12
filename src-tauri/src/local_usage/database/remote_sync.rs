@@ -270,34 +270,10 @@ impl LocalUsageDatabase {
         tool_filter: &ToolFilter,
     ) -> Result<Vec<LocalRequestRecord>, String> {
         let conn = self.conn.lock().unwrap();
-        let (sql, param) = match tool_filter {
-            ToolFilter::All => (
-                "SELECT session_id, tool, timestamp, COALESCE(message_id, ''),
+        let base_select = "SELECT session_id, tool, timestamp, COALESCE(message_id, ''),
                         input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
                         total_tokens, model, is_subagent, request_key
-                 FROM remote_request_facts
-                 WHERE timestamp >= ?1 AND timestamp < ?2
-                 ORDER BY timestamp ASC"
-                    .to_string(),
-                None,
-            ),
-            ToolFilter::Tool(tool) => (
-                "SELECT session_id, tool, timestamp, COALESCE(message_id, ''),
-                        input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-                        total_tokens, model, is_subagent, request_key
-                 FROM remote_request_facts
-                 WHERE timestamp >= ?1 AND timestamp < ?2 AND tool = ?3
-                 ORDER BY timestamp ASC"
-                    .to_string(),
-                Some(tool.clone()),
-            ),
-        };
-        let mut stmt = conn.prepare(&sql).map_err(|e| {
-            format!(
-                "Failed to prepare get_remote_request_records_in_range: {}",
-                e
-            )
-        })?;
+                 FROM remote_request_facts";
         let mapper = |row: &rusqlite::Row<'_>| {
             let request_key: Option<String> = row.get(11)?;
             Ok(LocalRequestRecord {
@@ -317,19 +293,76 @@ impl LocalUsageDatabase {
                 reasoning_tokens: 0,
             })
         };
-        let rows = match param {
-            Some(tool) => stmt
-                .query_map(params![start_epoch, end_epoch, tool], mapper)
-                .map_err(|e| format!("Failed to query remote records in range by tool: {}", e))?,
-            None => stmt
-                .query_map(params![start_epoch, end_epoch], mapper)
-                .map_err(|e| format!("Failed to query remote records in range: {}", e))?,
-        };
         let mut result = Vec::new();
-        for row in rows {
-            result.push(
-                row.map_err(|e| format!("Failed to read remote request row in range: {}", e))?,
-            );
+        match tool_filter {
+            ToolFilter::All => {
+                let sql = format!(
+                    "{base_select} WHERE timestamp >= ?1 AND timestamp < ?2 ORDER BY timestamp ASC"
+                );
+                let mut stmt = conn.prepare(&sql).map_err(|e| {
+                    format!(
+                        "Failed to prepare get_remote_request_records_in_range: {}",
+                        e
+                    )
+                })?;
+                for row in stmt
+                    .query_map(params![start_epoch, end_epoch], mapper)
+                    .map_err(|e| format!("Failed to query remote records in range: {}", e))?
+                {
+                    result.push(
+                        row.map_err(|e| format!("Failed to read remote request row: {}", e))?,
+                    );
+                }
+            }
+            ToolFilter::Tool(tool) => {
+                let sql = format!("{base_select} WHERE timestamp >= ?1 AND timestamp < ?2 AND tool = ?3 ORDER BY timestamp ASC");
+                let mut stmt = conn.prepare(&sql).map_err(|e| {
+                    format!(
+                        "Failed to prepare get_remote_request_records_in_range by tool: {}",
+                        e
+                    )
+                })?;
+                for row in stmt
+                    .query_map(params![start_epoch, end_epoch, tool], mapper)
+                    .map_err(|e| {
+                        format!("Failed to query remote records in range by tool: {}", e)
+                    })?
+                {
+                    result.push(row.map_err(|e| {
+                        format!("Failed to read remote request row by tool: {}", e)
+                    })?);
+                }
+            }
+            ToolFilter::AnyOf(tools) if !tools.is_empty() => {
+                let placeholders = tools
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("?{}", i + 3))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!("{base_select} WHERE timestamp >= ?1 AND timestamp < ?2 AND tool IN ({placeholders}) ORDER BY timestamp ASC");
+                let mut stmt = conn.prepare(&sql).map_err(|e| {
+                    format!(
+                        "Failed to prepare get_remote_request_records_in_range by tools: {}",
+                        e
+                    )
+                })?;
+                let mut all_params: Vec<Box<dyn rusqlite::ToSql>> =
+                    vec![Box::new(start_epoch), Box::new(end_epoch)];
+                for t in tools {
+                    all_params.push(Box::new(t.clone()));
+                }
+                let param_refs: Vec<&dyn rusqlite::ToSql> =
+                    all_params.iter().map(|p| p.as_ref()).collect();
+                for row in stmt.query_map(param_refs.as_slice(), mapper).map_err(|e| {
+                    format!("Failed to query remote records in range by tools: {}", e)
+                })? {
+                    result.push(row.map_err(|e| {
+                        format!("Failed to read remote request row by tools: {}", e)
+                    })?);
+                }
+            }
+            ToolFilter::AnyOf(_) => {}
         }
         Ok(result)
     }
@@ -339,30 +372,11 @@ impl LocalUsageDatabase {
         tool_filter: &ToolFilter,
     ) -> Result<Vec<SessionMeta>, String> {
         let conn = self.conn.lock().unwrap();
-        let (sql, param) = match tool_filter {
-            ToolFilter::All => (
-                "SELECT session_id, tool, project_key, project_name, start_time, end_time,
+        let base_select =
+            "SELECT session_id, tool, project_key, project_name, start_time, end_time,
                         request_count, total_input_tokens, total_output_tokens,
                         total_cache_create_tokens, total_cache_read_tokens, model_list_json
-                 FROM remote_sessions
-                 ORDER BY end_time DESC"
-                    .to_string(),
-                None,
-            ),
-            ToolFilter::Tool(tool) => (
-                "SELECT session_id, tool, project_key, project_name, start_time, end_time,
-                        request_count, total_input_tokens, total_output_tokens,
-                        total_cache_create_tokens, total_cache_read_tokens, model_list_json
-                 FROM remote_sessions
-                 WHERE tool = ?1
-                 ORDER BY end_time DESC"
-                    .to_string(),
-                Some(tool.clone()),
-            ),
-        };
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| format!("Failed to prepare get_remote_sessions: {}", e))?;
+                 FROM remote_sessions";
         let mapper = |row: &rusqlite::Row<'_>| {
             let project_key: Option<String> = row.get(2)?;
             let model_list_json: String = row.get(11)?;
@@ -389,17 +403,64 @@ impl LocalUsageDatabase {
                 message_ids: Vec::new(),
             })
         };
-        let rows = match param {
-            Some(tool) => stmt
-                .query_map(params![tool], mapper)
-                .map_err(|e| format!("Failed to query remote sessions by tool: {}", e))?,
-            None => stmt
-                .query_map([], mapper)
-                .map_err(|e| format!("Failed to query remote sessions: {}", e))?,
-        };
         let mut result = Vec::new();
-        for row in rows {
-            result.push(row.map_err(|e| format!("Failed to read remote session row: {}", e))?);
+        match tool_filter {
+            ToolFilter::All => {
+                let sql = format!("{base_select} ORDER BY end_time DESC");
+                let mut stmt = conn
+                    .prepare(&sql)
+                    .map_err(|e| format!("Failed to prepare get_remote_sessions: {}", e))?;
+                for row in stmt
+                    .query_map([], mapper)
+                    .map_err(|e| format!("Failed to query remote sessions: {}", e))?
+                {
+                    result.push(
+                        row.map_err(|e| format!("Failed to read remote session row: {}", e))?,
+                    );
+                }
+            }
+            ToolFilter::Tool(tool) => {
+                let sql = format!("{base_select} WHERE tool = ?1 ORDER BY end_time DESC");
+                let mut stmt = conn
+                    .prepare(&sql)
+                    .map_err(|e| format!("Failed to prepare get_remote_sessions by tool: {}", e))?;
+                for row in stmt
+                    .query_map(params![tool], mapper)
+                    .map_err(|e| format!("Failed to query remote sessions by tool: {}", e))?
+                {
+                    result.push(row.map_err(|e| {
+                        format!("Failed to read remote session row by tool: {}", e)
+                    })?);
+                }
+            }
+            ToolFilter::AnyOf(tools) if !tools.is_empty() => {
+                let placeholders = tools
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("?{}", i + 1))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql =
+                    format!("{base_select} WHERE tool IN ({placeholders}) ORDER BY end_time DESC");
+                let mut stmt = conn.prepare(&sql).map_err(|e| {
+                    format!("Failed to prepare get_remote_sessions by tools: {}", e)
+                })?;
+                let all_params: Vec<Box<dyn rusqlite::ToSql>> = tools
+                    .iter()
+                    .map(|t| Box::new(t.clone()) as Box<dyn rusqlite::ToSql>)
+                    .collect();
+                let param_refs: Vec<&dyn rusqlite::ToSql> =
+                    all_params.iter().map(|p| p.as_ref()).collect();
+                for row in stmt
+                    .query_map(param_refs.as_slice(), mapper)
+                    .map_err(|e| format!("Failed to query remote sessions by tools: {}", e))?
+                {
+                    result.push(row.map_err(|e| {
+                        format!("Failed to read remote session row by tools: {}", e)
+                    })?);
+                }
+            }
+            ToolFilter::AnyOf(_) => {}
         }
         Ok(result)
     }

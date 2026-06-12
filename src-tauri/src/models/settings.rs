@@ -237,7 +237,23 @@ pub struct ClientToolSettings {
 pub enum ToolFilter {
     All,
     Tool(String),
+    /// 一个工具家族：匹配家族内任意成员 tool ID
+    AnyOf(Vec<String>),
 }
+
+/// 工具家族定义：(家族代表 ID, 所有成员 ID 列表)
+///
+/// 当 active_tool_filter 设置为家族代表 ID 时，build_filter() 自动展开为 AnyOf。
+pub const TOOL_FAMILIES: &[(&str, &[&str])] = &[(
+    "qoder_ide",
+    &[
+        "qoder_ide",
+        "qoder_ide_cn",
+        "qoder_cli",
+        "qoder_work",
+        "qoder_work_cn",
+    ],
+)];
 
 impl Default for ClientToolSettings {
     fn default() -> Self {
@@ -251,8 +267,17 @@ impl Default for ClientToolSettings {
 impl ClientToolSettings {
     pub fn build_filter(&self) -> ToolFilter {
         match self.active_tool_filter.as_ref() {
-            Some(tool) if !tool.trim().is_empty() => ToolFilter::Tool(tool.clone()),
-            _ => ToolFilter::All,
+            None => ToolFilter::All,
+            Some(tool) if tool.trim().is_empty() => ToolFilter::All,
+            Some(tool) => {
+                // 若该 tool 是某个家族的代表，展开为 AnyOf
+                for (head, members) in TOOL_FAMILIES {
+                    if *head == tool.as_str() {
+                        return ToolFilter::AnyOf(members.iter().map(|s| s.to_string()).collect());
+                    }
+                }
+                ToolFilter::Tool(tool.clone())
+            }
         }
     }
 }
@@ -323,7 +348,7 @@ pub fn default_client_tool_profiles() -> Vec<ClientToolProfile> {
         ClientToolProfile {
             id: "qoder_ide".to_string(),
             tool: "qoder_ide".to_string(),
-            display_name: Some("Qoder".to_string()),
+            display_name: Some("Qoder IDE".to_string()),
             path_prefix: "qoder".to_string(),
             target_base_url: None,
             enabled: false,

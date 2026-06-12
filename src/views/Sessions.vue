@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { LayoutGrid } from 'lucide-vue-next'
+import { LayoutGrid, ChevronDown } from 'lucide-vue-next'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -7,10 +7,15 @@ import type { ProjectStats, ProjectToolStats, RequestRecord, SessionStats } from
 import SessionDetailModal from '../components/SessionDetailModal.vue'
 import LobeIcon from '../components/LobeIcon.vue'
 import { TOOL_LOBE_ICONS } from '../iconConfig'
+import { getFamilyForTool, getFamilyHead, getVariantLabel } from '../toolFamilies'
 import { formatCost as formatCostUtil, formatTokenValue, formatRequestCount } from '../utils/format'
 
 const store = useMonitorStore()
-const SESSION_SOURCE_TOOLS = new Set(['claude_code', 'codex', 'opencode', 'qoder_ide', 'reasonix'])
+const SESSION_SOURCE_TOOLS = new Set([
+  'claude_code', 'codex', 'opencode',
+  'qoder_ide', 'qoder_ide_cn', 'qoder_cli', 'qoder_work', 'qoder_work_cn',
+  'reasonix'
+])
 const normalizeSessionTool = (tool: string | null | undefined) => (
   tool && SESSION_SOURCE_TOOLS.has(tool) ? tool : null
 )
@@ -20,6 +25,8 @@ const uuidLikePattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 const activeTab = ref<'recent' | 'requests' | 'projects'>('recent')
 const selectedTool = ref<string | null>(normalizeSessionTool(store.settings.clientTools.activeToolFilter))
 const lastGlobalTool = ref<string | null>(normalizeSessionTool(store.settings.clientTools.activeToolFilter))
+// 已展开子菜单的家族 head ID
+const expandedFamily = ref<string | null>(null)
 
 // 选中的会话（用于模态框）
 const selectedSession = ref<SessionStats | null>(null)
@@ -50,7 +57,17 @@ let copiedProjectPathTimer: ReturnType<typeof setTimeout> | null = null
 
 const cacheKey = () => `${selectedTool.value ?? '__all__'}`
 
-const sourceOptions = computed(() => {
+interface SourceOption {
+  key: string
+  tool: string | null
+  label: string
+  icon: string | null
+  /** 若非 null，点击此条目展开/收起子菜单而非直接筛选 */
+  familyHead: string | null
+  children: SourceOption[]
+}
+
+const sourceOptions = computed<SourceOption[]>(() => {
   const profiles = store.settings.clientTools.profiles
     .filter(profile => SESSION_SOURCE_TOOLS.has(profile.tool))
     .sort((a, b) => {
@@ -59,20 +76,44 @@ const sourceOptions = computed(() => {
       return (a.displayName || a.tool).localeCompare(b.displayName || b.tool)
     })
 
-  return [
-    {
-      key: '__all__',
-      tool: null,
-      label: t(store.settings.locale, 'tools.all'),
-      icon: null
-    },
-    ...profiles.map(profile => ({
-      key: profile.tool,
-      tool: profile.tool,
-      label: profile.displayName || profile.tool,
-      icon: profile.icon || TOOL_LOBE_ICONS[profile.tool] || null
-    }))
+  const items: SourceOption[] = [
+    { key: '__all__', tool: null, label: t(store.settings.locale, 'tools.all'), icon: null, familyHead: null, children: [] }
   ]
+
+  for (const profile of profiles) {
+    const family = getFamilyForTool(profile.tool)
+    // 只有家族 head 本身出现在一级列表
+    if (family && profile.tool === family.head) {
+      const subItems: SourceOption[] = family.members.map(memberId => ({
+        key: memberId,
+        tool: memberId,
+        label: family.variantLabels[memberId] ?? memberId,
+        icon: TOOL_LOBE_ICONS[memberId] || null,
+        familyHead: null,
+        children: [],
+      }))
+      items.push({
+        key: profile.tool,
+        tool: profile.tool,       // 点击 head → 家族整体过滤
+        label: profile.displayName || profile.tool,
+        icon: profile.icon || TOOL_LOBE_ICONS[profile.tool] || null,
+        familyHead: family.head,  // 标记为家族 head，模板据此渲染展开箭头
+        children: subItems,
+      })
+    } else if (!family) {
+      // 非家族成员，直接一级条目
+      items.push({
+        key: profile.tool,
+        tool: profile.tool,
+        label: profile.displayName || profile.tool,
+        icon: profile.icon || TOOL_LOBE_ICONS[profile.tool] || null,
+        familyHead: null,
+        children: [],
+      })
+    }
+    // 家族非 head 成员不出现在一级，由 head 的 children 承载
+  }
+  return items
 })
 
 const applySessionCache = (entry: SessionCacheEntry) => {
@@ -305,9 +346,11 @@ const requestSourceLabel = (request: RequestRecord) => (
     || t(store.settings.locale, 'sources.unknown')
 )
 
-const requestToolLabel = (tool: string) => (
-  getToolProfile(tool)?.displayName || tool || t(store.settings.locale, 'common.unknown')
-)
+const requestToolLabel = (tool: string) => {
+  const baseName = getToolProfile(tool)?.displayName || tool || t(store.settings.locale, 'common.unknown')
+  const variant = getVariantLabel(tool)
+  return variant ? `${baseName} · ${variant}` : baseName
+}
 
 const requestCacheTokens = (request: RequestRecord) => (
   (request.cacheCreateTokens || 0) + (request.cacheReadTokens || 0)
@@ -450,13 +493,21 @@ const displayProxyRateValue = (session: SessionStats) => (
     : '—'
 )
 
-const getToolProfile = (tool: string) => (
-  store.settings.clientTools.profiles.find(profile => profile.tool === tool)
-)
+const getToolProfile = (tool: string) => {
+  // 精确匹配优先
+  const exact = store.settings.clientTools.profiles.find(profile => profile.tool === tool)
+  if (exact) return exact
+  // 变体兜底：回退到家族代表的 profile（保证图标和名称正确）
+  const headId = getFamilyHead(tool)
+  if (headId !== tool) {
+    return store.settings.clientTools.profiles.find(profile => profile.tool === headId)
+  }
+  return undefined
+}
 
 const getToolIcon = (tool: string) => {
   const profile = getToolProfile(tool)
-  return profile?.icon || TOOL_LOBE_ICONS[tool] || null
+  return profile?.icon || TOOL_LOBE_ICONS[tool] || TOOL_LOBE_ICONS[getFamilyHead(tool)] || null
 }
 
 const projectToolRows = (project: ProjectStats) => {
@@ -729,26 +780,56 @@ onUnmounted(() => {
     </div>
 
     <div v-if="activeTab === 'recent' || activeTab === 'requests'" class="tool-filter">
-      <button
-        v-for="option in sourceOptions"
-        :key="option.key"
-        type="button"
-        class="tool-filter__item"
-        :class="{ 'tool-filter__item--on': selectedTool === option.tool }"
-        @click="selectedTool = option.tool"
-      >
-        <LayoutGrid
-          v-if="!option.icon"
-          class="h-3.5 w-3.5 shrink-0"
-        />
-        <LobeIcon
-          v-else
-          :slug="option.icon"
-          :size="14"
-          @error="() => {}"
-        />
-        <span class="min-w-0 truncate">{{ option.label }}</span>
-      </button>
+      <template v-for="option in sourceOptions" :key="option.key">
+        <!-- 一级条目 -->
+        <button
+          type="button"
+          class="tool-filter__item"
+          :class="{
+            'tool-filter__item--on': option.familyHead
+              ? (selectedTool === option.tool || (option.children.some(c => c.tool === selectedTool) && expandedFamily !== option.familyHead))
+              : selectedTool === option.tool
+          }"
+          @click="option.familyHead
+            ? (expandedFamily = expandedFamily === option.familyHead ? null : option.familyHead, selectedTool = option.tool)
+            : (selectedTool = option.tool, expandedFamily = null)"
+        >
+          <LayoutGrid v-if="!option.icon" class="h-3.5 w-3.5 shrink-0" />
+          <LobeIcon v-else :slug="option.icon" :size="14" @error="() => {}" />
+          <span class="min-w-0 truncate">{{ option.label }}</span>
+          <!-- 有子菜单时显示展开箭头 -->
+          <ChevronDown
+            v-if="option.familyHead"
+            :class="['h-2.5 w-2.5 shrink-0 transition-transform duration-150', expandedFamily === option.familyHead && 'rotate-180']"
+          />
+        </button>
+
+        <!-- 二级子条目：仅当该家族展开时渲染 -->
+        <template v-if="option.familyHead && expandedFamily === option.familyHead">
+          <!-- 子菜单「全部」：等同于选整个家族 head -->
+          <button
+            type="button"
+            class="tool-filter__item tool-filter__item--child"
+            :class="{ 'tool-filter__item--on': selectedTool === option.tool }"
+            @click="selectedTool = option.tool"
+          >
+            <LayoutGrid class="h-3 w-3 shrink-0" />
+            <span class="min-w-0 truncate">{{ t(store.settings.locale, 'tools.familyAll') }}</span>
+          </button>
+          <!-- 各变体 -->
+          <button
+            v-for="child in option.children"
+            :key="child.key"
+            type="button"
+            class="tool-filter__item tool-filter__item--child"
+            :class="{ 'tool-filter__item--on': selectedTool === child.tool }"
+            @click="selectedTool = child.tool"
+          >
+            <LobeIcon v-if="child.icon" :slug="child.icon" :size="12" @error="() => {}" />
+            <span class="min-w-0 truncate">{{ child.label }}</span>
+          </button>
+        </template>
+      </template>
     </div>
 
     <!-- 1. 会话列表视图 -->
@@ -1271,6 +1352,27 @@ onUnmounted(() => {
   color: var(--theme-accent-contrast);
   border-color: transparent;
   box-shadow: 0 2px 8px color-mix(in srgb, var(--theme-accent-primary) 35%, transparent);
+}
+
+/* 二级子条目：字号更小、padding 更窄、左侧有缩进线 */
+.tool-filter__item--child {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-style: dashed;
+  margin-left: 4px;
+  opacity: 0.85;
+}
+
+.tool-filter__item--child:hover:not(.tool-filter__item--on) {
+  opacity: 1;
+}
+
+.tool-filter__item--child.tool-filter__item--on {
+  opacity: 1;
+}
+
+:root[data-appearance='dark'] .tool-filter__item--child {
+  border-style: dashed;
 }
 
 .request-stream-note {

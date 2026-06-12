@@ -318,6 +318,7 @@ fn matches_tool(tool: &str, filter: &ToolFilter) -> bool {
         ToolFilter::All => true,
         ToolFilter::Tool(tool_filter) if tool_filter.trim().is_empty() => true,
         ToolFilter::Tool(tool_filter) => tool == *tool_filter,
+        ToolFilter::AnyOf(tools) => tools.iter().any(|t| tool == *t),
     }
 }
 

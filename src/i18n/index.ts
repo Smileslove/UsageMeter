@@ -354,6 +354,14 @@ const messages: Record<AppLocale, TranslationNode> = {
       localScanOpenCodePath: '~/.local/share/opencode/opencode.db（SQLite 数据库，只读）',
       localScanQoderIde: 'Qoder IDE',
       localScanQoderIdePath: '~/Library/Application Support/Qoder/SharedClientCache/cache/db/local.db（SQLite 数据库，只读）',
+      localScanQoderIdeCn: 'Qoder IDE CN',
+      localScanQoderIdeCnPath: '~/Library/Application Support/QoderCN/SharedClientCache/cache/db/local.db（SQLite 数据库，只读）',
+      localScanQoderCli: 'Qoder CLI',
+      localScanQoderCliPath: '~/.qoder/projects/*/transcript/*.jsonl',
+      localScanQoderWork: 'Qoder Work',
+      localScanQoderWorkPath: '~/Library/Application Support/QoderWork/logs/<ts>/main.log',
+      localScanQoderWorkCn: 'Qoder Work CN',
+      localScanQoderWorkCnPath: '~/Library/Application Support/QoderWork CN/logs/<ts>/main.log',
       localScanReasonix: 'Reasonix',
       localScanReasonixPath: '~/Library/Application Support/reasonix/sessions/*.jsonl',
       localScanGemini: 'Gemini CLI',
@@ -678,8 +686,15 @@ const messages: Record<AppLocale, TranslationNode> = {
     },
     tools: {
       all: '全部工具',
+      familyAll: '全部',
+      expandVariants: '展开变体',
+      collapseVariants: '收起',
       ranking: '工具排行',
-      qoder_ide: 'Qoder'
+      qoder_ide: 'Qoder IDE',
+      qoder_ide_cn: 'Qoder IDE CN',
+      qoder_cli: 'Qoder CLI',
+      qoder_work: 'Qoder Work',
+      qoder_work_cn: 'Qoder Work CN'
     },
     sources: {
       title: 'API 来源',
@@ -791,7 +806,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       quotaQuerying: '正在查询已配置来源额度…',
       avgPace: '近7日均速 {value}/h',
       sourceSection: '已配置来源',
-      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', qoderIde: 'Qoder' }
+      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', qoderIde: 'Qoder', qoderIdeCn: 'Qoder IDE CN', qoderCli: 'Qoder CLI', qoderWork: 'Qoder Work', qoderWorkCn: 'Qoder Work CN' }
     }
   },
   'zh-TW': {
@@ -1143,6 +1158,14 @@ const messages: Record<AppLocale, TranslationNode> = {
       localScanOpenCodePath: '~/.local/share/opencode/opencode.db（SQLite 資料庫，唯讀）',
       localScanQoderIde: 'Qoder IDE',
       localScanQoderIdePath: '~/Library/Application Support/Qoder/SharedClientCache/cache/db/local.db（SQLite 資料庫，唯讀）',
+      localScanQoderIdeCn: 'Qoder IDE CN',
+      localScanQoderIdeCnPath: '~/Library/Application Support/QoderCN/SharedClientCache/cache/db/local.db（SQLite 資料庫，唯讀）',
+      localScanQoderCli: 'Qoder CLI',
+      localScanQoderCliPath: '~/.qoder/projects/*/transcript/*.jsonl',
+      localScanQoderWork: 'Qoder Work',
+      localScanQoderWorkPath: '~/Library/Application Support/QoderWork/logs/<ts>/main.log',
+      localScanQoderWorkCn: 'Qoder Work CN',
+      localScanQoderWorkCnPath: '~/Library/Application Support/QoderWork CN/logs/<ts>/main.log',
       localScanReasonix: 'Reasonix',
       localScanReasonixPath: '~/Library/Application Support/reasonix/sessions/*.jsonl',
       localScanGemini: 'Gemini CLI',
@@ -1466,8 +1489,15 @@ const messages: Record<AppLocale, TranslationNode> = {
     },
     tools: {
       all: '全部工具',
+      familyAll: '全部',
+      expandVariants: '展開變體',
+      collapseVariants: '收起',
       ranking: '工具排行',
-      qoder_ide: 'Qoder'
+      qoder_ide: 'Qoder IDE',
+      qoder_ide_cn: 'Qoder IDE CN',
+      qoder_cli: 'Qoder CLI',
+      qoder_work: 'Qoder Work',
+      qoder_work_cn: 'Qoder Work CN'
     },
     sources: {
       title: 'API 來源',
@@ -1579,7 +1609,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       quotaQuerying: '正在查詢已配置來源額度…',
       avgPace: '近7日均速 {value}/h',
       sourceSection: '已配置來源',
-      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', qoderIde: 'Qoder' }
+      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', qoderIde: 'Qoder', qoderIdeCn: 'Qoder IDE CN', qoderCli: 'Qoder CLI', qoderWork: 'Qoder Work', qoderWorkCn: 'Qoder Work CN' }
     }
   },
   'en-US': {
@@ -1931,6 +1961,14 @@ const messages: Record<AppLocale, TranslationNode> = {
       localScanOpenCodePath: '~/.local/share/opencode/opencode.db (SQLite database, read-only)',
       localScanQoderIde: 'Qoder IDE',
       localScanQoderIdePath: '~/Library/Application Support/Qoder/SharedClientCache/cache/db/local.db (SQLite database, read-only)',
+      localScanQoderIdeCn: 'Qoder IDE CN',
+      localScanQoderIdeCnPath: '~/Library/Application Support/QoderCN/SharedClientCache/cache/db/local.db (SQLite database, read-only)',
+      localScanQoderCli: 'Qoder CLI',
+      localScanQoderCliPath: '~/.qoder/projects/*/transcript/*.jsonl',
+      localScanQoderWork: 'Qoder Work',
+      localScanQoderWorkPath: '~/Library/Application Support/QoderWork/logs/<ts>/main.log',
+      localScanQoderWorkCn: 'Qoder Work CN',
+      localScanQoderWorkCnPath: '~/Library/Application Support/QoderWork CN/logs/<ts>/main.log',
       localScanReasonix: 'Reasonix',
       localScanReasonixPath: '~/Library/Application Support/reasonix/sessions/*.jsonl',
       localScanGemini: 'Gemini CLI',
@@ -2254,8 +2292,15 @@ const messages: Record<AppLocale, TranslationNode> = {
     },
     tools: {
       all: 'All Tools',
+      familyAll: 'All',
+      expandVariants: 'Expand variants',
+      collapseVariants: 'Collapse',
       ranking: 'Tool Ranking',
-      qoder_ide: 'Qoder'
+      qoder_ide: 'Qoder IDE',
+      qoder_ide_cn: 'Qoder IDE CN',
+      qoder_cli: 'Qoder CLI',
+      qoder_work: 'Qoder Work',
+      qoder_work_cn: 'Qoder Work CN'
     },
     sources: {
       title: 'API Sources',
@@ -2367,7 +2412,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       quotaQuerying: 'Querying configured-source quotas…',
       avgPace: '7d avg {value}/h',
       sourceSection: 'Configured sources',
-      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', qoderIde: 'Qoder' }
+      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', qoderIde: 'Qoder', qoderIdeCn: 'Qoder IDE CN', qoderCli: 'Qoder CLI', qoderWork: 'Qoder Work', qoderWorkCn: 'Qoder Work CN' }
     }
   }
 }

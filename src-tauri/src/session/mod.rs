@@ -1,4 +1,4 @@
-//! 会话模块 - JSONL 会话元数据提取（Claude Code / Codex / OpenCode）
+//! 会话模块 - JSONL 会话元数据提取（Claude Code / Codex / OpenCode / Qoder）
 //!
 //! 本模块提供扫描和提取本地会话数据的功能。
 
@@ -9,7 +9,9 @@ mod gemini_reader;
 mod meta;
 mod opencode;
 pub(crate) mod opencode_reader;
+pub(crate) mod qoder_cli_reader;
 pub(crate) mod qoder_ide_reader;
+pub(crate) mod qoder_work_reader;
 mod reasonix_reader;
 mod registry;
 mod scanner;

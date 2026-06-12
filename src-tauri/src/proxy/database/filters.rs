@@ -55,6 +55,14 @@ impl ProxyDatabase {
             ToolFilter::All => (String::new(), vec![]),
             ToolFilter::Tool(tool) if tool.trim().is_empty() => (String::new(), vec![]),
             ToolFilter::Tool(tool) => ("AND client_tool = ?".to_string(), vec![tool.clone()]),
+            ToolFilter::AnyOf(tools) if tools.is_empty() => ("AND 1 = 0".to_string(), vec![]),
+            ToolFilter::AnyOf(tools) => {
+                let placeholders = tools.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+                (
+                    format!("AND client_tool IN ({placeholders})"),
+                    tools.clone(),
+                )
+            }
         }
     }
 

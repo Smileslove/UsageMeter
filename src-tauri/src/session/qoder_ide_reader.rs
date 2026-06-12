@@ -13,6 +13,8 @@ const QODER_DB_SOURCE_KIND: &str = "qoder_ide_sqlite";
 const QODER_MODEL_FALLBACK: &str = "custom_model";
 
 pub(super) struct QoderIdeSource {
+    tool: &'static str,
+    app_dir: &'static str,
     cache: OnceLock<Mutex<HashMap<String, QoderIdeSessionData>>>,
 }
 
@@ -43,8 +45,10 @@ struct QoderSessionRow {
 }
 
 impl QoderIdeSource {
-    pub(super) const fn new() -> Self {
+    pub(super) const fn new(tool: &'static str, app_dir: &'static str) -> Self {
         Self {
+            tool,
+            app_dir,
             cache: OnceLock::new(),
         }
     }
@@ -56,11 +60,11 @@ impl QoderIdeSource {
 
 impl SessionSource for QoderIdeSource {
     fn tool_id(&self) -> &'static str {
-        super::constants::TOOL_QODER_IDE
+        self.tool
     }
 
     fn scan(&self) -> SourceSnapshot {
-        let scanned = scan_qoder_ide_sessions();
+        let scanned = scan_qoder_ide_sessions_for(self.app_dir, self.tool);
         let scan_fingerprint = compute_qoder_scan_fingerprint(&scanned);
         let sessions = scanned
             .iter()
@@ -108,7 +112,18 @@ impl SessionSource for QoderIdeSource {
 }
 
 pub(crate) fn scan_qoder_ide_sessions() -> Vec<QoderIdeSessionData> {
-    let Some(db_path) = find_qoder_ide_db() else {
+    scan_qoder_ide_sessions_for("Qoder", super::constants::TOOL_QODER_IDE)
+}
+
+pub(crate) fn scan_qoder_ide_cn_sessions() -> Vec<QoderIdeSessionData> {
+    scan_qoder_ide_sessions_for("QoderCN", super::constants::TOOL_QODER_IDE_CN)
+}
+
+pub(crate) fn scan_qoder_ide_sessions_for(
+    app_dir: &str,
+    tool_id: &str,
+) -> Vec<QoderIdeSessionData> {
+    let Some(db_path) = find_qoder_ide_db_for(app_dir) else {
         return Vec::new();
     };
     let Some(db_meta) = qoder_db_meta(&db_path) else {
@@ -177,7 +192,7 @@ pub(crate) fn scan_qoder_ide_sessions() -> Vec<QoderIdeSessionData> {
         if session_row.raw_session_id.trim().is_empty() {
             continue;
         }
-        if let Some(parsed) = parse_qoder_session(&db_meta, &conn, &session_row) {
+        if let Some(parsed) = parse_qoder_session(&db_meta, &conn, &session_row, tool_id) {
             sessions.push(parsed);
         }
     }
@@ -185,10 +200,15 @@ pub(crate) fn scan_qoder_ide_sessions() -> Vec<QoderIdeSessionData> {
     sessions
 }
 
+#[allow(dead_code)]
 pub(crate) fn find_qoder_ide_db() -> Option<PathBuf> {
+    find_qoder_ide_db_for("Qoder")
+}
+
+pub(crate) fn find_qoder_ide_db_for(app_dir: &str) -> Option<PathBuf> {
     dirs::data_dir()
         .map(|dir| {
-            dir.join("Qoder")
+            dir.join(app_dir)
                 .join("SharedClientCache")
                 .join("cache")
                 .join("db")
@@ -210,6 +230,7 @@ fn parse_qoder_session(
     db_meta: &QoderDbMeta,
     conn: &Connection,
     session_row: &QoderSessionRow,
+    tool_id: &str,
 ) -> Option<QoderIdeSessionData> {
     let mut stmt = match conn.prepare(
         "SELECT id, COALESCE(gmt_create, 0), token_info, model_info
@@ -248,7 +269,7 @@ fn parse_qoder_session(
         }
     };
 
-    let canonical_session_id = canonical_qoder_session_id(&session_row.raw_session_id);
+    let canonical_session_id = canonical_qoder_session_id_for(tool_id, &session_row.raw_session_id);
     let mut requests = Vec::new();
     let mut models = std::collections::BTreeSet::new();
     let mut total_input_tokens = 0u64;
@@ -315,7 +336,7 @@ fn parse_qoder_session(
 
         requests.push(LocalRequestRecord {
             session_id: canonical_session_id.clone(),
-            tool: super::constants::TOOL_QODER_IDE.to_string(),
+            tool: tool_id.to_string(),
             timestamp,
             message_id,
             input_tokens,
@@ -348,7 +369,7 @@ fn parse_qoder_session(
     let end_time = latest_timestamp.unwrap_or(start_time);
     let meta = SessionMeta {
         session_id: canonical_session_id.clone(),
-        tool: super::constants::TOOL_QODER_IDE.to_string(),
+        tool: tool_id.to_string(),
         cwd,
         project_name,
         topic,
@@ -439,8 +460,13 @@ fn modified_epoch_seconds(metadata: &std::fs::Metadata) -> i64 {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
 fn canonical_qoder_session_id(raw_session_id: &str) -> String {
-    format!("{}::{}", super::constants::TOOL_QODER_IDE, raw_session_id)
+    canonical_qoder_session_id_for(super::constants::TOOL_QODER_IDE, raw_session_id)
+}
+
+fn canonical_qoder_session_id_for(tool_id: &str, raw_session_id: &str) -> String {
+    format!("{}::{}", tool_id, raw_session_id)
 }
 
 fn build_qoder_source_locator(db_path: &Path, session_id: &str) -> String {
@@ -600,8 +626,8 @@ mod tests {
         };
 
         let conn = open_qoder_db_read_only(&db_path).expect("reopen qoder db");
-        let parsed =
-            parse_qoder_session(&db_meta, &conn, &session_row).expect("parse qoder session");
+        let parsed = parse_qoder_session(&db_meta, &conn, &session_row, "qoder_ide")
+            .expect("parse qoder session");
         assert_eq!(parsed.meta.session_id, "qoder_ide::sess_1");
         assert_eq!(parsed.meta.tool, "qoder_ide");
         assert_eq!(parsed.meta.project_name.as_deref(), Some("参考项目"));

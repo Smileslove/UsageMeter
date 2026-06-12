@@ -205,6 +205,10 @@ export const TOOL_LOBE_ICONS: Record<string, string> = {
   cursor: 'cursor',
   opencode: 'opencode',
   qoder_ide: 'qoder',
+  qoder_ide_cn: 'qoder-cn',
+  qoder_cli: 'qoder',
+  qoder_work: 'qoderwork',
+  qoder_work_cn: 'qoderwork-cn',
   reasonix: 'reasonix',
   gemini: 'geminicli',
 }

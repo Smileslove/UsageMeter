@@ -706,10 +706,29 @@ impl LocalUsageDatabase {
         if local_dates.is_empty() {
             return Ok(Vec::new());
         }
+        // Empty AnyOf → no rows can match
+        if let ToolFilter::AnyOf(tools) = tool_filter {
+            if tools.is_empty() {
+                return Ok(Vec::new());
+            }
+        }
         let conn = self.conn.lock().unwrap();
-        let placeholders = std::iter::repeat_n("?", local_dates.len())
+        let date_placeholders = std::iter::repeat_n("?", local_dates.len())
             .collect::<Vec<_>>()
             .join(", ");
+        let (tool_clause, tool_values): (String, Vec<String>) = match tool_filter {
+            ToolFilter::All => (String::new(), vec![]),
+            ToolFilter::Tool(t) if !t.trim().is_empty() => {
+                ("AND tool = ?".to_string(), vec![t.clone()])
+            }
+            ToolFilter::AnyOf(tools) => {
+                let ph = std::iter::repeat_n("?", tools.len())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                (format!("AND tool IN ({ph})"), tools.clone())
+            }
+            _ => (String::new(), vec![]),
+        };
         let sql = format!(
             r#"
             SELECT
@@ -719,15 +738,22 @@ impl LocalUsageDatabase {
                 coverage_origin, status_code, duration_ms, output_tokens_per_second, ttft_ms,
                 source_label
             FROM unified_daily_materialized_facts
-            WHERE local_date IN ({placeholders})
+            WHERE local_date IN ({date_placeholders}) {tool_clause}
             ORDER BY timestamp_ms ASC
             "#
         );
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = local_dates
+            .iter()
+            .map(|d| -> Box<dyn rusqlite::types::ToSql> { Box::new(d.clone()) })
+            .collect();
+        for v in tool_values {
+            params.push(Box::new(v));
+        }
         let mut stmt = conn
             .prepare(&sql)
             .map_err(|e| format!("Failed to prepare unified fact query: {}", e))?;
         let rows = stmt
-            .query_map(rusqlite::params_from_iter(local_dates.iter()), |row| {
+            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
                 Ok(MergedRequestFact {
                     canonical_request_key: row.get(0)?,
                     session_id: row.get(1)?,
@@ -756,20 +782,8 @@ impl LocalUsageDatabase {
                 })
             })
             .map_err(|e| format!("Failed to query unified materialized facts: {}", e))?;
-
-        let mut facts = Vec::new();
-        for row in rows {
-            let fact =
-                row.map_err(|e| format!("Failed to read unified materialized fact: {}", e))?;
-            if matches!(
-                tool_filter,
-                ToolFilter::Tool(tool) if !tool.trim().is_empty() && fact.tool != *tool
-            ) {
-                continue;
-            }
-            facts.push(fact);
-        }
-        Ok(facts)
+        rows.map(|r| r.map_err(|e| format!("Failed to read unified materialized fact: {}", e)))
+            .collect()
     }
 
     pub fn get_unified_daily_summaries_between(
