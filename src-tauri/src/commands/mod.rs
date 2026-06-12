@@ -1,6 +1,7 @@
 //! Tauri 命令模块
 
 mod autostart;
+mod copilot;
 mod currency;
 mod model_pricing;
 mod network_proxy;
@@ -14,6 +15,7 @@ mod usage;
 mod window;
 
 pub use autostart::*;
+pub use copilot::*;
 pub use currency::*;
 pub use model_pricing::*;
 pub use network_proxy::*;

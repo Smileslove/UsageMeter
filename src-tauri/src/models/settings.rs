@@ -346,6 +346,18 @@ pub fn default_client_tool_profiles() -> Vec<ClientToolProfile> {
             icon: Some("geminicli".to_string()),
         },
         ClientToolProfile {
+            id: "copilot".to_string(),
+            tool: "copilot".to_string(),
+            display_name: Some("GitHub Copilot CLI".to_string()),
+            path_prefix: "copilot".to_string(),
+            target_base_url: None,
+            enabled: false,
+            auto_detected: false,
+            first_seen_ms: now,
+            last_seen_ms: now,
+            icon: Some("copilot".to_string()),
+        },
+        ClientToolProfile {
             id: "qoder_ide".to_string(),
             tool: "qoder_ide".to_string(),
             display_name: Some("Qoder IDE".to_string()),

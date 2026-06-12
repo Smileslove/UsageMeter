@@ -202,6 +202,10 @@ async fn fetch_provider_quota(
             let gemini_provider = state.get_gemini_provider().await;
             gemini_provider.fetch_quota().await
         }
+        "copilot" => {
+            let copilot_provider = state.get_copilot_provider().await;
+            copilot_provider.query().await
+        }
         _ => SubscriptionQueryResult::error(
             provider,
             CredentialStatus::NotConfigured,

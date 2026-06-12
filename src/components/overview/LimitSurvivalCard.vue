@@ -1,131 +1,83 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { Activity } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
-import { Clock, Flame, Activity } from 'lucide-vue-next'
 import LobeIcon from '../LobeIcon.vue'
 import { formatTokenValue } from '../../utils/format'
-import type { SubscriptionQuota, QuotaTier } from '../../types'
+import type { QuotaTier, SubscriptionQuota } from '../../types'
 
 const store = useMonitorStore()
 const locale = computed(() => store.settings.locale)
 
-// ===== 真实配额（T1）：优先 Claude，其次 ChatGPT/Codex =====
 function pickQuota(result: { success?: boolean; quota?: SubscriptionQuota } | null): SubscriptionQuota | null {
   if (result?.success && result.quota && (result.quota.tiers?.length ?? 0) > 0) {
     return result.quota
   }
   return null
 }
-const claudeQuota = computed(() => pickQuota(store.claudeQuota))
-const gptQuota = computed(() => pickQuota(store.subscriptionQuota))
 
-// 各工具已配置来源的中转额度（一行一来源；A 静默降级：空数组 = 不可得）
+const claudeQuota = computed(() => pickQuota(store.claudeQuota))
+const codexQuota = computed(() => pickQuota(store.subscriptionQuota))
+const copilotQuota = computed(() => pickQuota(store.copilotQuota))
+const geminiQuota = computed(() => pickQuota(store.geminiQuota))
+
 const configuredSourceQuotas = computed<SubscriptionQuota[]>(() =>
   store.configuredSourceQuotas.filter(q => (q.tiers?.length ?? 0) > 0)
 )
 
-// 真值窗口配额：仅官方（Claude 优先，其次 ChatGPT/Codex）。已配置来源单独成行展示。
-const realQuota = computed(() => claudeQuota.value ?? gptQuota.value)
-const realProvider = computed<'claude' | 'gpt' | null>(() =>
-  claudeQuota.value ? 'claude' : gptQuota.value ? 'gpt' : null
-)
-const providerIcon = computed(() => (realProvider.value === 'claude' ? 'claude' : 'codex'))
-const providerName = computed(() =>
-  realProvider.value === 'claude' ? 'Claude' : t(locale.value, 'subscription.codex')
-)
-const refreshing = computed(() =>
-  realProvider.value === 'claude' ? store.claudeLoading : store.subscriptionLoading
-)
-
-// ===== 每来源行展示辅助 =====
-const TOOL_LABEL_KEYS: Record<string, string> = {
-  'claude-code': 'survival.tool.claudeCode',
-  codex: 'survival.tool.codex',
-  opencode: 'survival.tool.opencode'
-}
-function toolLabelOf(q: SubscriptionQuota): string {
-  if (q.provider === 'source-config') {
-    return q.credentialMessage || t(locale.value, 'survival.sourceSection')
-  }
-  const key = q.sourceTool ? TOOL_LABEL_KEYS[q.sourceTool] : undefined
-  return key ? t(locale.value, key) : (q.sourceTool ?? t(locale.value, 'survival.title'))
-}
-// 优先 5h 窗口，否则第一个非余额 tier
-function primaryWindowTierOf(q: SubscriptionQuota): QuotaTier | undefined {
-  return q.tiers.find(tt => tt.name === 'five_hour' && tt.kind !== 'balance')
-    ?? q.tiers.find(tt => tt.kind !== 'balance')
-}
-function balanceTierOf(q: SubscriptionQuota): QuotaTier | undefined {
-  return q.tiers.find(tt => tt.kind === 'balance')
-}
-function formatBalanceTier(tier: QuotaTier): string {
-  if (tier.remainingValue == null) return ''
-  const cur = tier.currency ?? ''
-  const sym = cur === 'USD' ? '$' : cur === 'CNY' ? '¥' : ''
-  return `${sym}${tier.remainingValue.toFixed(2)}${sym ? '' : ' ' + cur}`
-}
-
-const tiers = computed(() => realQuota.value?.tiers ?? [])
-const fiveHourTier = computed(() => tiers.value.find(tier => tier.name === 'five_hour'))
-const sevenDayTier = computed(() => tiers.value.find(tier => tier.name === 'seven_day'))
-
-// ===== 本地信号（burn / 锚定块 / 基线） =====
 const survival = computed(() => store.limitSurvival)
 const block = computed(() => survival.value?.block ?? null)
 const burn = computed(() => survival.value?.burn ?? null)
 const baseline = computed(() => survival.value?.baseline ?? null)
 
-// 是否展示 burn 子行：有速率且置信度非 low
 const showBurn = computed(
   () => !!burn.value && burn.value.tokensPerHour > 0 && burn.value.confidence !== 'low'
 )
-const burnText = computed(() =>
-  burn.value ? t(locale.value, 'survival.perHour', { value: formatTokenValue(burn.value.tokensPerHour) }) : ''
-)
-const relativeText = computed(() => {
-  const r = baseline.value?.relativeToBaseline
-  if (!r || r <= 0) return ''
-  return t(locale.value, 'survival.relativeToAvg', { x: r.toFixed(1) })
-})
 
-
-function sourceCaptionOf(q: SubscriptionQuota): string {
-  if (q.provider === 'source-config') return 'generic'
-  return q.tool
-}
-
-// 卡片是否有内容：有官方配额、任一已配置来源、活跃锚定块、或有历史基线（空闲态）
-const hasContent = computed(
-  () => !!realQuota.value || configuredSourceQuotas.value.length > 0 || !!block.value || !!baseline.value
+const hasContent = computed(() =>
+  !!block.value ||
+  !!baseline.value ||
+  !!copilotQuota.value ||
+  !!claudeQuota.value ||
+  !!codexQuota.value ||
+  !!geminiQuota.value ||
+  configuredSourceQuotas.value.length > 0
 )
 
-// 5h 窗口时间消耗进度（0-100），与 token 上限无关，纯时间维度
 const BLOCK_SECONDS = 5 * 3600
 const timeElapsedPct = computed<number>(() => {
   if (!block.value) return 0
   const elapsed = BLOCK_SECONDS - Math.max(0, block.value.remainingSeconds)
   return Math.min(100, Math.max(0, (elapsed / BLOCK_SECONDS) * 100))
 })
-function timeBarColor(pct: number): string {
-  if (pct >= 90) return 'bg-red-400'
-  if (pct >= 70) return 'bg-amber-400'
-  return 'bg-cyan-400'
-}
 
-// 空闲态平时均速文本（无活跃块但有历史时）
+const burnText = computed(() =>
+  burn.value ? t(locale.value, 'survival.perHour', { value: formatTokenValue(burn.value.tokensPerHour) }) : ''
+)
+
+const relativeText = computed(() => {
+  const value = baseline.value?.relativeToBaseline
+  if (!value || value <= 0) return ''
+  return t(locale.value, 'survival.relativeToAvg', { x: value.toFixed(1) })
+})
+
 const avgPaceText = computed(() => {
   const avg = baseline.value?.avgTokensPerHour
   if (!avg || avg <= 0) return ''
   return t(locale.value, 'survival.avgPace', { value: formatTokenValue(avg) })
 })
+
 const localStatusText = computed(() => {
-  if (block.value) return blockResetText.value
+  if (block.value) return formatDurationFromSeconds(block.value.remainingSeconds)
   if (avgPaceText.value) return avgPaceText.value
   return t(locale.value, 'survival.awaitingActivity')
 })
 
-// ===== 时间格式化 =====
+const blockUsedText = computed(() =>
+  block.value ? formatTokenValue(block.value.usedTokens) : '0'
+)
+
 function formatDurationFromSeconds(seconds: number): string {
   if (seconds <= 0) return t(locale.value, 'subscription.resetNow')
   const mins = Math.floor(seconds / 60)
@@ -144,36 +96,187 @@ function formatDurationFromSeconds(seconds: number): string {
   }
   return `${mins}${minuteUnit}`
 }
+
 function formatResetFromIso(resetsAt?: string): string {
   if (!resetsAt) return '--'
   const diffMs = new Date(resetsAt).getTime() - Date.now()
   return formatDurationFromSeconds(Math.floor(diffMs / 1000))
 }
-const blockResetText = computed(() =>
-  block.value ? formatDurationFromSeconds(block.value.remainingSeconds) : '--'
-)
-const blockUsedText = computed(() =>
-  block.value ? formatTokenValue(block.value.usedTokens) : '0'
-)
 
-// 利用率配色（与既有阈值一致）
-function tierColorClass(utilization: number): string {
-  if (utilization >= 90) return 'text-red-500 dark:text-red-400'
-  if (utilization >= 70) return 'text-amber-500 dark:text-amber-400'
-  return 'text-cyan-500 dark:text-cyan-400'
-}
-function tierDotClass(utilization: number): string {
-  if (utilization >= 90) return 'bg-red-400/80 dark:bg-red-400/70'
-  if (utilization >= 70) return 'bg-amber-400/85 dark:bg-amber-400/70'
-  return 'bg-cyan-400/85 dark:bg-cyan-300/70'
+function firstWindowTier(quota: SubscriptionQuota | null): QuotaTier | undefined {
+  if (!quota) return undefined
+  return quota.tiers.find(tier => tier.kind !== 'balance')
 }
 
-async function refreshReal() {
-  if (realProvider.value === 'claude') {
-    await store.refreshClaudeQuota()
-  } else if (realProvider.value === 'gpt') {
-    await store.refreshSubscriptionQuota()
+function primaryWindowTierOf(q: SubscriptionQuota): QuotaTier | undefined {
+  return q.tiers.find(tt => tt.name === 'five_hour' && tt.kind !== 'balance')
+    ?? q.tiers.find(tt => tt.kind !== 'balance')
+}
+
+function balanceTierOf(q: SubscriptionQuota): QuotaTier | undefined {
+  return q.tiers.find(tt => tt.kind === 'balance')
+}
+
+function remainingPercent(tier?: QuotaTier): number {
+  if (!tier) return 0
+  return Math.max(0, Math.min(100, 100 - tier.utilization))
+}
+
+function remainingPercentText(tier?: QuotaTier): string {
+  if (!tier) return '--'
+  return t(locale.value, 'survival.remainingPercent', { value: Math.round(remainingPercent(tier)) })
+}
+
+function formatBalanceTier(tier: QuotaTier): string {
+  if (tier.remainingValue == null) return '--'
+  const cur = tier.currency ?? ''
+  const sym = cur === 'USD' ? '$' : cur === 'CNY' ? '¥' : ''
+  return `${sym}${tier.remainingValue.toFixed(2)}${sym ? '' : ` ${cur}`}`
+}
+
+function formatCopilotTierCounter(tier?: QuotaTier): string {
+  if (!tier) return '--'
+  if (tier.maxValue == null || tier.remainingValue == null) {
+    return t(locale.value, 'copilot.quota.unlimited')
   }
+  return t(locale.value, 'copilot.quota.remainingTotal', {
+    remaining: Math.max(0, Math.round(tier.remainingValue)),
+    total: Math.max(0, Math.round(tier.maxValue)),
+  })
+}
+
+function translateCopilotPlanLabel(planLabel?: string | null): string | undefined {
+  const plan = planLabel?.trim().toLowerCase()
+  if (!plan) return undefined
+  const key = `copilot.plan.${plan}`
+  const translated = t(locale.value, key)
+  return translated === key ? planLabel ?? undefined : translated
+}
+
+const officialRows = computed(() => {
+  const rows: Array<{
+    key: string
+    label: string
+    icon: string
+    badge?: string
+    account?: string
+    metric: string
+    sublabel: string
+    footer?: string
+    barPercent: number
+    loading: boolean
+    refresh: () => Promise<void>
+  }> = []
+
+  const copilotTier = copilotQuota.value?.tiers.find(tier => tier.name === 'copilot_premium')
+  if (copilotQuota.value && copilotTier) {
+    const badge = translateCopilotPlanLabel(copilotQuota.value.planLabel)
+    const chatTier = copilotQuota.value.tiers.find(tier => tier.name === 'copilot_chat')
+    const completionsTier = copilotQuota.value.tiers.find(tier => tier.name === 'copilot_completions')
+    rows.push({
+      key: 'copilot',
+      label: t(locale.value, 'copilot.label'),
+      icon: 'githubcopilot',
+      badge,
+      account: copilotQuota.value.accountLabel || undefined,
+      metric: formatCopilotTierCounter(copilotTier),
+      sublabel: t(locale.value, 'copilot.quota.premium'),
+      footer: `${t(locale.value, 'copilot.quota.chat')} ${formatCopilotTierCounter(chatTier)} · ${t(locale.value, 'copilot.quota.completions')} ${formatCopilotTierCounter(completionsTier)}`,
+      barPercent: copilotTier.maxValue && copilotTier.remainingValue != null
+        ? Math.max(0, Math.min(100, (copilotTier.remainingValue / copilotTier.maxValue) * 100))
+        : 100,
+      loading: store.copilotQuotaLoading,
+      refresh: async () => { await store.refreshCopilotQuota() },
+    })
+  }
+
+  const claudeTier = firstWindowTier(claudeQuota.value)
+  if (claudeQuota.value && claudeTier) {
+    rows.push({
+      key: 'claude',
+      label: 'Claude',
+      icon: 'claude',
+      metric: remainingPercentText(claudeTier),
+      sublabel: t(locale.value, 'survival.window5h'),
+      footer: t(locale.value, 'survival.resetIn', { time: formatResetFromIso(claudeTier.resetsAt) }),
+      barPercent: remainingPercent(claudeTier),
+      loading: store.claudeLoading,
+      refresh: async () => { await store.refreshClaudeQuota() },
+    })
+  }
+
+  const codexTier = firstWindowTier(codexQuota.value)
+  if (codexQuota.value && codexTier) {
+    rows.push({
+      key: 'codex',
+      label: t(locale.value, 'subscription.codex'),
+      icon: 'codex',
+      metric: remainingPercentText(codexTier),
+      sublabel: t(locale.value, 'survival.window5h'),
+      footer: t(locale.value, 'survival.resetIn', { time: formatResetFromIso(codexTier.resetsAt) }),
+      barPercent: remainingPercent(codexTier),
+      loading: store.subscriptionLoading,
+      refresh: async () => { await store.refreshSubscriptionQuota() },
+    })
+  }
+
+  const geminiTier = firstWindowTier(geminiQuota.value)
+  if (geminiQuota.value && geminiTier) {
+    const summary = geminiQuota.value.tiers
+      .slice(0, 3)
+      .map((tier) => {
+        const labelMap: Record<string, string> = {
+          gemini_pro: t(locale.value, 'subscription.geminiPro'),
+          gemini_flash: t(locale.value, 'subscription.geminiFlash'),
+          gemini_flash_lite: t(locale.value, 'subscription.geminiFlashLite'),
+        }
+        return `${labelMap[tier.name] ?? tier.name} ${Math.round(remainingPercent(tier))}%`
+      })
+      .join(' · ')
+
+    rows.push({
+      key: 'gemini',
+      label: t(locale.value, 'subscription.gemini'),
+      icon: 'geminicli',
+      badge: geminiQuota.value.planLabel || undefined,
+      account: geminiQuota.value.accountLabel || undefined,
+      metric: remainingPercentText(geminiTier),
+      sublabel: t(locale.value, 'subscription.geminiQuota'),
+      footer: summary,
+      barPercent: remainingPercent(geminiTier),
+      loading: store.geminiQuotaLoading,
+      refresh: async () => { await store.refreshGeminiQuota() },
+    })
+  }
+
+  return rows
+})
+
+const TOOL_LABEL_KEYS: Record<string, string> = {
+  'claude-code': 'survival.tool.claudeCode',
+  codex: 'survival.tool.codex',
+  opencode: 'survival.tool.opencode',
+}
+
+function toolLabelOf(q: SubscriptionQuota): string {
+  if (q.provider === 'source-config') {
+    return q.accountLabel || q.credentialMessage || t(locale.value, 'survival.sourceSection')
+  }
+  const key = q.sourceTool ? TOOL_LABEL_KEYS[q.sourceTool] : undefined
+  return key ? t(locale.value, key) : (q.sourceTool ?? t(locale.value, 'survival.title'))
+}
+
+function sourceCaptionOf(q: SubscriptionQuota): string {
+  if (q.provider === 'source-config') {
+    return q.planLabel || q.credentialMessage || q.tool
+  }
+  return q.tool
+}
+
+function localBarClass(pct: number): string {
+  if (pct >= 90) return 'bg-red-400'
+  if (pct >= 70) return 'bg-amber-400'
+  return 'bg-cyan-400'
 }
 </script>
 
@@ -191,209 +294,119 @@ async function refreshReal() {
       </div>
 
       <div class="metric-body">
-        <!-- ===== 真实配额模式（T1） ===== -->
-        <template v-if="realQuota">
-          <div class="flex items-center justify-between gap-2">
-            <div class="flex min-w-0 items-center gap-1.5">
-              <LobeIcon :slug="providerIcon" :size="16" class="text-cyan-600 dark:text-cyan-300" />
-              <span class="text-[12px] font-semibold text-gray-900 dark:text-gray-50 truncate">{{ providerName }}</span>
+        <div class="limit-stack">
+          <div class="compact-row compact-row-local">
+            <div class="compact-row-head">
+              <div class="compact-row-main">
+                <span class="compact-dot bg-cyan-400/85 dark:bg-cyan-300/70" />
+                <span class="compact-title">{{ t(locale, 'survival.localWindow5h') }}</span>
+                <span class="compact-subtle">{{ block ? t(locale, 'survival.active') : t(locale, 'survival.idle') }}</span>
+              </div>
+              <span class="compact-metric">{{ localStatusText }}</span>
             </div>
-            <button
-              @click="refreshReal"
-              :disabled="refreshing"
-              class="p-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
-              :title="t(locale, 'subscription.refresh')"
-            >
-              <svg class="w-3 h-3 text-gray-400" :class="{ 'animate-spin': refreshing }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-            </button>
+
+            <div v-if="block" class="compact-progress">
+              <div
+                class="compact-progress-fill"
+                :class="localBarClass(timeElapsedPct)"
+                :style="{ width: `${timeElapsedPct}%` }"
+              />
+            </div>
+
+            <div class="compact-foot">
+              <span v-if="block">{{ t(locale, 'survival.used') }} {{ blockUsedText }}</span>
+              <span v-if="showBurn">{{ burnText }}</span>
+              <span v-if="relativeText">{{ relativeText }}</span>
+              <span v-if="!block && avgPaceText">{{ avgPaceText }}</span>
+            </div>
           </div>
 
-          <div class="mt-1.5 grid grid-cols-2 gap-1.5">
+          <div v-if="officialRows.length" class="compact-group">
             <div
-              v-if="fiveHourTier"
-              :class="['tier-chip', sevenDayTier ? '' : 'col-span-2']"
+              v-for="row in officialRows"
+              :key="row.key"
+              class="compact-row"
             >
-              <div class="flex items-center justify-between gap-1.5">
-                <span class="flex min-w-0 items-center gap-1">
-                  <span class="h-1.5 w-1.5 rounded-full shrink-0" :class="tierDotClass(fiveHourTier.utilization)" />
-                  <span class="text-[10px] text-gray-500 dark:text-gray-400 whitespace-nowrap">{{ t(locale, 'survival.window5h') }}</span>
-                </span>
-                <span class="flex shrink-0 items-center gap-1">
-                  <span :class="['text-[10px] font-mono font-semibold', tierColorClass(fiveHourTier.utilization)]">{{ fiveHourTier.utilization.toFixed(0) }}%</span>
-                  <span class="reset-chip"><Clock class="h-2.5 w-2.5 shrink-0" /><span class="font-mono">{{ formatResetFromIso(fiveHourTier.resetsAt) }}</span></span>
-                </span>
+              <div class="compact-row-head">
+                <div class="compact-row-main">
+                  <LobeIcon :slug="row.icon" :size="14" />
+                  <span class="compact-title">{{ row.label }}</span>
+                  <span v-if="row.badge" class="compact-badge">{{ row.badge }}</span>
+                </div>
+                <div class="compact-row-actions">
+                  <span class="compact-metric">{{ row.metric }}</span>
+                  <button
+                    class="compact-refresh"
+                    :disabled="row.loading"
+                    :title="t(locale, 'subscription.refresh')"
+                    @click="row.refresh"
+                  >
+                    <svg class="w-3 h-3 text-gray-400" :class="{ 'animate-spin': row.loading }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <div v-if="row.account" class="compact-caption">{{ row.account }}</div>
+              <div class="compact-caption">{{ row.sublabel }}</div>
+
+              <div class="compact-progress">
+                <div class="compact-progress-fill bg-cyan-400" :style="{ width: `${row.barPercent}%` }" />
+              </div>
+
+              <div v-if="row.footer" class="compact-foot">
+                <span>{{ row.footer }}</span>
               </div>
             </div>
-
-            <div
-              v-if="sevenDayTier"
-              :class="['tier-chip', fiveHourTier ? '' : 'col-span-2']"
-            >
-              <div class="flex items-center justify-between gap-1.5">
-                <span class="flex min-w-0 items-center gap-1">
-                  <span class="h-1.5 w-1.5 rounded-full shrink-0" :class="tierDotClass(sevenDayTier.utilization)" />
-                  <span class="text-[10px] text-gray-500 dark:text-gray-400 whitespace-nowrap">{{ t(locale, 'survival.weekly') }}</span>
-                </span>
-                <span class="flex shrink-0 items-center gap-1">
-                  <span :class="['text-[10px] font-mono font-semibold', tierColorClass(sevenDayTier.utilization)]">{{ sevenDayTier.utilization.toFixed(0) }}%</span>
-                  <span class="reset-chip"><Clock class="h-2.5 w-2.5 shrink-0" /><span class="font-mono">{{ formatResetFromIso(sevenDayTier.resetsAt) }}</span></span>
-                </span>
-              </div>
-            </div>
           </div>
 
-          <!-- burn 子行 -->
-          <div v-if="showBurn || relativeText" class="mt-1.5 flex items-center gap-1.5 text-[10px] text-gray-500 dark:text-gray-400">
-            <template v-if="showBurn">
-              <Flame class="h-2.5 w-2.5 shrink-0 text-amber-500" />
-              <span class="font-mono">{{ burnText }}</span>
-            </template>
-            <template v-if="relativeText">
-              <span v-if="showBurn" class="text-gray-300 dark:text-gray-600">·</span>
-              <span class="font-mono">{{ relativeText }}</span>
-            </template>
-          </div>
-        </template>
-
-        <!-- ===== 本地窗口（T3：有活跃 5h 块，无官方限额） ===== -->
-        <template v-else-if="block">
-          <div class="flex items-center justify-between gap-2">
-            <div class="flex min-w-0 items-center gap-1.5">
-              <span class="h-1.5 w-1.5 rounded-full shrink-0 bg-cyan-400/85 dark:bg-cyan-300/70" />
-              <span class="text-[11px] font-semibold text-gray-700 dark:text-gray-200 whitespace-nowrap">{{ t(locale, 'survival.localWindow5h') }}</span>
-            </div>
-            <span class="reset-chip"><Clock class="h-2.5 w-2.5 shrink-0" /><span class="font-mono">{{ blockResetText }}</span></span>
-          </div>
-
-          <!-- 时间进度条（代表 5h 窗口已消耗的时间，与 token 上限无关） -->
-          <div class="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-neutral-800">
-            <div
-              class="h-full rounded-full transition-all"
-              :class="timeBarColor(timeElapsedPct)"
-              :style="{ width: timeElapsedPct + '%' }"
-            />
-          </div>
-
-          <div class="mt-1.5 flex flex-wrap items-center justify-between gap-1.5 text-[10px] text-gray-500 dark:text-gray-400">
-            <span>{{ t(locale, 'survival.used') }} <span class="font-mono font-semibold text-gray-700 dark:text-gray-200">{{ blockUsedText }}</span></span>
-            <div class="flex items-center gap-1.5">
-              <template v-if="showBurn">
-                <Flame class="h-2.5 w-2.5 shrink-0 text-amber-500" />
-                <span class="font-mono">{{ burnText }}</span>
-              </template>
-              <template v-if="relativeText">
-                <span v-if="showBurn" class="text-gray-300 dark:text-gray-600">·</span>
-                <span class="font-mono">{{ relativeText }}</span>
-              </template>
-            </div>
-          </div>
-
-          <!-- 无官方/中转额度时的底部提示（含内联刷新） -->
-          <div
-            v-if="!realQuota && !configuredSourceQuotas.length"
-            class="mt-2 flex items-center justify-between gap-1"
-          >
-            <!-- 查询中：显示 loading 点动画 -->
-            <div v-if="store.configuredSourceLoading" class="flex items-center gap-1 text-[9px] text-gray-400/60 dark:text-gray-600">
-              <svg class="h-2.5 w-2.5 shrink-0 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-              <span>{{ t(locale, 'survival.quotaQuerying') }}</span>
-            </div>
-            <!-- 查询完毕无数据：显示提示 + 刷新按钮 -->
-            <template v-else>
-              <div class="flex items-center gap-1 text-[9px] text-gray-400/60 dark:text-gray-600">
-                <svg class="h-2.5 w-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <span>{{ t(locale, 'survival.noQuotaHint') }}</span>
-              </div>
+          <div v-if="configuredSourceQuotas.length" class="compact-group">
+            <div class="compact-section-label">
+              <span>{{ t(locale, 'survival.sourceSection') }}</span>
               <button
-                @click="store.forceFetchConfiguredSourceQuotas()"
-                class="p-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                class="compact-refresh"
+                :disabled="store.configuredSourceLoading"
                 :title="t(locale, 'subscription.refresh')"
+                @click="store.forceFetchConfiguredSourceQuotas()"
               >
-                <svg class="w-3 h-3 text-gray-400/60" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg class="w-3 h-3 text-gray-400" :class="{ 'animate-spin': store.configuredSourceLoading }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
               </button>
-            </template>
-          </div>
-        </template>
-
-        <!-- ===== 空闲态（有历史基线但当前 5h 无用量） ===== -->
-        <template v-else-if="baseline">
-          <div class="flex items-center justify-between gap-2">
-            <div class="flex min-w-0 items-center gap-1.5">
-              <span class="h-1.5 w-1.5 rounded-full shrink-0 bg-gray-300/80 dark:bg-gray-600/70" />
-              <span class="text-[11px] font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">{{ t(locale, 'survival.localWindow5h') }}</span>
-              <span class="text-[10px] text-gray-400">·</span>
-              <span class="text-[10px] text-gray-400 dark:text-gray-500">{{ t(locale, 'survival.idle') }}</span>
             </div>
-          </div>
-          <div v-if="avgPaceText" class="mt-1.5 flex items-center gap-1.5 text-[10px] text-gray-400 dark:text-gray-500">
-            <span class="font-mono">{{ avgPaceText }}</span>
-          </div>
-        </template>
 
-        <!-- ===== 占位空闲态（无活跃块/无基线，但仍有来源额度） ===== -->
-        <template v-else-if="configuredSourceQuotas.length">
-          <div class="flex items-center justify-between gap-2 rounded-lg border border-dashed border-gray-200/80 px-2 py-1.5 dark:border-white/10">
-            <div class="flex min-w-0 items-center gap-1.5">
-              <span class="h-1.5 w-1.5 rounded-full shrink-0 bg-gray-300/80 dark:bg-gray-600/70" />
-              <span class="text-[11px] font-semibold text-gray-600 dark:text-gray-300 whitespace-nowrap">{{ t(locale, 'survival.localWindow5h') }}</span>
-              <span class="text-[10px] text-gray-400">·</span>
-              <span class="truncate text-[10px] text-gray-400 dark:text-gray-500">{{ t(locale, 'survival.idle') }}</span>
-            </div>
-            <span class="shrink-0 text-[10px] font-mono text-gray-400 dark:text-gray-500 whitespace-nowrap">{{ localStatusText }}</span>
-          </div>
-        </template>
-
-        <!-- ===== 已配置来源额度（多工具中转，一行一来源，附加展示） ===== -->
-        <div
-          v-if="configuredSourceQuotas.length"
-          :class="['source-section', (realQuota || block || baseline) ? 'mt-2 border-t border-gray-100 pt-2 dark:border-neutral-800' : '']"
-        >
-          <div class="flex items-center justify-between gap-2">
-            <span class="text-[9px] font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">{{ t(locale, 'survival.sourceSection') }}</span>
-            <button
-              @click="store.forceFetchConfiguredSourceQuotas()"
-              :disabled="store.configuredSourceLoading"
-              class="p-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
-              :title="t(locale, 'subscription.refresh')"
-            >
-              <svg class="w-3 h-3 text-gray-400" :class="{ 'animate-spin': store.configuredSourceLoading }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-            </button>
-          </div>
-          <div class="mt-1 space-y-1">
             <div
-              v-for="(q, i) in configuredSourceQuotas"
-              :key="(q.sourceTool ?? '') + ':' + q.tool + ':' + i"
-              class="flex items-center justify-between gap-2"
+              v-for="(q, index) in configuredSourceQuotas"
+              :key="`${q.sourceTool ?? ''}:${q.tool}:${index}`"
+              class="compact-row"
             >
-              <div class="flex min-w-0 items-center gap-1.5">
+              <div class="compact-row-head">
+                <div class="compact-row-main">
+                  <span
+                    class="compact-dot"
+                    :class="primaryWindowTierOf(q) ? 'bg-emerald-400/85 dark:bg-emerald-300/70' : 'bg-emerald-400/85 dark:bg-emerald-300/70'"
+                  />
+                  <span class="compact-title">{{ toolLabelOf(q) }}</span>
+                  <span class="compact-subtle">{{ sourceCaptionOf(q) }}</span>
+                </div>
                 <span
-                  class="h-1.5 w-1.5 rounded-full shrink-0"
-                  :class="primaryWindowTierOf(q) ? tierDotClass(primaryWindowTierOf(q)!.utilization) : 'bg-emerald-400/85 dark:bg-emerald-300/70'"
-                />
-                <span class="text-[11px] font-semibold text-gray-700 dark:text-gray-200 truncate">{{ toolLabelOf(q) }}</span>
-                <span class="text-[10px] text-gray-300 dark:text-gray-600 shrink-0">·</span>
-                <span class="text-[10px] text-gray-500 dark:text-gray-400 truncate">{{ sourceCaptionOf(q) }}</span>
-              </div>
-              <span class="flex shrink-0 items-center gap-1">
-                <template v-if="primaryWindowTierOf(q)">
-                  <span :class="['text-[10px] font-mono font-semibold', tierColorClass(primaryWindowTierOf(q)!.utilization)]">{{ primaryWindowTierOf(q)!.utilization.toFixed(0) }}%</span>
-                  <span v-if="primaryWindowTierOf(q)!.resetsAt" class="reset-chip"><Clock class="h-2.5 w-2.5 shrink-0" /><span class="font-mono">{{ formatResetFromIso(primaryWindowTierOf(q)!.resetsAt) }}</span></span>
-                </template>
-                <span
-                  v-else-if="balanceTierOf(q)"
-                  class="text-[11px] font-mono font-semibold text-emerald-600 dark:text-emerald-400"
+                  v-if="balanceTierOf(q)"
+                  class="compact-metric compact-metric-balance"
                 >{{ formatBalanceTier(balanceTierOf(q)!) }}</span>
-              </span>
+                <span
+                  v-else-if="primaryWindowTierOf(q)"
+                  class="compact-metric"
+                >{{ remainingPercentText(primaryWindowTierOf(q)) }}</span>
+              </div>
+
+              <div v-if="primaryWindowTierOf(q)" class="compact-progress">
+                <div class="compact-progress-fill bg-emerald-400" :style="{ width: `${remainingPercent(primaryWindowTierOf(q))}%` }" />
+              </div>
+
+              <div v-if="primaryWindowTierOf(q)?.resetsAt" class="compact-foot">
+                <span>{{ t(locale, 'survival.resetIn', { time: formatResetFromIso(primaryWindowTierOf(q)?.resetsAt) }) }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -462,33 +475,154 @@ async function refreshReal() {
   min-width: 0;
   flex: 1 1 0%;
   padding: 0.5rem 0.625rem 0.375rem;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-}
-
-.tier-chip {
-  border-radius: 0.5rem;
-  border: 1px solid color-mix(in srgb, var(--theme-text-primary) 8%, transparent);
-  background: color-mix(in srgb, var(--theme-text-primary) 3%, transparent);
-  padding: 0.3125rem 0.375rem;
-}
-
-.reset-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.125rem;
-  border-radius: 0.375rem;
-  border: 1px solid color-mix(in srgb, var(--theme-text-primary) 8%, transparent);
-  background: color-mix(in srgb, var(--theme-text-primary) 3%, transparent);
-  padding: 0.0625rem 0.25rem;
-  font-size: 9px;
-  color: var(--theme-text-tertiary);
-  white-space: nowrap;
 }
 
 .writing-vertical {
   writing-mode: vertical-rl;
   text-orientation: upright;
+}
+
+.limit-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.compact-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.compact-row {
+  border-radius: 0.875rem;
+  border: 1px solid color-mix(in srgb, var(--theme-text-primary) 8%, transparent);
+  background: color-mix(in srgb, var(--theme-text-primary) 3%, transparent);
+  padding: 0.5rem 0.625rem;
+}
+
+.compact-row-local {
+  border-style: dashed;
+}
+
+.compact-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.compact-row-main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.compact-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.compact-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.compact-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--theme-text-primary);
+  white-space: nowrap;
+}
+
+.compact-subtle,
+.compact-caption,
+.compact-section-label,
+.compact-foot {
+  font-size: 10px;
+  color: var(--theme-text-tertiary);
+}
+
+.compact-subtle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-caption,
+.compact-foot {
+  margin-top: 0.25rem;
+  line-height: 1.35;
+}
+
+.compact-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.compact-metric {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--theme-text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: right;
+}
+
+.compact-metric-balance {
+  color: #34c99a;
+}
+
+.compact-badge {
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--theme-chart-requests) 22%, transparent);
+  background: color-mix(in srgb, var(--theme-chart-requests) 10%, transparent);
+  padding: 0.0625rem 0.375rem;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--theme-chart-requests);
+}
+
+.compact-progress {
+  margin-top: 0.375rem;
+  height: 0.375rem;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-text-primary) 10%, transparent);
+}
+
+.compact-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 180ms ease;
+}
+
+.compact-section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 700;
+}
+
+.compact-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.375rem;
+  padding: 0.125rem;
+  transition: background-color 0.15s ease;
+}
+
+.compact-refresh:hover {
+  background: color-mix(in srgb, var(--theme-text-primary) 8%, transparent);
 }
 </style>

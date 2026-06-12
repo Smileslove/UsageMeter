@@ -5,6 +5,7 @@
 mod claude_reader;
 mod codex_reader;
 mod constants;
+mod copilot_cli_reader;
 mod gemini_reader;
 mod meta;
 mod opencode;

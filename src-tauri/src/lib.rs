@@ -3,6 +3,7 @@
 //! 一款用于实时监控 Claude Code 使用情况的系统托盘应用。
 
 mod commands;
+mod copilot;
 mod local_usage;
 mod models;
 mod net;
@@ -196,6 +197,9 @@ fn make_window_rounded(window: &tauri::WebviewWindow) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let copilot_auth = std::sync::Arc::new(tokio::sync::RwLock::new(
+        copilot::CopilotAuthManager::new(crate::utils::usagemeter_dir().unwrap_or_default()),
+    ));
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
@@ -209,7 +213,8 @@ pub fn run() {
     builder
         .manage(commands::ProxyState::default())
         .manage(commands::UpdaterState::default())
-        .manage(subscription::SubscriptionState::new())
+        .manage(commands::CopilotAuthState(copilot_auth.clone()))
+        .manage(subscription::SubscriptionState::new_with_copilot(copilot_auth))
         .on_window_event(|window, event| match event {
             WindowEvent::Focused(false) => {
                 if window.label() == "main" {
@@ -521,6 +526,9 @@ pub fn run() {
             commands::get_configured_source_quotas,
             commands::has_gemini_oauth,
             commands::clear_subscription_cache,
+            commands::copilot_list_accounts,
+            commands::copilot_get_auth_status,
+            commands::copilot_is_authenticated,
             // 更新命令
             commands::check_for_update,
             commands::download_and_install_update,

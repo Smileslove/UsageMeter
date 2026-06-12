@@ -203,6 +203,7 @@ export const TOOL_LOBE_ICONS: Record<string, string> = {
   claude_code: 'claudecode',
   codex: 'codex',
   cursor: 'cursor',
+  copilot: 'githubcopilot',
   opencode: 'opencode',
   qoder_ide: 'qoder',
   qoder_ide_cn: 'qoder-cn',
@@ -216,8 +217,9 @@ export const TOOL_LOBE_ICONS: Record<string, string> = {
 const TOOL_ICON_ALIASES: Record<string, string> = {
   claude: 'claudecode',
   claude_code: 'claudecode',
-  githubcopilot: 'copilot',
-  github_copilot: 'copilot',
+  copilot: 'githubcopilot',
+  githubcopilot: 'githubcopilot',
+  github_copilot: 'githubcopilot',
   open_code: 'opencode',
 }
 

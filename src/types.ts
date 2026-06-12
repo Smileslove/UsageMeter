@@ -670,7 +670,7 @@ export interface QuotaTier {
 /// Subscription quota data for different providers
 export interface SubscriptionQuota {
   provider: string
-  tool: string           // 官方："codex"/"claude_oauth"；中转：供应商 id（如 "deepseek"）
+  tool: string           // 官方："codex"/"claude_oauth"/"copilot"；中转：供应商 id（如 "deepseek"）
   sourceTool?: string     // 来源工具："claude-code" / "codex" / "opencode"（仅已配置来源额度查询填充）
   credentialStatus: string
   credentialMessage?: string
@@ -709,4 +709,28 @@ export interface ConfiguredSourceQuotaQueryResult {
   failedCount: number
   errors: string[]
   queriedAt: number
+}
+
+export interface GitHubAccount {
+  id: string
+  login: string
+  avatarUrl?: string | null
+  authenticatedAt: number
+  githubDomain: string
+}
+
+export interface GitHubDeviceCodeResponse {
+  deviceCode: string
+  userCode: string
+  verificationUri: string
+  expiresIn: number
+  interval: number
+}
+
+export interface CopilotAuthStatus {
+  accounts: GitHubAccount[]
+  defaultAccountId?: string | null
+  authenticated: boolean
+  username?: string | null
+  migrationError?: string | null
 }

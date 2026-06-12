@@ -14,7 +14,7 @@ const store = useMonitorStore()
 const SESSION_SOURCE_TOOLS = new Set([
   'claude_code', 'codex', 'opencode',
   'qoder_ide', 'qoder_ide_cn', 'qoder_cli', 'qoder_work', 'qoder_work_cn',
-  'reasonix'
+  'reasonix', 'copilot'
 ])
 const normalizeSessionTool = (tool: string | null | undefined) => (
   tool && SESSION_SOURCE_TOOLS.has(tool) ? tool : null
@@ -347,7 +347,10 @@ const requestSourceLabel = (request: RequestRecord) => (
 )
 
 const requestToolLabel = (tool: string) => {
-  const baseName = getToolProfile(tool)?.displayName || tool || t(store.settings.locale, 'common.unknown')
+  const fallbackNames: Record<string, string> = {
+    copilot: 'GitHub Copilot CLI',
+  }
+  const baseName = getToolProfile(tool)?.displayName || fallbackNames[tool] || tool || t(store.settings.locale, 'common.unknown')
   const variant = getVariantLabel(tool)
   return variant ? `${baseName} · ${variant}` : baseName
 }

@@ -6,7 +6,6 @@ import { MessageSquare, Sigma, CircleDollarSign, Database } from 'lucide-vue-nex
 import { formatRequestCount, formatTokenValue, formatCost } from '../utils/format'
 import { WINDOW_ORDER, type WindowName } from '../types'
 import LimitSurvivalCard from './overview/LimitSurvivalCard.vue'
-import GeminiSubscriptionQuotaCard from './GeminiSubscriptionQuotaCard.vue'
 
 const store = useMonitorStore()
 
@@ -353,9 +352,6 @@ function detailPairSizeClass(first: string, second: string): string {
 
     <!-- 限额生存卡（真实配额 T1 + 燃烧速率 / 会话锚定块 / 历史基线） -->
     <LimitSurvivalCard />
-
-    <!-- Gemini 额度卡片（仅在检测到 Gemini CLI OAuth 凭据时显示） -->
-    <GeminiSubscriptionQuotaCard v-if="store.hasGeminiOAuth" />
   </div>
 </template>
 

@@ -3,6 +3,7 @@
 //! Provides subscription quota queries for official providers (GPT, Claude, etc.)
 
 mod claude;
+mod copilot;
 mod gemini;
 mod gpt;
 pub mod relay;
@@ -12,6 +13,7 @@ mod token_cache;
 mod types;
 
 pub use claude::ClaudeSubscriptionProvider;
+pub use copilot::CopilotSubscriptionProvider;
 pub use gemini::GeminiSubscriptionProvider;
 pub use gpt::*;
 pub use token_cache::TokenCache;
@@ -19,10 +21,10 @@ pub use token_cache::TokenCache;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::copilot::CopilotAuthManager;
 use crate::models::SubscriptionQuota;
 
 /// Subscription state shared across the application
-#[derive(Default)]
 pub struct SubscriptionState {
     /// Cached subscription data by provider
     cache: Arc<RwLock<std::collections::HashMap<String, CachedSubscription>>>,
@@ -32,6 +34,14 @@ pub struct SubscriptionState {
     gpt_provider: Arc<RwLock<Option<GptSubscriptionProvider>>>,
     /// Gemini provider instance (singleton, keeps in-memory token cache)
     gemini_provider: Arc<RwLock<Option<GeminiSubscriptionProvider>>>,
+    /// Copilot auth manager shared with commands
+    copilot_auth: Arc<RwLock<CopilotAuthManager>>,
+}
+
+impl Default for SubscriptionState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Cached subscription data with timestamp
@@ -46,7 +56,19 @@ const CACHE_VALIDITY_MS: i64 = 5 * 60 * 1000;
 
 impl SubscriptionState {
     pub fn new() -> Self {
-        Self::default()
+        Self::new_with_copilot(Arc::new(RwLock::new(CopilotAuthManager::new(
+            crate::utils::usagemeter_dir().unwrap_or_default(),
+        ))))
+    }
+
+    pub fn new_with_copilot(copilot_auth: Arc<RwLock<CopilotAuthManager>>) -> Self {
+        Self {
+            cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            token_cache: Arc::new(TokenCache::new()),
+            gpt_provider: Arc::new(RwLock::new(None)),
+            gemini_provider: Arc::new(RwLock::new(None)),
+            copilot_auth,
+        }
     }
 
     /// Get or create GPT provider instance with shared token cache
@@ -67,6 +89,10 @@ impl SubscriptionState {
             *provider = Some(GeminiSubscriptionProvider::new());
         }
         provider.clone().unwrap()
+    }
+
+    pub async fn get_copilot_provider(&self) -> CopilotSubscriptionProvider {
+        CopilotSubscriptionProvider::new(self.copilot_auth.clone())
     }
 
     /// Get cached subscription if still valid

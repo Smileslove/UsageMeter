@@ -366,6 +366,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       localScanReasonixPath: '~/Library/Application Support/reasonix/sessions/*.jsonl',
       localScanGemini: 'Gemini CLI',
       localScanGeminiPath: '~/.gemini/tmp/*/chats/session-*.json',
+      localScanCopilot: 'GitHub Copilot',
+      localScanCopilotPath: '~/.copilot/session-state/*/events.jsonl',
       localScanOpenCodeNote: 'OpenCode 数据存储在 SQLite 数据库中，与 Claude Code / Codex 的文本日志不同。UsageMeter 以只读方式访问，不影响 OpenCode 的正常运行。',
       localScanDetectedBadge: '已检测',
       localScanMessageOnlyBadge: '仅消息模式',
@@ -773,6 +775,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       geminiPro: 'Pro',
       geminiFlash: 'Flash',
       geminiFlashLite: 'Flash Lite',
+      copilot: 'GitHub Copilot',
       fiveHour: '5小时',
       sevenDay: '7天',
       refresh: '刷新',
@@ -787,6 +790,49 @@ const messages: Record<AppLocale, TranslationNode> = {
       errorRefreshFailed: '刷新失败，请重新登录',
       errorQueryFailed: '查询失败，请稍后再试',
       errorUnknown: '未知错误'
+    },
+    copilot: {
+      label: 'GitHub Copilot',
+      localStats: { label: '本地统计', auto: '自动扫描' },
+      settings: {
+        autoScanHint: '本地 OTEL 用量会自动扫描；这里只管理 GitHub 登录与配额查询。'
+      },
+      auth: {
+        notConnected: '未连接',
+        connect: '连接 GitHub',
+        switchAccount: '切换账号',
+        logout: '登出',
+        loggedInAs: '已登录：{login}'
+      },
+      login: {
+        title: '连接 GitHub Copilot',
+        instruction: '请在浏览器中访问以下地址：',
+        codeLabel: '输入以下验证码：',
+        copyCode: '复制',
+        openBrowser: '在浏览器中打开',
+        waiting: '等待授权...',
+        remaining: '剩余 {time}',
+        cancel: '取消',
+        success: '连接成功',
+        codeExpired: '验证码已过期，请重新开始',
+        accessDenied: '用户已拒绝授权',
+        noSubscription: '该 GitHub 账号未订阅 Copilot',
+        ghesDomainLabel: '企业 GitHub 域名（可选）',
+        ghesPlaceholder: 'github.company.com'
+      },
+      plan: { individual: '个人版', business: '团队版', enterprise: '企业版' },
+      quota: {
+        premium: '高级模型调用',
+        chat: '普通对话',
+        completions: '代码补全',
+        unlimited: '无限制',
+        resetsAt: '重置于 {date}',
+        remainingTotal: '剩余 {remaining} / 总量 {total}'
+      },
+      error: {
+        tokenExpired: 'GitHub token 已失效，请重新登录',
+        fetchFailed: '配额查询失败'
+      }
     },
     survival: {
       title: '限额',
@@ -1170,6 +1216,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       localScanReasonixPath: '~/Library/Application Support/reasonix/sessions/*.jsonl',
       localScanGemini: 'Gemini CLI',
       localScanGeminiPath: '~/.gemini/tmp/*/chats/session-*.json',
+      localScanCopilot: 'GitHub Copilot',
+      localScanCopilotPath: '~/.copilot/session-state/*/events.jsonl',
       localScanOpenCodeNote: 'OpenCode 資料存儲在 SQLite 資料庫中，與 Claude Code / Codex 的文字日誌不同。UsageMeter 以唯讀方式存取，不影響 OpenCode 的正常運作。',
       localScanDetectedBadge: '已偵測',
       localScanMessageOnlyBadge: '僅訊息模式',
@@ -1576,6 +1624,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       geminiPro: 'Pro',
       geminiFlash: 'Flash',
       geminiFlashLite: 'Flash Lite',
+      copilot: 'GitHub Copilot',
       fiveHour: '5小時',
       sevenDay: '7天',
       refresh: '重新整理',
@@ -1590,6 +1639,49 @@ const messages: Record<AppLocale, TranslationNode> = {
       errorRefreshFailed: '更新失敗，請重新登入',
       errorQueryFailed: '查詢失敗，請稍後再試',
       errorUnknown: '未知錯誤'
+    },
+    copilot: {
+      label: 'GitHub Copilot',
+      localStats: { label: '本地統計', auto: '自動掃描' },
+      settings: {
+        autoScanHint: '本地 OTEL 用量會自動掃描；這裡只管理 GitHub 登入與配額查詢。'
+      },
+      auth: {
+        notConnected: '未連接',
+        connect: '連接 GitHub',
+        switchAccount: '切換帳號',
+        logout: '登出',
+        loggedInAs: '已登入：{login}'
+      },
+      login: {
+        title: '連接 GitHub Copilot',
+        instruction: '請在瀏覽器中訪問以下位址：',
+        codeLabel: '輸入以下驗證碼：',
+        copyCode: '複製',
+        openBrowser: '在瀏覽器中打開',
+        waiting: '等待授權...',
+        remaining: '剩餘 {time}',
+        cancel: '取消',
+        success: '連接成功',
+        codeExpired: '驗證碼已過期，請重新開始',
+        accessDenied: '使用者已拒絕授權',
+        noSubscription: '該 GitHub 帳號未訂閱 Copilot',
+        ghesDomainLabel: '企業 GitHub 網域（可選）',
+        ghesPlaceholder: 'github.company.com'
+      },
+      plan: { individual: '個人版', business: '團隊版', enterprise: '企業版' },
+      quota: {
+        premium: '高級模型調用',
+        chat: '一般對話',
+        completions: '程式補全',
+        unlimited: '無限制',
+        resetsAt: '重置於 {date}',
+        remainingTotal: '剩餘 {remaining} / 總量 {total}'
+      },
+      error: {
+        tokenExpired: 'GitHub token 已失效，請重新登入',
+        fetchFailed: '配額查詢失敗'
+      }
     },
     survival: {
       title: '限額',
@@ -1973,6 +2065,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       localScanReasonixPath: '~/Library/Application Support/reasonix/sessions/*.jsonl',
       localScanGemini: 'Gemini CLI',
       localScanGeminiPath: '~/.gemini/tmp/*/chats/session-*.json',
+      localScanCopilot: 'GitHub Copilot',
+      localScanCopilotPath: '~/.copilot/session-state/*/events.jsonl',
       localScanOpenCodeNote: 'OpenCode stores data in a SQLite database rather than plain log files like Claude Code and Codex. UsageMeter accesses it read-only and does not affect OpenCode\'s operation.',
       localScanDetectedBadge: 'Detected',
       localScanMessageOnlyBadge: 'Message-only',
@@ -2379,6 +2473,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       geminiPro: 'Pro',
       geminiFlash: 'Flash',
       geminiFlashLite: 'Flash Lite',
+      copilot: 'GitHub Copilot',
       fiveHour: '5 Hours',
       sevenDay: '7 Days',
       refresh: 'Refresh',
@@ -2393,6 +2488,49 @@ const messages: Record<AppLocale, TranslationNode> = {
       errorRefreshFailed: 'Refresh failed, please sign in again',
       errorQueryFailed: 'Query failed, try again later',
       errorUnknown: 'Unknown error'
+    },
+    copilot: {
+      label: 'GitHub Copilot',
+      localStats: { label: 'Local Stats', auto: 'Auto Scan' },
+      settings: {
+        autoScanHint: 'Local OTEL usage is scanned automatically; this panel only manages GitHub sign-in and quota lookup.'
+      },
+      auth: {
+        notConnected: 'Not Connected',
+        connect: 'Connect GitHub',
+        switchAccount: 'Switch Account',
+        logout: 'Log Out',
+        loggedInAs: 'Signed in as {login}'
+      },
+      login: {
+        title: 'Connect GitHub Copilot',
+        instruction: 'Visit the following URL in your browser:',
+        codeLabel: 'Enter the following code:',
+        copyCode: 'Copy',
+        openBrowser: 'Open in Browser',
+        waiting: 'Waiting for authorization...',
+        remaining: '{time} remaining',
+        cancel: 'Cancel',
+        success: 'Connected',
+        codeExpired: 'Code expired, please start again',
+        accessDenied: 'Authorization denied',
+        noSubscription: 'This GitHub account has no Copilot subscription',
+        ghesDomainLabel: 'GitHub Enterprise Domain (optional)',
+        ghesPlaceholder: 'github.company.com'
+      },
+      plan: { individual: 'Individual', business: 'Business', enterprise: 'Enterprise' },
+      quota: {
+        premium: 'Premium Interactions',
+        chat: 'Chat',
+        completions: 'Completions',
+        unlimited: 'Unlimited',
+        resetsAt: 'Resets {date}',
+        remainingTotal: '{remaining} remaining / {total} total'
+      },
+      error: {
+        tokenExpired: 'GitHub token expired, please sign in again',
+        fetchFailed: 'Failed to fetch quota'
+      }
     },
     survival: {
       title: 'Limits',

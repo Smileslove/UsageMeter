@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SubscriptionQuota, SyncSettings, NetworkProxyConfig, ThemeSettings, WslScanSettings, LimitSurvivalSnapshot, SourceQuotaQueryConfig, ConfiguredSourceQuotaQueryResult } from '../types'
+import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SubscriptionQuota, SyncSettings, NetworkProxyConfig, ThemeSettings, WslScanSettings, LimitSurvivalSnapshot, SourceQuotaQueryConfig, ConfiguredSourceQuotaQueryResult, CopilotAuthStatus, GitHubAccount } from '../types'
 
 const defaultModelPricing: ModelPricingSettings = {
   matchMode: 'fuzzy',
@@ -65,7 +65,8 @@ const defaultClientTools: ClientToolSettings = {
     { id: 'opencode', tool: 'opencode', displayName: 'OpenCode', pathPrefix: 'opencode', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'opencode' },
     { id: 'qoder_ide', tool: 'qoder_ide', displayName: 'Qoder IDE', pathPrefix: 'qoder', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'qoder' },
     { id: 'reasonix', tool: 'reasonix', displayName: 'Reasonix', pathPrefix: 'reasonix', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'reasonix' },
-    { id: 'gemini', tool: 'gemini', displayName: 'Gemini CLI', pathPrefix: 'gemini', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'geminicli' }
+    { id: 'gemini', tool: 'gemini', displayName: 'Gemini CLI', pathPrefix: 'gemini', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'geminicli' },
+    { id: 'copilot', tool: 'copilot', displayName: 'GitHub Copilot CLI', pathPrefix: 'copilot', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'copilot' }
   ],
   activeToolFilter: null
 }
@@ -176,7 +177,12 @@ export const useMonitorStore = defineStore('monitor', {
     // Gemini 配额查询
     geminiQuota: null as SubscriptionQueryResult | null,
     geminiQuotaLoading: false,
-    hasGeminiOAuth: false
+    hasGeminiOAuth: false,
+    // Copilot 认证与配额
+    copilotAuthStatus: null as CopilotAuthStatus | null,
+    copilotQuota: null as SubscriptionQueryResult | null,
+    copilotQuotaLoading: false,
+    hasCopilotAuth: false
   }),
   getters: {
     hasData: state => !!state.snapshot,
@@ -219,6 +225,11 @@ export const useMonitorStore = defineStore('monitor', {
       await this.checkGeminiOAuth()
       if (this.hasGeminiOAuth) {
         await this.fetchGeminiQuota()
+      }
+
+      await this.refreshCopilotAuthStatus()
+      if (this.hasCopilotAuth) {
+        await this.fetchCopilotQuota()
       }
     },
     async loadSettings() {
@@ -889,6 +900,59 @@ export const useMonitorStore = defineStore('monitor', {
       } finally {
         this.geminiQuotaLoading = false
       }
+    },
+    async refreshCopilotAuthStatus() {
+      try {
+        this.copilotAuthStatus = await invoke<CopilotAuthStatus>('copilot_get_auth_status')
+        this.hasCopilotAuth = !!this.copilotAuthStatus?.authenticated
+      } catch (e) {
+        console.error('Failed to fetch Copilot auth status:', e)
+        this.copilotAuthStatus = null
+        this.hasCopilotAuth = false
+      }
+    },
+    async checkCopilotAuth() {
+      try {
+        this.hasCopilotAuth = await invoke<boolean>('copilot_is_authenticated')
+      } catch (e) {
+        console.error('Failed to check Copilot auth:', e)
+        this.hasCopilotAuth = false
+      }
+    },
+    async fetchCopilotQuota() {
+      this.copilotQuotaLoading = true
+      try {
+        this.copilotQuota = await invoke<SubscriptionQueryResult>('get_subscription_quota', { provider: 'copilot' })
+      } catch (e) {
+        console.error('Failed to fetch Copilot quota:', e)
+        this.copilotQuota = {
+          success: false,
+          credentialStatus: { queryFailed: { error: String(e) } },
+          error: String(e),
+          queriedAt: Date.now()
+        }
+      } finally {
+        this.copilotQuotaLoading = false
+      }
+    },
+    async refreshCopilotQuota() {
+      this.copilotQuotaLoading = true
+      try {
+        this.copilotQuota = await invoke<SubscriptionQueryResult>('refresh_subscription_quota', { provider: 'copilot' })
+      } catch (e) {
+        console.error('Failed to refresh Copilot quota:', e)
+        this.copilotQuota = {
+          success: false,
+          credentialStatus: { queryFailed: { error: String(e) } },
+          error: String(e),
+          queriedAt: Date.now()
+        }
+      } finally {
+        this.copilotQuotaLoading = false
+      }
+    },
+    async copilotListAccounts() {
+      return invoke<GitHubAccount[]>('copilot_list_accounts')
     },
     /**
      * 查询各工具已配置来源的第三方中转额度/余额（一行一来源，A 静默降级）。
