@@ -9,7 +9,7 @@ use super::shared::{
     trend_from_map, value_for_metric, StatAccumulator,
 };
 use crate::models::StatusCodeCount;
-use crate::unified_usage::MergedRequestFact;
+use crate::unified_usage::{normalize_model_bucket, MergedRequestFact};
 use std::collections::{HashMap, HashSet};
 
 fn merged_stat_capability_from_facts(facts: &[MergedRequestFact]) -> StatisticsCapability {
@@ -121,11 +121,7 @@ pub(super) fn build_merged_statistics(
     let mut model_map: HashMap<String, StatAccumulator> = HashMap::new();
 
     for fact in &facts {
-        let model_name = if fact.model.is_empty() {
-            "unknown".to_string()
-        } else {
-            fact.model.clone()
-        };
+        let model_name = normalize_model_bucket(&fact.tool, &fact.model);
         let bucket = bucket_start(fact.timestamp_sec, &query.bucket);
         add_fact_to_stat_acc(&mut total, fact);
         add_fact_to_stat_acc(trend_map.entry(bucket).or_default(), fact);
@@ -188,18 +184,14 @@ pub(super) fn build_merged_statistics(
     let mut model_trend_map: HashMap<String, HashMap<i64, StatAccumulator>> = HashMap::new();
 
     for fact in &facts {
-        let model_name = if fact.model.is_empty() {
-            "unknown"
-        } else {
-            fact.model.as_str()
-        };
-        if !top_model_names.contains(model_name) {
+        let model_name = normalize_model_bucket(&fact.tool, &fact.model);
+        if !top_model_names.contains(&model_name) {
             continue;
         }
         let bucket = bucket_start(fact.timestamp_sec, &query.bucket);
         add_fact_to_stat_acc(
             model_trend_map
-                .entry(model_name.to_string())
+                .entry(model_name)
                 .or_default()
                 .entry(bucket)
                 .or_default(),

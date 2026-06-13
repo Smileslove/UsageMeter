@@ -9,6 +9,7 @@ import { useMonitorStore } from './stores/monitor'
 import type { AppLocale, StatisticsBucket, StatisticsRangePreset, StatisticsSummary } from './types'
 import ShareUsageCard from './components/statistics/ShareUsageCard.vue'
 import { SHARE_THEMES } from './components/statistics/shareThemes'
+import { formatToolDisplayName } from './utils/toolDisplay'
 
 type SharePreset = Exclude<StatisticsRangePreset, 'custom'> | '1y'
 
@@ -158,8 +159,7 @@ function sourceDisplayName(sourceId: string): string | null {
 }
 
 function toolDisplayName(tool: string): string {
-  const profile = store.settings.clientTools.profiles.find(item => item.tool === tool)
-  return profile?.displayName || tool
+  return formatToolDisplayName(tool, locale.value, store.settings.clientTools.profiles)
 }
 
 const scopeLabel = computed(() => {

@@ -8,6 +8,7 @@ import { formatCost } from '../utils/format'
 import { ChevronDown, Globe, LayoutGrid } from 'lucide-vue-next'
 import LobeIcon from './LobeIcon.vue'
 import { TOOL_LOBE_ICONS } from '../iconConfig'
+import { formatToolDisplayName } from '../utils/toolDisplay'
 
 const store = useMonitorStore()
 
@@ -185,7 +186,7 @@ const matchedCount = computed(() => previewResult.value?.matchedCount ?? 0)
 const currentCost = computed(() => previewResult.value?.totalCurrentCost ?? 0)
 
 const getClientToolDisplayName = (profile: ClientToolProfile) => {
-  return profile.displayName || profile.tool
+  return formatToolDisplayName(profile.tool, store.settings.locale, store.settings.clientTools.profiles)
 }
 
 const getApiSourceDisplayName = (source: ApiSource) => {
@@ -209,7 +210,7 @@ const currentToolIcon = computed(() => {
 })
 const currentToolLabel = computed(() => {
   if (!selectedClientTool.value) return t(store.settings.locale, 'settings.pricingApplySourceAll')
-  return currentToolProfile.value?.displayName || selectedClientTool.value
+  return formatToolDisplayName(selectedClientTool.value, store.settings.locale, store.settings.clientTools.profiles)
 })
 
 const currentApiSource = computed(() => {

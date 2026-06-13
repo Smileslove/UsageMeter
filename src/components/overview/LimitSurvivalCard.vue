@@ -68,6 +68,10 @@ const avgPaceText = computed(() => {
   return t(locale.value, 'survival.avgPace', { value: formatTokenValue(avg) })
 })
 
+const localStateText = computed(() =>
+  block.value ? t(locale.value, 'survival.active') : t(locale.value, 'survival.idle')
+)
+
 const localStatusText = computed(() => {
   if (block.value) return formatDurationFromSeconds(block.value.remainingSeconds)
   if (avgPaceText.value) return avgPaceText.value
@@ -103,11 +107,6 @@ function formatResetFromIso(resetsAt?: string): string {
   return formatDurationFromSeconds(Math.floor(diffMs / 1000))
 }
 
-function firstWindowTier(quota: SubscriptionQuota | null): QuotaTier | undefined {
-  if (!quota) return undefined
-  return quota.tiers.find(tier => tier.kind !== 'balance')
-}
-
 function primaryWindowTierOf(q: SubscriptionQuota): QuotaTier | undefined {
   return q.tiers.find(tt => tt.name === 'five_hour' && tt.kind !== 'balance')
     ?? q.tiers.find(tt => tt.kind !== 'balance')
@@ -134,17 +133,6 @@ function formatBalanceTier(tier: QuotaTier): string {
   return `${sym}${tier.remainingValue.toFixed(2)}${sym ? '' : ` ${cur}`}`
 }
 
-function formatCopilotTierCounter(tier?: QuotaTier): string {
-  if (!tier) return '--'
-  if (tier.maxValue == null || tier.remainingValue == null) {
-    return t(locale.value, 'copilot.quota.unlimited')
-  }
-  return t(locale.value, 'copilot.quota.remainingTotal', {
-    remaining: Math.max(0, Math.round(tier.remainingValue)),
-    total: Math.max(0, Math.round(tier.maxValue)),
-  })
-}
-
 function translateCopilotPlanLabel(planLabel?: string | null): string | undefined {
   const plan = planLabel?.trim().toLowerCase()
   if (!plan) return undefined
@@ -153,97 +141,148 @@ function translateCopilotPlanLabel(planLabel?: string | null): string | undefine
   return translated === key ? planLabel ?? undefined : translated
 }
 
+type CompactQuotaCard = {
+  key: string
+  label: string
+  icon: string
+  toneClass: string
+  badge?: string
+  summaryBadge?: string
+  rows: CompactQuotaRow[]
+  loading: boolean
+  refresh: () => Promise<void>
+}
+
+type CompactQuotaRow = {
+  key: string
+  metric: string
+  sublabel: string
+  detailText?: string
+  resetText?: string
+  barPercent: number
+}
+
+function formatUsedTotal(tier?: QuotaTier): string {
+  if (!tier || tier.maxValue == null) return '--'
+  const total = Math.max(0, Math.round(tier.maxValue))
+  const remaining = Math.max(0, Math.round(tier.remainingValue ?? 0))
+  const used = Math.max(0, total - remaining)
+  const peak = Math.max(used, total)
+  let usedStr: string
+  let totalStr: string
+  if (peak >= 1_000_000) {
+    usedStr = `${(used / 1_000_000).toFixed(2)}M`
+    totalStr = `${(total / 1_000_000).toFixed(2)}M`
+  } else if (peak >= 1_000) {
+    usedStr = `${(used / 1_000).toFixed(2)}K`
+    totalStr = `${Math.round(total / 1_000)}K`
+  } else {
+    usedStr = String(used)
+    totalStr = String(total)
+  }
+  return `${usedStr} / ${totalStr}`
+}
+
+function usedPercentText(tier?: QuotaTier): string {
+  if (!tier || tier.maxValue == null || tier.remainingValue == null || tier.maxValue <= 0) return ''
+  const usedPercent = ((tier.maxValue - tier.remainingValue) / tier.maxValue) * 100
+  return t(locale.value, 'survival.usedPercent', { value: usedPercent.toFixed(1) })
+}
+
+function tierLabel(name: string): string {
+  switch (name) {
+    case 'five_hour':
+      return t(locale.value, 'subscription.fiveHour')
+    case 'seven_day':
+      return t(locale.value, 'subscription.sevenDay')
+    case 'seven_day_sonnet':
+      return `${t(locale.value, 'subscription.sevenDay')} Sonnet`
+    case 'seven_day_opus':
+      return `${t(locale.value, 'subscription.sevenDay')} Opus`
+    case 'gemini_pro':
+      return t(locale.value, 'subscription.geminiPro')
+    case 'gemini_flash':
+      return t(locale.value, 'subscription.geminiFlash')
+    case 'gemini_flash_lite':
+      return t(locale.value, 'subscription.geminiFlashLite')
+    default:
+      return name
+    }
+}
+
+function officialTierRow(tier: QuotaTier): CompactQuotaRow {
+  return {
+    key: tier.name,
+    metric: remainingPercentText(tier),
+    sublabel: tierLabel(tier.name),
+    resetText: t(locale.value, 'survival.resetIn', { time: formatResetFromIso(tier.resetsAt) }),
+    barPercent: remainingPercent(tier),
+  }
+}
+
 const officialRows = computed(() => {
-  const rows: Array<{
-    key: string
-    label: string
-    icon: string
-    badge?: string
-    account?: string
-    metric: string
-    sublabel: string
-    footer?: string
-    barPercent: number
-    loading: boolean
-    refresh: () => Promise<void>
-  }> = []
+  const rows: CompactQuotaCard[] = []
 
   const copilotTier = copilotQuota.value?.tiers.find(tier => tier.name === 'copilot_premium')
   if (copilotQuota.value && copilotTier) {
     const badge = translateCopilotPlanLabel(copilotQuota.value.planLabel)
-    const chatTier = copilotQuota.value.tiers.find(tier => tier.name === 'copilot_chat')
-    const completionsTier = copilotQuota.value.tiers.find(tier => tier.name === 'copilot_completions')
     rows.push({
       key: 'copilot',
       label: t(locale.value, 'copilot.label'),
       icon: 'githubcopilot',
+      toneClass: 'tone-cyan',
       badge,
-      account: copilotQuota.value.accountLabel || undefined,
-      metric: formatCopilotTierCounter(copilotTier),
-      sublabel: t(locale.value, 'copilot.quota.premium'),
-      footer: `${t(locale.value, 'copilot.quota.chat')} ${formatCopilotTierCounter(chatTier)} · ${t(locale.value, 'copilot.quota.completions')} ${formatCopilotTierCounter(completionsTier)}`,
-      barPercent: copilotTier.maxValue && copilotTier.remainingValue != null
-        ? Math.max(0, Math.min(100, (copilotTier.remainingValue / copilotTier.maxValue) * 100))
-        : 100,
+      summaryBadge: t(locale.value, 'copilot.quota.premium'),
+      rows: [{
+        key: 'copilot_premium',
+        metric: formatUsedTotal(copilotTier),
+        sublabel: t(locale.value, 'copilot.quota.premium'),
+        detailText: usedPercentText(copilotTier),
+        resetText: t(locale.value, 'survival.resetIn', { time: formatResetFromIso(copilotTier.resetsAt) }),
+        barPercent: copilotTier.maxValue && copilotTier.remainingValue != null
+          ? Math.max(0, Math.min(100, ((copilotTier.maxValue - copilotTier.remainingValue) / copilotTier.maxValue) * 100))
+          : 100,
+      }],
       loading: store.copilotQuotaLoading,
       refresh: async () => { await store.refreshCopilotQuota() },
     })
   }
 
-  const claudeTier = firstWindowTier(claudeQuota.value)
-  if (claudeQuota.value && claudeTier) {
+  const claudeTiers = claudeQuota.value?.tiers.filter(tier => tier.kind !== 'balance') ?? []
+  if (claudeQuota.value && claudeTiers.length > 0) {
     rows.push({
       key: 'claude',
       label: 'Claude',
       icon: 'claude',
-      metric: remainingPercentText(claudeTier),
-      sublabel: t(locale.value, 'survival.window5h'),
-      footer: t(locale.value, 'survival.resetIn', { time: formatResetFromIso(claudeTier.resetsAt) }),
-      barPercent: remainingPercent(claudeTier),
+      toneClass: 'tone-amber',
+      rows: claudeTiers.map(officialTierRow),
       loading: store.claudeLoading,
       refresh: async () => { await store.refreshClaudeQuota() },
     })
   }
 
-  const codexTier = firstWindowTier(codexQuota.value)
-  if (codexQuota.value && codexTier) {
+  const codexTiers = codexQuota.value?.tiers.filter(tier => tier.kind !== 'balance') ?? []
+  if (codexQuota.value && codexTiers.length > 0) {
     rows.push({
       key: 'codex',
       label: t(locale.value, 'subscription.codex'),
       icon: 'codex',
-      metric: remainingPercentText(codexTier),
-      sublabel: t(locale.value, 'survival.window5h'),
-      footer: t(locale.value, 'survival.resetIn', { time: formatResetFromIso(codexTier.resetsAt) }),
-      barPercent: remainingPercent(codexTier),
+      toneClass: 'tone-sky',
+      rows: codexTiers.map(officialTierRow),
       loading: store.subscriptionLoading,
       refresh: async () => { await store.refreshSubscriptionQuota() },
     })
   }
 
-  const geminiTier = firstWindowTier(geminiQuota.value)
-  if (geminiQuota.value && geminiTier) {
-    const summary = geminiQuota.value.tiers
-      .slice(0, 3)
-      .map((tier) => {
-        const labelMap: Record<string, string> = {
-          gemini_pro: t(locale.value, 'subscription.geminiPro'),
-          gemini_flash: t(locale.value, 'subscription.geminiFlash'),
-          gemini_flash_lite: t(locale.value, 'subscription.geminiFlashLite'),
-        }
-        return `${labelMap[tier.name] ?? tier.name} ${Math.round(remainingPercent(tier))}%`
-      })
-      .join(' · ')
-
+  const geminiTiers = geminiQuota.value?.tiers.filter(tier => tier.kind !== 'balance') ?? []
+  if (geminiQuota.value && geminiTiers.length > 0) {
     rows.push({
       key: 'gemini',
       label: t(locale.value, 'subscription.gemini'),
       icon: 'geminicli',
+      toneClass: 'tone-violet',
       badge: geminiQuota.value.planLabel || undefined,
-      account: geminiQuota.value.accountLabel || undefined,
-      metric: remainingPercentText(geminiTier),
-      sublabel: t(locale.value, 'subscription.geminiQuota'),
-      footer: summary,
-      barPercent: remainingPercent(geminiTier),
+      rows: geminiTiers.map(officialTierRow),
       loading: store.geminiQuotaLoading,
       refresh: async () => { await store.refreshGeminiQuota() },
     })
@@ -257,6 +296,27 @@ const TOOL_LABEL_KEYS: Record<string, string> = {
   codex: 'survival.tool.codex',
   opencode: 'survival.tool.opencode',
 }
+
+const sourceRows = computed(() =>
+  configuredSourceQuotas.value.map((q, index) => {
+    const windowTier = primaryWindowTierOf(q)
+    const balanceTier = balanceTierOf(q)
+    return {
+      key: `${q.sourceTool ?? ''}:${q.tool}:${index}`,
+      toneClass: 'tone-emerald',
+      label: toolLabelOf(q),
+      caption: sourceCaptionOf(q),
+      isBalance: !!balanceTier,
+      metric: balanceTier ? formatBalanceTier(balanceTier) : remainingPercentText(windowTier),
+      footer: windowTier?.resetsAt
+        ? t(locale.value, 'survival.resetIn', { time: formatResetFromIso(windowTier.resetsAt) })
+        : undefined,
+      barPercent: windowTier ? remainingPercent(windowTier) : null,
+      loading: store.configuredSourceLoading,
+      refresh: async () => { await store.forceFetchConfiguredSourceQuotas() },
+    }
+  })
+)
 
 function toolLabelOf(q: SubscriptionQuota): string {
   if (q.provider === 'source-config') {
@@ -295,117 +355,133 @@ function localBarClass(pct: number): string {
 
       <div class="metric-body">
         <div class="limit-stack">
-          <div class="compact-row compact-row-local">
-            <div class="compact-row-head">
-              <div class="compact-row-main">
+          <div class="quota-strip quota-strip-local tone-cyan">
+            <div class="quota-strip-head">
+              <div class="quota-row-title">
                 <span class="compact-dot bg-cyan-400/85 dark:bg-cyan-300/70" />
                 <span class="compact-title">{{ t(locale, 'survival.localWindow5h') }}</span>
-                <span class="compact-subtle">{{ block ? t(locale, 'survival.active') : t(locale, 'survival.idle') }}</span>
+                <span class="compact-subtle">{{ localStateText }}</span>
               </div>
-              <span class="compact-metric">{{ localStatusText }}</span>
+              <span class="quota-strip-metric quota-strip-metric-inline">{{ localStatusText }}</span>
             </div>
 
-            <div v-if="block" class="compact-progress">
-              <div
-                class="compact-progress-fill"
-                :class="localBarClass(timeElapsedPct)"
-                :style="{ width: `${timeElapsedPct}%` }"
-              />
-            </div>
-
-            <div class="compact-foot">
-              <span v-if="block">{{ t(locale, 'survival.used') }} {{ blockUsedText }}</span>
-              <span v-if="showBurn">{{ burnText }}</span>
-              <span v-if="relativeText">{{ relativeText }}</span>
-              <span v-if="!block && avgPaceText">{{ avgPaceText }}</span>
-            </div>
-          </div>
-
-          <div v-if="officialRows.length" class="compact-group">
-            <div
-              v-for="row in officialRows"
-              :key="row.key"
-              class="compact-row"
-            >
-              <div class="compact-row-head">
-                <div class="compact-row-main">
-                  <LobeIcon :slug="row.icon" :size="14" />
-                  <span class="compact-title">{{ row.label }}</span>
-                  <span v-if="row.badge" class="compact-badge">{{ row.badge }}</span>
-                </div>
-                <div class="compact-row-actions">
-                  <span class="compact-metric">{{ row.metric }}</span>
-                  <button
-                    class="compact-refresh"
-                    :disabled="row.loading"
-                    :title="t(locale, 'subscription.refresh')"
-                    @click="row.refresh"
-                  >
-                    <svg class="w-3 h-3 text-gray-400" :class="{ 'animate-spin': row.loading }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                  </button>
-                </div>
+            <div class="quota-strip-official-body">
+              <div v-if="block" class="compact-progress quota-strip-progress quota-strip-progress-official">
+                <div
+                  class="compact-progress-fill"
+                  :class="localBarClass(timeElapsedPct)"
+                  :style="{ width: `${timeElapsedPct}%` }"
+                />
               </div>
-
-              <div v-if="row.account" class="compact-caption">{{ row.account }}</div>
-              <div class="compact-caption">{{ row.sublabel }}</div>
-
-              <div class="compact-progress">
-                <div class="compact-progress-fill bg-cyan-400" :style="{ width: `${row.barPercent}%` }" />
-              </div>
-
-              <div v-if="row.footer" class="compact-foot">
-                <span>{{ row.footer }}</span>
+              <div class="quota-strip-official-meta quota-strip-local-meta">
+                <span v-if="block" class="quota-strip-caption quota-strip-caption-strong">{{ t(locale, 'survival.used') }} {{ blockUsedText }}</span>
+                <span v-if="showBurn" class="quota-strip-caption quota-strip-caption-muted">{{ burnText }}</span>
+                <span v-if="relativeText" class="quota-strip-caption quota-strip-caption-muted">{{ relativeText }}</span>
+                <span v-if="!block && avgPaceText" class="quota-strip-caption quota-strip-caption-muted">{{ avgPaceText }}</span>
               </div>
             </div>
           </div>
 
-          <div v-if="configuredSourceQuotas.length" class="compact-group">
-            <div class="compact-section-label">
-              <span>{{ t(locale, 'survival.sourceSection') }}</span>
+          <div
+            v-for="row in officialRows"
+            :key="row.key"
+            :class="['quota-strip', row.toneClass, { 'quota-strip-multi': row.rows.length > 1 }]"
+          >
+            <div class="quota-strip-head">
+              <div class="quota-row-title quota-row-title-official">
+                <LobeIcon :slug="row.icon" :size="14" />
+                <span class="compact-title quota-title-text">{{ row.label }}</span>
+                <span v-if="row.summaryBadge" class="compact-badge compact-badge-neutral">{{ row.summaryBadge }}</span>
+                <span v-if="row.badge" class="compact-badge">{{ row.badge }}</span>
+              </div>
               <button
-                class="compact-refresh"
-                :disabled="store.configuredSourceLoading"
+                class="compact-refresh quota-strip-refresh"
+                :disabled="row.loading"
                 :title="t(locale, 'subscription.refresh')"
-                @click="store.forceFetchConfiguredSourceQuotas()"
+                :aria-label="t(locale, 'subscription.refresh')"
+                @click="row.refresh"
               >
-                <svg class="w-3 h-3 text-gray-400" :class="{ 'animate-spin': store.configuredSourceLoading }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg class="w-3 h-3 text-gray-400" :class="{ 'animate-spin': row.loading }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                 </svg>
               </button>
             </div>
 
-            <div
-              v-for="(q, index) in configuredSourceQuotas"
-              :key="`${q.sourceTool ?? ''}:${q.tool}:${index}`"
-              class="compact-row"
-            >
-              <div class="compact-row-head">
-                <div class="compact-row-main">
-                  <span
-                    class="compact-dot"
-                    :class="primaryWindowTierOf(q) ? 'bg-emerald-400/85 dark:bg-emerald-300/70' : 'bg-emerald-400/85 dark:bg-emerald-300/70'"
-                  />
-                  <span class="compact-title">{{ toolLabelOf(q) }}</span>
-                  <span class="compact-subtle">{{ sourceCaptionOf(q) }}</span>
+            <div class="quota-strip-tier-list">
+              <div
+                v-for="tierRow in row.rows"
+                :key="`${row.key}:${tierRow.key}`"
+                :class="[
+                  'quota-strip-official-body',
+                  {
+                    'quota-strip-official-body-tiered': row.rows.length > 1,
+                    'quota-strip-tier-row': row.rows.length > 1,
+                  }
+                ]"
+              >
+                <div class="compact-progress quota-strip-progress quota-strip-progress-official">
+                  <div class="compact-progress-fill" :style="{ width: `${tierRow.barPercent}%` }" />
                 </div>
-                <span
-                  v-if="balanceTierOf(q)"
-                  class="compact-metric compact-metric-balance"
-                >{{ formatBalanceTier(balanceTierOf(q)!) }}</span>
-                <span
-                  v-else-if="primaryWindowTierOf(q)"
-                  class="compact-metric"
-                >{{ remainingPercentText(primaryWindowTierOf(q)) }}</span>
+                <div
+                  :class="[
+                    'quota-strip-official-meta',
+                    {
+                      'quota-strip-official-meta-copilot': row.key === 'copilot',
+                      'quota-strip-official-meta-tiered': row.rows.length > 1,
+                    }
+                  ]"
+                >
+                  <span
+                    v-if="tierRow.detailText"
+                    :class="['quota-strip-caption', row.key === 'copilot' ? 'quota-strip-caption-emphasis' : 'quota-strip-caption-muted']"
+                  >{{ tierRow.detailText }}</span>
+                  <span
+                    v-if="row.rows.length > 1 || !row.summaryBadge"
+                    class="quota-strip-caption quota-strip-caption-strong quota-strip-caption-label quota-strip-caption-tier-label"
+                  >{{ tierRow.sublabel }}</span>
+                  <span :class="['quota-strip-metric', 'quota-strip-metric-inline', { 'quota-strip-metric-tiered': row.rows.length > 1 }]">{{ tierRow.metric }}</span>
+                  <span v-if="tierRow.resetText" class="quota-strip-caption quota-strip-caption-muted">{{ tierRow.resetText }}</span>
+                </div>
               </div>
+            </div>
+          </div>
 
-              <div v-if="primaryWindowTierOf(q)" class="compact-progress">
-                <div class="compact-progress-fill bg-emerald-400" :style="{ width: `${remainingPercent(primaryWindowTierOf(q))}%` }" />
+          <div
+            v-for="row in sourceRows"
+            :key="row.key"
+            :class="['quota-strip', 'quota-strip-source', row.toneClass, { 'quota-strip-balance': row.isBalance }]"
+          >
+            <div class="quota-strip-head">
+              <div class="quota-row-title quota-row-title-source">
+                <span class="compact-dot quota-row-dot" />
+                <span class="compact-title quota-title-text">{{ row.label }}</span>
+                <span class="quota-inline-caption quota-inline-caption-source">{{ row.caption }}</span>
               </div>
+              <div class="quota-strip-trailing">
+                <span
+                  class="quota-strip-metric quota-strip-metric-source"
+                  :class="{ 'compact-metric-balance': row.isBalance }"
+                >{{ row.metric }}</span>
+                <button
+                  class="compact-refresh quota-strip-refresh"
+                  :disabled="row.loading"
+                  :title="t(locale, 'subscription.refresh')"
+                  :aria-label="t(locale, 'subscription.refresh')"
+                  @click="row.refresh"
+                >
+                  <svg class="w-3 h-3 text-gray-400" :class="{ 'animate-spin': row.loading }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+              </div>
+            </div>
 
-              <div v-if="primaryWindowTierOf(q)?.resetsAt" class="compact-foot">
-                <span>{{ t(locale, 'survival.resetIn', { time: formatResetFromIso(primaryWindowTierOf(q)?.resetsAt) }) }}</span>
+            <div v-if="!row.isBalance && row.barPercent != null" class="quota-strip-official-body">
+              <div class="compact-progress quota-strip-progress quota-strip-progress-official">
+                <div class="compact-progress-fill" :style="{ width: `${row.barPercent}%` }" />
+              </div>
+              <div v-if="row.footer" class="quota-strip-official-meta">
+                <span class="quota-strip-caption quota-strip-caption-muted">{{ row.footer }}</span>
               </div>
             </div>
           </div>
@@ -485,45 +561,7 @@ function localBarClass(pct: number): string {
 .limit-stack {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-}
-
-.compact-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-
-.compact-row {
-  border-radius: 0.875rem;
-  border: 1px solid color-mix(in srgb, var(--theme-text-primary) 8%, transparent);
-  background: color-mix(in srgb, var(--theme-text-primary) 3%, transparent);
-  padding: 0.5rem 0.625rem;
-}
-
-.compact-row-local {
-  border-style: dashed;
-}
-
-.compact-row-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-
-.compact-row-main {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.compact-row-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  flex-shrink: 0;
+  gap: 0.4375rem;
 }
 
 .compact-dot {
@@ -537,41 +575,20 @@ function localBarClass(pct: number): string {
   font-size: 12px;
   font-weight: 700;
   color: var(--theme-text-primary);
-  white-space: nowrap;
-}
-
-.compact-subtle,
-.compact-caption,
-.compact-section-label,
-.compact-foot {
-  font-size: 10px;
-  color: var(--theme-text-tertiary);
-}
-
-.compact-subtle {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.compact-caption,
-.compact-foot {
-  margin-top: 0.25rem;
-  line-height: 1.35;
-}
-
-.compact-foot {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.compact-metric {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--theme-text-primary);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  text-align: right;
+.compact-subtle {
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--theme-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .compact-metric-balance {
@@ -586,6 +603,12 @@ function localBarClass(pct: number): string {
   font-size: 9px;
   font-weight: 600;
   color: var(--theme-chart-requests);
+}
+
+.compact-badge-neutral {
+  border-color: color-mix(in srgb, var(--theme-text-primary) 14%, transparent);
+  background: color-mix(in srgb, var(--theme-text-primary) 6%, transparent);
+  color: var(--theme-text-secondary);
 }
 
 .compact-progress {
@@ -603,16 +626,6 @@ function localBarClass(pct: number): string {
   transition: width 180ms ease;
 }
 
-.compact-section-label {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-weight: 700;
-}
-
 .compact-refresh {
   display: inline-flex;
   align-items: center;
@@ -624,5 +637,262 @@ function localBarClass(pct: number): string {
 
 .compact-refresh:hover {
   background: color-mix(in srgb, var(--theme-text-primary) 8%, transparent);
+}
+
+.quota-strip {
+  --compact-accent: var(--theme-chart-requests);
+  --compact-accent-soft: color-mix(in srgb, var(--compact-accent) 12%, transparent);
+  --compact-accent-border: color-mix(in srgb, var(--compact-accent) 22%, transparent);
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  border-radius: 0.875rem;
+  border: 1px solid color-mix(in srgb, var(--theme-text-primary) 8%, transparent);
+  background: color-mix(in srgb, var(--theme-text-primary) 3%, transparent);
+  padding: 0.5rem 0.625rem;
+}
+
+.quota-strip-multi {
+  padding: 0.46875rem 0.5625rem;
+}
+
+.quota-strip-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.quota-strip-trailing {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.quota-row-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.quota-row-title-source {
+  gap: 0.3125rem;
+}
+
+.quota-row-title-official {
+  flex: 1 1 auto;
+}
+
+.quota-title-text {
+  flex: 1 1 auto;
+}
+
+.quota-inline-caption {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--theme-text-tertiary);
+}
+
+.quota-inline-caption-source {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--compact-accent) 82%, var(--theme-text-secondary) 18%);
+}
+
+.quota-strip-refresh {
+  flex-shrink: 0;
+}
+
+.quota-strip-metric {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--theme-text-primary);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.quota-strip-metric-inline {
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+
+.quota-strip-metric-source {
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.quota-strip-balance .quota-strip-metric-source {
+  font-size: 15px;
+}
+
+.quota-strip-official-body {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.3125rem;
+}
+
+.quota-strip-official-body-tiered {
+  margin-top: 0;
+}
+
+.quota-strip-tier-list {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.1875rem;
+  margin-top: 0.25rem;
+}
+
+.quota-strip-local-body {
+  margin-top: 0.375rem;
+}
+
+.quota-strip-official-meta {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.375rem;
+  white-space: nowrap;
+}
+
+.quota-strip-official-meta-copilot {
+  flex: 0 0 auto;
+  min-width: 0;
+  justify-content: flex-end;
+  gap: 0.3125rem;
+}
+
+.quota-strip-official-meta-tiered {
+  gap: 0.25rem;
+}
+
+.quota-strip-local-meta {
+  flex: 0 1 auto;
+}
+
+.quota-strip-progress-official {
+  flex: 1 1 0;
+  min-width: 0;
+  width: 100%;
+  margin-top: 0;
+}
+
+.quota-strip-caption {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--theme-text-secondary);
+}
+
+.quota-strip-caption-strong {
+  color: var(--theme-text-primary);
+  font-weight: 700;
+}
+
+.quota-strip-caption-label {
+  color: var(--theme-text-secondary);
+  font-weight: 600;
+}
+
+.quota-strip-caption-tier-label {
+  font-size: 9.5px;
+}
+
+.quota-strip-caption-emphasis {
+  color: color-mix(in srgb, var(--compact-accent) 86%, var(--theme-text-secondary) 14%);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.quota-strip-caption-muted {
+  color: var(--theme-text-tertiary);
+}
+
+.quota-strip-progress {
+  margin-top: 0.3125rem;
+}
+
+.quota-strip-tier-row {
+  padding-top: 0.25rem;
+  border-top: 1px solid color-mix(in srgb, var(--theme-text-primary) 6%, transparent);
+}
+
+.quota-strip-tier-row:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.quota-strip-tier-row .quota-strip-progress-official {
+  flex-basis: 46%;
+}
+
+.quota-strip-tier-row .compact-progress {
+  height: 0.3125rem;
+}
+
+.quota-strip-metric-tiered {
+  font-size: 11.5px;
+}
+
+.quota-row-dot {
+  background: color-mix(in srgb, var(--compact-accent) 72%, white 28%);
+}
+
+.quota-strip .compact-progress-fill {
+  background: var(--compact-accent);
+}
+
+.quota-strip .compact-badge {
+  border-color: var(--compact-accent-border);
+  background: var(--compact-accent-soft);
+  color: var(--compact-accent);
+}
+
+.tone-cyan {
+  --compact-accent: var(--theme-chart-requests);
+}
+
+.tone-sky {
+  --compact-accent: var(--theme-chart-tokens);
+}
+
+.tone-violet {
+  --compact-accent: var(--theme-chart-series-3);
+}
+
+.tone-amber {
+  --compact-accent: var(--theme-chart-cost);
+}
+
+.tone-emerald {
+  --compact-accent: #34c99a;
+}
+
+@media (max-width: 420px) {
+  .quota-strip-metric {
+    font-size: 13px;
+  }
+
+  .quota-strip-metric-inline {
+    font-size: 11.5px;
+  }
 }
 </style>

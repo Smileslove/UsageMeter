@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { t } from '../../i18n'
 import { formatCost, formatRequestCount } from '../../utils/format'
+import { isOpaqueModelId } from '../../utils/modelDisplay'
 import type { AppLocale, CurrencySettings, StatisticsModelBreakdown, StatisticsSummary, StatisticsTrendPoint } from '../../types'
 import { shareThemeById } from './shareThemes'
 
@@ -76,7 +77,7 @@ const trendSummary = computed(() => {
 
 const topModels = computed(() => {
   return [...(props.summary?.models ?? [])]
-    .filter(model => model.totalTokens > 0)
+    .filter(model => model.totalTokens > 0 && !isOpaqueModelId(model.modelName))
     .sort((a, b) => b.totalTokens - a.totalTokens)
     .slice(0, MODEL_LIMIT)
 })

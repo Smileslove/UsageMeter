@@ -1,5 +1,7 @@
 use crate::models::{AppSettings, ToolFilter};
-use crate::unified_usage::{has_partial_coverage, CoverageOrigin, MergedRequestFact};
+use crate::unified_usage::{
+    has_partial_coverage, normalize_model_bucket, CoverageOrigin, MergedRequestFact,
+};
 use rusqlite::{params, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 
@@ -90,11 +92,7 @@ impl LocalUsageDatabase {
     ) -> Vec<UnifiedDailyModelSummaryRow> {
         let mut by_model: HashMap<String, UnifiedDailyModelSummaryRow> = HashMap::new();
         for fact in facts {
-            let model_name = if fact.model.trim().is_empty() {
-                "unknown".to_string()
-            } else {
-                fact.model.clone()
-            };
+            let model_name = normalize_model_bucket(&fact.tool, &fact.model);
             let entry =
                 by_model
                     .entry(model_name.clone())

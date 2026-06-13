@@ -8,7 +8,7 @@ use super::breakdown::build_overview_breakdown_from_facts;
 use super::rate::build_window_rate_summary_from_facts;
 use crate::commands::usage::accumulator::FactAccumulator;
 use crate::models::{AppSettings, UsageSnapshot, WindowUsage};
-use crate::unified_usage::MergedRequestFact;
+use crate::unified_usage::{normalize_model_bucket, MergedRequestFact};
 use std::collections::HashMap;
 
 fn facts_slice_for_window<'a>(
@@ -96,8 +96,9 @@ pub(super) fn build_window_usage_from_facts(
     for fact in facts {
         overall.add_fact(fact);
 
-        if !fact.model.is_empty() {
-            let entry = model_stats.entry(fact.model.clone()).or_default();
+        let model_name = normalize_model_bucket(&fact.tool, &fact.model);
+        if model_name != "unknown" {
+            let entry = model_stats.entry(model_name).or_default();
             entry.input_tokens += fact.input_tokens;
             entry.output_tokens += fact.output_tokens;
             entry.cache_create_tokens += fact.cache_create_tokens;
@@ -177,11 +178,12 @@ pub(super) fn build_model_token_totals_from_facts(
     let mut model_stats: HashMap<String, ModelTokenTotals> = HashMap::new();
 
     for fact in facts {
-        if fact.model.is_empty() {
+        let model_name = normalize_model_bucket(&fact.tool, &fact.model);
+        if model_name == "unknown" {
             continue;
         }
 
-        let entry = model_stats.entry(fact.model.clone()).or_default();
+        let entry = model_stats.entry(model_name).or_default();
         entry.input_tokens += fact.input_tokens;
         entry.output_tokens += fact.output_tokens;
         entry.cache_create_tokens += fact.cache_create_tokens;

@@ -5,7 +5,8 @@ import { t } from '../i18n'
 import { ChevronDown, ChevronRight, LayoutGrid } from 'lucide-vue-next'
 import LobeIcon from './LobeIcon.vue'
 import { resolveToolLobeIcon } from '../iconConfig'
-import { getFamilyForTool, getFamilyHead, getVariantLabel } from '../toolFamilies'
+import { getFamilyForTool, getFamilyHead } from '../toolFamilies'
+import { formatToolDisplayName } from '../utils/toolDisplay'
 
 const store = useMonitorStore()
 
@@ -21,13 +22,7 @@ const visibleProfiles = computed(() => profiles.value)
 const showSelector = computed(() => visibleProfiles.value.length > 0)
 
 const getToolName = (tool: string) => {
-  const headId = getFamilyHead(tool)
-  const profile = profiles.value.find(p => p.tool === headId)
-  const baseName = profile?.displayName || tool
-  // Head represents the whole family; don't append a variant label for it
-  if (tool === headId) return baseName
-  const variant = getVariantLabel(tool)
-  return variant ? `${baseName} · ${variant}` : baseName
+  return formatToolDisplayName(tool, store.settings.locale, profiles.value)
 }
 
 const getToolIcon = (tool: string) => {
@@ -164,7 +159,7 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
                     @error="() => {}"
                   />
                   <span v-else class="w-2.5 h-2.5 rounded-full bg-gray-400 shrink-0"></span>
-                  <span class="truncate">{{ profile.displayName || profile.tool }}</span>
+                  <span class="truncate">{{ formatToolDisplayName(profile.tool, store.settings.locale, profiles) }}</span>
                 </button>
                 <!-- 右侧：展开/收起箭头 -->
                 <button
@@ -217,7 +212,7 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
                     @error="() => {}"
                   />
                   <span class="truncate">
-                    {{ getFamilyForTool(profile.tool)!.variantLabels[memberId] ?? memberId }}
+                    {{ getFamilyForTool(profile.tool)!.variantLabels[memberId] ?? formatToolDisplayName(memberId, store.settings.locale, profiles) }}
                   </span>
                 </button>
               </template>
@@ -243,7 +238,7 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
                   @error="() => {}"
                 />
                 <span v-else class="w-2.5 h-2.5 rounded-full bg-gray-400 shrink-0"></span>
-                <span class="truncate">{{ profile.displayName || profile.tool }}</span>
+                <span class="truncate">{{ formatToolDisplayName(profile.tool, store.settings.locale, profiles) }}</span>
               </button>
             </template>
           </template>

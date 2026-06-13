@@ -146,6 +146,34 @@ fn derive_source_label(
     None
 }
 
+fn is_opaque_model_name(model: &str) -> bool {
+    let trimmed = model.trim();
+    trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("unknown")
+        || trimmed.eq_ignore_ascii_case("custom_model")
+}
+
+fn fallback_model_name_for_tool(tool: &str) -> Option<&'static str> {
+    match tool {
+        "qoder_ide" => Some("Qoder IDE"),
+        "qoder_ide_cn" => Some("Qoder IDE CN"),
+        "qoder_cli" => Some("Qoder CLI"),
+        "qoder_work" => Some("Qoder Work"),
+        "qoder_work_cn" => Some("Qoder Work CN"),
+        _ => None,
+    }
+}
+
+pub(crate) fn normalize_model_bucket(tool: &str, model: &str) -> String {
+    if !is_opaque_model_name(model) {
+        return model.trim().to_string();
+    }
+
+    fallback_model_name_for_tool(tool)
+        .unwrap_or("unknown")
+        .to_string()
+}
+
 pub(crate) fn matches_source_filter(fact: &MergedRequestFact, filter: &SourceFilter) -> bool {
     match filter {
         SourceFilter::All => true,
@@ -187,7 +215,7 @@ impl MergedRequestFact {
             tool: record.tool.clone(),
             timestamp_sec: record.timestamp,
             timestamp_ms: record.timestamp.saturating_mul(1000),
-            model: record.model.clone(),
+            model: normalize_model_bucket(&record.tool, &record.model),
             input_tokens: record.input_tokens,
             output_tokens: record.output_tokens,
             cache_create_tokens: record.cache_create_tokens,
@@ -223,7 +251,7 @@ impl MergedRequestFact {
             tool: record.client_tool.clone(),
             timestamp_sec: record.timestamp / 1000,
             timestamp_ms: record.timestamp,
-            model: record.model.clone(),
+            model: normalize_model_bucket(&record.client_tool, &record.model),
             input_tokens: record.input_tokens,
             output_tokens: record.output_tokens,
             cache_create_tokens: record.cache_create_tokens,
@@ -282,6 +310,7 @@ impl MergedRequestFact {
         } else {
             local.model.clone()
         };
+        let model = normalize_model_bucket(&tool, &model);
 
         // 用量：proxy 优先 input/output，local 优先 cache_*
         let input_tokens = if proxy.input_tokens > 0 {

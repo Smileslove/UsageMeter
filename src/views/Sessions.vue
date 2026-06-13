@@ -7,8 +7,10 @@ import type { ProjectStats, ProjectToolStats, RequestRecord, SessionStats } from
 import SessionDetailModal from '../components/SessionDetailModal.vue'
 import LobeIcon from '../components/LobeIcon.vue'
 import { TOOL_LOBE_ICONS } from '../iconConfig'
-import { getFamilyForTool, getFamilyHead, getVariantLabel } from '../toolFamilies'
+import { getFamilyForTool, getFamilyHead } from '../toolFamilies'
 import { formatCost as formatCostUtil, formatTokenValue, formatRequestCount } from '../utils/format'
+import { formatModelDisplayName } from '../utils/modelDisplay'
+import { formatToolDisplayName, getToolProfileByTool } from '../utils/toolDisplay'
 
 const store = useMonitorStore()
 const SESSION_SOURCE_TOOLS = new Set([
@@ -87,7 +89,7 @@ const sourceOptions = computed<SourceOption[]>(() => {
       const subItems: SourceOption[] = family.members.map(memberId => ({
         key: memberId,
         tool: memberId,
-        label: family.variantLabels[memberId] ?? memberId,
+        label: formatToolDisplayName(memberId, store.settings.locale, profiles),
         icon: TOOL_LOBE_ICONS[memberId] || null,
         familyHead: null,
         children: [],
@@ -95,7 +97,7 @@ const sourceOptions = computed<SourceOption[]>(() => {
       items.push({
         key: profile.tool,
         tool: profile.tool,       // 点击 head → 家族整体过滤
-        label: profile.displayName || profile.tool,
+        label: formatToolDisplayName(profile.tool, store.settings.locale, profiles),
         icon: profile.icon || TOOL_LOBE_ICONS[profile.tool] || null,
         familyHead: family.head,  // 标记为家族 head，模板据此渲染展开箭头
         children: subItems,
@@ -105,7 +107,7 @@ const sourceOptions = computed<SourceOption[]>(() => {
       items.push({
         key: profile.tool,
         tool: profile.tool,
-        label: profile.displayName || profile.tool,
+        label: formatToolDisplayName(profile.tool, store.settings.locale, profiles),
         icon: profile.icon || TOOL_LOBE_ICONS[profile.tool] || null,
         familyHead: null,
         children: [],
@@ -299,14 +301,17 @@ const formatDuration = (ms?: number | null) => {
   return `${minutes}m ${seconds}s`
 }
 
-const compactModelName = (model: string) => {
-  const value = model?.trim()
-  if (!value) return t(store.settings.locale, 'common.unknown')
+const compactModelName = (request: RequestRecord) => {
+  const value = formatModelDisplayName(request.model, request.tool, store.settings.locale, store.settings.clientTools.profiles)
   return value
     .replace(/^claude-/, '')
     .replace(/^gpt-/, 'gpt-')
     .replace(/-20\d{6}$/, '')
 }
+
+const requestModelLabel = (request: RequestRecord) => (
+  formatModelDisplayName(request.model, request.tool, store.settings.locale, store.settings.clientTools.profiles)
+)
 
 const requestStatusLabel = (request: RequestRecord) => {
   if (request.coverageOrigin === 'local_only') return t(store.settings.locale, 'sessions.requestLocalOnly')
@@ -347,12 +352,7 @@ const requestSourceLabel = (request: RequestRecord) => (
 )
 
 const requestToolLabel = (tool: string) => {
-  const fallbackNames: Record<string, string> = {
-    copilot: 'GitHub Copilot CLI',
-  }
-  const baseName = getToolProfile(tool)?.displayName || fallbackNames[tool] || tool || t(store.settings.locale, 'common.unknown')
-  const variant = getVariantLabel(tool)
-  return variant ? `${baseName} · ${variant}` : baseName
+  return formatToolDisplayName(tool, store.settings.locale, store.settings.clientTools.profiles)
 }
 
 const requestCacheTokens = (request: RequestRecord) => (
@@ -497,15 +497,7 @@ const displayProxyRateValue = (session: SessionStats) => (
 )
 
 const getToolProfile = (tool: string) => {
-  // 精确匹配优先
-  const exact = store.settings.clientTools.profiles.find(profile => profile.tool === tool)
-  if (exact) return exact
-  // 变体兜底：回退到家族代表的 profile（保证图标和名称正确）
-  const headId = getFamilyHead(tool)
-  if (headId !== tool) {
-    return store.settings.clientTools.profiles.find(profile => profile.tool === headId)
-  }
-  return undefined
+  return getToolProfileByTool(store.settings.clientTools.profiles, tool)
 }
 
 const getToolIcon = (tool: string) => {
@@ -973,7 +965,7 @@ onUnmounted(() => {
           <div class="request-card__top">
             <div class="min-w-0 flex items-center gap-1.5">
               <span class="request-card__time">{{ formatTime(request.timestampSec) }}</span>
-              <span class="request-card__model" :title="request.model">{{ compactModelName(request.model) }}</span>
+              <span class="request-card__model" :title="requestModelLabel(request)">{{ compactModelName(request) }}</span>
             </div>
             <div class="flex shrink-0 items-center gap-1.5">
               <span class="request-card__tokens">{{ formatTokens(request.totalTokens) }}</span>
@@ -1175,7 +1167,7 @@ onUnmounted(() => {
                 <span class="text-[10px] text-gray-400">{{ formatTime(selectedRequest.timestampSec) }}</span>
               </div>
               <h3 class="truncate text-base font-semibold text-gray-800 dark:text-gray-100">
-                {{ selectedRequest.model || t(store.settings.locale, 'common.unknown') }}
+                {{ requestModelLabel(selectedRequest) }}
               </h3>
               <p class="mt-0.5 truncate text-[10px] text-gray-400">
                 {{ requestProjectLabel(selectedRequest) }} / {{ requestToolLabel(selectedRequest.tool) }} / {{ requestSourceLabel(selectedRequest) }}

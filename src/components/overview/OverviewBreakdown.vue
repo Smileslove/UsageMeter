@@ -5,6 +5,7 @@ import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
 import { formatCost, formatRequestCount, formatTokenValue } from '../../utils/format'
 import { resolveToolLobeIcon } from '../../iconConfig'
+import { formatToolDisplayName } from '../../utils/toolDisplay'
 import LobeIcon from '../LobeIcon.vue'
 import type { OverviewBreakdownItem } from '../../types'
 
@@ -74,6 +75,9 @@ function sortItems(items: OverviewBreakdownItem[]): OverviewBreakdownItem[] {
 }
 
 function displayLabel(item: OverviewBreakdownItem): string {
+  if (item.kind === 'tool') {
+    return formatToolDisplayName(item.id, locale.value, store.settings.clientTools.profiles)
+  }
   if (item.label === '__unknown__') return t(locale.value, 'sources.unknown')
   if (item.label === '__official_api__') return t(locale.value, 'sources.officialAnthropic')
   return item.label

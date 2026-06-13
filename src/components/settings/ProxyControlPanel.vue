@@ -9,6 +9,7 @@ import LobeIcon from '../LobeIcon.vue'
 import SettingsSwitch from './SettingsSwitch.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import { TOOL_LOBE_ICONS } from '../../iconConfig'
+import { formatToolDisplayName } from '../../utils/toolDisplay'
 
 const store = useMonitorStore()
 
@@ -55,7 +56,7 @@ const toolAlerts = computed(() => {
     if (status?.conflictPaused) {
       alerts.push({
         toolId: profile.tool,
-        tool: profile.displayName || profile.tool,
+        tool: formatToolDisplayName(profile.tool, store.settings.locale, store.settings.clientTools.profiles),
         tone: 'warning',
         message: t(store.settings.locale, 'settings.takeoverConflictDetectedDesc'),
         actions: ['force_reclaim', 'disable_takeover']
@@ -65,7 +66,7 @@ const toolAlerts = computed(() => {
     if (status?.lastError) {
       alerts.push({
         toolId: profile.tool,
-        tool: profile.displayName || profile.tool,
+        tool: formatToolDisplayName(profile.tool, store.settings.locale, store.settings.clientTools.profiles),
         tone: 'error',
         message: status.lastError
       })
@@ -75,7 +76,7 @@ const toolAlerts = computed(() => {
     if (actionError) {
       alerts.push({
         toolId: profile.tool,
-        tool: profile.displayName || profile.tool,
+        tool: formatToolDisplayName(profile.tool, store.settings.locale, store.settings.clientTools.profiles),
         tone: 'error',
         message: actionError
       })
@@ -219,7 +220,7 @@ function formatUptime(seconds: number): string {
 }
 
 function toolLabel(profile: ClientToolProfile): string {
-  return profile.displayName || profile.tool
+  return formatToolDisplayName(profile.tool, store.settings.locale, store.settings.clientTools.profiles)
 }
 
 function compactPath(path: string): string {

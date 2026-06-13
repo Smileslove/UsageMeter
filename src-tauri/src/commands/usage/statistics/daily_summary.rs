@@ -9,7 +9,9 @@ use super::shared::{
     normalize_range, DayAccumulatorMap,
 };
 use crate::models::{AppSettings, StatusCodeCount};
-use crate::unified_usage::{has_partial_coverage, CoverageOrigin, MergedRequestFact};
+use crate::unified_usage::{
+    has_partial_coverage, normalize_model_bucket, CoverageOrigin, MergedRequestFact,
+};
 use std::collections::HashMap;
 
 fn next_business_date(date: &str, settings: &AppSettings) -> Result<String, String> {
@@ -211,11 +213,7 @@ fn build_daily_model_summaries_from_facts(
     let mut by_model: HashMap<String, crate::local_usage::UnifiedDailyModelSummaryRow> =
         HashMap::new();
     for fact in facts {
-        let model_name = if fact.model.trim().is_empty() {
-            "unknown".to_string()
-        } else {
-            fact.model.clone()
-        };
+        let model_name = normalize_model_bucket(&fact.tool, &fact.model);
         let entry = by_model.entry(model_name.clone()).or_insert_with(|| {
             crate::local_usage::UnifiedDailyModelSummaryRow {
                 local_date: local_date.to_string(),
