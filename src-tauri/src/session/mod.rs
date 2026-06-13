@@ -8,6 +8,7 @@ mod constants;
 mod copilot_cli_reader;
 mod gemini_reader;
 mod meta;
+mod openclaw_reader;
 mod opencode;
 pub(crate) mod opencode_reader;
 pub(crate) mod qoder_cli_reader;

@@ -5,6 +5,7 @@ use super::codex_reader::CodexSource;
 use super::copilot_cli_reader::CopilotCliSource;
 use super::gemini_reader::GeminiSource;
 use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
+use super::openclaw_reader::OpenClawSource;
 use super::opencode_reader::OpenCodeSource;
 use super::qoder_cli_reader::QoderCliSource;
 use super::qoder_ide_reader::QoderIdeSource;
@@ -14,6 +15,7 @@ use super::source::{ParsedSessionData, SessionSource};
 static CLAUDE_SOURCE: ClaudeSource = ClaudeSource;
 static COPILOT_CLI_SOURCE: CopilotCliSource = CopilotCliSource;
 static CODEX_SOURCE: CodexSource = CodexSource;
+static OPENCLAW_SOURCE: OpenClawSource = OpenClawSource;
 static OPENCODE_SOURCE: OpenCodeSource = OpenCodeSource;
 static QODER_IDE_SOURCE: QoderIdeSource =
     QoderIdeSource::new(super::constants::TOOL_QODER_IDE, "Qoder");
@@ -23,11 +25,12 @@ static QODER_CLI_SOURCE: QoderCliSource = QoderCliSource;
 static REASONIX_SOURCE: ReasonixSource = ReasonixSource;
 static GEMINI_SOURCE: GeminiSource = GeminiSource;
 
-pub fn all_sources() -> [&'static dyn SessionSource; 9] {
+pub fn all_sources() -> [&'static dyn SessionSource; 10] {
     [
         &CLAUDE_SOURCE,
         &COPILOT_CLI_SOURCE,
         &CODEX_SOURCE,
+        &OPENCLAW_SOURCE,
         &OPENCODE_SOURCE,
         &QODER_IDE_SOURCE,
         &QODER_IDE_CN_SOURCE,
@@ -37,11 +40,12 @@ pub fn all_sources() -> [&'static dyn SessionSource; 9] {
     ]
 }
 
-pub fn file_backed_sources() -> [&'static dyn SessionSource; 6] {
+pub fn file_backed_sources() -> [&'static dyn SessionSource; 7] {
     [
         &CLAUDE_SOURCE,
         &COPILOT_CLI_SOURCE,
         &CODEX_SOURCE,
+        &OPENCLAW_SOURCE,
         &QODER_CLI_SOURCE,
         &REASONIX_SOURCE,
         &GEMINI_SOURCE,

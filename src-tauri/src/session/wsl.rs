@@ -58,6 +58,16 @@ fn append_tail(root: &str, tail: &[&str]) -> std::path::PathBuf {
     std::path::PathBuf::from(s)
 }
 
+#[cfg(any(windows, test))]
+fn openclaw_agent_tail_variants() -> [&'static [&'static str]; 4] {
+    [
+        &[".openclaw", "agents"],
+        &[".clawdbot", "agents"],
+        &[".moltbot", "agents"],
+        &[".moldbot", "agents"],
+    ]
+}
+
 // === Windows 专属实现 ===
 
 #[cfg(windows)]
@@ -98,6 +108,11 @@ mod platform {
         roots_for(cfg, &[".codex", "sessions"])
     }
 
+    /// 所有 WSL 发行版下的 OpenClaw `agents` 根（含历史别名目录）。
+    pub fn openclaw_agent_roots(cfg: &WslScanSettings) -> Vec<PathBuf> {
+        roots_for_many(cfg, &openclaw_agent_tail_variants())
+    }
+
     /// 所有 WSL 发行版下的 OpenCode 数据根。
     pub fn opencode_home_roots(cfg: &WslScanSettings) -> Vec<PathBuf> {
         roots_for(cfg, &[".local", "share", "opencode"])
@@ -118,6 +133,21 @@ mod platform {
             if !root.trim().is_empty() {
                 roots.push(append_tail(root, tail));
             }
+        }
+        roots
+    }
+
+    fn roots_for_many(cfg: &WslScanSettings, tails: &[&[&str]]) -> Vec<PathBuf> {
+        let homes = distro_homes(cfg);
+        let mut roots: Vec<PathBuf> = homes
+            .iter()
+            .flat_map(|(distro, home)| tails.iter().map(move |tail| unc_join(distro, home, tail)))
+            .collect();
+        for root in &cfg.extra_roots {
+            if root.trim().is_empty() {
+                continue;
+            }
+            roots.extend(tails.iter().map(|tail| append_tail(root, tail)));
         }
         roots
     }
@@ -214,8 +244,8 @@ mod platform {
 
 #[cfg(windows)]
 pub use platform::{
-    claude_projects_roots, codex_session_roots, gemini_tmp_roots, opencode_home_roots,
-    scan_config_if_enabled,
+    claude_projects_roots, codex_session_roots, gemini_tmp_roots, openclaw_agent_roots,
+    opencode_home_roots, scan_config_if_enabled,
 };
 
 #[cfg(test)]
@@ -277,6 +307,19 @@ mod tests {
                 &[".local", "share", "opencode"]
             ),
             std::path::PathBuf::from(r"\\wsl$\Ubuntu\home\alice\.local\share\opencode"),
+        );
+    }
+
+    #[test]
+    fn openclaw_tail_variants_include_legacy_aliases() {
+        assert_eq!(
+            openclaw_agent_tail_variants(),
+            [
+                &[".openclaw", "agents"],
+                &[".clawdbot", "agents"],
+                &[".moltbot", "agents"],
+                &[".moldbot", "agents"],
+            ],
         );
     }
 }

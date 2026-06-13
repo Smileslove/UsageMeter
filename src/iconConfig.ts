@@ -202,6 +202,7 @@ export const SOURCE_ICONS_FLAT: string[] = [...new Set(SOURCE_ICON_CATEGORIES.fl
 export const TOOL_LOBE_ICONS: Record<string, string> = {
   claude_code: 'claudecode',
   codex: 'codex',
+  openclaw: 'openclaw',
   cursor: 'cursor',
   copilot: 'githubcopilot',
   opencode: 'opencode',

@@ -310,6 +310,18 @@ pub fn default_client_tool_profiles() -> Vec<ClientToolProfile> {
             icon: Some("codex".to_string()),
         },
         ClientToolProfile {
+            id: "openclaw".to_string(),
+            tool: "openclaw".to_string(),
+            display_name: Some("OpenClaw".to_string()),
+            path_prefix: "openclaw".to_string(),
+            target_base_url: None,
+            enabled: false,
+            auto_detected: false,
+            first_seen_ms: now,
+            last_seen_ms: now,
+            icon: Some("openclaw".to_string()),
+        },
+        ClientToolProfile {
             id: "opencode".to_string(),
             tool: "opencode".to_string(),
             display_name: Some("OpenCode".to_string()),
