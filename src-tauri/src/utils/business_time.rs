@@ -106,12 +106,7 @@ pub fn business_window_cutoff_epoch(window: &str, settings: &AppSettings) -> i64
         "current_month" => current_business_month_start_epoch(settings),
         "5h" => (now - Duration::hours(5)).timestamp(),
         "24h" => (now - Duration::hours(24)).timestamp(),
-        "7d" => {
-            let weekday = now.weekday().num_days_from_monday();
-            let monday = now.date_naive() - Duration::days(weekday as i64);
-            resolve_business_day_boundary(monday, settings, "current_week")
-                .unwrap_or_else(|_| now.timestamp())
-        }
+        "7d" => (now - Duration::days(7)).timestamp(),
         "30d" => (now - Duration::days(30)).timestamp(),
         _ => (now - Duration::hours(24)).timestamp(),
     }

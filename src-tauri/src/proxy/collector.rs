@@ -159,7 +159,7 @@ impl UsageCollector {
     /// - "5h": 滑动窗口，当前时间往前推 5 小时
     /// - "24h": 滑动窗口，当前时间往前推 24 小时
     /// - "today": 自然日，今天 00:00:00 到现在
-    /// - "7d": 自然周，本周一 00:00:00 到现在
+    /// - "7d": 滑动窗口，当前时间往前推 7 天
     /// - "30d": 滑动窗口，当前时间往前推 30 天
     /// - "current_month": 自然月，本月 1 日 00:00:00 到现在
     ///
@@ -369,7 +369,7 @@ impl Default for UsageCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Datelike, Duration, Local, TimeZone};
+    use chrono::{Duration, Local};
 
     #[test]
     fn test_window_cutoff_calculation() {
@@ -394,16 +394,10 @@ mod tests {
             crate::utils::business_time::business_window_cutoff_epoch("today", &settings) * 1000;
         assert_eq!(cutoff_today, expected_today);
 
-        // 7d 自然周：应该是本周一 00:00:00
+        // 7d 滑动窗口：应该约为 7 天前
         let cutoff_7d = UsageCollector::calculate_window_cutoff("7d");
-        let weekday = now.weekday().num_days_from_monday();
-        let monday = now.date_naive() - Duration::days(weekday as i64);
-        let week_start = monday.and_hms_opt(0, 0, 0).unwrap();
-        let expected_7d = Local
-            .from_local_datetime(&week_start)
-            .unwrap()
-            .timestamp_millis();
-        assert_eq!(cutoff_7d, expected_7d);
+        let expected_7d = (now - Duration::days(7)).timestamp_millis();
+        assert!((cutoff_7d - expected_7d).abs() < 1000);
 
         // 30d 滑动窗口：应该约为 30 天前
         let cutoff_30d = UsageCollector::calculate_window_cutoff("30d");
@@ -440,7 +434,6 @@ mod tests {
         assert!(cutoff_30d > 0);
 
         // 验证滑动窗口的顺序：30d <= 7d（30天前早于或等于7天前）
-        // 注意：7d 是本周一，30d 是30天前，所以 30d 应该更早
         assert!(cutoff_30d <= cutoff_7d);
         // 所有截止时间都应该在过去
         assert!(cutoff_5h < now);
