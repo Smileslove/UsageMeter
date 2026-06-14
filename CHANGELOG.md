@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.0] - 2026-06-14
+
+### Added
+
+- **Gemini End-to-end Support**: Added Gemini local session scanning, proxy collection, and subscription quota monitoring so UsageMeter can track Gemini usage alongside existing tools
+- **Expanded Local Tool Coverage**: Added local usage support for GitHub Copilot CLI, Qoder CLI, Qoder Work, Qoder Work CN, Qoder IDE, Qoder IDE CN, OpenClaw, and Hermes Agent
+- **Night Owl Day Boundary**: Added an optional 4 AM day boundary mode for night-owl workflows, including cache metadata migration support for rebuilt statistics
+
+### Changed
+
+- **Subscription Source Resolution**: Reworked third-party quota lookup and query profiles with live relay auto-detection, expanding source-aware subscription resolution
+- **Usage Presentation Consistency**: Normalized quota and model display across usage views, share surfaces, and survival cards for clearer multi-tool comparisons
+
+### Fixed
+
+- **Updater Dialog Details**: Refined the updater dialog layout and fixed incorrect release date rendering in the update flow
+- **Limit Survival Card Spacing**: Fixed extra bottom whitespace in the limit survival card idle state
+
+---
+
+### 新增
+
+- **Gemini 全链路支持**：新增 Gemini 本地会话扫描、代理采集与订阅额度监控，使 UsageMeter 可以将 Gemini 与现有工具一起纳入追踪
+- **本地工具覆盖扩展**：新增 GitHub Copilot CLI、Qoder CLI、Qoder Work、Qoder Work CN、Qoder IDE、Qoder IDE CN、OpenClaw 和 Hermes Agent 的本地用量支持
+- **夜猫子日界线**：新增可选的凌晨 4 点日界线模式，适配夜猫子工作流，并支持统计重建时的缓存元数据迁移
+
+### 变更
+
+- **订阅来源解析**：重构第三方额度查询与查询配置，并支持 live relay 自动识别，扩展基于来源的订阅额度解析能力
+- **用量展示一致性**：统一各使用量视图、分享界面与生存卡片中的配额和模型显示方式，使多工具对比更清晰
+
+### 修复
+
+- **更新弹窗细节**：优化更新弹窗布局，并修复更新流程中的发布日期显示异常
+- **限额生存卡片留白**：修复限额生存卡片空闲态底部多余留白
+
+---
+
 ## [0.7.3] - 2026-06-10
 
 ### Added
@@ -693,6 +731,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.8.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.8.0
 [0.7.3]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.3
 [0.7.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.2
 [0.7.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.1

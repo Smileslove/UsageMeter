@@ -72,7 +72,10 @@ fn openclaw_agent_tail_variants() -> [&'static [&'static str]; 4] {
 
 #[cfg(windows)]
 mod platform {
-    use super::{append_tail, decode_utf16le_lossy, is_valid_distro_name, unc_join};
+    use super::{
+        append_tail, decode_utf16le_lossy, is_valid_distro_name, openclaw_agent_tail_variants,
+        unc_join,
+    };
     use crate::models::{AppSettings, WslScanSettings};
     use std::collections::HashMap;
     use std::os::windows::process::CommandExt;
