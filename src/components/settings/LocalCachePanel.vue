@@ -22,6 +22,15 @@ interface OpenCodeSchemaStatus {
 
 const store = useMonitorStore()
 const opencodeSchema = ref<OpenCodeSchemaStatus | null>(null)
+const qoderExpanded = ref(false)
+
+const qoderSources = [
+  { icon: TOOL_LOBE_ICONS.qoder_cli, labelKey: 'settings.localScanQoderCli', pathKey: 'settings.localScanQoderCliPath' },
+  { icon: TOOL_LOBE_ICONS.qoder_ide, labelKey: 'settings.localScanQoderIde', pathKey: 'settings.localScanQoderIdePath' },
+  { icon: TOOL_LOBE_ICONS.qoder_ide_cn, labelKey: 'settings.localScanQoderIdeCn', pathKey: 'settings.localScanQoderIdeCnPath' },
+  { icon: TOOL_LOBE_ICONS.qoder_work, labelKey: 'settings.localScanQoderWork', pathKey: 'settings.localScanQoderWorkPath' },
+  { icon: TOOL_LOBE_ICONS.qoder_work_cn, labelKey: 'settings.localScanQoderWorkCn', pathKey: 'settings.localScanQoderWorkCnPath' },
+] as const
 
 const loadOpenCodeSchemaStatus = async () => {
   try {
@@ -144,61 +153,46 @@ function compactPath(path: string | null | undefined): string {
       </div>
 
       <div class="rounded-lg border border-gray-100 bg-white px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
-        <div class="flex items-start gap-2">
-          <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 dark:bg-neutral-800">
-            <LobeIcon :slug="TOOL_LOBE_ICONS.qoder_cli" :size="15" @error="() => {}" />
+        <div class="flex items-start justify-between gap-2">
+          <div class="flex min-w-0 items-start gap-2">
+            <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 dark:bg-neutral-800">
+              <LobeIcon :slug="TOOL_LOBE_ICONS.qoder_ide" :size="15" @error="() => {}" />
+            </div>
+            <div class="min-w-0">
+              <div class="text-[10.5px] font-medium leading-none text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.localScanQoder') }}</div>
+              <div class="mt-0.5 min-w-0 truncate text-[9px] leading-tight text-gray-400 dark:text-gray-500">
+                {{ t(store.settings.locale, 'settings.localScanQoderSummary') }}
+              </div>
+            </div>
           </div>
-          <div class="min-w-0">
-            <div class="text-[10.5px] font-medium leading-none text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.localScanQoderCli') }}</div>
-            <div class="mt-0.5 break-all font-mono text-[9px] leading-tight text-gray-400 dark:text-gray-500">{{ t(store.settings.locale, 'settings.localScanQoderCliPath') }}</div>
-          </div>
+          <button
+            type="button"
+            class="shrink-0 text-[9px] font-medium text-[var(--theme-accent-primary)]"
+            @click="qoderExpanded = !qoderExpanded"
+          >
+            {{ qoderExpanded ? t(store.settings.locale, 'common.hide') : t(store.settings.locale, 'common.view') }}
+          </button>
         </div>
-      </div>
-
-      <div class="rounded-lg border border-gray-100 bg-white px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
-        <div class="flex items-start gap-2">
-          <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 dark:bg-neutral-800">
-            <LobeIcon :slug="TOOL_LOBE_ICONS.qoder_ide" :size="15" @error="() => {}" />
-          </div>
-          <div class="min-w-0">
-            <div class="text-[10.5px] font-medium leading-none text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.localScanQoderIde') }}</div>
-            <div class="mt-0.5 break-all font-mono text-[9px] leading-tight text-gray-400 dark:text-gray-500">{{ t(store.settings.locale, 'settings.localScanQoderIdePath') }}</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="rounded-lg border border-gray-100 bg-white px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
-        <div class="flex items-start gap-2">
-          <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 dark:bg-neutral-800">
-            <LobeIcon :slug="TOOL_LOBE_ICONS.qoder_ide_cn" :size="15" @error="() => {}" />
-          </div>
-          <div class="min-w-0">
-            <div class="text-[10.5px] font-medium leading-none text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.localScanQoderIdeCn') }}</div>
-            <div class="mt-0.5 break-all font-mono text-[9px] leading-tight text-gray-400 dark:text-gray-500">{{ t(store.settings.locale, 'settings.localScanQoderIdeCnPath') }}</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="rounded-lg border border-gray-100 bg-white px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
-        <div class="flex items-start gap-2">
-          <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 dark:bg-neutral-800">
-            <LobeIcon :slug="TOOL_LOBE_ICONS.qoder_work" :size="15" @error="() => {}" />
-          </div>
-          <div class="min-w-0">
-            <div class="text-[10.5px] font-medium leading-none text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.localScanQoderWork') }}</div>
-            <div class="mt-0.5 break-all font-mono text-[9px] leading-tight text-gray-400 dark:text-gray-500">{{ t(store.settings.locale, 'settings.localScanQoderWorkPath') }}</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="rounded-lg border border-gray-100 bg-white px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
-        <div class="flex items-start gap-2">
-          <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 dark:bg-neutral-800">
-            <LobeIcon :slug="TOOL_LOBE_ICONS.qoder_work_cn" :size="15" @error="() => {}" />
-          </div>
-          <div class="min-w-0">
-            <div class="text-[10.5px] font-medium leading-none text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.localScanQoderWorkCn') }}</div>
-            <div class="mt-0.5 break-all font-mono text-[9px] leading-tight text-gray-400 dark:text-gray-500">{{ t(store.settings.locale, 'settings.localScanQoderWorkCnPath') }}</div>
+        <div
+          v-if="qoderExpanded"
+          class="mt-1.5 space-y-1.5 border-t border-gray-100 pt-1.5 dark:border-neutral-800/60"
+        >
+          <div
+            v-for="source in qoderSources"
+            :key="source.labelKey"
+            class="flex items-start gap-2 rounded-md bg-gray-50/70 px-2 py-1.5 dark:bg-neutral-900/70"
+          >
+            <div class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-white dark:bg-neutral-800">
+              <LobeIcon :slug="source.icon" :size="13" @error="() => {}" />
+            </div>
+            <div class="min-w-0">
+              <div class="text-[10px] font-medium leading-none text-gray-700 dark:text-gray-200">
+                {{ t(store.settings.locale, source.labelKey) }}
+              </div>
+              <div class="mt-0.5 break-all font-mono text-[9px] leading-tight text-gray-400 dark:text-gray-500">
+                {{ t(store.settings.locale, source.pathKey) }}
+              </div>
+            </div>
           </div>
         </div>
       </div>

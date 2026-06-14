@@ -10,7 +10,7 @@ import { TOOL_LOBE_ICONS } from '../iconConfig'
 import { getFamilyForTool, getFamilyHead } from '../toolFamilies'
 import { formatCost as formatCostUtil, formatTokenValue, formatRequestCount } from '../utils/format'
 import { formatModelDisplayName } from '../utils/modelDisplay'
-import { formatToolDisplayName, getToolProfileByTool } from '../utils/toolDisplay'
+import { formatToolDisplayName, formatToolFilterDisplayName, getToolProfileByTool } from '../utils/toolDisplay'
 
 const store = useMonitorStore()
 const SESSION_SOURCE_TOOLS = new Set([
@@ -29,6 +29,8 @@ const selectedTool = ref<string | null>(normalizeSessionTool(store.settings.clie
 const lastGlobalTool = ref<string | null>(normalizeSessionTool(store.settings.clientTools.activeToolFilter))
 // 已展开子菜单的家族 head ID
 const expandedFamily = ref<string | null>(null)
+const filterDropdownOpen = ref(false)
+const filterDropdownRef = ref<HTMLElement | null>(null)
 
 // 选中的会话（用于模态框）
 const selectedSession = ref<SessionStats | null>(null)
@@ -97,7 +99,7 @@ const sourceOptions = computed<SourceOption[]>(() => {
       items.push({
         key: profile.tool,
         tool: profile.tool,       // 点击 head → 家族整体过滤
-        label: formatToolDisplayName(profile.tool, store.settings.locale, profiles),
+        label: formatToolFilterDisplayName(profile.tool, store.settings.locale, profiles),
         icon: profile.icon || TOOL_LOBE_ICONS[profile.tool] || null,
         familyHead: family.head,  // 标记为家族 head，模板据此渲染展开箭头
         children: subItems,
@@ -117,6 +119,62 @@ const sourceOptions = computed<SourceOption[]>(() => {
   }
   return items
 })
+
+const menuSourceOptions = computed(() => sourceOptions.value.filter(option => option.key !== '__all__'))
+
+const activeFamilyHead = computed(() => (
+  selectedTool.value ? getFamilyHead(selectedTool.value) : null
+))
+
+const currentSourceOption = computed<SourceOption>(() => {
+  if (selectedTool.value === null) {
+    return sourceOptions.value[0]
+  }
+
+  for (const option of sourceOptions.value) {
+    if (option.tool === selectedTool.value) {
+      return option
+    }
+    const child = option.children.find(item => item.tool === selectedTool.value)
+    if (child) {
+      return child
+    }
+  }
+
+  return sourceOptions.value[0]
+})
+
+const closeFilterDropdown = () => {
+  filterDropdownOpen.value = false
+  expandedFamily.value = null
+}
+
+const toggleFilterDropdown = () => {
+  const next = !filterDropdownOpen.value
+  filterDropdownOpen.value = next
+  if (!next) {
+    expandedFamily.value = null
+    return
+  }
+  expandedFamily.value = activeFamilyHead.value && activeFamilyHead.value !== selectedTool.value
+    ? activeFamilyHead.value
+    : null
+}
+
+const selectSourceTool = (tool: string | null) => {
+  selectedTool.value = tool
+  closeFilterDropdown()
+}
+
+const toggleFamilyMenu = (headId: string) => {
+  expandedFamily.value = expandedFamily.value === headId ? null : headId
+}
+
+const handleFilterClickOutside = (event: MouseEvent) => {
+  if (!filterDropdownRef.value?.contains(event.target as Node)) {
+    closeFilterDropdown()
+  }
+}
 
 const applySessionCache = (entry: SessionCacheEntry) => {
   store.sessions = entry.items
@@ -201,6 +259,7 @@ const reloadProjectStats = async (force = false) => {
 
 // 切换 tab 时加载项目统计
 watch(activeTab, async (newTab) => {
+  closeFilterDropdown()
   if (newTab === 'requests') {
     await reloadRequestRecords()
   }
@@ -709,6 +768,7 @@ watch(() => store.sessions.length, () => {
 
 // 初始加载
 onMounted(async () => {
+  document.addEventListener('click', handleFilterClickOutside)
   await reloadSessions()
 
   // 监听触底加载
@@ -730,6 +790,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  document.removeEventListener('click', handleFilterClickOutside)
   if (observer) {
     observer.disconnect()
   }
@@ -774,57 +835,91 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <div v-if="activeTab === 'recent' || activeTab === 'requests'" class="tool-filter">
-      <template v-for="option in sourceOptions" :key="option.key">
-        <!-- 一级条目 -->
-        <button
-          type="button"
-          class="tool-filter__item"
-          :class="{
-            'tool-filter__item--on': option.familyHead
-              ? (selectedTool === option.tool || (option.children.some(c => c.tool === selectedTool) && expandedFamily !== option.familyHead))
-              : selectedTool === option.tool
-          }"
-          @click="option.familyHead
-            ? (expandedFamily = expandedFamily === option.familyHead ? null : option.familyHead, selectedTool = option.tool)
-            : (selectedTool = option.tool, expandedFamily = null)"
-        >
-          <LayoutGrid v-if="!option.icon" class="h-3.5 w-3.5 shrink-0" />
-          <LobeIcon v-else :slug="option.icon" :size="14" @error="() => {}" />
-          <span class="min-w-0 truncate">{{ option.label }}</span>
-          <!-- 有子菜单时显示展开箭头 -->
-          <ChevronDown
-            v-if="option.familyHead"
-            :class="['h-2.5 w-2.5 shrink-0 transition-transform duration-150', expandedFamily === option.familyHead && 'rotate-180']"
-          />
-        </button>
+    <div v-if="activeTab === 'recent' || activeTab === 'requests'" ref="filterDropdownRef" class="tool-filter">
+      <button
+        type="button"
+        class="tool-filter__trigger"
+        :class="{ 'tool-filter__trigger--open': filterDropdownOpen }"
+        :aria-expanded="filterDropdownOpen"
+        :title="currentSourceOption.label"
+        @click="toggleFilterDropdown"
+      >
+        <LayoutGrid v-if="!currentSourceOption.icon" class="h-3.5 w-3.5 shrink-0" />
+        <LobeIcon v-else :slug="currentSourceOption.icon" :size="14" @error="() => {}" />
+        <span class="tool-filter__current">{{ currentSourceOption.label }}</span>
+        <ChevronDown :class="['h-3.5 w-3.5 shrink-0 transition-transform duration-150', filterDropdownOpen && 'rotate-180']" />
+      </button>
 
-        <!-- 二级子条目：仅当该家族展开时渲染 -->
-        <template v-if="option.familyHead && expandedFamily === option.familyHead">
-          <!-- 子菜单「全部」：等同于选整个家族 head -->
+      <Transition
+        enter-active-class="transition ease-out duration-120"
+        enter-from-class="transform opacity-0 -translate-y-1"
+        enter-to-class="transform opacity-100 translate-y-0"
+        leave-active-class="transition ease-in duration-100"
+        leave-from-class="transform opacity-100 translate-y-0"
+        leave-to-class="transform opacity-0 -translate-y-1"
+      >
+        <div v-if="filterDropdownOpen" class="tool-filter__menu">
           <button
             type="button"
-            class="tool-filter__item tool-filter__item--child"
-            :class="{ 'tool-filter__item--on': selectedTool === option.tool }"
-            @click="selectedTool = option.tool"
+            class="tool-filter__menu-item"
+            :class="{ 'tool-filter__menu-item--on': selectedTool === null }"
+            @click="selectSourceTool(null)"
           >
-            <LayoutGrid class="h-3 w-3 shrink-0" />
-            <span class="min-w-0 truncate">{{ t(store.settings.locale, 'tools.familyAll') }}</span>
+            <LayoutGrid class="h-3.5 w-3.5 shrink-0" />
+            <span class="truncate">{{ t(store.settings.locale, 'tools.all') }}</span>
           </button>
-          <!-- 各变体 -->
-          <button
-            v-for="child in option.children"
-            :key="child.key"
-            type="button"
-            class="tool-filter__item tool-filter__item--child"
-            :class="{ 'tool-filter__item--on': selectedTool === child.tool }"
-            @click="selectedTool = child.tool"
-          >
-            <LobeIcon v-if="child.icon" :slug="child.icon" :size="12" @error="() => {}" />
-            <span class="min-w-0 truncate">{{ child.label }}</span>
-          </button>
-        </template>
-      </template>
+
+          <div class="tool-filter__menu-list">
+            <template v-for="option in menuSourceOptions" :key="option.key">
+              <div class="tool-filter__menu-row">
+                <button
+                  type="button"
+                  class="tool-filter__menu-item tool-filter__menu-item--family"
+                  :class="{ 'tool-filter__menu-item--on': selectedTool === option.tool }"
+                  @click="selectSourceTool(option.tool)"
+                >
+                  <LobeIcon v-if="option.icon" :slug="option.icon" :size="14" @error="() => {}" />
+                  <LayoutGrid v-else class="h-3.5 w-3.5 shrink-0" />
+                  <span class="truncate">{{ option.label }}</span>
+                </button>
+                <button
+                  v-if="option.familyHead"
+                  type="button"
+                  class="tool-filter__menu-expand"
+                  :title="expandedFamily === option.familyHead ? t(store.settings.locale, 'tools.collapseVariants') : t(store.settings.locale, 'tools.expandVariants')"
+                  @click.stop="toggleFamilyMenu(option.familyHead)"
+                >
+                  <ChevronDown :class="['h-3 w-3 transition-transform duration-150', expandedFamily === option.familyHead && 'rotate-180']" />
+                </button>
+              </div>
+
+              <div v-if="option.familyHead && expandedFamily === option.familyHead" class="tool-filter__submenu">
+                <button
+                  type="button"
+                  class="tool-filter__menu-item tool-filter__menu-item--child"
+                  :class="{ 'tool-filter__menu-item--on': selectedTool === option.tool }"
+                  @click="selectSourceTool(option.tool)"
+                >
+                  <LayoutGrid class="h-3 w-3 shrink-0" />
+                  <span class="truncate">{{ t(store.settings.locale, 'tools.familyAll') }}</span>
+                </button>
+                <button
+                  v-for="child in option.children"
+                  :key="child.key"
+                  type="button"
+                  class="tool-filter__menu-item tool-filter__menu-item--child"
+                  :class="{ 'tool-filter__menu-item--on': selectedTool === child.tool }"
+                  @click="selectSourceTool(child.tool)"
+                >
+                  <LobeIcon v-if="child.icon" :slug="child.icon" :size="12" @error="() => {}" />
+                  <LayoutGrid v-else class="h-3 w-3 shrink-0" />
+                  <span class="truncate">{{ child.label }}</span>
+                </button>
+              </div>
+            </template>
+          </div>
+        </div>
+      </Transition>
     </div>
 
     <!-- 1. 会话列表视图 -->
@@ -1294,80 +1389,147 @@ onUnmounted(() => {
   box-shadow: 0 2px 6px color-mix(in srgb, var(--theme-accent-primary) 30%, transparent);
 }
 
-/* Tool filter — theme-adaptive pills that wrap instead of scrolling,
-   so it scales as more tools are added. Mirrors the app's segmented controls. */
+/* Tool filter — compact dropdown keeps the session view stable as the tool list grows. */
 .tool-filter {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 2px 2px 4px;
+  position: relative;
+  padding: 2px 0 4px;
 }
 
-.tool-filter__item {
-  display: inline-flex;
+.tool-filter__trigger {
+  width: 100%;
+  display: flex;
   align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  padding: 4px 10px;
-  border-radius: 9999px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.1;
-  cursor: pointer;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: 10px;
   border: 1px solid var(--theme-border-default);
   background: var(--theme-bg-elevated);
-  color: var(--theme-text-tertiary);
-  transition: color 0.18s ease, background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
 }
 
-.tool-filter__item:hover:not(.tool-filter__item--on) {
-  color: var(--theme-text-primary);
+.tool-filter__trigger:hover,
+.tool-filter__trigger--open {
   border-color: var(--theme-border-strong);
 }
 
-.tool-filter__item--on {
-  color: var(--theme-accent-contrast);
-  background: var(--theme-accent-primary);
-  border-color: transparent;
-  box-shadow: 0 2px 6px color-mix(in srgb, var(--theme-accent-primary) 30%, transparent);
+.tool-filter__current {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--theme-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-:root[data-appearance='dark'] .tool-filter__item {
-  background: var(--theme-dark-item-bg);
-  border-color: var(--theme-divider-default);
-  color: var(--theme-dark-idle-label);
+.tool-filter__menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  max-height: 216px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  border-radius: 12px;
+  border: 1px solid var(--theme-border-default);
+  background: var(--theme-bg-overlay);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(14px);
 }
 
-:root[data-appearance='dark'] .tool-filter__item:hover:not(.tool-filter__item--on) {
+.tool-filter__menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tool-filter__menu-row {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.tool-filter__menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--theme-text-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.tool-filter__menu-item:hover {
+  background: var(--theme-bg-hover);
   color: var(--theme-text-primary);
 }
 
-:root[data-appearance='dark'] .tool-filter__item--on {
-  background: var(--theme-accent-primary);
-  color: var(--theme-accent-contrast);
-  border-color: transparent;
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--theme-accent-primary) 35%, transparent);
+.tool-filter__menu-item--on {
+  background: var(--theme-accent-soft);
+  color: var(--theme-accent-primary);
 }
 
-/* 二级子条目：字号更小、padding 更窄、左侧有缩进线 */
-.tool-filter__item--child {
+.tool-filter__menu-item--family {
+  flex: 1;
+}
+
+.tool-filter__menu-expand {
+  width: 28px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--theme-text-tertiary);
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.tool-filter__menu-expand:hover {
+  background: var(--theme-bg-hover);
+  color: var(--theme-text-primary);
+}
+
+.tool-filter__submenu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 1px 0 3px;
+  padding-left: 12px;
+  position: relative;
+}
+
+.tool-filter__submenu::before {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 2px;
+  bottom: 2px;
+  width: 1px;
+  background: color-mix(in srgb, var(--theme-accent-primary) 18%, var(--theme-border-subtle));
+}
+
+.tool-filter__menu-item--child {
   font-size: 10px;
-  padding: 3px 8px;
-  border-style: dashed;
-  margin-left: 4px;
-  opacity: 0.85;
-}
-
-.tool-filter__item--child:hover:not(.tool-filter__item--on) {
-  opacity: 1;
-}
-
-.tool-filter__item--child.tool-filter__item--on {
-  opacity: 1;
-}
-
-:root[data-appearance='dark'] .tool-filter__item--child {
-  border-style: dashed;
+  padding: 5px 8px;
 }
 
 .request-stream-note {

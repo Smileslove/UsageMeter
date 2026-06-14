@@ -6,7 +6,7 @@ import { ChevronDown, ChevronRight, LayoutGrid } from 'lucide-vue-next'
 import LobeIcon from './LobeIcon.vue'
 import { resolveToolLobeIcon } from '../iconConfig'
 import { getFamilyForTool, getFamilyHead } from '../toolFamilies'
-import { formatToolDisplayName } from '../utils/toolDisplay'
+import { formatToolDisplayName, formatToolFilterDisplayName } from '../utils/toolDisplay'
 
 const store = useMonitorStore()
 
@@ -22,7 +22,7 @@ const visibleProfiles = computed(() => profiles.value)
 const showSelector = computed(() => visibleProfiles.value.length > 0)
 
 const getToolName = (tool: string) => {
-  return formatToolDisplayName(tool, store.settings.locale, profiles.value)
+  return formatToolFilterDisplayName(tool, store.settings.locale, profiles.value)
 }
 
 const getToolIcon = (tool: string) => {
@@ -159,7 +159,7 @@ onUnmounted(() => document.removeEventListener('click', handleClickOutside))
                     @error="() => {}"
                   />
                   <span v-else class="w-2.5 h-2.5 rounded-full bg-gray-400 shrink-0"></span>
-                  <span class="truncate">{{ formatToolDisplayName(profile.tool, store.settings.locale, profiles) }}</span>
+                  <span class="truncate">{{ formatToolFilterDisplayName(profile.tool, store.settings.locale, profiles) }}</span>
                 </button>
                 <!-- 右侧：展开/收起箭头 -->
                 <button

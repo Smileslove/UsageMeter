@@ -8,6 +8,8 @@
 export interface ToolFamily {
   /** 家族代表 ID，同时也是 profiles 中保留的唯一条目 ID */
   head: string
+  /** 家族整体筛选在 UI 中的显示 key */
+  familyLabelKey?: string
   /** 家族内所有变体 tool ID（含 head 自身） */
   members: readonly string[]
   /** 各变体的显示子标签，key 为 member tool ID */
@@ -17,6 +19,7 @@ export interface ToolFamily {
 export const TOOL_FAMILIES: ToolFamily[] = [
   {
     head: 'qoder_ide',
+    familyLabelKey: 'tools.qoder_family',
     members: ['qoder_cli', 'qoder_ide', 'qoder_ide_cn', 'qoder_work', 'qoder_work_cn'],
     variantLabels: {
       qoder_cli: 'CLI',

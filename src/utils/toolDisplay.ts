@@ -1,6 +1,6 @@
 import type { AppLocale, ClientToolProfile } from '../types'
 import { t } from '../i18n'
-import { getFamilyHead, getVariantLabel } from '../toolFamilies'
+import { getFamilyForTool, getFamilyHead, getVariantLabel } from '../toolFamilies'
 
 const FALLBACK_TOOL_NAMES: Record<string, string> = {
   copilot: 'GitHub Copilot CLI',
@@ -47,4 +47,22 @@ export function formatToolDisplayName(
 
   const variant = getVariantLabel(tool)
   return variant ? `${baseName} · ${variant}` : baseName
+}
+
+export function formatToolFilterDisplayName(
+  tool: string | null | undefined,
+  locale: AppLocale | undefined,
+  profiles: ClientToolProfile[]
+): string {
+  if (!tool) return t(locale, 'common.unknown')
+
+  const family = getFamilyForTool(tool)
+  if (family?.head === tool && family.familyLabelKey) {
+    const translated = t(locale, family.familyLabelKey)
+    if (translated !== family.familyLabelKey) {
+      return translated
+    }
+  }
+
+  return formatToolDisplayName(tool, locale, profiles)
 }
