@@ -84,6 +84,9 @@ struct ReasonixBranchMeta {
     workspace_root: Option<String>,
     #[serde(default)]
     topic_title: Option<String>,
+    /// Reasonix v2 新增：会话作用域（"project" | "global"）
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 /// Reasonix 会话 JSONL 单行消息（仅取需要的字段）
@@ -109,16 +112,39 @@ struct ReasonixTurnCheckpoint {
 
 fn reasonix_session_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
+    let mut reasonix_bases: Vec<PathBuf> = Vec::new();
+
     if let Some(config_dir) = dirs::config_dir() {
-        roots.push(config_dir.join("reasonix").join("sessions"));
+        reasonix_bases.push(config_dir.join("reasonix"));
     }
     // Linux 上 dirs::config_dir() 即 ~/.config；其它平台额外兼容 ~/.config/reasonix。
     if let Some(home) = dirs::home_dir() {
-        let xdg = home.join(".config").join("reasonix").join("sessions");
-        if !roots.contains(&xdg) {
-            roots.push(xdg);
+        let xdg = home.join(".config").join("reasonix");
+        if !reasonix_bases.contains(&xdg) {
+            reasonix_bases.push(xdg);
         }
     }
+
+    for base in &reasonix_bases {
+        // 全局会话目录
+        roots.push(base.join("sessions"));
+
+        // 项目级会话目录：<config_dir>/reasonix/projects/<slug>/sessions/
+        // Reasonix v2 在项目目录启动时（CLI 和桌面端）将会话存于此处。
+        let projects_dir = base.join("projects");
+        if let Ok(read_dir) = fs::read_dir(&projects_dir) {
+            for entry in read_dir.flatten() {
+                let slug_path = entry.path();
+                if slug_path.is_dir() {
+                    let sessions = slug_path.join("sessions");
+                    if !roots.contains(&sessions) {
+                        roots.push(sessions);
+                    }
+                }
+            }
+        }
+    }
+
     roots
 }
 
@@ -160,7 +186,20 @@ fn collect_reasonix_session_files(root: &Path) -> Vec<SessionFile> {
             .and_then(|stem| stem.to_str())
             .unwrap_or(file_name)
             .to_string();
-        let unique_id = format!("{}::{}", super::constants::TOOL_REASONIX, file_stem);
+
+        // 用父目录路径的 hash 作为 session_id 的目录标识，避免全局目录与
+        // projects/<slug>/sessions/ 下同名文件产生相同 ID 导致 transcript_map 覆盖。
+        let dir_hash = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            root.to_string_lossy().hash(&mut h);
+            format!("{:x}", std::hash::Hasher::finish(&h))
+        };
+        let unique_id = format!(
+            "{}::{}::{}",
+            super::constants::TOOL_REASONIX,
+            dir_hash,
+            file_stem
+        );
 
         let path_string = path.to_string_lossy().to_string();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -233,6 +272,9 @@ pub(super) fn parse_reasonix_session_file(session: &SessionFile) -> ReasonixPars
                 .and_then(parse_rfc3339_to_epoch)
             {
                 meta.end_time = ts;
+            }
+            if let Some(scope) = branch.scope.filter(|s| !s.trim().is_empty()) {
+                meta.scope = Some(scope);
             }
             let _ = branch.id;
         }
@@ -405,9 +447,9 @@ fn select_workspace_root(paths: &[PathBuf]) -> Option<PathBuf> {
 }
 
 fn most_frequent_trusted_directory(paths: &[PathBuf]) -> Option<PathBuf> {
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
-    let mut counts: HashMap<PathBuf, usize> = HashMap::new();
+    let mut counts: BTreeMap<PathBuf, usize> = BTreeMap::new();
     for path in paths {
         if !is_trusted_workspace_root(path) {
             continue;
@@ -418,12 +460,17 @@ fn most_frequent_trusted_directory(paths: &[PathBuf]) -> Option<PathBuf> {
     counts
         .into_iter()
         .max_by(|(left_path, left_count), (right_path, right_count)| {
-            left_count.cmp(right_count).then_with(|| {
-                left_path
-                    .components()
-                    .count()
-                    .cmp(&right_path.components().count())
-            })
+            left_count
+                .cmp(right_count)
+                .then_with(|| {
+                    left_path
+                        .components()
+                        .count()
+                        .cmp(&right_path.components().count())
+                })
+                // When usage count and depth are identical, prefer the lexicographically
+                // smaller path so workspace-root inference stays deterministic.
+                .then_with(|| right_path.cmp(left_path))
         })
         .map(|(path, _)| path)
 }
@@ -626,5 +673,136 @@ mod tests {
         ]);
 
         assert_eq!(root, Some(PathBuf::from("/Users/test/project-alpha/src")));
+    }
+
+    #[test]
+    fn workspace_root_tie_breaker_is_stable_when_count_and_depth_match() {
+        let root = select_workspace_root(&[
+            PathBuf::from("/Users/test/project-beta/docs"),
+            PathBuf::from("/Users/test/project-alpha/src"),
+        ]);
+
+        assert_eq!(root, Some(PathBuf::from("/Users/test/project-alpha/src")));
+    }
+
+    #[test]
+    fn collect_session_files_from_project_sessions_dir() {
+        let temp = tempdir().unwrap();
+        // 模拟 projects/<slug>/sessions/ 结构
+        let slug_dir = temp
+            .path()
+            .join("projects")
+            .join("-Users-test-work-my-project")
+            .join("sessions");
+        fs::create_dir_all(&slug_dir).unwrap();
+
+        let stem = "20260610-090000.000000000-deepseek-v4-pro";
+        let jsonl_path = slug_dir.join(format!("{stem}.jsonl"));
+        {
+            let mut f = fs::File::create(&jsonl_path).unwrap();
+            writeln!(
+                f,
+                "{}",
+                serde_json::json!({"role":"user","content":"hello"})
+            )
+            .unwrap();
+            writeln!(
+                f,
+                "{}",
+                serde_json::json!({"role":"assistant","content":"hi"})
+            )
+            .unwrap();
+        }
+
+        let sessions = collect_reasonix_session_files(&slug_dir);
+        assert_eq!(sessions.len(), 1);
+
+        let session = &sessions[0];
+        // session_id 包含目录 hash，不会与全局目录下同名文件碰撞
+        assert!(session.session_id.starts_with("reasonix::"));
+        assert!(session.session_id.ends_with(stem));
+        assert_eq!(session.tool, "reasonix");
+
+        // 解析验证
+        let data = parse_reasonix_session_file(session);
+        assert_eq!(data.meta.models, vec!["deepseek-v4-pro".to_string()]);
+        assert_eq!(data.meta.message_count, 1);
+    }
+
+    #[test]
+    fn session_ids_differ_across_global_and_project_dirs() {
+        let temp = tempdir().unwrap();
+        let global_dir = temp.path().join("sessions");
+        let project_dir = temp
+            .path()
+            .join("projects")
+            .join("-Users-test-work-proj")
+            .join("sessions");
+        fs::create_dir_all(&global_dir).unwrap();
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let stem = "20260610-100000.000000000-deepseek-v4-pro";
+        for dir in [&global_dir, &project_dir] {
+            let mut f = fs::File::create(dir.join(format!("{stem}.jsonl"))).unwrap();
+            writeln!(f, "{}", serde_json::json!({"role":"user","content":"x"})).unwrap();
+            writeln!(
+                f,
+                "{}",
+                serde_json::json!({"role":"assistant","content":"y"})
+            )
+            .unwrap();
+        }
+
+        let global_sessions = collect_reasonix_session_files(&global_dir);
+        let project_sessions = collect_reasonix_session_files(&project_dir);
+        assert_eq!(global_sessions.len(), 1);
+        assert_eq!(project_sessions.len(), 1);
+
+        assert_ne!(
+            global_sessions[0].session_id, project_sessions[0].session_id,
+            "同名文件在不同目录下应产生不同的 session_id"
+        );
+    }
+
+    #[test]
+    fn scope_field_parsed_from_branch_meta() {
+        let temp = tempdir().unwrap();
+        let stem = "20260610-110000.000000000-deepseek-v4-pro";
+        let jsonl_path = temp.path().join(format!("{stem}.jsonl"));
+        {
+            let mut f = fs::File::create(&jsonl_path).unwrap();
+            writeln!(
+                f,
+                "{}",
+                serde_json::json!({"role":"user","content":"hello"})
+            )
+            .unwrap();
+            writeln!(
+                f,
+                "{}",
+                serde_json::json!({"role":"assistant","content":"hi"})
+            )
+            .unwrap();
+        }
+        {
+            let mut meta_file =
+                fs::File::create(temp.path().join(format!("{stem}.jsonl.meta"))).unwrap();
+            write!(
+                meta_file,
+                "{}",
+                serde_json::json!({
+                    "id": stem,
+                    "workspace_root": "/Users/test/work/proj",
+                    "created_at": "2026-06-10T11:00:00Z",
+                    "updated_at": "2026-06-10T11:30:00Z",
+                    "scope": "project"
+                })
+            )
+            .unwrap();
+        }
+
+        let session = make_session(&jsonl_path.to_string_lossy(), stem);
+        let data = parse_reasonix_session_file(&session);
+        assert_eq!(data.meta.scope, Some("project".to_string()));
     }
 }

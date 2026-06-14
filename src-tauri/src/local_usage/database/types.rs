@@ -7,6 +7,8 @@ pub struct SyncExportSession {
     pub tool: String,
     pub project_key: Option<String>,
     pub project_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     pub start_time: i64,
     pub end_time: i64,
     pub request_count: u64,

@@ -313,6 +313,9 @@ pub struct SessionStats {
     /// 自定义会话名称
     #[serde(default)]
     pub session_name: Option<String>,
+    /// 会话作用域（如 Reasonix 的 project / global）
+    #[serde(default)]
+    pub scope: Option<String>,
     /// 来源 WSL 发行版名（如 "Ubuntu"）；非 WSL 会话为 None。
     /// 由 transcript 文件路径的 `\\wsl$\<distro>\...` 前缀解析得到。
     #[serde(default)]

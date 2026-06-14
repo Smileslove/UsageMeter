@@ -391,12 +391,12 @@ impl LocalUsageDatabase {
             tx.execute(
                 "INSERT INTO local_sessions (
                     session_id, tool, project_key, cwd, project_name, topic, last_prompt,
-                    session_name, primary_file_path, file_size, last_modified, start_time, end_time,
+                    session_name, scope, primary_file_path, file_size, last_modified, start_time, end_time,
                     request_count, total_input_tokens, total_output_tokens,
                     total_cache_create_tokens, total_cache_read_tokens, total_tokens,
                     model_list_json, source_kind, sync_version, updated_at
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                          ?16, ?17, ?18, ?19, ?20, ?21, 1, ?22)",
+                          ?16, ?17, ?18, ?19, ?20, ?21, ?22, 1, ?23)",
                 params![
                     meta.session_id.as_str(),
                     meta.tool.as_str(),
@@ -406,6 +406,7 @@ impl LocalUsageDatabase {
                     meta.topic.as_deref(),
                     meta.last_prompt.as_deref(),
                     meta.session_name.as_deref(),
+                    meta.scope.as_deref(),
                     meta.file_path.as_str(),
                     meta.file_size as i64,
                     meta.last_modified,
@@ -428,6 +429,7 @@ impl LocalUsageDatabase {
                 tool: meta.tool.clone(),
                 project_key: Some(project_key.clone()),
                 project_name: meta.project_name.clone(),
+                scope: meta.scope.clone(),
                 start_time: meta.start_time,
                 end_time: meta.end_time,
                 request_count: meta.message_count,

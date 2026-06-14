@@ -120,12 +120,12 @@ impl LocalUsageDatabase {
         let conn = self.conn.lock().unwrap();
         let base_select =
             "SELECT session_id, tool, cwd, project_name, topic, last_prompt, session_name,
-                        primary_file_path, file_size, last_modified, total_input_tokens,
+                        scope, primary_file_path, file_size, last_modified, total_input_tokens,
                         total_output_tokens, total_cache_create_tokens, total_cache_read_tokens,
                         request_count, start_time, end_time, source_kind, model_list_json
                  FROM local_sessions";
         let mapper = |row: &rusqlite::Row<'_>| {
-            let model_list_json: String = row.get(18)?;
+            let model_list_json: String = row.get(19)?;
             Ok(SessionMeta {
                 session_id: row.get(0)?,
                 tool: row.get(1)?,
@@ -134,18 +134,19 @@ impl LocalUsageDatabase {
                 topic: row.get(4)?,
                 last_prompt: row.get(5)?,
                 session_name: row.get(6)?,
-                file_path: row.get(7)?,
-                file_size: row.get::<_, i64>(8)? as u64,
-                last_modified: row.get(9)?,
-                total_input_tokens: row.get::<_, i64>(10)? as u64,
-                total_output_tokens: row.get::<_, i64>(11)? as u64,
-                total_cache_create_tokens: row.get::<_, i64>(12)? as u64,
-                total_cache_read_tokens: row.get::<_, i64>(13)? as u64,
+                scope: row.get(7)?,
+                file_path: row.get(8)?,
+                file_size: row.get::<_, i64>(9)? as u64,
+                last_modified: row.get(10)?,
+                total_input_tokens: row.get::<_, i64>(11)? as u64,
+                total_output_tokens: row.get::<_, i64>(12)? as u64,
+                total_cache_create_tokens: row.get::<_, i64>(13)? as u64,
+                total_cache_read_tokens: row.get::<_, i64>(14)? as u64,
                 models: serde_json::from_str(&model_list_json).unwrap_or_default(),
-                message_count: row.get::<_, i64>(14)? as u64,
-                start_time: row.get(15)?,
-                end_time: row.get(16)?,
-                source: row.get(17)?,
+                message_count: row.get::<_, i64>(15)? as u64,
+                start_time: row.get(16)?,
+                end_time: row.get(17)?,
+                source: row.get(18)?,
                 message_ids: Vec::new(),
             })
         };

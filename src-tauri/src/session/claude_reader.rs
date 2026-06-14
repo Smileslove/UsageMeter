@@ -188,6 +188,7 @@ pub(super) fn parse_claude_session_file(
         end_time: 0,
         source: "jsonl".to_string(),
         message_ids: Vec::new(),
+        scope: None,
     };
 
     let mut first_user_message: Option<String> = None;

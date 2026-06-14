@@ -141,6 +141,7 @@ fn parse_work_session(log_path: &Path, ts_name: &str, tool: &str) -> Option<Qode
         end_time: latest_ts.unwrap_or(last_modified),
         source: QODER_WORK_SOURCE_KIND.to_string(),
         message_ids: requests.iter().map(|r| r.message_id.clone()).collect(),
+        scope: None,
     };
 
     Some(QoderWorkSessionData {

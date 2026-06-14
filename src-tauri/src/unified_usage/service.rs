@@ -604,6 +604,7 @@ fn build_metadata_only_session_stats(meta: &SessionMeta, now_sec: i64) -> Sessio
         topic: meta.topic.clone(),
         last_prompt: meta.last_prompt.clone(),
         session_name: meta.session_name.clone(),
+        scope: meta.scope.clone(),
         wsl_distro: wsl_distro_from_path(&meta.file_path),
     }
 }
@@ -1924,6 +1925,7 @@ pub async fn get_merged_sessions(
             topic: meta.and_then(|m| m.topic.clone()),
             last_prompt: meta.and_then(|m| m.last_prompt.clone()),
             session_name: meta.and_then(|m| m.session_name.clone()),
+            scope: meta.and_then(|m| m.scope.clone()),
             wsl_distro: meta.and_then(|m| wsl_distro_from_path(&m.file_path)),
         });
     }

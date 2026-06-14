@@ -222,6 +222,7 @@ impl ProxyDatabase {
                     topic: None,
                     last_prompt: None,
                     session_name: None,
+                    scope: None,
                     wsl_distro: None,
                 })
             },
@@ -332,6 +333,7 @@ impl ProxyDatabase {
                         topic: None,
                         last_prompt: None,
                         session_name: None,
+                        scope: None,
                         wsl_distro: None,
                     })
                 },

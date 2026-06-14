@@ -196,6 +196,7 @@ pub(super) fn parse_codex_session_file(session: &SessionFile) -> CodexParsedData
         end_time: 0,
         source: "codex_rollout".to_string(),
         message_ids: Vec::new(),
+        scope: None,
     };
 
     let mut first_user_message: Option<String> = None;

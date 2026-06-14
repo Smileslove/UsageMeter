@@ -52,6 +52,9 @@ pub struct SessionMeta {
     pub last_prompt: Option<String>,
     /// 自定义会话名称（来自 slug 或 customTitle）
     pub session_name: Option<String>,
+    /// 会话作用域（Reasonix v2 BranchMeta.scope："project" | "global"）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     /// 文件路径
     pub file_path: String,
     /// 文件大小（字节）

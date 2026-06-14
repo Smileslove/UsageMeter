@@ -287,6 +287,7 @@ fn build_single_session_data(
             end_time,
             source,
             message_ids,
+            scope: None,
         },
         requests,
         fingerprint,

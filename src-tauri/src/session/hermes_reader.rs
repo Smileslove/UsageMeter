@@ -299,6 +299,7 @@ fn build_hermes_session(
             .iter()
             .map(|record| record.message_id.clone())
             .collect(),
+        scope: None,
     };
 
     let fingerprint = compute_hermes_session_fingerprint(

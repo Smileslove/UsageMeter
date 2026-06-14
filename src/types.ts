@@ -514,6 +514,7 @@ export interface SessionStats {
   topic?: string        // 首个有意义用户消息
   lastPrompt?: string
   sessionName?: string  // 自定义会话名（customTitle 或 slug）
+  scope?: 'project' | 'global' | string | null
   wslDistro?: string | null  // 来源 WSL 发行版名（非 WSL 会话为空）
 }
 

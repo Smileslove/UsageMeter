@@ -13,7 +13,7 @@ impl LocalUsageDatabase {
 
         let mut session_stmt = conn
             .prepare(
-                "SELECT session_id, tool, project_key, project_name, start_time, end_time,
+                "SELECT session_id, tool, project_key, project_name, scope, start_time, end_time,
                         request_count, total_input_tokens, total_output_tokens,
                         total_cache_create_tokens, total_cache_read_tokens, total_tokens,
                         model_list_json
@@ -23,20 +23,21 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to prepare sync session export: {}", e))?;
         let session_rows = session_stmt
             .query_map([], |row| {
-                let model_list_json: String = row.get(12)?;
+                let model_list_json: String = row.get(13)?;
                 Ok(SyncExportSession {
                     session_id: row.get(0)?,
                     tool: row.get(1)?,
                     project_key: row.get(2)?,
                     project_name: row.get(3)?,
-                    start_time: row.get(4)?,
-                    end_time: row.get(5)?,
-                    request_count: row.get::<_, i64>(6)? as u64,
-                    total_input_tokens: row.get::<_, i64>(7)? as u64,
-                    total_output_tokens: row.get::<_, i64>(8)? as u64,
-                    total_cache_create_tokens: row.get::<_, i64>(9)? as u64,
-                    total_cache_read_tokens: row.get::<_, i64>(10)? as u64,
-                    total_tokens: row.get::<_, i64>(11)? as u64,
+                    scope: row.get(4)?,
+                    start_time: row.get(5)?,
+                    end_time: row.get(6)?,
+                    request_count: row.get::<_, i64>(7)? as u64,
+                    total_input_tokens: row.get::<_, i64>(8)? as u64,
+                    total_output_tokens: row.get::<_, i64>(9)? as u64,
+                    total_cache_create_tokens: row.get::<_, i64>(10)? as u64,
+                    total_cache_read_tokens: row.get::<_, i64>(11)? as u64,
+                    total_tokens: row.get::<_, i64>(12)? as u64,
                     model_list: serde_json::from_str(&model_list_json).unwrap_or_default(),
                 })
             })
@@ -146,15 +147,16 @@ impl LocalUsageDatabase {
                 .map_err(|e| format!("Failed to serialize remote session models: {}", e))?;
             tx.execute(
                 "INSERT INTO remote_sessions (
-                    origin_device_id, session_id, tool, project_key, project_name, start_time,
+                    origin_device_id, session_id, tool, project_key, project_name, scope, start_time,
                     end_time, request_count, total_input_tokens, total_output_tokens,
                     total_cache_create_tokens, total_cache_read_tokens, total_tokens,
                     model_list_json, imported_at, export_seq
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
                  ON CONFLICT(origin_device_id, session_id) DO UPDATE SET
                     tool = excluded.tool,
                     project_key = excluded.project_key,
                     project_name = excluded.project_name,
+                    scope = excluded.scope,
                     start_time = excluded.start_time,
                     end_time = excluded.end_time,
                     request_count = excluded.request_count,
@@ -173,6 +175,7 @@ impl LocalUsageDatabase {
                     session.tool.as_str(),
                     session.project_key.as_deref(),
                     session.project_name.as_deref(),
+                    session.scope.as_deref(),
                     session.start_time,
                     session.end_time,
                     session.request_count as i64,
@@ -383,13 +386,13 @@ impl LocalUsageDatabase {
     ) -> Result<Vec<SessionMeta>, String> {
         let conn = self.conn.lock().unwrap();
         let base_select =
-            "SELECT session_id, tool, project_key, project_name, start_time, end_time,
+            "SELECT session_id, tool, project_key, project_name, scope, start_time, end_time,
                         request_count, total_input_tokens, total_output_tokens,
                         total_cache_create_tokens, total_cache_read_tokens, model_list_json
                  FROM remote_sessions";
         let mapper = |row: &rusqlite::Row<'_>| {
             let project_key: Option<String> = row.get(2)?;
-            let model_list_json: String = row.get(11)?;
+            let model_list_json: String = row.get(12)?;
             Ok(SessionMeta {
                 session_id: row.get(0)?,
                 tool: row.get(1)?,
@@ -398,17 +401,18 @@ impl LocalUsageDatabase {
                 topic: None,
                 last_prompt: None,
                 session_name: None,
+                scope: row.get(4)?,
                 file_path: String::new(),
                 file_size: 0,
-                last_modified: row.get(5)?,
-                total_input_tokens: row.get::<_, i64>(7)? as u64,
-                total_output_tokens: row.get::<_, i64>(8)? as u64,
-                total_cache_create_tokens: row.get::<_, i64>(9)? as u64,
-                total_cache_read_tokens: row.get::<_, i64>(10)? as u64,
+                last_modified: row.get(6)?,
+                total_input_tokens: row.get::<_, i64>(8)? as u64,
+                total_output_tokens: row.get::<_, i64>(9)? as u64,
+                total_cache_create_tokens: row.get::<_, i64>(10)? as u64,
+                total_cache_read_tokens: row.get::<_, i64>(11)? as u64,
                 models: serde_json::from_str(&model_list_json).unwrap_or_default(),
-                message_count: row.get::<_, i64>(6)? as u64,
-                start_time: row.get(4)?,
-                end_time: row.get(5)?,
+                message_count: row.get::<_, i64>(7)? as u64,
+                start_time: row.get(5)?,
+                end_time: row.get(6)?,
                 source: "remote_sync".to_string(),
                 message_ids: Vec::new(),
             })

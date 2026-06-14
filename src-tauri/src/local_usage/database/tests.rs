@@ -760,6 +760,95 @@ fn open_v4_db_upgrades_to_v5_without_error() {
 }
 
 #[test]
+fn open_v14_db_upgrades_to_v15_with_scope_columns() {
+    let tmpdir = tempfile::tempdir().expect("create temp dir");
+    let path = tmpdir.path().join("legacy-v14.db");
+
+    {
+        let conn = Connection::open(&path).expect("open legacy db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE local_sync_state (
+                state_key TEXT PRIMARY KEY,
+                state_value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE local_sessions (
+                session_id TEXT PRIMARY KEY,
+                tool TEXT NOT NULL,
+                project_key TEXT,
+                cwd TEXT,
+                project_name TEXT,
+                topic TEXT,
+                last_prompt TEXT,
+                session_name TEXT,
+                primary_file_path TEXT,
+                file_size INTEGER NOT NULL DEFAULT 0,
+                last_modified INTEGER NOT NULL DEFAULT 0,
+                start_time INTEGER NOT NULL DEFAULT 0,
+                end_time INTEGER NOT NULL DEFAULT 0,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                total_input_tokens INTEGER NOT NULL DEFAULT 0,
+                total_output_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                model_list_json TEXT NOT NULL DEFAULT '[]',
+                source_kind TEXT NOT NULL DEFAULT 'local_transcript',
+                sync_version INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE TABLE remote_sessions (
+                origin_device_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                tool TEXT NOT NULL,
+                project_key TEXT,
+                project_name TEXT,
+                start_time INTEGER NOT NULL DEFAULT 0,
+                end_time INTEGER NOT NULL DEFAULT 0,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                total_input_tokens INTEGER NOT NULL DEFAULT 0,
+                total_output_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                model_list_json TEXT NOT NULL DEFAULT '[]',
+                imported_at INTEGER NOT NULL,
+                export_seq INTEGER NOT NULL,
+                PRIMARY KEY(origin_device_id, session_id)
+            );
+            "#,
+        )
+        .expect("create legacy v14 tables");
+        conn.execute(
+            "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+             VALUES ('schema_version', '14', 1700000000)",
+            [],
+        )
+        .expect("set schema_version=14");
+    }
+
+    let db = LocalUsageDatabase::new_with_path(&path)
+        .expect("open legacy db should trigger v15 migration without error");
+
+    let conn = db.conn.lock().unwrap();
+    for table in ["local_sessions", "remote_sessions"] {
+        let cols: Vec<String> = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(
+            cols.contains(&"scope".to_string()),
+            "migration missed scope column on {table}: {:?}",
+            cols
+        );
+    }
+}
+
+#[test]
 fn count_orphan_facts_filters_by_source_present() {
     let (_tmp, db) = temp_db();
     insert_request_fact(&db, "sess-a", "msg-1", "/tmp/a.jsonl", true, 100);
@@ -885,6 +974,68 @@ fn get_all_request_records_returns_persisted_request_key() {
         .expect("request_key 应该被读出来");
     assert_eq!(key, "claude_code:msg-1");
     assert_eq!(records[0].source_file_present, Some(true));
+}
+
+#[test]
+fn local_session_scope_round_trips_from_database() {
+    let (_tmp, db) = temp_db();
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO local_sessions (
+                session_id, tool, project_key, cwd, project_name, topic, last_prompt,
+                session_name, scope, primary_file_path, file_size, last_modified,
+                start_time, end_time, request_count, total_input_tokens,
+                total_output_tokens, total_cache_create_tokens, total_cache_read_tokens,
+                total_tokens, model_list_json, source_kind, sync_version, updated_at
+             ) VALUES (
+                'reasonix::session-1', 'reasonix', 'p', '/tmp/project', 'project',
+                'Topic', 'Prompt', 'Name', 'project', '/tmp/session.jsonl', 10, 20,
+                30, 40, 2, 100, 200, 3, 4, 307, '[]', 'reasonix_session', 1, 50
+             )",
+            [],
+        )
+        .expect("insert local session");
+    }
+
+    let sessions = db.get_all_sessions(&ToolFilter::All).unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].scope.as_deref(), Some("project"));
+}
+
+#[test]
+fn session_scope_survives_sync_export_and_remote_import() {
+    let (_tmp_a, db_a) = temp_db();
+    {
+        let conn = db_a.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO local_sessions (
+                session_id, tool, project_key, cwd, project_name, topic, last_prompt,
+                session_name, scope, primary_file_path, file_size, last_modified,
+                start_time, end_time, request_count, total_input_tokens,
+                total_output_tokens, total_cache_create_tokens, total_cache_read_tokens,
+                total_tokens, model_list_json, source_kind, sync_version, updated_at
+             ) VALUES (
+                'reasonix::session-2', 'reasonix', 'p', '/tmp/global', 'global',
+                NULL, NULL, NULL, 'global', '/tmp/session-2.jsonl', 0, 60,
+                70, 80, 1, 10, 20, 0, 0, 30, '[]', 'reasonix_session', 1, 90
+             )",
+            [],
+        )
+        .expect("insert exportable local session");
+    }
+
+    let export = db_a.get_sync_export_data().expect("export sync data");
+    assert_eq!(export.sessions.len(), 1);
+    assert_eq!(export.sessions[0].scope.as_deref(), Some("global"));
+
+    let (_tmp_b, db_b) = temp_db();
+    db_b.import_remote_sync_data("device-a", 1, &export)
+        .expect("import remote sync data");
+
+    let sessions = db_b.get_remote_sessions(&ToolFilter::All).unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].scope.as_deref(), Some("global"));
 }
 
 #[test]

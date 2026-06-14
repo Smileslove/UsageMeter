@@ -174,6 +174,7 @@ fn parse_copilot_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRe
         end_time: 0,
         source: COPILOT_CLI_SOURCE_KIND.to_string(),
         message_ids: Vec::new(),
+        scope: None,
     };
 
     let file = match fs::File::open(&session.file_path) {

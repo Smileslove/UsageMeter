@@ -208,6 +208,7 @@ pub(super) fn parse_openclaw_session_file(
         end_time: 0,
         source: "openclaw_session".to_string(),
         message_ids: Vec::new(),
+        scope: None,
     };
 
     let mut first_user_message: Option<String> = None;
