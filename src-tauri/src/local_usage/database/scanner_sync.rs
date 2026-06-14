@@ -199,6 +199,13 @@ impl LocalUsageDatabase {
             Some("qoder_work_cn"),
         )?;
 
+        let hermes_map = sessions_to_dirty_map(
+            crate::session::scan_hermes_sessions(),
+            "hermes_session",
+            |s| (s.meta, s.requests, s.fingerprint, s.source_locator),
+        );
+        self.sync_dirty_session_map(hermes_map, "hermes_session", Some("hermes"))?;
+
         let opencode_states = crate::session::opencode_reader::get_opencode_db_scan_states();
         let opencode_schema_status = crate::session::opencode_reader::check_opencode_schema();
         let now = chrono::Utc::now().timestamp();
@@ -473,11 +480,11 @@ impl LocalUsageDatabase {
                     "INSERT INTO local_request_facts (
                         request_id, session_id, tool, project_key, timestamp, message_id, dedupe_key,
                         request_key, model, input_tokens, output_tokens, reasoning_tokens,
-                        cache_create_tokens, cache_read_tokens, total_tokens, source_offset,
-                        event_index, is_subagent, raw_event_kind, sync_version, created_at,
-                        source_file_path, source_file_present
+                        cache_create_tokens, cache_read_tokens, total_tokens, request_count,
+                        explicit_estimated_cost, source_offset, event_index, is_subagent,
+                        raw_event_kind, sync_version, created_at, source_file_path, source_file_present
                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                              NULL, ?16, ?17, 'request', 1, ?18, ?19, 1)
+                              ?16, ?17, NULL, ?18, ?19, 'request', 1, ?20, ?21, 1)
                     ON CONFLICT(tool, dedupe_key) DO UPDATE SET
                         session_id = excluded.session_id,
                         project_key = excluded.project_key,
@@ -491,6 +498,8 @@ impl LocalUsageDatabase {
                         cache_create_tokens = excluded.cache_create_tokens,
                         cache_read_tokens = excluded.cache_read_tokens,
                         total_tokens = excluded.total_tokens,
+                        request_count = excluded.request_count,
+                        explicit_estimated_cost = excluded.explicit_estimated_cost,
                         event_index = excluded.event_index,
                         is_subagent = excluded.is_subagent,
                         sync_version = sync_version + 1,
@@ -512,6 +521,8 @@ impl LocalUsageDatabase {
                         request.cache_create_tokens as i64,
                         request.cache_read_tokens as i64,
                         request.total_tokens as i64,
+                        request.request_count as i64,
+                        request.explicit_estimated_cost,
                         idx as i64,
                         if request.is_subagent { 1 } else { 0 },
                         now,
@@ -538,6 +549,8 @@ impl LocalUsageDatabase {
                     cache_create_tokens: request.cache_create_tokens,
                     cache_read_tokens: request.cache_read_tokens,
                     total_tokens: request.total_tokens,
+                    request_count: request.request_count,
+                    explicit_estimated_cost: request.explicit_estimated_cost,
                     is_subagent: request.is_subagent,
                     source_kind: "local_usage".to_string(),
                 };

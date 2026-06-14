@@ -14,12 +14,12 @@ impl LocalUsageDatabase {
         let conn = self.conn.lock().unwrap();
         let base_select = "SELECT session_id, tool, timestamp, message_id,
                         input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-                        total_tokens, model, is_subagent, request_key, source_file_present,
-                        COALESCE(reasoning_tokens, 0)
+                        total_tokens, COALESCE(request_count, 1), model, is_subagent, request_key,
+                        source_file_present, COALESCE(reasoning_tokens, 0), explicit_estimated_cost
                  FROM local_request_facts";
         let mapper = |row: &rusqlite::Row<'_>| {
-            let request_key: Option<String> = row.get(11)?;
-            let source_file_present: Option<i64> = row.get(12)?;
+            let request_key: Option<String> = row.get(12)?;
+            let source_file_present: Option<i64> = row.get(13)?;
             Ok(LocalRequestRecord {
                 session_id: row.get(0)?,
                 tool: row.get(1)?,
@@ -30,11 +30,13 @@ impl LocalUsageDatabase {
                 cache_create_tokens: row.get::<_, i64>(6)? as u64,
                 cache_read_tokens: row.get::<_, i64>(7)? as u64,
                 total_tokens: row.get::<_, i64>(8)? as u64,
-                model: row.get(9)?,
-                is_subagent: row.get::<_, i64>(10)? != 0,
+                request_count: row.get::<_, i64>(9)?.max(1) as u64,
+                model: row.get(10)?,
+                is_subagent: row.get::<_, i64>(11)? != 0,
                 request_key: request_key.filter(|v| !v.trim().is_empty()),
+                explicit_estimated_cost: row.get(15)?,
                 source_file_present: source_file_present.map(|v| v != 0),
-                reasoning_tokens: row.get::<_, i64>(13)? as u64,
+                reasoning_tokens: row.get::<_, i64>(14)? as u64,
             })
         };
         let mut result = Vec::new();

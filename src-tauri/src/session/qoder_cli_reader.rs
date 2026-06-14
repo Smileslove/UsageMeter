@@ -299,9 +299,11 @@ fn extract_cli_request_record(
         cache_create_tokens: usage.cache_create,
         cache_read_tokens: usage.cache_read,
         total_tokens: total,
+        request_count: 1,
         model,
         is_subagent: false,
         request_key: None,
+        explicit_estimated_cost: None,
         source_file_present: None,
     })
 }

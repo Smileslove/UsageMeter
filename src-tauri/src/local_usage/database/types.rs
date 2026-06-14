@@ -34,6 +34,8 @@ pub struct SyncExportRequest {
     pub cache_create_tokens: u64,
     pub cache_read_tokens: u64,
     pub total_tokens: u64,
+    pub request_count: u64,
+    pub explicit_estimated_cost: Option<f64>,
     pub is_subagent: bool,
     pub source_kind: String,
 }

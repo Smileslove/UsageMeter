@@ -4,6 +4,7 @@ use super::claude_reader::ClaudeSource;
 use super::codex_reader::CodexSource;
 use super::copilot_cli_reader::CopilotCliSource;
 use super::gemini_reader::GeminiSource;
+use super::hermes_reader::HERMES_SOURCE;
 use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
 use super::openclaw_reader::OpenClawSource;
 use super::opencode_reader::OpenCodeSource;
@@ -25,7 +26,7 @@ static QODER_CLI_SOURCE: QoderCliSource = QoderCliSource;
 static REASONIX_SOURCE: ReasonixSource = ReasonixSource;
 static GEMINI_SOURCE: GeminiSource = GeminiSource;
 
-pub fn all_sources() -> [&'static dyn SessionSource; 10] {
+pub fn all_sources() -> [&'static dyn SessionSource; 11] {
     [
         &CLAUDE_SOURCE,
         &COPILOT_CLI_SOURCE,
@@ -37,6 +38,7 @@ pub fn all_sources() -> [&'static dyn SessionSource; 10] {
         &QODER_CLI_SOURCE,
         &REASONIX_SOURCE,
         &GEMINI_SOURCE,
+        &HERMES_SOURCE,
     ]
 }
 

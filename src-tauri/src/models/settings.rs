@@ -358,6 +358,18 @@ pub fn default_client_tool_profiles() -> Vec<ClientToolProfile> {
             icon: Some("geminicli".to_string()),
         },
         ClientToolProfile {
+            id: "hermes".to_string(),
+            tool: "hermes".to_string(),
+            display_name: Some("Hermes Agent".to_string()),
+            path_prefix: "hermes".to_string(),
+            target_base_url: None,
+            enabled: false,
+            auto_detected: false,
+            first_seen_ms: now,
+            last_seen_ms: now,
+            icon: Some("hermesagent".to_string()),
+        },
+        ClientToolProfile {
             id: "copilot".to_string(),
             tool: "copilot".to_string(),
             display_name: Some("GitHub Copilot CLI".to_string()),

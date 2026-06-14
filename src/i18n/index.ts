@@ -370,6 +370,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       localScanGeminiPath: '~/.gemini/tmp/*/chats/session-*.json',
       localScanCopilot: 'GitHub Copilot',
       localScanCopilotPath: '~/.copilot/session-state/*/events.jsonl',
+      localScanHermes: 'Hermes Agent',
+      localScanHermesPath: '~/.hermes/state.db 和 ~/.hermes/profiles/*/state.db',
       localScanOpenCodeNote: 'OpenCode 数据存储在 SQLite 数据库中，与 Claude Code / Codex 的文本日志不同。UsageMeter 以只读方式访问，不影响 OpenCode 的正常运行。',
       localScanDetectedBadge: '已检测',
       localScanMessageOnlyBadge: '仅消息模式',
@@ -694,6 +696,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       expandVariants: '展开变体',
       collapseVariants: '收起',
       ranking: '工具排行',
+      hermes: 'Hermes Agent',
       openclaw: 'OpenClaw',
       qoder_ide: 'Qoder IDE',
       qoder_ide_cn: 'Qoder IDE CN',
@@ -860,7 +863,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       avgPace: '近7日均速 {value}/h',
       walletMetric: '钱包余额',
       sourceSection: '已配置来源',
-      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', qoderIde: 'Qoder', qoderIdeCn: 'Qoder IDE CN', qoderCli: 'Qoder CLI', qoderWork: 'Qoder Work', qoderWorkCn: 'Qoder Work CN' }
+      tool: { claudeCode: 'Claude Code', codex: 'Codex', hermes: 'Hermes Agent', opencode: 'OpenCode', qoderIde: 'Qoder', qoderIdeCn: 'Qoder IDE CN', qoderCli: 'Qoder CLI', qoderWork: 'Qoder Work', qoderWorkCn: 'Qoder Work CN' }
     }
   },
   'zh-TW': {
@@ -1228,6 +1231,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       localScanGeminiPath: '~/.gemini/tmp/*/chats/session-*.json',
       localScanCopilot: 'GitHub Copilot',
       localScanCopilotPath: '~/.copilot/session-state/*/events.jsonl',
+      localScanHermes: 'Hermes Agent',
+      localScanHermesPath: '~/.hermes/state.db 和 ~/.hermes/profiles/*/state.db',
       localScanOpenCodeNote: 'OpenCode 資料存儲在 SQLite 資料庫中，與 Claude Code / Codex 的文字日誌不同。UsageMeter 以唯讀方式存取，不影響 OpenCode 的正常運作。',
       localScanDetectedBadge: '已偵測',
       localScanMessageOnlyBadge: '僅訊息模式',
@@ -1551,6 +1556,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       expandVariants: '展開變體',
       collapseVariants: '收起',
       ranking: '工具排行',
+      hermes: 'Hermes Agent',
       openclaw: 'OpenClaw',
       qoder_ide: 'Qoder IDE',
       qoder_ide_cn: 'Qoder IDE CN',
@@ -1717,7 +1723,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       avgPace: '近7日均速 {value}/h',
       walletMetric: '錢包餘額',
       sourceSection: '已配置來源',
-      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', qoderIde: 'Qoder', qoderIdeCn: 'Qoder IDE CN', qoderCli: 'Qoder CLI', qoderWork: 'Qoder Work', qoderWorkCn: 'Qoder Work CN' }
+      tool: { claudeCode: 'Claude Code', codex: 'Codex', hermes: 'Hermes Agent', opencode: 'OpenCode', qoderIde: 'Qoder', qoderIdeCn: 'Qoder IDE CN', qoderCli: 'Qoder CLI', qoderWork: 'Qoder Work', qoderWorkCn: 'Qoder Work CN' }
     }
   },
   'en-US': {
@@ -2085,6 +2091,8 @@ const messages: Record<AppLocale, TranslationNode> = {
       localScanGeminiPath: '~/.gemini/tmp/*/chats/session-*.json',
       localScanCopilot: 'GitHub Copilot',
       localScanCopilotPath: '~/.copilot/session-state/*/events.jsonl',
+      localScanHermes: 'Hermes Agent',
+      localScanHermesPath: '~/.hermes/state.db and ~/.hermes/profiles/*/state.db',
       localScanOpenCodeNote: 'OpenCode stores data in a SQLite database rather than plain log files like Claude Code and Codex. UsageMeter accesses it read-only and does not affect OpenCode\'s operation.',
       localScanDetectedBadge: 'Detected',
       localScanMessageOnlyBadge: 'Message-only',
@@ -2408,6 +2416,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       expandVariants: 'Expand variants',
       collapseVariants: 'Collapse',
       ranking: 'Tool Ranking',
+      hermes: 'Hermes Agent',
       openclaw: 'OpenClaw',
       qoder_ide: 'Qoder IDE',
       qoder_ide_cn: 'Qoder IDE CN',
@@ -2574,7 +2583,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       avgPace: '7d avg {value}/h',
       walletMetric: 'Wallet balance',
       sourceSection: 'Configured sources',
-      tool: { claudeCode: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', qoderIde: 'Qoder', qoderIdeCn: 'Qoder IDE CN', qoderCli: 'Qoder CLI', qoderWork: 'Qoder Work', qoderWorkCn: 'Qoder Work CN' }
+      tool: { claudeCode: 'Claude Code', codex: 'Codex', hermes: 'Hermes Agent', opencode: 'OpenCode', qoderIde: 'Qoder', qoderIdeCn: 'Qoder IDE CN', qoderCli: 'Qoder CLI', qoderWork: 'Qoder Work', qoderWorkCn: 'Qoder Work CN' }
     }
   }
 }

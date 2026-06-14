@@ -14,7 +14,7 @@ import { formatToolDisplayName, getToolProfileByTool } from '../utils/toolDispla
 
 const store = useMonitorStore()
 const SESSION_SOURCE_TOOLS = new Set([
-  'claude_code', 'codex', 'openclaw', 'opencode',
+  'claude_code', 'codex', 'hermes', 'openclaw', 'opencode',
   'qoder_ide', 'qoder_ide_cn', 'qoder_cli', 'qoder_work', 'qoder_work_cn',
   'reasonix', 'copilot'
 ])

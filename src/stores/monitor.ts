@@ -62,6 +62,7 @@ const defaultClientTools: ClientToolSettings = {
   profiles: [
     { id: 'claude_code', tool: 'claude_code', displayName: 'Claude Code', pathPrefix: 'claude-code', enabled: true, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'claudecode' },
     { id: 'codex', tool: 'codex', displayName: 'Codex', pathPrefix: 'codex', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'codex' },
+    { id: 'hermes', tool: 'hermes', displayName: 'Hermes Agent', pathPrefix: 'hermes', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'hermesagent' },
     { id: 'openclaw', tool: 'openclaw', displayName: 'OpenClaw', pathPrefix: 'openclaw', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'openclaw' },
     { id: 'opencode', tool: 'opencode', displayName: 'OpenCode', pathPrefix: 'opencode', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'opencode' },
     { id: 'qoder_ide', tool: 'qoder_ide', displayName: 'Qoder IDE', pathPrefix: 'qoder', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'qoder' },

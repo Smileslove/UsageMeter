@@ -925,6 +925,7 @@ fn unified_materialized_facts_round_trip() {
         cache_create_tokens: 3,
         cache_read_tokens: 4,
         total_tokens: 37,
+        request_count: 1,
         estimated_cost: 1.2345,
         coverage_origin: CoverageOrigin::MergedProxyPreferred,
         status_code: Some(200),
@@ -1014,6 +1015,7 @@ fn unified_materialization_state_persists_day_boundary_mode() {
         cache_create_tokens: 0,
         cache_read_tokens: 0,
         total_tokens: 20,
+        request_count: 1,
         estimated_cost: 0.8,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: Some(200),
@@ -1261,6 +1263,7 @@ fn purge_orphan_uses_business_day_bucketing_for_invalidated_dates() {
         cache_create_tokens: 0,
         cache_read_tokens: 0,
         total_tokens: 3,
+        request_count: 1,
         estimated_cost: 0.1,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: Some(200),
@@ -1351,6 +1354,7 @@ fn invalidate_unified_materialization_clears_rows_and_bumps_version() {
         cache_create_tokens: 0,
         cache_read_tokens: 0,
         total_tokens: 30,
+        request_count: 1,
         estimated_cost: 1.0,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: Some(200),
@@ -1427,6 +1431,7 @@ fn unified_visible_counts_exclude_3xx_statuses() {
         cache_create_tokens: 0,
         cache_read_tokens: 0,
         total_tokens: 30,
+        request_count: 1,
         estimated_cost: 1.0,
         coverage_origin: CoverageOrigin::ProxyOnly,
         status_code: Some(200),
@@ -1506,6 +1511,7 @@ fn unified_local_only_day_is_not_marked_partial() {
         cache_create_tokens: 0,
         cache_read_tokens: 0,
         total_tokens: 30,
+        request_count: 1,
         estimated_cost: 1.0,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: None,
@@ -1569,6 +1575,7 @@ fn unified_mixed_day_is_marked_partial() {
         cache_create_tokens: 0,
         cache_read_tokens: 0,
         total_tokens: 30,
+        request_count: 1,
         estimated_cost: 1.0,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: None,
@@ -1593,6 +1600,7 @@ fn unified_mixed_day_is_marked_partial() {
         cache_create_tokens: 0,
         cache_read_tokens: 0,
         total_tokens: 30,
+        request_count: 1,
         estimated_cost: 1.0,
         coverage_origin: CoverageOrigin::ProxyOnly,
         status_code: Some(200),
@@ -1637,4 +1645,69 @@ fn unified_mixed_day_is_marked_partial() {
     assert_eq!(summaries.len(), 1);
     assert!(!summaries[0].has_partial_status_coverage);
     assert!(summaries[0].has_partial_performance_coverage);
+}
+
+#[test]
+fn unified_summary_respects_request_count_weight() {
+    let (_tmp, db) = temp_db();
+    let local_date = "2026-05-28".to_string();
+    let fact = MergedRequestFact {
+        canonical_request_key: "hermes:session-1".to_string(),
+        session_id: "hermes::session-1".to_string(),
+        project_name: Some("work".to_string()),
+        project_path: None,
+        api_key_prefix: None,
+        request_base_url: None,
+        tool: "hermes".to_string(),
+        timestamp_sec: 1_780_000_000,
+        timestamp_ms: 1_780_000_000_000,
+        model: "claude-sonnet-4".to_string(),
+        input_tokens: 100,
+        output_tokens: 40,
+        cache_create_tokens: 20,
+        cache_read_tokens: 10,
+        total_tokens: 170,
+        request_count: 7,
+        estimated_cost: 0.42,
+        coverage_origin: CoverageOrigin::LocalOnly,
+        status_code: Some(200),
+        duration_ms: None,
+        output_tokens_per_second: None,
+        ttft_ms: None,
+        source_label: None,
+    };
+
+    db.replace_unified_day_materialization(
+        &local_date,
+        &[(String::from("hermes:session-1"), fact)],
+        &UnifiedDayMaterializationState {
+            local_date: local_date.clone(),
+            day_boundary_mode: "standard".to_string(),
+            fact_count: 1,
+            local_request_count: 1,
+            local_max_sync_version: 1,
+            local_max_timestamp: 1_780_000_000,
+            remote_request_count: 0,
+            remote_max_export_seq: 0,
+            remote_max_timestamp: 0,
+            proxy_record_count: 0,
+            proxy_all_record_count: 0,
+            proxy_max_timestamp_ms: 0,
+            proxy_max_updated_at: 0,
+            max_fact_timestamp_ms: 1_780_000_000_000,
+            pricing_fingerprint: 1,
+            is_finalized: true,
+            finalized_at: Some(200),
+            materialized_at: 200,
+        },
+    )
+    .unwrap();
+
+    let summaries = db
+        .get_unified_daily_summaries_between("2026-05-28", "2026-05-29")
+        .unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].request_count, 7);
+    assert_eq!(summaries[0].visible_request_count, 7);
+    assert_eq!(summaries[0].success_request_count, 7);
 }

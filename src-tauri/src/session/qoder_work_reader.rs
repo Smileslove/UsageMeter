@@ -236,9 +236,11 @@ fn parse_work_log_line(
         cache_create_tokens,
         cache_read_tokens,
         total_tokens: total,
+        request_count: 1,
         model: "unknown".to_string(),
         is_subagent: false,
         request_key: None,
+        explicit_estimated_cost: None,
         source_file_present: None,
     })
 }

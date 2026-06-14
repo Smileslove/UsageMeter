@@ -7,6 +7,7 @@ mod codex_reader;
 mod constants;
 mod copilot_cli_reader;
 mod gemini_reader;
+mod hermes_reader;
 mod meta;
 mod openclaw_reader;
 mod opencode;
@@ -21,6 +22,7 @@ mod shared;
 mod source;
 mod wsl;
 
+pub(crate) use hermes_reader::scan_hermes_sessions;
 #[allow(unused_imports)]
 pub use meta::{wsl_distro_from_path, LocalRequestRecord, SessionFile, SessionMeta};
 pub use registry::{parse_session_file_for_storage, scan_file_backed_session_files};

@@ -180,9 +180,11 @@ fn build_single_session_data(
             cache_create_tokens: snapshot.cache_create_tokens,
             cache_read_tokens: snapshot.cache_read_tokens,
             total_tokens: snapshot.total_tokens,
+            request_count: 1,
             model: snapshot.model.clone(),
             is_subagent: false,
             request_key,
+            explicit_estimated_cost: None,
             source_file_present: Some(true),
         });
     }

@@ -193,6 +193,7 @@ mod tests {
             cache_create_tokens,
             cache_read_tokens,
             total_tokens: input_tokens + output_tokens + cache_create_tokens + cache_read_tokens,
+            request_count: 1,
             estimated_cost: 0.0,
             coverage_origin,
             status_code,

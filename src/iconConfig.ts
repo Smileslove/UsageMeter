@@ -213,6 +213,7 @@ export const TOOL_LOBE_ICONS: Record<string, string> = {
   qoder_work_cn: 'qoderwork-cn',
   reasonix: 'reasonix',
   gemini: 'geminicli',
+  hermes: 'hermesagent',
 }
 
 const TOOL_ICON_ALIASES: Record<string, string> = {

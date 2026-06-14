@@ -277,6 +277,7 @@ mod tests {
             cache_create_tokens: 0,
             cache_read_tokens: 0,
             total_tokens: input_tokens + output_tokens,
+            request_count: 1,
             estimated_cost: cost,
             coverage_origin: CoverageOrigin::ProxyOnly,
             status_code,

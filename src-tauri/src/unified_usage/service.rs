@@ -2051,12 +2051,13 @@ pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<Proj
             entry.stats.project_identity = Some(descriptor.identity.clone());
         }
 
+        let request_count = fact.request_count.max(1);
         entry.stats.total_input_tokens += fact.input_tokens;
         entry.stats.total_output_tokens += fact.output_tokens;
         entry.stats.total_cache_create_tokens += fact.cache_create_tokens;
         entry.stats.total_cache_read_tokens += fact.cache_read_tokens;
         entry.stats.total_cost += fact.estimated_cost;
-        entry.stats.request_count += 1;
+        entry.stats.request_count += request_count;
         entry.stats.last_active = entry.stats.last_active.max(fact.timestamp_sec);
         if !fact.session_id.trim().is_empty() {
             fact_backed_project_session_ids.insert(fact.session_id.clone());
@@ -2074,7 +2075,7 @@ pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<Proj
             {
                 *proxy_backed_requests_by_session
                     .entry(fact.session_id.clone())
-                    .or_default() += 1;
+                    .or_default() += request_count;
             }
         } else {
             entry.tool_sessions.entry(fact.tool.clone()).or_default();
@@ -2097,14 +2098,14 @@ pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<Proj
                 entry.stats.tool_breakdown.last_mut().unwrap()
             }
         };
-        entry.stats.covered_requests += 1;
+        entry.stats.covered_requests += request_count;
         tool_stats.total_input_tokens += fact.input_tokens;
         tool_stats.total_output_tokens += fact.output_tokens;
         tool_stats.total_cache_create_tokens += fact.cache_create_tokens;
         tool_stats.total_cache_read_tokens += fact.cache_read_tokens;
         tool_stats.total_cost += fact.estimated_cost;
-        tool_stats.request_count += 1;
-        tool_stats.covered_requests += 1;
+        tool_stats.request_count += request_count;
+        tool_stats.covered_requests += request_count;
         tool_stats.last_active = tool_stats.last_active.max(fact.timestamp_sec);
     }
 

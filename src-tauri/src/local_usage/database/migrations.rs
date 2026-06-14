@@ -20,7 +20,7 @@ impl LocalUsageDatabase {
 
     pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 13 {
+        if schema_version >= 14 {
             return Ok(());
         }
         let mut cleared_runtime_caches = false;
@@ -436,6 +436,55 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to update v13 schema version: {}", e))?;
             tx.commit()
                 .map_err(|e| format!("Failed to commit v13 schema migration: {}", e))?;
+        }
+
+        if schema_version < 14 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v14 schema migration: {}", e))?;
+
+            Self::add_column_if_missing(
+                &tx,
+                "local_request_facts",
+                "request_count",
+                "INTEGER NOT NULL DEFAULT 1",
+            )?;
+            Self::add_column_if_missing(
+                &tx,
+                "local_request_facts",
+                "explicit_estimated_cost",
+                "REAL",
+            )?;
+            Self::add_column_if_missing(
+                &tx,
+                "remote_request_facts",
+                "request_count",
+                "INTEGER NOT NULL DEFAULT 1",
+            )?;
+            Self::add_column_if_missing(
+                &tx,
+                "remote_request_facts",
+                "explicit_estimated_cost",
+                "REAL",
+            )?;
+            Self::add_column_if_missing(
+                &tx,
+                "unified_daily_materialized_facts",
+                "request_count",
+                "INTEGER NOT NULL DEFAULT 1",
+            )?;
+
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '14', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v14 schema version: {}", e))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v14 schema migration: {}", e))?;
         }
 
         if cleared_runtime_caches {

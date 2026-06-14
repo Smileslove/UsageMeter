@@ -50,19 +50,20 @@ impl FactAccumulator {
     }
 
     pub(super) fn add_fact(&mut self, fact: &MergedRequestFact) {
+        let request_count = fact.request_count.max(1);
         self.add_tokens(
             fact.input_tokens,
             fact.output_tokens,
             fact.cache_create_tokens,
             fact.cache_read_tokens,
-            1,
+            request_count,
             fact.estimated_cost,
         );
 
         if matches!(fact.coverage_origin, CoverageOrigin::LocalOnly) {
-            self.local_request_count += 1;
+            self.local_request_count += request_count;
         } else {
-            self.proxy_request_count += 1;
+            self.proxy_request_count += request_count;
         }
 
         self.last_seen_ms = self.last_seen_ms.max(fact.timestamp_ms);
@@ -70,13 +71,13 @@ impl FactAccumulator {
         if let Some(status_code) = fact.status_code {
             self.has_status = true;
             if (200..300).contains(&status_code) {
-                self.success_requests += 1;
+                self.success_requests += request_count;
             } else if (400..500).contains(&status_code) {
-                self.client_error_requests += 1;
+                self.client_error_requests += request_count;
             } else if status_code >= 500 {
-                self.server_error_requests += 1;
+                self.server_error_requests += request_count;
             }
-            *self.status_code_counts.entry(status_code).or_insert(0) += 1;
+            *self.status_code_counts.entry(status_code).or_insert(0) += request_count;
         }
 
         if let (Some(duration_ms), Some(rate)) = (fact.duration_ms, fact.output_tokens_per_second) {
@@ -134,6 +135,7 @@ mod tests {
             cache_create_tokens: 3,
             cache_read_tokens: 2,
             total_tokens: 35,
+            request_count: 1,
             estimated_cost: 1.25,
             coverage_origin,
             status_code,

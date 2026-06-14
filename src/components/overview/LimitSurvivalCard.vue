@@ -294,6 +294,7 @@ const officialRows = computed(() => {
 const TOOL_LABEL_KEYS: Record<string, string> = {
   'claude-code': 'survival.tool.claudeCode',
   codex: 'survival.tool.codex',
+  hermes: 'survival.tool.hermes',
   opencode: 'survival.tool.opencode',
 }
 
@@ -754,10 +755,6 @@ function localBarClass(pct: number): string {
   flex-direction: column;
   gap: 0.1875rem;
   margin-top: 0.25rem;
-}
-
-.quota-strip-local-body {
-  margin-top: 0.375rem;
 }
 
 .quota-strip-official-meta {

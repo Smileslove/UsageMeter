@@ -51,7 +51,8 @@ impl LocalUsageDatabase {
             .prepare(
                 "SELECT session_id, tool, project_key, timestamp, message_id, dedupe_key,
                         model, input_tokens, output_tokens, cache_create_tokens,
-                        cache_read_tokens, total_tokens, is_subagent
+                        cache_read_tokens, total_tokens, request_count, explicit_estimated_cost,
+                        is_subagent
                  FROM local_request_facts
                  ORDER BY timestamp ASC",
             )
@@ -96,7 +97,9 @@ impl LocalUsageDatabase {
                     cache_create_tokens: row.get::<_, i64>(9)? as u64,
                     cache_read_tokens: row.get::<_, i64>(10)? as u64,
                     total_tokens,
-                    is_subagent: row.get::<_, i64>(12)? != 0,
+                    request_count: row.get::<_, i64>(12)?.max(1) as u64,
+                    explicit_estimated_cost: row.get(13)?,
+                    is_subagent: row.get::<_, i64>(14)? != 0,
                     source_kind: "local_usage".to_string(),
                 })
             })
@@ -198,9 +201,9 @@ impl LocalUsageDatabase {
                 "INSERT INTO remote_request_facts (
                     request_key, origin_device_id, session_id, tool, project_key, timestamp,
                     message_id, dedupe_key, model, input_tokens, output_tokens,
-                    cache_create_tokens, cache_read_tokens, total_tokens, is_subagent,
-                    source_kind, imported_at, export_seq
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                    cache_create_tokens, cache_read_tokens, total_tokens, request_count, explicit_estimated_cost,
+                    is_subagent, source_kind, imported_at, export_seq
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
                  ON CONFLICT(origin_device_id, request_key) DO UPDATE SET
                     session_id = excluded.session_id,
                     tool = excluded.tool,
@@ -214,6 +217,8 @@ impl LocalUsageDatabase {
                     cache_create_tokens = excluded.cache_create_tokens,
                     cache_read_tokens = excluded.cache_read_tokens,
                     total_tokens = excluded.total_tokens,
+                    request_count = excluded.request_count,
+                    explicit_estimated_cost = excluded.explicit_estimated_cost,
                     is_subagent = excluded.is_subagent,
                     source_kind = excluded.source_kind,
                     imported_at = excluded.imported_at,
@@ -234,6 +239,8 @@ impl LocalUsageDatabase {
                     request.cache_create_tokens as i64,
                     request.cache_read_tokens as i64,
                     request.total_tokens as i64,
+                    request.request_count as i64,
+                    request.explicit_estimated_cost,
                     if request.is_subagent { 1 } else { 0 },
                     request.source_kind.as_str(),
                     now,
@@ -272,10 +279,11 @@ impl LocalUsageDatabase {
         let conn = self.conn.lock().unwrap();
         let base_select = "SELECT session_id, tool, timestamp, COALESCE(message_id, ''),
                         input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
-                        total_tokens, model, is_subagent, request_key
+                        total_tokens, COALESCE(request_count, 1), model, explicit_estimated_cost,
+                        is_subagent, request_key
                  FROM remote_request_facts";
         let mapper = |row: &rusqlite::Row<'_>| {
-            let request_key: Option<String> = row.get(11)?;
+            let request_key: Option<String> = row.get(13)?;
             Ok(LocalRequestRecord {
                 session_id: row.get(0)?,
                 tool: row.get(1)?,
@@ -286,8 +294,10 @@ impl LocalUsageDatabase {
                 cache_create_tokens: row.get::<_, i64>(6)? as u64,
                 cache_read_tokens: row.get::<_, i64>(7)? as u64,
                 total_tokens: row.get::<_, i64>(8)? as u64,
-                model: row.get(9)?,
-                is_subagent: row.get::<_, i64>(10)? != 0,
+                request_count: row.get::<_, i64>(9)?.max(1) as u64,
+                model: row.get(10)?,
+                explicit_estimated_cost: row.get(11)?,
+                is_subagent: row.get::<_, i64>(12)? != 0,
                 request_key: request_key.filter(|v| !v.trim().is_empty()),
                 source_file_present: None,
                 reasoning_tokens: 0,

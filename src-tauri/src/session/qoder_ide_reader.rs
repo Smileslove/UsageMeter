@@ -345,9 +345,11 @@ fn parse_qoder_session(
             cache_create_tokens: 0,
             cache_read_tokens,
             total_tokens,
+            request_count: 1,
             model,
             is_subagent: false,
             request_key: None,
+            explicit_estimated_cost: None,
             source_file_present: None,
         });
     }

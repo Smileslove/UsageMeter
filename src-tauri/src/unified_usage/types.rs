@@ -35,6 +35,7 @@ pub struct MergedRequestFact {
     pub cache_create_tokens: u64,
     pub cache_read_tokens: u64,
     pub total_tokens: u64,
+    pub request_count: u64,
     pub estimated_cost: f64,
     pub coverage_origin: CoverageOrigin,
     pub status_code: Option<u16>,
@@ -221,7 +222,8 @@ impl MergedRequestFact {
             cache_create_tokens: record.cache_create_tokens,
             cache_read_tokens: record.cache_read_tokens,
             total_tokens: record.total_tokens,
-            estimated_cost: cost,
+            request_count: record.request_count.max(1),
+            estimated_cost: record.explicit_estimated_cost.unwrap_or(cost).max(0.0),
             coverage_origin: CoverageOrigin::LocalOnly,
             // Local transcript requests are treated as successful; no proxy performance fields available.
             status_code: Some(200),
@@ -257,6 +259,7 @@ impl MergedRequestFact {
             cache_create_tokens: record.cache_create_tokens,
             cache_read_tokens: record.cache_read_tokens,
             total_tokens: record.total_tokens,
+            request_count: 1,
             estimated_cost: record.estimated_cost,
             coverage_origin: CoverageOrigin::ProxyOnly,
             status_code: Some(record.status_code),
@@ -345,7 +348,7 @@ impl MergedRequestFact {
         let estimated_cost = if proxy.cost_locked {
             proxy.estimated_cost
         } else {
-            fallback_cost
+            local.explicit_estimated_cost.unwrap_or(fallback_cost)
         };
         let local_request_key = canonical_request_key_for_local(local);
         let canonical_request_key = if !local_request_key.trim().is_empty() {
@@ -370,6 +373,7 @@ impl MergedRequestFact {
             cache_create_tokens,
             cache_read_tokens,
             total_tokens,
+            request_count: local.request_count.max(1),
             estimated_cost,
             coverage_origin: CoverageOrigin::MergedProxyPreferred,
             status_code: Some(proxy.status_code),

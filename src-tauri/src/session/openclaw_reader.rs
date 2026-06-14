@@ -381,9 +381,11 @@ pub(super) fn parse_openclaw_session_file(
                         cache_create_tokens: cache_create,
                         cache_read_tokens: cache_read,
                         total_tokens,
+                        request_count: 1,
                         model,
                         is_subagent: false,
                         request_key: None,
+                        explicit_estimated_cost: None,
                         source_file_present: None,
                     });
                 }

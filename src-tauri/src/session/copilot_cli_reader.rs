@@ -502,9 +502,11 @@ fn build_requests_from_shutdown(
             cache_create_tokens,
             cache_read_tokens,
             total_tokens,
+            request_count: 1,
             model,
             is_subagent: false,
             request_key: None,
+            explicit_estimated_cost: None,
             source_file_present: None,
         });
     }
@@ -530,9 +532,11 @@ fn build_requests_from_assistant_events(
             cache_create_tokens: 0,
             cache_read_tokens: 0,
             total_tokens: event.output_tokens,
+            request_count: 1,
             model: event.model.clone(),
             is_subagent: false,
             request_key: event.interaction_id.clone(),
+            explicit_estimated_cost: None,
             source_file_present: None,
         })
         .collect()

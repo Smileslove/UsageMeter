@@ -122,6 +122,9 @@ pub struct LocalRequestRecord {
     /// 总 Token = input + cache_create + cache_read + output
     #[serde(default)]
     pub total_tokens: u64,
+    /// 该事实代表的请求数权重。逐请求来源通常为 1，会话级聚合来源可大于 1。
+    #[serde(default = "default_request_count")]
+    pub request_count: u64,
     /// 使用模型
     #[serde(default)]
     pub model: String,
@@ -132,10 +135,17 @@ pub struct LocalRequestRecord {
     /// scanner 直接解析文件时不填，由 local_usage 层加载并填充。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_key: Option<String>,
+    /// 本地来源显式提供的费用。为 None 时由统一层按定价配置估算。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_estimated_cost: Option<f64>,
     /// 来源文件当前是否仍存在；scanner 不填，由 local_usage 层加载并填充。
     /// None 视为"未知/仍存在"。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_file_present: Option<bool>,
+}
+
+fn default_request_count() -> u64 {
+    1
 }
 
 /// 会话文件信息（用于扫描）

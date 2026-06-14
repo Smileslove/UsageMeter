@@ -25,10 +25,11 @@ impl LocalUsageDatabase {
         let mut success_models = HashSet::new();
 
         for fact in facts {
-            summary.request_count += 1;
+            let request_count = fact.request_count.max(1);
+            summary.request_count += request_count;
             let visible = fact.status_code.map(|code| code < 300).unwrap_or(true);
             if visible {
-                summary.visible_request_count += 1;
+                summary.visible_request_count += request_count;
                 summary.visible_total_tokens += fact.total_tokens;
                 summary.visible_input_tokens += fact.input_tokens;
                 summary.visible_output_tokens += fact.output_tokens;
@@ -44,11 +45,11 @@ impl LocalUsageDatabase {
             summary.total_cost += fact.estimated_cost;
 
             match fact.coverage_origin {
-                CoverageOrigin::ProxyOnly => summary.proxy_backed_requests += 1,
-                CoverageOrigin::LocalOnly => summary.local_only_requests += 1,
+                CoverageOrigin::ProxyOnly => summary.proxy_backed_requests += request_count,
+                CoverageOrigin::LocalOnly => summary.local_only_requests += request_count,
                 CoverageOrigin::MergedProxyPreferred => {
-                    summary.proxy_backed_requests += 1;
-                    summary.merged_overlap_requests += 1;
+                    summary.proxy_backed_requests += request_count;
+                    summary.merged_overlap_requests += request_count;
                 }
             }
 
@@ -58,7 +59,7 @@ impl LocalUsageDatabase {
 
             if let Some(status_code) = fact.status_code {
                 if status_code < 400 {
-                    summary.success_request_count += 1;
+                    summary.success_request_count += request_count;
                     summary.success_total_tokens += fact.total_tokens;
                     summary.success_input_tokens += fact.input_tokens;
                     summary.success_output_tokens += fact.output_tokens;
@@ -69,9 +70,9 @@ impl LocalUsageDatabase {
                         success_models.insert(fact.model.clone());
                     }
                 } else if status_code < 500 {
-                    summary.client_error_requests += 1;
+                    summary.client_error_requests += request_count;
                 } else {
-                    summary.server_error_requests += 1;
+                    summary.server_error_requests += request_count;
                 }
             }
         }
@@ -102,10 +103,11 @@ impl LocalUsageDatabase {
                         materialized_at,
                         ..Default::default()
                     });
-            entry.request_count += 1;
+            let request_count = fact.request_count.max(1);
+            entry.request_count += request_count;
             let visible = fact.status_code.map(|code| code < 300).unwrap_or(true);
             if visible {
-                entry.visible_request_count += 1;
+                entry.visible_request_count += request_count;
                 entry.visible_total_tokens += fact.total_tokens;
                 entry.visible_input_tokens += fact.input_tokens;
                 entry.visible_output_tokens += fact.output_tokens;
@@ -132,9 +134,9 @@ impl LocalUsageDatabase {
                 }
             }
             if let Some(status_code) = fact.status_code {
-                *entry.status_code_counts.entry(status_code).or_insert(0) += 1;
+                *entry.status_code_counts.entry(status_code).or_insert(0) += request_count;
                 if status_code < 400 {
-                    entry.success_request_count += 1;
+                    entry.success_request_count += request_count;
                     entry.success_total_tokens += fact.total_tokens;
                     entry.success_input_tokens += fact.input_tokens;
                     entry.success_output_tokens += fact.output_tokens;
@@ -142,9 +144,9 @@ impl LocalUsageDatabase {
                     entry.success_cache_read_tokens += fact.cache_read_tokens;
                     entry.success_cost += fact.estimated_cost;
                 } else if status_code < 500 {
-                    entry.client_error_requests += 1;
+                    entry.client_error_requests += request_count;
                 } else {
-                    entry.server_error_requests += 1;
+                    entry.server_error_requests += request_count;
                 }
             }
         }
@@ -414,14 +416,14 @@ impl LocalUsageDatabase {
                         local_date, request_key, session_id, project_name, project_path,
                         api_key_prefix, request_base_url, tool, timestamp_sec, timestamp_ms,
                         model, input_tokens, output_tokens, cache_create_tokens,
-                        cache_read_tokens, total_tokens, estimated_cost, coverage_origin,
+                        cache_read_tokens, total_tokens, request_count, estimated_cost, coverage_origin,
                         status_code, duration_ms, output_tokens_per_second, ttft_ms, source_label
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5,
                         ?6, ?7, ?8, ?9, ?10,
                         ?11, ?12, ?13, ?14,
-                        ?15, ?16, ?17, ?18,
-                        ?19, ?20, ?21, ?22, ?23
+                        ?15, ?16, ?17, ?18, ?19,
+                        ?20, ?21, ?22, ?23, ?24
                     )
                     "#,
                 )
@@ -445,6 +447,7 @@ impl LocalUsageDatabase {
                     fact.cache_create_tokens as i64,
                     fact.cache_read_tokens as i64,
                     fact.total_tokens as i64,
+                    fact.request_count as i64,
                     fact.estimated_cost,
                     fact.coverage_origin.as_storage_str(),
                     fact.status_code.map(i64::from),
@@ -732,7 +735,7 @@ impl LocalUsageDatabase {
             SELECT
                 request_key, session_id, project_name, project_path, api_key_prefix, request_base_url,
                 tool, timestamp_sec, timestamp_ms, model, input_tokens, output_tokens,
-                cache_create_tokens, cache_read_tokens, total_tokens, estimated_cost,
+                cache_create_tokens, cache_read_tokens, total_tokens, request_count, estimated_cost,
                 coverage_origin, status_code, duration_ms, output_tokens_per_second, ttft_ms,
                 source_label
             FROM unified_daily_materialized_facts
@@ -768,15 +771,16 @@ impl LocalUsageDatabase {
                     cache_create_tokens: row.get::<_, i64>(12)?.max(0) as u64,
                     cache_read_tokens: row.get::<_, i64>(13)?.max(0) as u64,
                     total_tokens: row.get::<_, i64>(14)?.max(0) as u64,
-                    estimated_cost: row.get(15)?,
+                    request_count: row.get::<_, i64>(15)?.max(1) as u64,
+                    estimated_cost: row.get(16)?,
                     coverage_origin: CoverageOrigin::from_storage_str(
-                        row.get::<_, String>(16)?.as_str(),
+                        row.get::<_, String>(17)?.as_str(),
                     ),
-                    status_code: row.get::<_, Option<i64>>(17)?.map(|v| v as u16),
-                    duration_ms: row.get::<_, Option<i64>>(18)?.map(|v| v.max(0) as u64),
-                    output_tokens_per_second: row.get(19)?,
-                    ttft_ms: row.get::<_, Option<i64>>(20)?.map(|v| v.max(0) as u64),
-                    source_label: row.get(21)?,
+                    status_code: row.get::<_, Option<i64>>(18)?.map(|v| v as u16),
+                    duration_ms: row.get::<_, Option<i64>>(19)?.map(|v| v.max(0) as u64),
+                    output_tokens_per_second: row.get(20)?,
+                    ttft_ms: row.get::<_, Option<i64>>(21)?.map(|v| v.max(0) as u64),
+                    source_label: row.get(22)?,
                 })
             })
             .map_err(|e| format!("Failed to query unified materialized facts: {}", e))?;

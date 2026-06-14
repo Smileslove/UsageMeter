@@ -103,7 +103,7 @@ pub(super) fn build_window_usage_from_facts(
             entry.output_tokens += fact.output_tokens;
             entry.cache_create_tokens += fact.cache_create_tokens;
             entry.cache_read_tokens += fact.cache_read_tokens;
-            entry.request_count += 1;
+            entry.request_count += fact.request_count.max(1);
         }
     }
 
@@ -188,7 +188,7 @@ pub(super) fn build_model_token_totals_from_facts(
         entry.output_tokens += fact.output_tokens;
         entry.cache_create_tokens += fact.cache_create_tokens;
         entry.cache_read_tokens += fact.cache_read_tokens;
-        entry.request_count += 1;
+        entry.request_count += fact.request_count.max(1);
     }
 
     model_stats
@@ -254,13 +254,14 @@ pub(super) fn build_usage_refresh_bundle_from_prepared(
     let mut summary_server_error_requests = 0_u64;
 
     for fact in summary_facts {
+        let request_count = fact.request_count.max(1);
         if let Some(status_code) = fact.status_code {
             if (200..300).contains(&status_code) {
-                summary_success_requests += 1;
+                summary_success_requests += request_count;
             } else if (400..500).contains(&status_code) {
-                summary_client_error_requests += 1;
+                summary_client_error_requests += request_count;
             } else if status_code >= 500 {
-                summary_server_error_requests += 1;
+                summary_server_error_requests += request_count;
             }
         }
     }

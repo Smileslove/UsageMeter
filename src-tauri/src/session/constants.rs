@@ -4,6 +4,7 @@ pub const TOOL_OPENCLAW: &str = "openclaw";
 pub const TOOL_OPENCODE: &str = "opencode";
 pub const TOOL_REASONIX: &str = "reasonix";
 pub const TOOL_GEMINI: &str = "gemini";
+pub const TOOL_HERMES: &str = "hermes";
 pub const TOOL_QODER_IDE: &str = "qoder_ide";
 pub const TOOL_QODER_IDE_CN: &str = "qoder_ide_cn";
 pub const TOOL_QODER_CLI: &str = "qoder_cli";

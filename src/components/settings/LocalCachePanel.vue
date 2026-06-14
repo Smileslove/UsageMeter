@@ -249,6 +249,18 @@ function compactPath(path: string | null | undefined): string {
         </div>
       </div>
 
+      <div class="rounded-lg border border-gray-100 bg-white px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
+        <div class="flex items-start gap-2">
+          <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 dark:bg-neutral-800">
+            <LobeIcon :slug="TOOL_LOBE_ICONS.hermes" :size="15" @error="() => {}" />
+          </div>
+          <div class="min-w-0">
+            <div class="text-[10.5px] font-medium leading-none text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.localScanHermes') }}</div>
+            <div class="mt-0.5 break-all font-mono text-[9px] leading-tight text-gray-400 dark:text-gray-500">{{ t(store.settings.locale, 'settings.localScanHermesPath') }}</div>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div>
 </template>

@@ -149,10 +149,11 @@ fn build_daily_summary_from_facts(
     let mut models = std::collections::HashSet::new();
     let mut success_models = std::collections::HashSet::new();
     for fact in facts {
-        summary.request_count += 1;
+        let request_count = fact.request_count.max(1);
+        summary.request_count += request_count;
         let visible = fact.status_code.map(|code| code < 300).unwrap_or(true);
         if visible {
-            summary.visible_request_count += 1;
+            summary.visible_request_count += request_count;
             summary.visible_total_tokens += fact.total_tokens;
             summary.visible_input_tokens += fact.input_tokens;
             summary.visible_output_tokens += fact.output_tokens;
@@ -167,11 +168,11 @@ fn build_daily_summary_from_facts(
         summary.cache_read_tokens += fact.cache_read_tokens;
         summary.total_cost += fact.estimated_cost;
         match fact.coverage_origin {
-            CoverageOrigin::ProxyOnly => summary.proxy_backed_requests += 1,
-            CoverageOrigin::LocalOnly => summary.local_only_requests += 1,
+            CoverageOrigin::ProxyOnly => summary.proxy_backed_requests += request_count,
+            CoverageOrigin::LocalOnly => summary.local_only_requests += request_count,
             CoverageOrigin::MergedProxyPreferred => {
-                summary.proxy_backed_requests += 1;
-                summary.merged_overlap_requests += 1;
+                summary.proxy_backed_requests += request_count;
+                summary.merged_overlap_requests += request_count;
             }
         }
         if !fact.model.trim().is_empty() {
@@ -179,7 +180,7 @@ fn build_daily_summary_from_facts(
         }
         if let Some(status_code) = fact.status_code {
             if status_code < 400 {
-                summary.success_request_count += 1;
+                summary.success_request_count += request_count;
                 summary.success_total_tokens += fact.total_tokens;
                 summary.success_input_tokens += fact.input_tokens;
                 summary.success_output_tokens += fact.output_tokens;
@@ -190,9 +191,9 @@ fn build_daily_summary_from_facts(
                     success_models.insert(fact.model.clone());
                 }
             } else if status_code < 500 {
-                summary.client_error_requests += 1;
+                summary.client_error_requests += request_count;
             } else {
-                summary.server_error_requests += 1;
+                summary.server_error_requests += request_count;
             }
         }
     }
@@ -222,10 +223,11 @@ fn build_daily_model_summaries_from_facts(
                 ..Default::default()
             }
         });
-        entry.request_count += 1;
+        let request_count = fact.request_count.max(1);
+        entry.request_count += request_count;
         let visible = fact.status_code.map(|code| code < 300).unwrap_or(true);
         if visible {
-            entry.visible_request_count += 1;
+            entry.visible_request_count += request_count;
             entry.visible_total_tokens += fact.total_tokens;
             entry.visible_input_tokens += fact.input_tokens;
             entry.visible_output_tokens += fact.output_tokens;
@@ -252,12 +254,12 @@ fn build_daily_model_summaries_from_facts(
             }
         }
         if matches!(fact.coverage_origin, CoverageOrigin::LocalOnly) {
-            entry.local_only_requests += 1;
+            entry.local_only_requests += request_count;
         }
         if let Some(status_code) = fact.status_code {
-            *entry.status_code_counts.entry(status_code).or_insert(0) += 1;
+            *entry.status_code_counts.entry(status_code).or_insert(0) += request_count;
             if status_code < 400 {
-                entry.success_request_count += 1;
+                entry.success_request_count += request_count;
                 entry.success_total_tokens += fact.total_tokens;
                 entry.success_input_tokens += fact.input_tokens;
                 entry.success_output_tokens += fact.output_tokens;
@@ -265,9 +267,9 @@ fn build_daily_model_summaries_from_facts(
                 entry.success_cache_read_tokens += fact.cache_read_tokens;
                 entry.success_cost += fact.estimated_cost;
             } else if status_code < 500 {
-                entry.client_error_requests += 1;
+                entry.client_error_requests += request_count;
             } else {
-                entry.server_error_requests += 1;
+                entry.server_error_requests += request_count;
             }
         }
     }
@@ -708,6 +710,7 @@ mod tests {
             cache_create_tokens,
             cache_read_tokens,
             total_tokens: input_tokens + output_tokens + cache_create_tokens + cache_read_tokens,
+            request_count: 1,
             estimated_cost: cost,
             coverage_origin,
             status_code,
