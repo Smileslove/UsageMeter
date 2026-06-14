@@ -30,7 +30,7 @@ pub enum RelayProvider {
 }
 
 impl RelayProvider {
-    fn id(self) -> &'static str {
+    pub fn id(self) -> &'static str {
         match self {
             RelayProvider::Kimi => "kimi",
             RelayProvider::Zhipu | RelayProvider::ZhipuEn => "zhipu",
@@ -58,7 +58,7 @@ pub fn detect_relay_provider(base_url: &str) -> Option<RelayProvider> {
         Some(RelayProvider::MiniMaxCn)
     } else if url.contains("api.minimax.io") {
         Some(RelayProvider::MiniMaxGlobal)
-    } else if url.contains("zenmux") {
+    } else if url.contains("zenmux.") {
         Some(RelayProvider::ZenMux)
     } else if url.contains("api.deepseek.com") {
         Some(RelayProvider::DeepSeek)
@@ -364,11 +364,11 @@ fn parse_for(provider: RelayProvider, body: &Value) -> Vec<QuotaTier> {
 }
 
 /// 给定 base_url + 完整 api_key，查询并归一化为统一额度。
-pub async fn fetch_relay_quota(base_url: &str, api_key: &str) -> SubscriptionQuota {
-    let Some(provider) = detect_relay_provider(base_url) else {
-        return make_error("unknown", format!("Unsupported relay base_url: {base_url}"));
-    };
-
+pub async fn fetch_relay_quota_for_provider(
+    provider: RelayProvider,
+    base_url: &str,
+    api_key: &str,
+) -> SubscriptionQuota {
     let url = endpoint(provider, base_url);
     let client = HttpClientFactory::global().standard();
     let mut req = client.get(&url).header("Accept", "application/json");

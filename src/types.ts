@@ -140,18 +140,91 @@ export interface ApiSource {
   color: string
   icon?: string
   autoDetected: boolean
-  quotaQuery?: SourceQuotaQueryConfig
+  quotaQuery?: SourceQuotaBindingConfig
   firstSeenMs: number
   lastSeenMs: number
 }
 
-export type SourceQuotaQueryType = 'new_api' | 'generic_balance'
+export type SourceQueryProfileId =
+  | 'generic_balance_v1_usage'
+  | 'new_api_user_self'
+  | 'official_deep_seek_balance'
+  | 'official_step_fun_balance'
+  | 'official_silicon_flow_balance_cn'
+  | 'official_silicon_flow_balance_en'
+  | 'official_open_router_balance'
+  | 'official_novita_balance'
+  | 'kimi_coding_plan'
+  | 'zhipu_coding_plan'
+  | 'mini_max_coding_plan'
+  | 'zen_mux_coding_plan'
 
-export interface SourceQuotaQueryConfig {
+export type SourceCredentialStrategy =
+  | 'tool_live_api_key'
+  | 'manual_api_key'
+  | 'tool_live_api_key_then_manual_api_key'
+  | 'manual_access_token_user_id'
+
+export interface SourceQuotaBindingConfig {
   enabled: boolean
-  queryType: SourceQuotaQueryType
-  accessToken?: string
-  userId?: string
+  queryProfileId: SourceQueryProfileId
+  credentialStrategy: SourceCredentialStrategy
+  manualApiKey?: string
+  manualAccessToken?: string
+  manualUserId?: string
+}
+
+export interface SourceQuotaBindingTestResult {
+  success: boolean
+  attemptedProfileId?: SourceQueryProfileId
+  recommendedProfileId?: SourceQueryProfileId
+  credentialStrategy?: SourceCredentialStrategy
+  sourceTool?: string
+  summary?: string
+  quota?: SubscriptionQuota
+  error?: string
+}
+
+export type DetectionConfidence = 'high' | 'medium' | 'low'
+
+export interface SourceQuotaBindingRuntimeState {
+  sourceId: string
+  recommendedProfileId?: SourceQueryProfileId
+  detectionConfidence?: DetectionConfidence
+  lastProbeAt?: number
+  lastProbeError?: string
+  lastVerifiedAt?: number
+  lastTestSuccess?: boolean
+  lastTestSummary?: string
+  lastTestError?: string
+  lastTestedProfileId?: SourceQueryProfileId
+  lastTestedStrategy?: SourceCredentialStrategy
+  sourceTool?: string
+}
+
+export type SourceQuotaProfileCategory =
+  | 'genericBalance'
+  | 'newApiBalance'
+  | 'officialBalance'
+  | 'codingPlan'
+
+export type SourceQuotaExecutorKind =
+  | 'genericBalanceV1Usage'
+  | 'newApiUserSelf'
+  | 'relayProvider'
+
+export type SourceQuotaProbeKind =
+  | 'genericBalanceV1Usage'
+  | 'newApiUserSelf'
+
+export interface SourceQuotaProfileDescriptor {
+  profileId: SourceQueryProfileId
+  labelKey: string
+  category: SourceQuotaProfileCategory
+  executorKind: SourceQuotaExecutorKind
+  probeKind?: SourceQuotaProbeKind
+  defaultCredentialStrategy: SourceCredentialStrategy
+  supportedCredentialStrategies: SourceCredentialStrategy[]
 }
 
 // 来源感知设置

@@ -35,10 +35,25 @@ impl ToolKind {
 }
 
 /// 解析出的「已配置来源」真实上游凭据。`api_key` 为完整密钥，用完即弃。
+#[derive(Debug, Clone)]
 pub struct ResolvedRelaySource {
     pub tool: ToolKind,
     pub base_url: String,
     pub api_key: String,
+}
+
+pub fn normalize_base_url(base_url: &str) -> String {
+    base_url.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+pub fn find_resolved_source_for_base_url<'a>(
+    sources: &'a [ResolvedRelaySource],
+    base_url: &str,
+) -> Option<&'a ResolvedRelaySource> {
+    let normalized = normalize_base_url(base_url);
+    sources
+        .iter()
+        .find(|source| normalize_base_url(&source.base_url) == normalized)
 }
 
 /// 汇总所有可解析工具的已配置来源（Claude Code 0..1 + Codex 0..1 + OpenCode 0..N）。

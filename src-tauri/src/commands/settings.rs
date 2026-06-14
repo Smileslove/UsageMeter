@@ -12,6 +12,7 @@ pub fn load_settings() -> Result<AppSettings, String> {
     if !path.exists() {
         let mut settings = AppSettings::default();
         normalize_settings(&mut settings)?;
+        crate::subscription::source_quota_secrets::hydrate_settings(&mut settings)?;
         return Ok(settings);
     }
 
@@ -20,6 +21,7 @@ pub fn load_settings() -> Result<AppSettings, String> {
         serde_json::from_str(&raw).map_err(|e| format!("ERR_PARSE_SETTINGS: {e}"))?;
 
     normalize_settings(&mut settings)?;
+    crate::subscription::source_quota_secrets::hydrate_settings(&mut settings)?;
 
     Ok(settings)
 }
@@ -69,6 +71,8 @@ pub fn save_settings_internal(settings: AppSettings) -> Result<(), SaveSettingsE
     let mut settings = settings;
     let previous_settings = load_settings().unwrap_or_default();
     normalize_settings(&mut settings).map_err(SaveSettingsError::Other)?;
+    crate::subscription::source_quota_secrets::persist_settings(&mut settings, &previous_settings)
+        .map_err(SaveSettingsError::Other)?;
     let path = AppSettings::settings_path().map_err(SaveSettingsError::Other)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -182,16 +186,14 @@ fn migrate_client_tools(settings: &mut AppSettings) {
 fn migrate_api_sources(settings: &mut AppSettings) {
     for source in &mut settings.source_aware.sources {
         if let Some(quota_query) = &mut source.quota_query {
-            quota_query.access_token = quota_query
-                .access_token
-                .as_ref()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty());
-            quota_query.user_id = quota_query
-                .user_id
-                .as_ref()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty());
+            if quota_query.manual_api_key.is_none() {
+                quota_query.manual_api_key = source
+                    .api_key_notes
+                    .get("__quota_api_key")
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty());
+            }
+            quota_query.normalize();
         }
     }
 }

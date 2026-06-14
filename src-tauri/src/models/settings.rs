@@ -396,24 +396,164 @@ pub fn default_client_tool_profiles() -> Vec<ClientToolProfile> {
     ]
 }
 
-/// 一个自动发现的 API 来源（由 Proxy 实际请求行为触发，非手动创建）
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// 协议型来源额度查询配置。
+///
+/// 设计上按“绑定到某个查询 profile + 选择凭据策略”建模，
+/// 同时保留对旧版 `queryType/accessToken/userId` 结构的反序列化兼容。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceQueryProfileId {
+    GenericBalanceV1Usage,
+    NewApiUserSelf,
+    OfficialDeepSeekBalance,
+    OfficialStepFunBalance,
+    OfficialSiliconFlowBalanceCn,
+    OfficialSiliconFlowBalanceEn,
+    OfficialOpenRouterBalance,
+    OfficialNovitaBalance,
+    KimiCodingPlan,
+    ZhipuCodingPlan,
+    MiniMaxCodingPlan,
+    ZenMuxCodingPlan,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceCredentialStrategy {
+    ToolLiveApiKey,
+    ManualApiKey,
+    ToolLiveApiKeyThenManualApiKey,
+    ManualAccessTokenUserId,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DetectionConfidence {
+    High,
+    Medium,
+    Low,
+}
+
+/// 旧版来源额度查询类型，仅用于兼容反序列化。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceQuotaQueryType {
     NewApi,
     GenericBalance,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct SourceQuotaQueryConfig {
+pub struct SourceQuotaBindingConfig {
     #[serde(default)]
     pub enabled: bool,
-    pub query_type: SourceQuotaQueryType,
+    pub query_profile_id: SourceQueryProfileId,
+    pub credential_strategy: SourceCredentialStrategy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access_token: Option<String>,
+    pub manual_api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_id: Option<String>,
+    pub manual_access_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_user_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SourceQuotaBindingConfigWire {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    query_profile_id: Option<SourceQueryProfileId>,
+    #[serde(default)]
+    credential_strategy: Option<SourceCredentialStrategy>,
+    #[serde(default)]
+    manual_api_key: Option<String>,
+    #[serde(default)]
+    manual_access_token: Option<String>,
+    #[serde(default)]
+    manual_user_id: Option<String>,
+    #[serde(default)]
+    query_type: Option<SourceQuotaQueryType>,
+    #[serde(default)]
+    access_token: Option<String>,
+    #[serde(default)]
+    user_id: Option<String>,
+}
+
+impl SourceQuotaBindingConfig {
+    pub fn default_credential_strategy_for(
+        profile_id: SourceQueryProfileId,
+    ) -> SourceCredentialStrategy {
+        match profile_id {
+            SourceQueryProfileId::NewApiUserSelf => {
+                SourceCredentialStrategy::ManualAccessTokenUserId
+            }
+            SourceQueryProfileId::GenericBalanceV1Usage
+            | SourceQueryProfileId::OfficialDeepSeekBalance
+            | SourceQueryProfileId::OfficialStepFunBalance
+            | SourceQueryProfileId::OfficialSiliconFlowBalanceCn
+            | SourceQueryProfileId::OfficialSiliconFlowBalanceEn
+            | SourceQueryProfileId::OfficialOpenRouterBalance
+            | SourceQueryProfileId::OfficialNovitaBalance
+            | SourceQueryProfileId::KimiCodingPlan
+            | SourceQueryProfileId::ZhipuCodingPlan
+            | SourceQueryProfileId::MiniMaxCodingPlan
+            | SourceQueryProfileId::ZenMuxCodingPlan => {
+                SourceCredentialStrategy::ToolLiveApiKeyThenManualApiKey
+            }
+        }
+    }
+
+    pub fn normalize(&mut self) {
+        self.manual_api_key = self
+            .manual_api_key
+            .as_ref()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        self.manual_access_token = self
+            .manual_access_token
+            .as_ref()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        self.manual_user_id = self
+            .manual_user_id
+            .as_ref()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+    }
+}
+
+impl<'de> Deserialize<'de> for SourceQuotaBindingConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = SourceQuotaBindingConfigWire::deserialize(deserializer)?;
+
+        let profile_id = wire.query_profile_id.or_else(|| {
+            wire.query_type.map(|legacy| match legacy {
+                SourceQuotaQueryType::NewApi => SourceQueryProfileId::NewApiUserSelf,
+                SourceQuotaQueryType::GenericBalance => SourceQueryProfileId::GenericBalanceV1Usage,
+            })
+        });
+
+        let Some(query_profile_id) = profile_id else {
+            return Err(serde::de::Error::missing_field("queryProfileId"));
+        };
+
+        let mut config = Self {
+            enabled: wire.enabled,
+            query_profile_id,
+            credential_strategy: wire.credential_strategy.unwrap_or_else(|| {
+                SourceQuotaBindingConfig::default_credential_strategy_for(query_profile_id)
+            }),
+            manual_api_key: wire.manual_api_key,
+            manual_access_token: wire.manual_access_token.or(wire.access_token),
+            manual_user_id: wire.manual_user_id.or(wire.user_id),
+        };
+        config.normalize();
+        Ok(config)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -440,9 +580,9 @@ pub struct ApiSource {
     /// true = 自动发现，false = 用户手动编辑过
     #[serde(default)]
     pub auto_detected: bool,
-    /// 可选的来源级额度查询配置。当前仅支持 new-api 风格余额接口。
+    /// 可选的来源级额度查询配置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quota_query: Option<SourceQuotaQueryConfig>,
+    pub quota_query: Option<SourceQuotaBindingConfig>,
     /// 首次发现时间（Unix 毫秒）
     pub first_seen_ms: i64,
     /// 最近使用时间（Unix 毫秒）
@@ -884,5 +1024,51 @@ impl AppSettings {
     pub fn settings_path() -> Result<std::path::PathBuf, String> {
         let home = dirs::home_dir().ok_or_else(|| "ERR_HOME_DIR_NOT_FOUND".to_string())?;
         Ok(home.join(".usagemeter").join("settings.json"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_quota_binding_deserializes_legacy_generic_balance_shape() {
+        let config: SourceQuotaBindingConfig = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "queryType": "generic_balance"
+        }))
+        .expect("legacy binding");
+
+        assert!(config.enabled);
+        assert_eq!(
+            config.query_profile_id,
+            SourceQueryProfileId::GenericBalanceV1Usage
+        );
+        assert_eq!(
+            config.credential_strategy,
+            SourceCredentialStrategy::ToolLiveApiKeyThenManualApiKey
+        );
+    }
+
+    #[test]
+    fn source_quota_binding_deserializes_legacy_new_api_shape() {
+        let config: SourceQuotaBindingConfig = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "queryType": "new_api",
+            "accessToken": " token ",
+            "userId": " 42 "
+        }))
+        .expect("legacy binding");
+
+        assert_eq!(
+            config.query_profile_id,
+            SourceQueryProfileId::NewApiUserSelf
+        );
+        assert_eq!(
+            config.credential_strategy,
+            SourceCredentialStrategy::ManualAccessTokenUserId
+        );
+        assert_eq!(config.manual_access_token.as_deref(), Some("token"));
+        assert_eq!(config.manual_user_id.as_deref(), Some("42"));
     }
 }

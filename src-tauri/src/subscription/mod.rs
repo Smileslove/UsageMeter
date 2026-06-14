@@ -6,8 +6,12 @@ mod claude;
 mod copilot;
 mod gemini;
 mod gpt;
+pub mod query_profiles;
 pub mod relay;
 pub mod source_quota;
+pub mod source_quota_executor;
+pub mod source_quota_secrets;
+pub mod source_quota_util;
 pub mod source_resolver;
 mod token_cache;
 mod types;
@@ -23,6 +27,7 @@ use tokio::sync::RwLock;
 
 use crate::copilot::CopilotAuthManager;
 use crate::models::SubscriptionQuota;
+use crate::subscription::source_quota::SourceQuotaBindingRuntimeState;
 
 /// Subscription state shared across the application
 pub struct SubscriptionState {
@@ -36,6 +41,9 @@ pub struct SubscriptionState {
     gemini_provider: Arc<RwLock<Option<GeminiSubscriptionProvider>>>,
     /// Copilot auth manager shared with commands
     copilot_auth: Arc<RwLock<CopilotAuthManager>>,
+    /// Ephemeral per-source quota binding state (recommendations, last tests).
+    source_binding_states:
+        Arc<RwLock<std::collections::HashMap<String, SourceQuotaBindingRuntimeState>>>,
 }
 
 impl Default for SubscriptionState {
@@ -68,6 +76,7 @@ impl SubscriptionState {
             gpt_provider: Arc::new(RwLock::new(None)),
             gemini_provider: Arc::new(RwLock::new(None)),
             copilot_auth,
+            source_binding_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
         }
     }
 
@@ -130,5 +139,18 @@ impl SubscriptionState {
     pub async fn clear_all_cache(&self) {
         let mut cache = self.cache.write().await;
         cache.clear();
+    }
+
+    pub async fn get_all_source_binding_states(
+        &self,
+    ) -> std::collections::HashMap<String, SourceQuotaBindingRuntimeState> {
+        self.source_binding_states.read().await.clone()
+    }
+
+    pub async fn update_source_binding_state(&self, state: SourceQuotaBindingRuntimeState) {
+        self.source_binding_states
+            .write()
+            .await
+            .insert(state.source_id.clone(), state);
     }
 }

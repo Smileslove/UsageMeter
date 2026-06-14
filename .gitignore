@@ -41,6 +41,7 @@ Thumbs.db
 
 # Vibe Coding local config
 .claude/
+.reasonix
 CLAUDE.md
 AGENTS.md
 doc

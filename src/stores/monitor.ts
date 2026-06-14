@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SubscriptionQuota, SyncSettings, NetworkProxyConfig, ThemeSettings, WslScanSettings, LimitSurvivalSnapshot, SourceQuotaQueryConfig, ConfiguredSourceQuotaQueryResult, CopilotAuthStatus, GitHubAccount } from '../types'
+import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SubscriptionQuota, SyncSettings, NetworkProxyConfig, ThemeSettings, WslScanSettings, LimitSurvivalSnapshot, SourceQuotaBindingConfig, ConfiguredSourceQuotaQueryResult, CopilotAuthStatus, GitHubAccount, SourceQuotaBindingTestResult, SourceQuotaBindingRuntimeState, SourceQuotaProfileDescriptor } from '../types'
 
 const defaultModelPricing: ModelPricingSettings = {
   matchMode: 'fuzzy',
@@ -161,6 +161,8 @@ export const useMonitorStore = defineStore('monitor', {
     claudeQuota: null as SubscriptionQueryResult | null,
     claudeLoading: false,
     hasClaudeOAuth: false,
+    sourceQuotaProfiles: [] as SourceQuotaProfileDescriptor[],
+    sourceQuotaBindingStates: {} as Record<string, SourceQuotaBindingRuntimeState>,
     // 各工具已配置来源的第三方中转额度/余额（一行一来源；A 静默降级：空数组表示不可得）
     configuredSourceQuotas: [] as SubscriptionQuota[],
     configuredSourceLoading: false,
@@ -221,7 +223,9 @@ export const useMonitorStore = defineStore('monitor', {
       }
 
       // 第三方中转额度查询（已配置来源；静默降级）
+      await this.fetchSourceQuotaProfiles()
       await this.forceFetchConfiguredSourceQuotas()
+      await this.fetchSourceQuotaBindingStates()
 
       // 检查是否有 Gemini CLI OAuth 凭据，如果有则查询额度
       await this.checkGeminiOAuth()
@@ -744,13 +748,45 @@ export const useMonitorStore = defineStore('monitor', {
       await invoke('update_api_source_key_note', { sourceId, keyPrefix, note })
       await this.loadSettings()
     },
-    async updateSourceQuotaQuery(sourceId: string, quotaQuery: SourceQuotaQueryConfig | null) {
+    async updateSourceQuotaQuery(sourceId: string, quotaQuery: SourceQuotaBindingConfig | null) {
       const source = this.settings.sourceAware.sources.find(s => s.id === sourceId)
       if (!source) return
       source.quotaQuery = quotaQuery ?? undefined
       source.autoDetected = false
       await this.saveSettings()
+      await this.fetchSourceQuotaBindingStates()
       await this.forceFetchConfiguredSourceQuotas()
+    },
+    async fetchSourceQuotaProfiles() {
+      this.sourceQuotaProfiles = await invoke<SourceQuotaProfileDescriptor[]>('get_source_quota_profiles')
+      return this.sourceQuotaProfiles
+    },
+    async fetchSourceQuotaBindingStates(sourceId?: string) {
+      const states = await invoke<SourceQuotaBindingRuntimeState[]>('get_source_quota_binding_states', {
+        sourceId: sourceId ?? null,
+      })
+      const next = { ...this.sourceQuotaBindingStates }
+      for (const state of states) {
+        next[state.sourceId] = state
+      }
+      this.sourceQuotaBindingStates = next
+      return states
+    },
+    async probeSourceQuotaQuery(sourceId: string, binding: SourceQuotaBindingConfig | null = null) {
+      const state = await invoke<SourceQuotaBindingRuntimeState>('probe_source_quota_query', {
+        sourceId,
+        binding,
+      })
+      this.sourceQuotaBindingStates = {
+        ...this.sourceQuotaBindingStates,
+        [state.sourceId]: state,
+      }
+      return state
+    },
+    async testSourceQuotaQuery(sourceId: string, binding: SourceQuotaBindingConfig) {
+      const result = await invoke<SourceQuotaBindingTestResult>('test_source_quota_query', { sourceId, binding })
+      await this.fetchSourceQuotaBindingStates(sourceId)
+      return result
     },
     // === 订阅查询 ===
     /**

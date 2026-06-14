@@ -320,14 +320,19 @@ const sourceRows = computed(() =>
 )
 
 function toolLabelOf(q: SubscriptionQuota): string {
+  const key = q.sourceTool ? TOOL_LABEL_KEYS[q.sourceTool] : undefined
+  if (key) return t(locale.value, key)
+  if (q.sourceTool) return q.sourceTool
   if (q.provider === 'source-config') {
     return q.accountLabel || q.credentialMessage || t(locale.value, 'survival.sourceSection')
   }
-  const key = q.sourceTool ? TOOL_LABEL_KEYS[q.sourceTool] : undefined
-  return key ? t(locale.value, key) : (q.sourceTool ?? t(locale.value, 'survival.title'))
+  return t(locale.value, 'survival.title')
 }
 
 function sourceCaptionOf(q: SubscriptionQuota): string {
+  if (q.sourceTool && q.accountLabel) {
+    return q.accountLabel
+  }
   if (q.provider === 'source-config') {
     return q.planLabel || q.credentialMessage || q.tool
   }
