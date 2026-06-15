@@ -105,6 +105,20 @@ impl LocalUsageDatabase {
         Ok(crate::utils::usagemeter_dir()?.join("local_usage.db"))
     }
 
+    pub(super) fn open_readonly_connection(&self) -> Result<Connection, String> {
+        let path = Self::db_path()?;
+        let conn = Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_URI
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|e| format!("Failed to open readonly local usage DB: {}", e))?;
+        conn.busy_timeout(Duration::from_secs(30))
+            .map_err(|e| format!("Failed to set readonly local usage DB busy timeout: {}", e))?;
+        Ok(conn)
+    }
+
     pub fn ensure_synced_throttled(&self, min_interval: Duration) -> Result<(), String> {
         let (lock, cvar) = self.sync_gate.as_ref();
 
@@ -178,4 +192,8 @@ pub fn ensure_local_usage_synced() -> Result<Arc<LocalUsageDatabase>, String> {
     let db = LocalUsageDatabase::get_global()?;
     db.ensure_synced_throttled(LOCAL_SYNC_THROTTLE_INTERVAL)?;
     Ok(db)
+}
+
+pub fn get_local_usage_db() -> Result<Arc<LocalUsageDatabase>, String> {
+    LocalUsageDatabase::get_global()
 }

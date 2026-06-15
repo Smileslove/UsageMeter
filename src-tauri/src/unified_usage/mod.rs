@@ -2,8 +2,9 @@ mod service;
 mod types;
 
 pub(crate) use service::{
-    build_coverage, clear_runtime_caches, ensure_materialized_history, get_merged_project_stats,
-    get_merged_request_facts, get_merged_session_detail, get_merged_sessions,
+    build_coverage, clear_runtime_caches, ensure_materialized_history_no_sync,
+    get_merged_project_stats, get_merged_request_facts, get_merged_request_facts_no_sync,
+    get_merged_session_detail, get_merged_sessions,
 };
 #[cfg(test)]
 pub(crate) use service::{runtime_merge_cache_len_for_test, seed_runtime_merge_cache_for_test};

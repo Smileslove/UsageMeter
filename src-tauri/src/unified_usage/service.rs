@@ -52,6 +52,23 @@ struct HotMergeCacheEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct HistoryMaterializationCacheKey {
+    start_epoch: i64,
+    end_epoch: i64,
+    day_boundary_mode: String,
+    pricing_match_mode: String,
+    pricing_fingerprint: u64,
+    local_signature: crate::local_usage::LocalMergeCacheSignature,
+    proxy_signature: Option<ProxyMergeCacheSignature>,
+}
+
+#[derive(Debug, Clone)]
+struct HistoryMaterializationCacheEntry {
+    key: HistoryMaterializationCacheKey,
+    ready_dates: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SessionDerivedCacheKey {
     merge_key: MergeCacheKey,
     limit: i64,
@@ -77,11 +94,14 @@ struct ProjectDerivedCacheEntry {
 
 static MERGED_REQUEST_FACTS_CACHE: OnceLock<Mutex<Vec<MergeCacheEntry>>> = OnceLock::new();
 static HOT_MERGED_REQUEST_FACTS_CACHE: OnceLock<Mutex<Vec<HotMergeCacheEntry>>> = OnceLock::new();
+static HISTORY_MATERIALIZATION_CACHE: OnceLock<Mutex<Vec<HistoryMaterializationCacheEntry>>> =
+    OnceLock::new();
 static MERGED_SESSIONS_CACHE: OnceLock<Mutex<Vec<SessionDerivedCacheEntry>>> = OnceLock::new();
 static MERGED_PROJECTS_CACHE: OnceLock<Mutex<Vec<ProjectDerivedCacheEntry>>> = OnceLock::new();
-static UNIFIED_INFLIGHT_KEYS: OnceLock<tokio::sync::Mutex<HashSet<String>>> = OnceLock::new();
+static UNIFIED_INFLIGHT_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 const MERGED_REQUEST_FACTS_CACHE_CAPACITY: usize = 8;
 const HOT_MERGED_REQUEST_FACTS_CACHE_CAPACITY: usize = 4;
+const HISTORY_MATERIALIZATION_CACHE_CAPACITY: usize = 8;
 const MERGED_SESSIONS_CACHE_CAPACITY: usize = 6;
 const MERGED_PROJECTS_CACHE_CAPACITY: usize = 6;
 const REASONIX_FULL_COVERAGE_GRACE_SECS: i64 = 30;
@@ -112,8 +132,12 @@ fn hot_merge_cache() -> &'static Mutex<Vec<HotMergeCacheEntry>> {
     HOT_MERGED_REQUEST_FACTS_CACHE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-fn inflight_keys() -> &'static tokio::sync::Mutex<HashSet<String>> {
-    UNIFIED_INFLIGHT_KEYS.get_or_init(|| tokio::sync::Mutex::new(HashSet::new()))
+fn history_materialization_cache() -> &'static Mutex<Vec<HistoryMaterializationCacheEntry>> {
+    HISTORY_MATERIALIZATION_CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn inflight_keys() -> &'static Mutex<HashSet<String>> {
+    UNIFIED_INFLIGHT_KEYS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 fn normalized_day_boundary_mode(settings: &AppSettings) -> String {
@@ -123,6 +147,7 @@ fn normalized_day_boundary_mode(settings: &AppSettings) -> String {
 pub(crate) fn clear_runtime_caches() {
     merge_cache().lock().unwrap().clear();
     hot_merge_cache().lock().unwrap().clear();
+    history_materialization_cache().lock().unwrap().clear();
     merged_sessions_cache().lock().unwrap().clear();
     merged_projects_cache().lock().unwrap().clear();
 }
@@ -263,6 +288,39 @@ fn store_hot_merge_cache(key: HotMergeCacheKey, facts: &[MergedRequestFact]) {
     );
     if guard.len() > HOT_MERGED_REQUEST_FACTS_CACHE_CAPACITY {
         guard.truncate(HOT_MERGED_REQUEST_FACTS_CACHE_CAPACITY);
+    }
+}
+
+fn lookup_history_materialization_cache(
+    key: &HistoryMaterializationCacheKey,
+) -> Option<Vec<String>> {
+    let cache = history_materialization_cache();
+    let mut guard = cache.lock().unwrap();
+    let idx = guard.iter().position(|entry| entry.key == *key)?;
+    let entry = guard.remove(idx);
+    let result = entry.ready_dates.clone();
+    guard.insert(0, entry);
+    Some(result)
+}
+
+fn store_history_materialization_cache(
+    key: HistoryMaterializationCacheKey,
+    ready_dates: &[String],
+) {
+    let cache = history_materialization_cache();
+    let mut guard = cache.lock().unwrap();
+    if let Some(idx) = guard.iter().position(|entry| entry.key == key) {
+        guard.remove(idx);
+    }
+    guard.insert(
+        0,
+        HistoryMaterializationCacheEntry {
+            key,
+            ready_dates: ready_dates.to_vec(),
+        },
+    );
+    if guard.len() > HISTORY_MATERIALIZATION_CACHE_CAPACITY {
+        guard.truncate(HISTORY_MATERIALIZATION_CACHE_CAPACITY);
     }
 }
 
@@ -802,6 +860,16 @@ struct MergeCacheKeyParts<'a> {
     pricings: &'a [crate::models::ModelPricingConfig],
 }
 
+struct HistoryMaterializationCacheKeyParts<'a> {
+    settings: &'a AppSettings,
+    range_start: i64,
+    range_end: i64,
+    pricing_match_mode: &'a str,
+    pricings: &'a [crate::models::ModelPricingConfig],
+    local_signature: crate::local_usage::LocalMergeCacheSignature,
+    proxy_signature: Option<ProxyMergeCacheSignature>,
+}
+
 struct RealtimeMergeResult {
     facts: Vec<MergedRequestFact>,
     local_record_count: usize,
@@ -852,6 +920,20 @@ fn build_hot_merge_cache_key(
     }
 }
 
+fn build_history_materialization_cache_key(
+    parts: HistoryMaterializationCacheKeyParts<'_>,
+) -> HistoryMaterializationCacheKey {
+    HistoryMaterializationCacheKey {
+        start_epoch: parts.range_start,
+        end_epoch: parts.range_end,
+        day_boundary_mode: normalized_day_boundary_mode(parts.settings),
+        pricing_match_mode: parts.pricing_match_mode.to_string(),
+        pricing_fingerprint: fingerprint_pricings(parts.pricings),
+        local_signature: parts.local_signature,
+        proxy_signature: parts.proxy_signature,
+    }
+}
+
 fn merge_cache_inflight_key(key: &MergeCacheKey) -> String {
     format!(
         "merge:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
@@ -877,21 +959,58 @@ fn merge_cache_inflight_key(key: &MergeCacheKey) -> String {
     )
 }
 
-async fn acquire_inflight_key(key: &str) {
-    loop {
-        let mut guard = inflight_keys().lock().await;
-        if !guard.contains(key) {
-            guard.insert(key.to_string());
-            return;
-        }
-        drop(guard);
-        tokio::time::sleep(Duration::from_millis(25)).await;
+fn history_materialization_inflight_key(key: &HistoryMaterializationCacheKey) -> String {
+    format!(
+        "history:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        key.start_epoch,
+        key.end_epoch,
+        key.day_boundary_mode,
+        key.pricing_match_mode,
+        key.pricing_fingerprint,
+        key.local_signature.local_max_sync_version,
+        key.local_signature.remote_max_export_seq,
+        key.local_signature
+            .unified_materialization_invalidation_version,
+        key.proxy_signature
+            .map(|sig| format!(
+                "{}:{}:{}:{}",
+                sig.usage_record_count,
+                sig.max_timestamp,
+                sig.max_updated_at,
+                sig.session_stats_max_updated_at
+            ))
+            .unwrap_or_else(|| "none".to_string()),
+    )
+}
+
+struct InflightKeyGuard {
+    key: String,
+}
+
+impl Drop for InflightKeyGuard {
+    fn drop(&mut self) {
+        inflight_keys().lock().unwrap().remove(&self.key);
     }
 }
 
-async fn release_inflight_key(key: &str) {
-    let mut guard = inflight_keys().lock().await;
-    guard.remove(key);
+async fn acquire_inflight_key(key: &str) -> InflightKeyGuard {
+    loop {
+        let acquired = {
+            let mut guard = inflight_keys().lock().unwrap();
+            if guard.contains(key) {
+                false
+            } else {
+                guard.insert(key.to_string());
+                true
+            }
+        };
+        if acquired {
+            return InflightKeyGuard {
+                key: key.to_string(),
+            };
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }
 
 fn canonical_history_settings(settings: &AppSettings) -> AppSettings {
@@ -1199,6 +1318,7 @@ fn build_materialization_state(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn ensure_materialized_history_for_range(
     local_db: &crate::local_usage::LocalUsageDatabase,
     settings: &AppSettings,
@@ -1206,9 +1326,33 @@ async fn ensure_materialized_history_for_range(
     range_end: i64,
     pricings: &[crate::models::ModelPricingConfig],
     pricing_match_mode: &str,
+    local_signature: crate::local_usage::LocalMergeCacheSignature,
+    proxy_signature: Option<ProxyMergeCacheSignature>,
 ) -> Result<Vec<String>, String> {
     let today = crate::local_usage::LocalUsageDatabase::today_local_date_with_settings(settings);
     let canonical_settings = canonical_history_settings(settings);
+    let cache_key = build_history_materialization_cache_key(HistoryMaterializationCacheKeyParts {
+        settings,
+        range_start,
+        range_end,
+        pricing_match_mode,
+        pricings,
+        local_signature,
+        proxy_signature,
+    });
+    if let Some(ready_dates) = lookup_history_materialization_cache(&cache_key) {
+        perf_log(
+            "merge_history_materialize_cache_hit",
+            format!(
+                "range={}..{} dates={}",
+                range_start,
+                range_end,
+                ready_dates.len(),
+            ),
+        );
+        return Ok(ready_dates);
+    }
+
     let materializable_dates: Vec<String> = enumerate_local_dates(range_start, range_end, settings)
         .into_iter()
         .filter(|date| date < &today)
@@ -1248,7 +1392,7 @@ async fn ensure_materialized_history_for_range(
 
         if needs_rebuild {
             let inflight_key = format!("materialize:{local_date}");
-            acquire_inflight_key(&inflight_key).await;
+            let _inflight_guard = acquire_inflight_key(&inflight_key).await;
             let latest_state = local_db.get_unified_day_materialization_state(&local_date)?;
             let latest_local_snapshot =
                 local_db.get_unified_day_local_snapshot_with_settings(&local_date, settings)?;
@@ -1325,36 +1469,16 @@ async fn ensure_materialized_history_for_range(
                             day_started_at.elapsed().as_millis(),
                         ),
                     );
-                } else {
-                    perf_log(
-                        "merge_materialize_reuse",
-                        format!(
-                            "date={} pricing_fingerprint={} elapsed_ms={}",
-                            local_date,
-                            pricing_fingerprint,
-                            day_started_at.elapsed().as_millis(),
-                        ),
-                    );
                 }
                 Ok::<(), String>(())
             }
             .await;
-            release_inflight_key(&inflight_key).await;
             materialize_result?;
-        } else {
-            perf_log(
-                "merge_materialize_reuse",
-                format!(
-                    "date={} pricing_fingerprint={} elapsed_ms={}",
-                    local_date,
-                    pricing_fingerprint,
-                    day_started_at.elapsed().as_millis(),
-                ),
-            );
         }
         ready_dates.push(local_date);
     }
 
+    store_history_materialization_cache(cache_key, &ready_dates);
     Ok(ready_dates)
 }
 
@@ -1376,12 +1500,16 @@ fn combined_data_time_bounds(
     })
 }
 
-pub(crate) async fn ensure_materialized_history(
+async fn ensure_materialized_history_with_db(
+    local_db: &crate::local_usage::LocalUsageDatabase,
     settings: &AppSettings,
     start_epoch: i64,
     end_epoch: i64,
 ) -> Result<(), String> {
-    let local_db = crate::local_usage::ensure_local_usage_synced()?;
+    let local_signature = local_db.get_merge_cache_signature()?;
+    let proxy_signature = ProxyDatabase::get_global()
+        .map(|db| db.get_merge_cache_signature())
+        .transpose()?;
     let mut pricings = settings.model_pricing.pricings.clone();
     if let Ok(db) = crate::proxy::ProxyDatabase::new() {
         if let Ok(db_pricings) = db.get_all_model_pricings() {
@@ -1389,27 +1517,57 @@ pub(crate) async fn ensure_materialized_history(
         }
     }
     let pricing_match_mode = settings.model_pricing.match_mode.clone();
-    let effective_range =
-        if let Some((data_start, data_end)) = combined_data_time_bounds(&local_db)? {
-            let effective_start = start_epoch.max(data_start);
-            let effective_end = end_epoch.min(data_end.max(start_epoch.saturating_add(1)));
-            (effective_start, effective_end)
-        } else {
-            (start_epoch, start_epoch)
-        };
+    let effective_range = if let Some((data_start, data_end)) = combined_data_time_bounds(local_db)?
+    {
+        let effective_start = start_epoch.max(data_start);
+        let effective_end = end_epoch.min(data_end.max(start_epoch.saturating_add(1)));
+        (effective_start, effective_end)
+    } else {
+        (start_epoch, start_epoch)
+    };
     if effective_range.1 <= effective_range.0 {
         return Ok(());
     }
-    let _ = ensure_materialized_history_for_range(
-        &local_db,
+    let cache_key = build_history_materialization_cache_key(HistoryMaterializationCacheKeyParts {
+        settings,
+        range_start: effective_range.0,
+        range_end: effective_range.1,
+        pricing_match_mode: &pricing_match_mode,
+        pricings: &pricings,
+        local_signature,
+        proxy_signature,
+    });
+    if lookup_history_materialization_cache(&cache_key).is_some() {
+        return Ok(());
+    }
+
+    let inflight_key = history_materialization_inflight_key(&cache_key);
+    let _inflight_guard = acquire_inflight_key(&inflight_key).await;
+    if lookup_history_materialization_cache(&cache_key).is_some() {
+        return Ok(());
+    }
+    let result = ensure_materialized_history_for_range(
+        local_db,
         settings,
         effective_range.0,
         effective_range.1,
         &pricings,
         &pricing_match_mode,
+        local_signature,
+        proxy_signature,
     )
-    .await?;
+    .await;
+    let _ = result?;
     Ok(())
+}
+
+pub(crate) async fn ensure_materialized_history_no_sync(
+    settings: &AppSettings,
+    start_epoch: i64,
+    end_epoch: i64,
+) -> Result<(), String> {
+    let local_db = crate::local_usage::get_local_usage_db()?;
+    ensure_materialized_history_with_db(local_db.as_ref(), settings, start_epoch, end_epoch).await
 }
 
 async fn get_hot_merge_facts(
@@ -1460,9 +1618,8 @@ async fn get_hot_merge_facts(
         cache_key.pricing_match_mode,
         cache_key.pricing_fingerprint
     );
-    acquire_inflight_key(&inflight_key).await;
+    let _inflight_guard = acquire_inflight_key(&inflight_key).await;
     if let Some(facts) = lookup_hot_merge_cache(&cache_key) {
-        release_inflight_key(&inflight_key).await;
         perf_log(
             "merge_hot_cache_hit_after_wait",
             format!("date={} facts={}", today, facts.len()),
@@ -1500,11 +1657,11 @@ async fn get_hot_merge_facts(
         Ok::<Vec<MergedRequestFact>, String>(merge.facts)
     }
     .await;
-    release_inflight_key(&inflight_key).await;
     compute_result
 }
 
-pub async fn get_merged_request_facts(
+async fn get_merged_request_facts_with_db(
+    local_db: std::sync::Arc<crate::local_usage::LocalUsageDatabase>,
     settings: &AppSettings,
     start_epoch: Option<i64>,
     end_epoch: Option<i64>,
@@ -1522,7 +1679,6 @@ pub async fn get_merged_request_facts(
     }
     let pricing_match_mode = settings.model_pricing.match_mode.clone();
 
-    let local_db = crate::local_usage::ensure_local_usage_synced()?;
     let local_signature = local_db.get_merge_cache_signature()?;
     let proxy_signature = ProxyDatabase::get_global()
         .map(|db| db.get_merge_cache_signature())
@@ -1560,9 +1716,8 @@ pub async fn get_merged_request_facts(
         ),
     );
     let inflight_key = merge_cache_inflight_key(&cache_key);
-    acquire_inflight_key(&inflight_key).await;
+    let _inflight_guard = acquire_inflight_key(&inflight_key).await;
     if let Some((facts, coverage)) = lookup_merge_cache(&cache_key) {
-        release_inflight_key(&inflight_key).await;
         perf_log(
             "merge_cache_hit_after_wait",
             format!(
@@ -1590,6 +1745,8 @@ pub async fn get_merged_request_facts(
                     effective_end,
                     &pricings,
                     &pricing_match_mode,
+                    local_signature,
+                    proxy_signature,
                 )
                 .await?
             } else {
@@ -1707,8 +1864,29 @@ pub async fn get_merged_request_facts(
         Ok::<(Vec<MergedRequestFact>, MergedCoverage), String>((merged, coverage))
     }
     .await;
-    release_inflight_key(&inflight_key).await;
     compute_result
+}
+
+pub async fn get_merged_request_facts(
+    settings: &AppSettings,
+    start_epoch: Option<i64>,
+    end_epoch: Option<i64>,
+    include_errors: bool,
+) -> Result<(Vec<MergedRequestFact>, MergedCoverage), String> {
+    let local_db = crate::local_usage::ensure_local_usage_synced()?;
+    get_merged_request_facts_with_db(local_db, settings, start_epoch, end_epoch, include_errors)
+        .await
+}
+
+pub async fn get_merged_request_facts_no_sync(
+    settings: &AppSettings,
+    start_epoch: Option<i64>,
+    end_epoch: Option<i64>,
+    include_errors: bool,
+) -> Result<(Vec<MergedRequestFact>, MergedCoverage), String> {
+    let local_db = crate::local_usage::get_local_usage_db()?;
+    get_merged_request_facts_with_db(local_db, settings, start_epoch, end_epoch, include_errors)
+        .await
 }
 
 pub async fn get_merged_sessions(
@@ -2369,6 +2547,16 @@ mod tests {
             },
             "2026-06-11".to_string(),
         );
+        let history_key =
+            build_history_materialization_cache_key(HistoryMaterializationCacheKeyParts {
+                settings: &settings,
+                range_start: 10,
+                range_end: 20,
+                pricing_match_mode: &settings.model_pricing.match_mode,
+                pricings: &[],
+                local_signature,
+                proxy_signature: None,
+            });
         let session_key = SessionDerivedCacheKey {
             merge_key: merge_key.clone(),
             limit: 10,
@@ -2380,11 +2568,13 @@ mod tests {
 
         store_merge_cache(merge_key.clone(), &[], &MergedCoverage::default());
         store_hot_merge_cache(hot_key.clone(), &[]);
+        store_history_materialization_cache(history_key.clone(), &["2026-06-11".to_string()]);
         store_sessions_cache(session_key.clone(), &[]);
         store_projects_cache(project_key.clone(), &[]);
 
         assert!(lookup_merge_cache(&merge_key).is_some());
         assert!(lookup_hot_merge_cache(&hot_key).is_some());
+        assert!(lookup_history_materialization_cache(&history_key).is_some());
         assert!(lookup_sessions_cache(&session_key).is_some());
         assert!(lookup_projects_cache(&project_key).is_some());
 
@@ -2392,7 +2582,45 @@ mod tests {
 
         assert!(lookup_merge_cache(&merge_key).is_none());
         assert!(lookup_hot_merge_cache(&hot_key).is_none());
+        assert!(lookup_history_materialization_cache(&history_key).is_none());
         assert!(lookup_sessions_cache(&session_key).is_none());
         assert!(lookup_projects_cache(&project_key).is_none());
+    }
+
+    #[test]
+    fn history_materialization_cache_key_tracks_signatures() {
+        clear_runtime_caches();
+        let settings = sample_settings("standard");
+        let key = build_history_materialization_cache_key(HistoryMaterializationCacheKeyParts {
+            settings: &settings,
+            range_start: 10,
+            range_end: 20,
+            pricing_match_mode: &settings.model_pricing.match_mode,
+            pricings: &[],
+            local_signature: sample_local_signature(),
+            proxy_signature: None,
+        });
+        store_history_materialization_cache(key.clone(), &["2026-06-11".to_string()]);
+
+        assert_eq!(
+            lookup_history_materialization_cache(&key),
+            Some(vec!["2026-06-11".to_string()])
+        );
+
+        let changed_signature = crate::local_usage::LocalMergeCacheSignature {
+            unified_materialization_invalidation_version: 2,
+            ..sample_local_signature()
+        };
+        let changed_key =
+            build_history_materialization_cache_key(HistoryMaterializationCacheKeyParts {
+                settings: &settings,
+                range_start: 10,
+                range_end: 20,
+                pricing_match_mode: &settings.model_pricing.match_mode,
+                pricings: &[],
+                local_signature: changed_signature,
+                proxy_signature: None,
+            });
+        assert!(lookup_history_materialization_cache(&changed_key).is_none());
     }
 }

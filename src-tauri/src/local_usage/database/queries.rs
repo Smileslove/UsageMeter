@@ -223,7 +223,7 @@ impl LocalUsageDatabase {
     }
 
     pub fn get_merge_cache_signature(&self) -> Result<LocalMergeCacheSignature, String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.open_readonly_connection()?;
         conn.query_row(
             r#"
             SELECT

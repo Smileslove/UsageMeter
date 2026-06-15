@@ -713,7 +713,7 @@ impl LocalUsageDatabase {
                 return Ok(Vec::new());
             }
         }
-        let conn = self.conn.lock().unwrap();
+        let conn = self.open_readonly_connection()?;
         let date_placeholders = std::iter::repeat_n("?", local_dates.len())
             .collect::<Vec<_>>()
             .join(", ");
@@ -793,7 +793,7 @@ impl LocalUsageDatabase {
         start_date_inclusive: &str,
         end_date_exclusive: &str,
     ) -> Result<Vec<UnifiedDailySummaryRow>, String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.open_readonly_connection()?;
         let mut stmt = conn
             .prepare(
                 r#"
@@ -863,7 +863,7 @@ impl LocalUsageDatabase {
         start_date_inclusive: &str,
         end_date_exclusive: &str,
     ) -> Result<Vec<UnifiedDailyModelSummaryRow>, String> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.open_readonly_connection()?;
         let mut stmt = conn
             .prepare(
                 r#"

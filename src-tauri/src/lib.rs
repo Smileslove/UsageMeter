@@ -453,6 +453,7 @@ pub fn run() {
             commands::list_wsl_distros,
             // 用量命令
             commands::refresh_usage_bundle,
+            commands::get_overview_deferred_bundle,
             commands::get_overview_breakdown,
             commands::get_window_rate_summary,
             commands::get_statistics_summary,

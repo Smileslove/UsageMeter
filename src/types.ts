@@ -363,9 +363,17 @@ export interface OverviewBreakdown {
 export interface UsageRefreshBundle {
   generatedAtEpoch: number
   snapshot: UsageSnapshot
+  limitSurvival: LimitSurvivalSnapshot
+}
+
+export interface OverviewDeferredBundle {
+  window: string
+  generatedAtEpoch: number
+  windowUsage: WindowUsage
+  usageSummary: UsageSummary
+  modelDistribution: ModelUsage[]
   rateSummary: WindowRateSummary
   overviewBreakdown: OverviewBreakdown
-  limitSurvival: LimitSurvivalSnapshot
 }
 
 // ============ Limit Survival Types ============

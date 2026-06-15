@@ -67,8 +67,9 @@ pub(super) async fn load_day_activity_from_summary_with_hot_overlay(
     include_errors: bool,
     settings: &AppSettings,
 ) -> Result<HashMap<String, DayActivity>, String> {
-    crate::unified_usage::ensure_materialized_history(settings, start_epoch, end_epoch).await?;
-    let local_db = crate::local_usage::ensure_local_usage_synced()?;
+    crate::unified_usage::ensure_materialized_history_no_sync(settings, start_epoch, end_epoch)
+        .await?;
+    let local_db = crate::local_usage::get_local_usage_db()?;
     let start_date =
         crate::utils::business_time::business_date_for_timestamp(start_epoch, settings);
     let end_date = crate::utils::business_time::business_date_for_timestamp(
@@ -102,7 +103,7 @@ pub(super) async fn load_day_activity_from_summary_with_hot_overlay(
     if end_epoch > today_start && start_epoch < end_epoch {
         let hot_start = start_epoch.max(today_start);
         if end_epoch > hot_start {
-            let (facts, _coverage) = crate::unified_usage::get_merged_request_facts(
+            let (facts, _coverage) = crate::unified_usage::get_merged_request_facts_no_sync(
                 settings,
                 Some(hot_start),
                 Some(end_epoch),
@@ -288,8 +289,9 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
 
     let (start_epoch, end_epoch) = normalize_range(query);
     let include_errors = settings.proxy.include_error_requests;
-    let local_db = crate::local_usage::ensure_local_usage_synced()?;
-    crate::unified_usage::ensure_materialized_history(settings, start_epoch, end_epoch).await?;
+    let local_db = crate::local_usage::get_local_usage_db()?;
+    crate::unified_usage::ensure_materialized_history_no_sync(settings, start_epoch, end_epoch)
+        .await?;
     let start_date =
         crate::utils::business_time::business_date_for_timestamp(start_epoch, settings);
     let end_date = crate::utils::business_time::business_date_for_timestamp(
@@ -320,7 +322,7 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
     if end_epoch > today_start {
         let hot_start = start_epoch.max(today_start);
         if end_epoch > hot_start {
-            let (facts, _coverage) = crate::unified_usage::get_merged_request_facts(
+            let (facts, _coverage) = crate::unified_usage::get_merged_request_facts_no_sync(
                 settings,
                 Some(hot_start),
                 Some(end_epoch),

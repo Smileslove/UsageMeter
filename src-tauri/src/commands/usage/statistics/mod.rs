@@ -7,6 +7,7 @@ use crate::models::AppSettings;
 mod activity;
 mod aggregate;
 mod daily_summary;
+mod hourly_summary;
 mod shared;
 
 #[tauri::command]
@@ -34,9 +35,27 @@ pub async fn get_statistics_summary(
         return Ok(summary);
     }
 
+    if let Some(summary) =
+        hourly_summary::try_build_statistics_summary_from_hourly_cache(&query, &settings).await?
+    {
+        perf_log(
+            "get_statistics_summary",
+            format!(
+                "range={}..{} bucket={} path=hourly-cache models={} trend_points={} total_ms={}",
+                summary.range.start_epoch,
+                summary.range.end_epoch,
+                summary.range.bucket,
+                summary.models.len(),
+                summary.trend.len(),
+                started_at.elapsed().as_millis(),
+            ),
+        );
+        return Ok(summary);
+    }
+
     let (start_epoch, end_epoch) = shared::normalize_range(&query);
     let include_errors = settings.proxy.include_error_requests;
-    let (facts, _) = crate::unified_usage::get_merged_request_facts(
+    let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
         &settings,
         Some(start_epoch),
         Some(end_epoch),

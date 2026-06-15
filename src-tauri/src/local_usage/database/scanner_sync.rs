@@ -1,5 +1,7 @@
+use crate::models::ToolFilter;
 use crate::session::{
-    parse_session_file_for_storage, scan_file_backed_session_files, LocalRequestRecord, SessionMeta,
+    parse_session_file_for_storage, scan_file_backed_session_files, LocalRequestRecord,
+    SessionFile, SessionMeta,
 };
 use rusqlite::params;
 use std::collections::{HashMap, HashSet};
@@ -95,38 +97,10 @@ impl LocalUsageDatabase {
             &persisted_opencode_states,
         );
 
-        let scanned = scan_file_backed_session_files();
-        let mut reasonix_local_sessions: Vec<crate::session::SessionMeta> = Vec::new();
-        let mut transcript_map: HashMap<String, DirtySessionSync> = HashMap::new();
-        for session in scanned {
-            let (meta, requests) = parse_session_file_for_storage(&session);
-            if session.tool == "reasonix" {
-                reasonix_local_sessions.push(meta.clone());
-            }
-            let project_key = meta
-                .project_name
-                .clone()
-                .or(meta.cwd.clone())
-                .unwrap_or_else(|| "unknown_project".to_string());
-            let key = session.session_id.clone();
-            transcript_map.insert(
-                key.clone(),
-                DirtySessionSync {
-                    session_id: key,
-                    tool: session.tool.clone(),
-                    file_path: session.file_path.clone(),
-                    file_role: "session_group".to_string(),
-                    file_size: session.file_size,
-                    last_modified: session.last_modified,
-                    fingerprint: session.fingerprint.to_string(),
-                    meta,
-                    requests,
-                    project_key,
-                },
-            );
-        }
-        self.sync_dirty_session_map(transcript_map, "session_group", None)?;
+        self.sync_file_backed_sessions(scan_file_backed_session_files())?;
         if let Some(proxy_db) = crate::proxy::ProxyDatabase::get_global() {
+            let reasonix_local_sessions =
+                self.get_all_sessions(&ToolFilter::Tool("reasonix".to_string()))?;
             let _ = proxy_db.reconcile_reasonix_records(&reasonix_local_sessions);
         }
 
@@ -225,6 +199,49 @@ impl LocalUsageDatabase {
         Ok(())
     }
 
+    fn sync_file_backed_sessions(&self, scanned_sessions: Vec<SessionFile>) -> Result<(), String> {
+        let current_ids: HashSet<String> = scanned_sessions
+            .iter()
+            .map(|session| session.session_id.clone())
+            .collect();
+        let cached_fingerprints = self.load_source_fingerprints("session_group", None)?;
+        let cached_ids: HashSet<String> = cached_fingerprints.keys().cloned().collect();
+        let removed_ids: Vec<String> = cached_ids.difference(&current_ids).cloned().collect();
+
+        let mut dirty_sessions: Vec<DirtySessionSync> = scanned_sessions
+            .into_iter()
+            .filter_map(|session| {
+                let fingerprint = session.fingerprint.to_string();
+                match cached_fingerprints.get(&session.session_id) {
+                    Some(existing) if existing == &fingerprint => None,
+                    _ => {
+                        let (meta, requests) = parse_session_file_for_storage(&session);
+                        let project_key = meta
+                            .project_name
+                            .clone()
+                            .or(meta.cwd.clone())
+                            .unwrap_or_else(|| "unknown_project".to_string());
+                        Some(DirtySessionSync {
+                            session_id: session.session_id,
+                            tool: session.tool,
+                            file_path: session.file_path,
+                            file_role: "session_group".to_string(),
+                            file_size: session.file_size,
+                            last_modified: session.last_modified,
+                            fingerprint,
+                            meta,
+                            requests,
+                            project_key,
+                        })
+                    }
+                }
+            })
+            .collect();
+        dirty_sessions.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+
+        self.sync_dirty_sessions(dirty_sessions, removed_ids)
+    }
+
     fn sync_dirty_session_map(
         &self,
         scanned_map: HashMap<String, DirtySessionSync>,
@@ -255,6 +272,14 @@ impl LocalUsageDatabase {
             .into_iter()
             .filter_map(|session_id| scanned_map.get(&session_id).cloned())
             .collect();
+        self.sync_dirty_sessions(dirty_sessions, removed_ids)
+    }
+
+    fn sync_dirty_sessions(
+        &self,
+        dirty_sessions: Vec<DirtySessionSync>,
+        removed_ids: Vec<String>,
+    ) -> Result<(), String> {
         let dirty_session_count = dirty_sessions.len();
         let removed_session_count = removed_ids.len();
 

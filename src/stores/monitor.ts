@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
-import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SubscriptionQuota, SyncSettings, NetworkProxyConfig, ThemeSettings, WslScanSettings, LimitSurvivalSnapshot, SourceQuotaBindingConfig, ConfiguredSourceQuotaQueryResult, CopilotAuthStatus, GitHubAccount, SourceQuotaBindingTestResult, SourceQuotaBindingRuntimeState, SourceQuotaProfileDescriptor } from '../types'
+import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, OverviewDeferredBundle, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SubscriptionQuota, SyncSettings, NetworkProxyConfig, ThemeSettings, WslScanSettings, LimitSurvivalSnapshot, SourceQuotaBindingConfig, ConfiguredSourceQuotaQueryResult, CopilotAuthStatus, GitHubAccount, SourceQuotaBindingTestResult, SourceQuotaBindingRuntimeState, SourceQuotaProfileDescriptor } from '../types'
 
 const defaultModelPricing: ModelPricingSettings = {
   matchMode: 'fuzzy',
@@ -148,11 +148,16 @@ export const useMonitorStore = defineStore('monitor', {
     statisticsRequestKey: '' as string,
     monthActivityRequestSeq: 0,
     yearActivityRequestSeq: 0,
+    monthActivityRequestKey: '',
+    yearActivityRequestKey: '',
     // 概览归因排行
     overviewBreakdown: null as OverviewBreakdown | null,
     overviewBreakdownLoading: false,
     overviewBreakdownError: '' as string,
     overviewBreakdownRequestSeq: 0,
+    rateSummaryRequestSeq: 0,
+    directRateSummaryRequestSeq: 0,
+    overviewDeferredRequestSeq: 0,
     // 订阅查询
     subscriptionQuota: null as SubscriptionQueryResult | null,
     subscriptionLoading: false,
@@ -275,11 +280,11 @@ export const useMonitorStore = defineStore('monitor', {
 
         const bundle = await invoke<UsageRefreshBundle>('refresh_usage_bundle', { settings: this.settings })
         this.snapshot = bundle.snapshot
-        this.rateSummary = bundle.rateSummary
-        this.overviewBreakdown = bundle.overviewBreakdown
         this.limitSurvival = bundle.limitSurvival
 
         this.lastUpdatedEpoch = this.snapshot.generatedAtEpoch
+        const summaryWindow = this.settings.summaryWindow
+        void this.fetchOverviewDeferredBundle(summaryWindow)
       } catch (e) {
         this.error = String(e)
       } finally {
@@ -325,7 +330,12 @@ export const useMonitorStore = defineStore('monitor', {
       }
     },
     async fetchMonthActivity(year: number, month: number, metric: StatisticsMetric) {
+      const requestKey = JSON.stringify({ year, month, metric, settings: this.settings })
+      if (this.monthActivityLoading && this.monthActivityRequestKey === requestKey) {
+        return
+      }
       const requestSeq = ++this.monthActivityRequestSeq
+      this.monthActivityRequestKey = requestKey
       this.monthActivityLoading = true
       try {
         this.statisticsError = ''
@@ -349,7 +359,12 @@ export const useMonitorStore = defineStore('monitor', {
       }
     },
     async fetchYearActivity(year: number, metric: StatisticsMetric) {
+      const requestKey = JSON.stringify({ year, metric, settings: this.settings })
+      if (this.yearActivityLoading && this.yearActivityRequestKey === requestKey) {
+        return
+      }
       const requestSeq = ++this.yearActivityRequestSeq
+      this.yearActivityRequestKey = requestKey
       this.yearActivityLoading = true
       try {
         this.statisticsError = ''
@@ -390,6 +405,64 @@ export const useMonitorStore = defineStore('monitor', {
         }
       } finally {
         if (requestSeq === this.overviewBreakdownRequestSeq) {
+          this.overviewBreakdownLoading = false
+        }
+      }
+    },
+    async fetchOverviewDeferredBundle(window: string) {
+      const requestSeq = ++this.overviewDeferredRequestSeq
+      const rateSummaryRequestSeq = ++this.rateSummaryRequestSeq
+      const overviewBreakdownRequestSeq = ++this.overviewBreakdownRequestSeq
+      this.overviewBreakdownLoading = true
+      try {
+        this.overviewBreakdownError = ''
+        const bundle = await invokeWithTimeout<OverviewDeferredBundle>('get_overview_deferred_bundle', {
+          window,
+          settings: this.settings
+        }, 60000)
+        if (requestSeq === this.overviewDeferredRequestSeq) {
+          if (this.snapshot) {
+            const existingWindows = this.snapshot.windows.filter(item => item.window !== bundle.windowUsage.window)
+            this.snapshot = {
+              ...this.snapshot,
+              windows: [...existingWindows, bundle.windowUsage],
+              summary: bundle.usageSummary,
+              modelDistribution: bundle.modelDistribution
+            }
+          }
+        }
+        if (rateSummaryRequestSeq === this.rateSummaryRequestSeq) {
+          this.rateSummary = bundle.rateSummary
+        }
+        if (overviewBreakdownRequestSeq === this.overviewBreakdownRequestSeq) {
+          this.overviewBreakdown = bundle.overviewBreakdown
+        }
+      } catch (e) {
+        if (overviewBreakdownRequestSeq === this.overviewBreakdownRequestSeq) {
+          this.overviewBreakdownError = String(e)
+          this.overviewBreakdown = null
+        }
+        if (rateSummaryRequestSeq === this.rateSummaryRequestSeq) {
+          this.rateSummary = {
+            window,
+            overall: {
+              requestCount: 0,
+              totalOutputTokens: 0,
+              totalDurationMs: 0,
+              avgTokensPerSecond: 0
+            },
+            byModel: [],
+            ttft: {
+              requestCount: 0,
+              avgTtftMs: 0,
+              minTtftMs: 0,
+              maxTtftMs: 0
+            },
+            ttftByModel: []
+          }
+        }
+      } finally {
+        if (overviewBreakdownRequestSeq === this.overviewBreakdownRequestSeq) {
           this.overviewBreakdownLoading = false
         }
       }
@@ -488,30 +561,34 @@ export const useMonitorStore = defineStore('monitor', {
     },
     // 速率统计操作
     async fetchRateSummary(window: string) {
-      // 先重置，避免旧窗口数据残留
+      const requestSeq = ++this.directRateSummaryRequestSeq
       this.rateSummary = null
 
       try {
-        this.rateSummary = await invoke<WindowRateSummary>('get_window_rate_summary', { window })
+        const summary = await invoke<WindowRateSummary>('get_window_rate_summary', { window })
+        if (requestSeq === this.directRateSummaryRequestSeq) {
+          this.rateSummary = summary
+        }
       } catch (e) {
         console.error('Failed to fetch rate summary:', e)
-        // 出错时返回空统计
-        this.rateSummary = {
-          window,
-          overall: {
-            requestCount: 0,
-            totalOutputTokens: 0,
-            totalDurationMs: 0,
-            avgTokensPerSecond: 0
-          },
-          byModel: [],
-          ttft: {
-            requestCount: 0,
-            avgTtftMs: 0,
-            minTtftMs: 0,
-            maxTtftMs: 0
-          },
-          ttftByModel: []
+        if (requestSeq === this.directRateSummaryRequestSeq) {
+          this.rateSummary = {
+            window,
+            overall: {
+              requestCount: 0,
+              totalOutputTokens: 0,
+              totalDurationMs: 0,
+              avgTokensPerSecond: 0
+            },
+            byModel: [],
+            ttft: {
+              requestCount: 0,
+              avgTtftMs: 0,
+              minTtftMs: 0,
+              maxTtftMs: 0
+            },
+            ttftByModel: []
+          }
         }
       }
     },

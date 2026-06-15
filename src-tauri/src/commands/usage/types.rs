@@ -1,5 +1,5 @@
 use super::survival::LimitSurvivalSnapshot;
-use crate::models::{StatusCodeCount, UsageSnapshot, WindowRateSummary};
+use crate::models::{StatusCodeCount, UsageSnapshot};
 use crate::proxy::ProxyServer;
 use crate::unified_usage::MergedRequestFact;
 use std::sync::Arc;
@@ -39,7 +39,7 @@ pub enum StatisticsBucket {
     Day,
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StatisticsMetric {
     Cost,
@@ -212,9 +212,19 @@ pub struct OverviewBreakdown {
 pub struct UsageRefreshBundle {
     pub generated_at_epoch: u64,
     pub snapshot: UsageSnapshot,
-    pub rate_summary: WindowRateSummary,
-    pub overview_breakdown: OverviewBreakdown,
     pub limit_survival: LimitSurvivalSnapshot,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverviewDeferredBundle {
+    pub window: String,
+    pub generated_at_epoch: i64,
+    pub window_usage: crate::models::WindowUsage,
+    pub usage_summary: crate::models::UsageSummary,
+    pub model_distribution: Vec<crate::models::ModelUsage>,
+    pub rate_summary: crate::models::WindowRateSummary,
+    pub overview_breakdown: OverviewBreakdown,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -253,12 +263,12 @@ pub struct DayActivity {
 }
 
 pub(super) const MERGED_SOURCE: &str = "proxy-merged";
-pub(super) const USAGE_WINDOWS: &[&str] = &["5h", "24h", "today", "7d", "30d", "current_month"];
 pub(super) const MODEL_TREND_LIMIT: usize = 6;
 
 pub(super) struct WindowPreparedFacts {
     pub(super) window: String,
-    pub(super) start_index: usize,
+    pub(super) start_index: Option<usize>,
+    pub(super) precomputed_usage: Option<UsageWindowPreparedSummary>,
 }
 
 pub(super) struct PreparedUsageRefreshData {
@@ -266,3 +276,11 @@ pub(super) struct PreparedUsageRefreshData {
     pub(super) facts: Vec<MergedRequestFact>,
     pub(super) windows: Vec<WindowPreparedFacts>,
 }
+
+pub(super) struct UsageWindowPreparedSummary {
+    pub(super) usage: UsageSnapshotWindowUsage,
+    pub(super) has_partial_status_coverage: bool,
+    pub(super) has_partial_performance_coverage: bool,
+}
+
+type UsageSnapshotWindowUsage = crate::models::WindowUsage;

@@ -4,11 +4,136 @@ use super::daily_summary::{
     can_use_unified_daily_summary, load_day_activity_from_summary_with_hot_overlay,
 };
 use super::shared::{
-    collect_day_activity_from_facts, month_day_count, to_date_key, DayAccumulatorMap,
+    cache_key_for_source_filter, cache_key_for_tool_filter, collect_day_activity_from_facts,
+    fingerprint_pricings, month_day_count, normalized_day_boundary_mode, to_date_key,
+    DayAccumulatorMap,
 };
 use crate::models::AppSettings;
+use crate::proxy::{ProxyDatabase, ProxyMergeCacheSignature};
 use chrono::{Local, NaiveDate};
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ActivityCacheKey {
+    kind: ActivityCacheKind,
+    start_epoch: i64,
+    end_epoch: i64,
+    day_boundary_mode: String,
+    timezone: String,
+    include_errors: bool,
+    tool_filter: String,
+    source_filter: String,
+    pricing_match_mode: String,
+    pricing_fingerprint: u64,
+    local_signature: crate::local_usage::LocalMergeCacheSignature,
+    proxy_signature: Option<ProxyMergeCacheSignature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ActivityCacheKind {
+    Month {
+        year: i32,
+        month: u8,
+        metric: StatisticsMetric,
+    },
+    Year {
+        year: i32,
+        metric: StatisticsMetric,
+    },
+}
+
+#[derive(Debug, Clone)]
+enum ActivityCacheValue {
+    Month(MonthActivity),
+    Year(YearActivity),
+}
+
+#[derive(Debug, Clone)]
+struct ActivityCacheEntry {
+    key: ActivityCacheKey,
+    value: ActivityCacheValue,
+}
+
+static ACTIVITY_CACHE: OnceLock<Mutex<Vec<ActivityCacheEntry>>> = OnceLock::new();
+const ACTIVITY_CACHE_CAPACITY: usize = 8;
+
+fn activity_cache() -> &'static Mutex<Vec<ActivityCacheEntry>> {
+    ACTIVITY_CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn lookup_activity_cache(key: &ActivityCacheKey) -> Option<ActivityCacheValue> {
+    let cache = activity_cache();
+    let mut guard = cache.lock().unwrap();
+    let idx = guard.iter().position(|entry| entry.key == *key)?;
+    let entry = guard.remove(idx);
+    let value = entry.value.clone();
+    guard.insert(0, entry);
+    Some(value)
+}
+
+fn store_activity_cache(key: ActivityCacheKey, value: ActivityCacheValue) {
+    let cache = activity_cache();
+    let mut guard = cache.lock().unwrap();
+    if let Some(idx) = guard.iter().position(|entry| entry.key == key) {
+        guard.remove(idx);
+    }
+    guard.insert(0, ActivityCacheEntry { key, value });
+    if guard.len() > ACTIVITY_CACHE_CAPACITY {
+        guard.truncate(ACTIVITY_CACHE_CAPACITY);
+    }
+}
+
+#[cfg(test)]
+fn clear_activity_cache() {
+    activity_cache().lock().unwrap().clear();
+}
+
+fn resolve_period_bounds(
+    start_label: &str,
+    end_label: &str,
+    settings: &AppSettings,
+) -> Result<(i64, i64), String> {
+    let start = crate::utils::business_time::business_date_epoch_bounds(start_label, settings)
+        .map(|(value, _)| value)?;
+    let end = crate::utils::business_time::business_date_epoch_bounds(end_label, settings)
+        .map(|(value, _)| value)?;
+    Ok((start, end))
+}
+
+fn build_activity_cache_key(
+    kind: ActivityCacheKind,
+    start_epoch: i64,
+    end_epoch: i64,
+    settings: &AppSettings,
+) -> Result<ActivityCacheKey, String> {
+    let local_db = crate::local_usage::get_local_usage_db()?;
+    let local_signature = local_db.get_merge_cache_signature()?;
+    let proxy_signature = ProxyDatabase::get_global()
+        .map(|db| db.get_merge_cache_signature())
+        .transpose()?;
+    let mut pricings = settings.model_pricing.pricings.clone();
+    if let Ok(db) = crate::proxy::ProxyDatabase::new() {
+        if let Ok(db_pricings) = db.get_all_model_pricings() {
+            pricings.extend(db_pricings);
+        }
+    }
+
+    Ok(ActivityCacheKey {
+        kind,
+        start_epoch,
+        end_epoch,
+        day_boundary_mode: normalized_day_boundary_mode(settings),
+        timezone: settings.timezone.clone(),
+        include_errors: settings.proxy.include_error_requests,
+        tool_filter: cache_key_for_tool_filter(&settings.client_tools.build_filter()),
+        source_filter: cache_key_for_source_filter(&settings.source_aware.build_filter()),
+        pricing_match_mode: settings.model_pricing.match_mode.clone(),
+        pricing_fingerprint: fingerprint_pricings(&pricings),
+        local_signature,
+        proxy_signature,
+    })
+}
 
 async fn load_activity_day_map(
     start_epoch: i64,
@@ -17,7 +142,6 @@ async fn load_activity_day_map(
     settings: &AppSettings,
 ) -> Result<(HashMap<String, DayActivity>, usize, &'static str), String> {
     if can_use_unified_daily_summary(settings) {
-        crate::unified_usage::ensure_materialized_history(settings, start_epoch, end_epoch).await?;
         return Ok((
             load_day_activity_from_summary_with_hot_overlay(
                 start_epoch,
@@ -32,7 +156,7 @@ async fn load_activity_day_map(
     }
 
     let mut day_map: DayAccumulatorMap = HashMap::new();
-    let (facts, _coverage) = crate::unified_usage::get_merged_request_facts(
+    let (facts, _coverage) = crate::unified_usage::get_merged_request_facts_no_sync(
         settings,
         Some(start_epoch),
         Some(end_epoch),
@@ -73,23 +197,39 @@ pub(super) async fn get_month_activity_impl(
 ) -> Result<MonthActivity, String> {
     let started_at = std::time::Instant::now();
     let day_count = month_day_count(year, month);
-    let month_start = crate::utils::business_time::business_date_epoch_bounds(
-        &format!("{year}-{month:02}-01"),
-        &settings,
-    )
-    .map(|(start, _)| start)
-    .unwrap_or_else(|_| Local::now().timestamp());
     let next_month = if month == 12 {
         (year + 1, 1)
     } else {
         (year, month as u32 + 1)
     };
-    let month_end = crate::utils::business_time::business_date_epoch_bounds(
+    let (month_start, month_end) = resolve_period_bounds(
+        &format!("{year}-{month:02}-01"),
         &format!("{}-{:02}-01", next_month.0, next_month.1),
         &settings,
-    )
-    .map(|(start, _)| start)
-    .unwrap_or_else(|_| Local::now().timestamp());
+    )?;
+    let cache_key = build_activity_cache_key(
+        ActivityCacheKind::Month {
+            year,
+            month,
+            metric: metric.clone(),
+        },
+        month_start,
+        month_end,
+        &settings,
+    )?;
+    if let Some(ActivityCacheValue::Month(activity)) = lookup_activity_cache(&cache_key) {
+        perf_log(
+            "get_month_activity_cache_hit",
+            format!(
+                "year={} month={} days={} elapsed_ms={}",
+                year,
+                month,
+                activity.days.len(),
+                started_at.elapsed().as_millis(),
+            ),
+        );
+        return Ok(activity);
+    }
 
     let include_errors = settings.proxy.include_error_requests;
     let aggregate_started_at = std::time::Instant::now();
@@ -112,7 +252,7 @@ pub(super) async fn get_month_activity_impl(
         year,
         month,
         timezone: settings.timezone.clone(),
-        metric,
+        metric: metric.clone(),
         days,
     };
     let today_key = to_date_key(Local::now().timestamp(), &settings);
@@ -136,6 +276,7 @@ pub(super) async fn get_month_activity_impl(
             started_at.elapsed().as_millis(),
         ),
     );
+    store_activity_cache(cache_key, ActivityCacheValue::Month(activity.clone()));
     Ok(activity)
 }
 
@@ -145,18 +286,32 @@ pub(super) async fn get_year_activity_impl(
     settings: AppSettings,
 ) -> Result<YearActivity, String> {
     let started_at = std::time::Instant::now();
-    let year_start = crate::utils::business_time::business_date_epoch_bounds(
+    let (year_start, year_end) = resolve_period_bounds(
         &format!("{year}-01-01"),
-        &settings,
-    )
-    .map(|(start, _)| start)
-    .unwrap_or_else(|_| Local::now().timestamp());
-    let year_end = crate::utils::business_time::business_date_epoch_bounds(
         &format!("{}-01-01", year + 1),
         &settings,
-    )
-    .map(|(start, _)| start)
-    .unwrap_or_else(|_| Local::now().timestamp());
+    )?;
+    let cache_key = build_activity_cache_key(
+        ActivityCacheKind::Year {
+            year,
+            metric: metric.clone(),
+        },
+        year_start,
+        year_end,
+        &settings,
+    )?;
+    if let Some(ActivityCacheValue::Year(activity)) = lookup_activity_cache(&cache_key) {
+        perf_log(
+            "get_year_activity_cache_hit",
+            format!(
+                "year={} days={} elapsed_ms={}",
+                year,
+                activity.days.len(),
+                started_at.elapsed().as_millis(),
+            ),
+        );
+        return Ok(activity);
+    }
 
     let include_errors = settings.proxy.include_error_requests;
     let aggregate_started_at = std::time::Instant::now();
@@ -196,7 +351,7 @@ pub(super) async fn get_year_activity_impl(
     let activity = YearActivity {
         year,
         timezone: settings.timezone.clone(),
-        metric,
+        metric: metric.clone(),
         days,
     };
     let today_key = to_date_key(Local::now().timestamp(), &settings);
@@ -219,5 +374,79 @@ pub(super) async fn get_year_activity_impl(
             started_at.elapsed().as_millis(),
         ),
     );
+    store_activity_cache(cache_key, ActivityCacheValue::Year(activity.clone()));
     Ok(activity)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_local_signature(version: i64) -> crate::local_usage::LocalMergeCacheSignature {
+        crate::local_usage::LocalMergeCacheSignature {
+            local_request_count: 1,
+            local_max_sync_version: version,
+            local_max_timestamp: 1,
+            remote_request_count: 0,
+            remote_max_export_seq: 0,
+            remote_max_timestamp: 0,
+            local_session_max_updated_at: 0,
+            remote_session_max_imported_at: 0,
+            unified_materialization_invalidation_version: version,
+        }
+    }
+
+    fn sample_month_activity() -> MonthActivity {
+        MonthActivity {
+            year: 2026,
+            month: 6,
+            timezone: "Asia/Shanghai".to_string(),
+            metric: StatisticsMetric::Cost,
+            days: vec![DayActivity {
+                date: "2026-06-14".to_string(),
+                request_count: 12,
+                ..Default::default()
+            }],
+        }
+    }
+
+    fn sample_activity_key(
+        local_signature: crate::local_usage::LocalMergeCacheSignature,
+    ) -> ActivityCacheKey {
+        let settings = AppSettings::default();
+        ActivityCacheKey {
+            kind: ActivityCacheKind::Month {
+                year: 2026,
+                month: 6,
+                metric: StatisticsMetric::Cost,
+            },
+            start_epoch: 1,
+            end_epoch: 2,
+            day_boundary_mode: normalized_day_boundary_mode(&settings),
+            timezone: settings.timezone,
+            include_errors: settings.proxy.include_error_requests,
+            tool_filter: "all".to_string(),
+            source_filter: "all".to_string(),
+            pricing_match_mode: settings.model_pricing.match_mode,
+            pricing_fingerprint: 0,
+            local_signature,
+            proxy_signature: None,
+        }
+    }
+
+    #[test]
+    fn activity_cache_hit_requires_matching_signature() {
+        clear_activity_cache();
+        let key = sample_activity_key(sample_local_signature(1));
+        let activity = sample_month_activity();
+        store_activity_cache(key.clone(), ActivityCacheValue::Month(activity.clone()));
+
+        let cached = lookup_activity_cache(&key);
+        assert!(
+            matches!(cached, Some(ActivityCacheValue::Month(value)) if value.days[0].request_count == 12)
+        );
+
+        let changed_key = sample_activity_key(sample_local_signature(2));
+        assert!(lookup_activity_cache(&changed_key).is_none());
+    }
 }

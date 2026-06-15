@@ -2,7 +2,9 @@ use super::super::types::{StatisticsBucket, StatisticsMetric, StatisticsTrendPoi
 use crate::models::AppSettings;
 use crate::unified_usage::MergedRequestFact;
 use chrono::{Local, NaiveDate, TimeZone};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 pub(super) type DayAccumulatorMap = HashMap<String, (StatAccumulator, HashSet<String>)>;
 pub(super) type StatAccumulator = super::super::accumulator::FactAccumulator;
@@ -134,4 +136,51 @@ pub(super) fn local_date_start_epoch(local_date: &str, settings: &AppSettings) -
     crate::utils::business_time::business_date_epoch_bounds(local_date, settings)
         .map(|(start, _)| start)
         .unwrap_or_else(|_| Local::now().timestamp())
+}
+
+pub(super) fn fingerprint_pricings(pricings: &[crate::models::ModelPricingConfig]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for pricing in pricings {
+        pricing.model_id.hash(&mut hasher);
+        pricing.display_name.hash(&mut hasher);
+        pricing.input_price.to_bits().hash(&mut hasher);
+        pricing.output_price.to_bits().hash(&mut hasher);
+        pricing.cache_read_price.map(f64::to_bits).hash(&mut hasher);
+        pricing
+            .cache_write_price
+            .map(f64::to_bits)
+            .hash(&mut hasher);
+        pricing.source.hash(&mut hasher);
+        pricing.last_updated.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+pub(super) fn cache_key_for_source_filter(filter: &crate::models::SourceFilter) -> String {
+    match filter {
+        crate::models::SourceFilter::All => "all".to_string(),
+        crate::models::SourceFilter::Unknown { known_pairs } => {
+            format!("unknown:{known_pairs:?}")
+        }
+        crate::models::SourceFilter::Source {
+            api_key_prefixes,
+            base_url,
+        } => format!("source:{api_key_prefixes:?}:{base_url:?}"),
+    }
+}
+
+pub(super) fn cache_key_for_tool_filter(filter: &crate::models::ToolFilter) -> String {
+    match filter {
+        crate::models::ToolFilter::All => "all".to_string(),
+        crate::models::ToolFilter::Tool(tool) => format!("tool:{tool}"),
+        crate::models::ToolFilter::AnyOf(tools) => {
+            let mut sorted = tools.clone();
+            sorted.sort();
+            format!("anyof:{}", sorted.join(","))
+        }
+    }
+}
+
+pub(super) fn normalized_day_boundary_mode(settings: &AppSettings) -> String {
+    crate::utils::business_time::normalize_day_boundary_mode(&settings.day_boundary_mode)
 }

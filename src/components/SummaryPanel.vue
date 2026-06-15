@@ -1,18 +1,37 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import { t, windowNameLabel } from '../i18n'
 import { MessageSquare, Sigma, CircleDollarSign, Database } from 'lucide-vue-next'
 import { formatRequestCount, formatTokenValue, formatCost } from '../utils/format'
-import { WINDOW_ORDER, type WindowName } from '../types'
+import { WINDOW_ORDER, type WindowName, type WindowUsage } from '../types'
 import LimitSurvivalCard from './overview/LimitSurvivalCard.vue'
 
 const store = useMonitorStore()
 
 // 获取当前选择的汇总窗口数据
-const summaryWindowData = computed(() => {
+const currentSummaryWindowData = computed(() => {
   const windowName = store.settings.summaryWindow
   return store.windows.find(w => w.window === windowName)
+})
+
+const lastSummaryWindowData = ref<WindowUsage | null>(null)
+
+watch(
+  currentSummaryWindowData,
+  data => {
+    if (data) {
+      lastSummaryWindowData.value = data
+    }
+  },
+  { immediate: true }
+)
+
+const summaryWindowData = computed(() => {
+  const current = currentSummaryWindowData.value
+  if (current) return current
+  const last = lastSummaryWindowData.value
+  return last?.window === store.settings.summaryWindow ? last : null
 })
 
 // 计算总输入 Token（包含缓存读取）

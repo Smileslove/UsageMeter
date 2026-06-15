@@ -1,5 +1,5 @@
 use super::helpers::perf_log;
-use super::types::{OverviewBreakdown, ProxyState, UsageRefreshBundle};
+use super::types::{OverviewBreakdown, OverviewDeferredBundle, ProxyState, UsageRefreshBundle};
 use crate::models::{AppSettings, WindowRateSummary};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -13,11 +13,19 @@ pub async fn refresh_usage_bundle(
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<UsageRefreshBundle, String> {
     let started_at = std::time::Instant::now();
+    tauri::async_runtime::spawn(async move {
+        let _ = tauri::async_runtime::spawn_blocking(|| {
+            if let Err(err) = crate::local_usage::ensure_local_usage_synced() {
+                eprintln!("[UsageMeter] Background local usage sync failed: {err}");
+            }
+        })
+        .await;
+    });
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let prepared = refresh::prepare_usage_refresh_data(&settings, now).await?;
+    let prepared = refresh::prepare_usage_refresh_data_no_sync(&settings, now).await?;
     let build_started_at = std::time::Instant::now();
     let bundle = refresh::build_usage_refresh_bundle_from_prepared(&settings, &prepared);
     perf_log(
@@ -71,6 +79,50 @@ pub async fn get_window_rate_summary(
     .await?;
 
     Ok(rate::build_window_rate_summary_from_facts(window, facts))
+}
+
+#[tauri::command]
+pub async fn get_overview_deferred_bundle(
+    window: String,
+    settings: AppSettings,
+    _proxy_state: tauri::State<'_, ProxyState>,
+) -> Result<OverviewDeferredBundle, String> {
+    let now = chrono::Utc::now().timestamp();
+    let include_errors = settings.proxy.include_error_requests;
+    let cutoff_epoch =
+        crate::utils::business_time::business_window_cutoff_epoch(&window, &settings);
+    let (facts, _) = crate::unified_usage::get_merged_request_facts(
+        &settings,
+        Some(cutoff_epoch),
+        Some(now + 1),
+        include_errors,
+    )
+    .await?;
+    let model_stats = refresh::build_model_token_totals_from_facts(&facts);
+    let model_distribution =
+        refresh::build_model_distribution_from_window_stats(Some(&model_stats));
+    let (window_usage, _) = refresh::build_window_usage_from_facts(&window, &facts);
+    let (success_requests, client_error_requests, server_error_requests) =
+        refresh::summarize_status_counts(&facts);
+    let usage_summary = refresh::build_usage_summary_from_usage(
+        &window_usage,
+        success_requests,
+        client_error_requests,
+        server_error_requests,
+    );
+    let rate_summary = rate::build_window_rate_summary_from_facts(window.clone(), facts.clone());
+    let overview_breakdown =
+        breakdown::build_overview_breakdown_from_facts(&settings, window.clone(), now, &facts);
+
+    Ok(OverviewDeferredBundle {
+        window,
+        generated_at_epoch: now,
+        window_usage,
+        usage_summary,
+        model_distribution,
+        rate_summary,
+        overview_breakdown,
+    })
 }
 
 #[cfg(test)]
