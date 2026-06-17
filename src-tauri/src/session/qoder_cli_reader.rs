@@ -166,6 +166,7 @@ fn parse_qoder_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRequ
         end_time: 0,
         source: QODER_CLI_SOURCE_KIND.to_string(),
         message_ids: Vec::new(),
+        explicit_estimated_cost: None,
         scope: None,
     };
 

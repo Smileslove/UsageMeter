@@ -7,13 +7,9 @@
 //! 因此本适配器只产出会话/项目级元数据（标题、消息数、模型、时间、cwd），
 //! `requests` 恒为空——准确 per-request 事实与性能指标一律由代理链提供。
 //!
-//! 路径说明：Reasonix（Go）用 `os.UserConfigDir()` 落盘，与 Rust 的
-//! `dirs::config_dir()` 逐平台一致：
-//! - macOS: `~/Library/Application Support/reasonix/`
-//! - Linux: `~/.config/reasonix/`
+//! 路径说明（Reasonix v1 Go）：
+//! - macOS/Linux: `~/.reasonix/`
 //! - Windows: `%AppData%\reasonix\`
-//!
-//! 同时兼容 Linux 上可能存在的 `~/.config/reasonix/`。
 
 use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
 use super::shared::{extract_project_name, truncate_string};
@@ -84,9 +80,39 @@ struct ReasonixBranchMeta {
     workspace_root: Option<String>,
     #[serde(default)]
     topic_title: Option<String>,
-    /// Reasonix v2 新增：会话作用域（"project" | "global"）
     #[serde(default)]
     scope: Option<String>,
+    /// v1 Go 新增：会话使用的模型（对 desktop-* 等无法从文件名提取模型的格式尤为重要）
+    #[serde(default)]
+    model: Option<String>,
+}
+
+/// Reasonix v1 Go 新格式 `.jsonl.telemetry.json` 中的用量块。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct ReasonixTelemetryUsage {
+    cache_miss_tokens: u64,
+    cache_hit_tokens: u64,
+    completion_tokens: u64,
+    request_count: u64,
+    session_cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ReasonixTelemetry {
+    usage: ReasonixTelemetryUsage,
+}
+
+/// Reasonix 旧 desktop 格式（`desktop-*`）的 `<stem>.meta.json`。
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct ReasonixLegacyStatsMeta {
+    cache_hit_tokens: u64,
+    cache_miss_tokens: u64,
+    total_completion_tokens: u64,
+    total_cost_usd: Option<f64>,
+    workspace: Option<String>,
 }
 
 /// Reasonix 会话 JSONL 单行消息（仅取需要的字段）
@@ -110,19 +136,27 @@ struct ReasonixTurnCheckpoint {
     files: Vec<ReasonixTurnFileRef>,
 }
 
+/// Reasonix 主目录：优先读取 `REASONIX_HOME` 环境变量，
+/// 否则使用平台默认值（macOS/Linux: `~/.reasonix`，Windows: `%AppData%\reasonix`）。
+fn reasonix_home_dir() -> Option<PathBuf> {
+    if let Ok(val) = std::env::var("REASONIX_HOME") {
+        let trimmed = val.trim().to_string();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    return dirs::home_dir().map(|h| h.join(".reasonix"));
+    #[cfg(target_os = "windows")]
+    return dirs::config_dir().map(|d| d.join("reasonix"));
+}
+
 fn reasonix_session_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     let mut reasonix_bases: Vec<PathBuf> = Vec::new();
 
-    if let Some(config_dir) = dirs::config_dir() {
-        reasonix_bases.push(config_dir.join("reasonix"));
-    }
-    // Linux 上 dirs::config_dir() 即 ~/.config；其它平台额外兼容 ~/.config/reasonix。
-    if let Some(home) = dirs::home_dir() {
-        let xdg = home.join(".config").join("reasonix");
-        if !reasonix_bases.contains(&xdg) {
-            reasonix_bases.push(xdg);
-        }
+    if let Some(base) = reasonix_home_dir() {
+        reasonix_bases.push(base);
     }
 
     for base in &reasonix_bases {
@@ -163,7 +197,11 @@ fn collect_reasonix_session_files(root: &Path) -> Vec<SessionFile> {
             continue;
         };
         // 只取会话主文件 *.jsonl，跳过 .jsonl.meta / .display.json / .legacy-imported 等。
-        if !file_name.ends_with(".jsonl") || file_name.starts_with('.') {
+        // sa_* 为子代理会话（Reasonix subagent），不作为顶层会话展示。
+        if !file_name.ends_with(".jsonl")
+            || file_name.starts_with('.')
+            || file_name.starts_with("sa_")
+        {
             continue;
         }
 
@@ -276,6 +314,10 @@ pub(super) fn parse_reasonix_session_file(session: &SessionFile) -> ReasonixPars
             if let Some(scope) = branch.scope.filter(|s| !s.trim().is_empty()) {
                 meta.scope = Some(scope);
             }
+            // .jsonl.meta 里的 model 字段是 desktop-* 等格式会话的唯一模型来源
+            if let Some(model) = branch.model.filter(|m| !m.trim().is_empty()) {
+                models_set.insert(model);
+            }
             let _ = branch.id;
         }
     }
@@ -286,10 +328,65 @@ pub(super) fn parse_reasonix_session_file(session: &SessionFile) -> ReasonixPars
         }
     }
 
-    // 扫描消息：取首条 user 消息作为 topic，统计消息数。
+    // 读取 `.jsonl.telemetry.json`（新格式，优先）或 `<stem>.meta.json`（旧 desktop 格式）。
+    let telemetry_path = format!("{}.telemetry.json", session.file_path);
+    let mut token_data_loaded = false;
+    if let Ok(content) = fs::read_to_string(&telemetry_path) {
+        if let Ok(t) = serde_json::from_str::<ReasonixTelemetry>(&content) {
+            let u = &t.usage;
+            if u.cache_miss_tokens > 0 || u.completion_tokens > 0 || u.cache_hit_tokens > 0 {
+                meta.total_input_tokens = u.cache_miss_tokens;
+                meta.total_cache_read_tokens = u.cache_hit_tokens;
+                meta.total_output_tokens = u.completion_tokens;
+                meta.explicit_estimated_cost = u.session_cost_usd;
+                if u.request_count > 0 {
+                    meta.message_count = u.request_count;
+                }
+                token_data_loaded = true;
+            }
+        }
+    }
+    if !token_data_loaded {
+        let parent = Path::new(&session.file_path)
+            .parent()
+            .unwrap_or(Path::new("."));
+        let stem = Path::new(&session.file_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        let legacy_path = parent.join(format!("{}.meta.json", stem));
+        if let Ok(content) = fs::read_to_string(&legacy_path) {
+            if let Ok(lm) = serde_json::from_str::<ReasonixLegacyStatsMeta>(&content) {
+                if lm.cache_miss_tokens > 0
+                    || lm.total_completion_tokens > 0
+                    || lm.cache_hit_tokens > 0
+                {
+                    meta.total_input_tokens = lm.cache_miss_tokens;
+                    meta.total_cache_read_tokens = lm.cache_hit_tokens;
+                    meta.total_output_tokens = lm.total_completion_tokens;
+                    meta.explicit_estimated_cost = lm.total_cost_usd;
+                }
+                // desktop 格式的 global session，workspace_root 是假路径，
+                // 从 .meta.json 的 workspace 字段获取真实路径。
+                if let Some(ws) = lm.workspace.filter(|w| !w.is_empty()) {
+                    if meta
+                        .cwd
+                        .as_deref()
+                        .map(|c| c.contains("global-workspace"))
+                        .unwrap_or(true)
+                    {
+                        meta.project_name = extract_project_name(&ws);
+                        meta.cwd = Some(ws);
+                    }
+                }
+            }
+        }
+    }
+
+    // 扫描消息：取首条 user 消息作为 topic，统计消息数（当 telemetry 无数据时作为 fallback）。
     let mut first_user_message: Option<String> = None;
     let mut last_user_message: Option<String> = None;
-    let mut message_count: u64 = 0;
+    let mut assistant_count: u64 = 0;
     if let Ok(file) = fs::File::open(&session.file_path) {
         let reader = BufReader::new(file);
         for line in reader.lines().map_while(Result::ok) {
@@ -300,10 +397,8 @@ pub(super) fn parse_reasonix_session_file(session: &SessionFile) -> ReasonixPars
             let Ok(message) = serde_json::from_str::<ReasonixMessage>(trimmed) else {
                 continue;
             };
-            // 仅 assistant 消息计入请求数，与 Claude reader 语义一致
-            //（message_count = 请求数 = assistant 消息数）。
             if message.role == "assistant" {
-                message_count += 1;
+                assistant_count += 1;
             }
             if message.role == "user"
                 && first_user_message.is_none()
@@ -320,9 +415,11 @@ pub(super) fn parse_reasonix_session_file(session: &SessionFile) -> ReasonixPars
     meta.topic = first_user_message.map(|text| truncate_string(&text, 50));
     meta.last_prompt = last_user_message.map(|text| truncate_string(&text, 100));
     meta.models = models_set.into_iter().collect();
-    meta.message_count = message_count;
+    // telemetry 的 requestCount 更准确；无 telemetry 时 fallback 到 assistant 消息数。
+    if meta.message_count == 0 {
+        meta.message_count = assistant_count;
+    }
 
-    // Reasonix transcript 本体不含 per-request token：用量字段保持 0，requests 为空。
     ReasonixParsedData {
         meta,
         requests: Vec::new(),
@@ -366,8 +463,23 @@ fn hash_reasonix_session_companions(
     session_path: &Path,
     hasher: &mut std::collections::hash_map::DefaultHasher,
 ) {
+    // .jsonl.meta：会话元数据（名称、时间戳、workspace、model 等）
     let meta_path = PathBuf::from(format!("{}.meta", session_path.to_string_lossy()));
     hash_path_metadata(&meta_path, hasher);
+
+    // .jsonl.telemetry.json：新格式 token 统计（v1 Go YYYYMMDD-* 格式）
+    let telemetry_path =
+        PathBuf::from(format!("{}.telemetry.json", session_path.to_string_lossy()));
+    hash_path_metadata(&telemetry_path, hasher);
+
+    // <stem>.meta.json：旧 desktop-* 格式的 token 统计
+    if let (Some(parent), Some(stem)) = (
+        session_path.parent(),
+        session_path.file_stem().and_then(|s| s.to_str()),
+    ) {
+        let legacy_stats_path = parent.join(format!("{}.meta.json", stem));
+        hash_path_metadata(&legacy_stats_path, hasher);
+    }
 
     if let Some(checkpoint_dir) = checkpoint_dir_for_session(&session_path.to_string_lossy()) {
         let Ok(read_dir) = fs::read_dir(checkpoint_dir) else {

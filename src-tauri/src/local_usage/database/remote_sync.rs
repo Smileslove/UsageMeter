@@ -415,6 +415,7 @@ impl LocalUsageDatabase {
                 end_time: row.get(6)?,
                 source: "remote_sync".to_string(),
                 message_ids: Vec::new(),
+                explicit_estimated_cost: None,
             })
         };
         let mut result = Vec::new();

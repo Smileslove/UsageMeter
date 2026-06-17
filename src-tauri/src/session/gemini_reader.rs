@@ -168,6 +168,7 @@ pub(super) fn parse_gemini_session_file(
         end_time: 0,
         source: "gemini_session".to_string(),
         message_ids: Vec::new(),
+        explicit_estimated_cost: None,
         scope: None,
     };
 

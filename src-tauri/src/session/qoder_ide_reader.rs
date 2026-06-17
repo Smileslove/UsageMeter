@@ -396,6 +396,7 @@ fn parse_qoder_session(
             .map(|record| record.message_id.clone())
             .collect(),
         scope: None,
+        explicit_estimated_cost: None,
     };
 
     let fingerprint = compute_qoder_session_fingerprint(

@@ -148,6 +148,7 @@ impl LocalUsageDatabase {
                 end_time: row.get(17)?,
                 source: row.get(18)?,
                 message_ids: Vec::new(),
+                explicit_estimated_cost: None,
             })
         };
         let mut result = Vec::new();

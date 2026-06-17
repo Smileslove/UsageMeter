@@ -174,6 +174,7 @@ fn parse_copilot_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRe
         end_time: 0,
         source: COPILOT_CLI_SOURCE_KIND.to_string(),
         message_ids: Vec::new(),
+        explicit_estimated_cost: None,
         scope: None,
     };
 

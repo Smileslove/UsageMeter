@@ -200,6 +200,7 @@ pub(super) fn parse_codex_session_file(session: &SessionFile) -> CodexParsedData
         end_time: 0,
         source: "codex_rollout".to_string(),
         message_ids: Vec::new(),
+        explicit_estimated_cost: None,
         scope: None,
     };
 
@@ -881,59 +882,79 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         let fork_ts = "2026-06-16T10:00:00Z"; // fork creation time
-        let new_ts  = "2026-06-16T10:05:00Z"; // a real new turn, clearly after fork
+        let new_ts = "2026-06-16T10:05:00Z"; // a real new turn, clearly after fork
 
         let rollout_path = dir.join("rollout-fork-session.jsonl");
         {
             let mut f = fs::File::create(&rollout_path).unwrap();
 
             // Fork's own session_meta (has forked_from_id, outer ts = fork_ts)
-            writeln!(f, "{}", serde_json::json!({
-                "timestamp": fork_ts,
-                "type": "session_meta",
-                "payload": {
-                    "id": "fork-session-id",
-                    "forked_from_id": "original-session-id",
-                    "cwd": "/work/project"
-                }
-            })).unwrap();
+            writeln!(
+                f,
+                "{}",
+                serde_json::json!({
+                    "timestamp": fork_ts,
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "fork-session-id",
+                        "forked_from_id": "original-session-id",
+                        "cwd": "/work/project"
+                    }
+                })
+            )
+            .unwrap();
 
             // Replayed history event 1: cumulative 100 input, 30 output (outer ts = fork_ts)
-            writeln!(f, "{}", serde_json::json!({
-                "timestamp": fork_ts,
-                "type": "event_msg",
-                "payload": {
-                    "type": "token_count",
-                    "info": {
-                        "total_token_usage": { "input_tokens": 100, "output_tokens": 30 }
+            writeln!(
+                f,
+                "{}",
+                serde_json::json!({
+                    "timestamp": fork_ts,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": {
+                            "total_token_usage": { "input_tokens": 100, "output_tokens": 30 }
+                        }
                     }
-                }
-            })).unwrap();
+                })
+            )
+            .unwrap();
 
             // Replayed history event 2: cumulative 200 input, 60 output (outer ts = fork_ts)
-            writeln!(f, "{}", serde_json::json!({
-                "timestamp": fork_ts,
-                "type": "event_msg",
-                "payload": {
-                    "type": "token_count",
-                    "info": {
-                        "total_token_usage": { "input_tokens": 200, "output_tokens": 60 }
+            writeln!(
+                f,
+                "{}",
+                serde_json::json!({
+                    "timestamp": fork_ts,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": {
+                            "total_token_usage": { "input_tokens": 200, "output_tokens": 60 }
+                        }
                     }
-                }
-            })).unwrap();
+                })
+            )
+            .unwrap();
 
             // First genuine new turn after fork: cumulative grows by 50 input, 20 output.
             // No last_token_usage — the fix must derive delta via prev_total baseline.
-            writeln!(f, "{}", serde_json::json!({
-                "timestamp": new_ts,
-                "type": "event_msg",
-                "payload": {
-                    "type": "token_count",
-                    "info": {
-                        "total_token_usage": { "input_tokens": 250, "output_tokens": 80 }
+            writeln!(
+                f,
+                "{}",
+                serde_json::json!({
+                    "timestamp": new_ts,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": {
+                            "total_token_usage": { "input_tokens": 250, "output_tokens": 80 }
+                        }
                     }
-                }
-            })).unwrap();
+                })
+            )
+            .unwrap();
         }
 
         let path = rollout_path.to_string_lossy().to_string();
@@ -945,14 +966,24 @@ mod tests {
         let data = parse_codex_session_file(&session);
 
         // Only the one genuinely new event should produce a record.
-        assert_eq!(data.requests.len(), 1,
-            "expected exactly 1 request (the new turn), got {}", data.requests.len());
+        assert_eq!(
+            data.requests.len(),
+            1,
+            "expected exactly 1 request (the new turn), got {}",
+            data.requests.len()
+        );
 
         // Delta = 250-200=50 input (net), 80-60=20 output.
         // normalize_codex_delta may reclassify some input as cache_read; sum them all.
         let total_input = data.requests[0].input_tokens + data.requests[0].cache_read_tokens;
         let total_output = data.requests[0].output_tokens;
-        assert_eq!(total_input, 50, "input delta should be 50, got {total_input}");
-        assert_eq!(total_output, 20, "output delta should be 20, got {total_output}");
+        assert_eq!(
+            total_input, 50,
+            "input delta should be 50, got {total_input}"
+        );
+        assert_eq!(
+            total_output, 20,
+            "output delta should be 20, got {total_output}"
+        );
     }
 }

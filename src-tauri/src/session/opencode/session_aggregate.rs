@@ -292,6 +292,7 @@ fn build_single_session_data(
             source,
             message_ids,
             scope: None,
+            explicit_estimated_cost: None,
         },
         requests,
         fingerprint,
@@ -304,7 +305,9 @@ fn build_single_session_data(
 /// "opencode::wsl:Ubuntu::ses_xyz" → "ses_xyz"
 /// bare "ses_xyz" → "ses_xyz" (unchanged)
 fn strip_canonical_prefix(canonical_id: &str) -> &str {
-    let remainder = canonical_id.strip_prefix("opencode::").unwrap_or(canonical_id);
+    let remainder = canonical_id
+        .strip_prefix("opencode::")
+        .unwrap_or(canonical_id);
     // remainder is now "<storage_id>::<raw_id>" or "<raw_id>"
     if let Some(pos) = remainder.find("::") {
         &remainder[pos + 2..]
@@ -338,7 +341,10 @@ mod tests {
 
     #[test]
     fn strip_canonical_prefix_extracts_raw_id() {
-        assert_eq!(strip_canonical_prefix("opencode::native::ses_abc"), "ses_abc");
+        assert_eq!(
+            strip_canonical_prefix("opencode::native::ses_abc"),
+            "ses_abc"
+        );
         assert_eq!(
             strip_canonical_prefix("opencode::wsl:Ubuntu::ses_abc"),
             "ses_abc"
@@ -356,7 +362,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("opencode.db");
         let conn = Connection::open(&db_path).unwrap();
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             CREATE TABLE session (
               id TEXT PRIMARY KEY,
               project_id TEXT NOT NULL DEFAULT '',
@@ -382,13 +389,16 @@ mod tests {
               time_updated INTEGER NOT NULL,
               data TEXT NOT NULL
             );
-        ").unwrap();
+        ",
+        )
+        .unwrap();
 
         // original session
         conn.execute(
             "INSERT INTO session (id, time_created, time_updated) VALUES ('ses_orig', 1000, 9999)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (
                'msg_orig', 'ses_orig', 1050, 1050,
@@ -401,7 +411,8 @@ mod tests {
         conn.execute(
             "INSERT INTO session (id, time_created, time_updated) VALUES ('ses_fork', 2000, 9999)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         // replayed copy (time_created=1050 < 2000)
         conn.execute(
             "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (
@@ -430,16 +441,19 @@ mod tests {
         let messages = super::super::db_scan::refresh_db_messages_for_path(&mut db_state, &root);
 
         // Collect per session
-        let orig_msgs: Vec<_> = messages.values()
+        let orig_msgs: Vec<_> = messages
+            .values()
             .filter(|m| m.canonical_session_id == "opencode::native::ses_orig")
             .collect();
-        let fork_msgs: Vec<_> = messages.values()
+        let fork_msgs: Vec<_> = messages
+            .values()
             .filter(|m| m.canonical_session_id == "opencode::native::ses_fork")
             .collect();
 
         assert_eq!(orig_msgs.len(), 1, "original session should have 1 message");
         assert_eq!(
-            fork_msgs.len(), 1,
+            fork_msgs.len(),
+            1,
             "fork session should have 1 message (replayed copy filtered out)"
         );
         assert_eq!(
@@ -459,7 +473,8 @@ mod tests {
 
         // Create a real DB with the full schema so detect_schema_mode returns Full.
         let conn = Connection::open(&db_path).unwrap();
-        conn.execute_batch("
+        conn.execute_batch(
+            "
             CREATE TABLE session (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL DEFAULT '',
@@ -491,7 +506,9 @@ mod tests {
             INSERT INTO message (id, session_id, time_created, time_updated, data)
             VALUES ('msg_x', 'ses_x', 5000, 6000,
                     '{\"role\":\"assistant\",\"tokens\":{\"input\":20,\"output\":2}}');
-        ").unwrap();
+        ",
+        )
+        .unwrap();
         drop(conn);
 
         let data = serde_json::json!({
@@ -501,8 +518,15 @@ mod tests {
             "time": { "created": 5000, "completed": 6000 }
         });
         let snapshot = parse_message_snapshot(
-            "native", "opencode://test", "ses_x", "msg_x", &data, 5000, "opencode_db"
-        ).unwrap();
+            "native",
+            "opencode://test",
+            "ses_x",
+            "msg_x",
+            &data,
+            5000,
+            "opencode_db",
+        )
+        .unwrap();
 
         let canonical_id = snapshot.canonical_session_id.clone();
         let mut combined = HashMap::new();

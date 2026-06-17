@@ -243,7 +243,7 @@ function toolConfigPaths(profile: ClientToolProfile): string[] {
     case 'opencode':
       return ['~/.config/opencode/opencode.json']
     case 'reasonix':
-      return ['~/Library/Application Support/reasonix/config.toml']
+      return ['~/.reasonix/config.toml']
     case 'gemini':
       return ['~/.gemini/.env']
     default:

@@ -92,6 +92,9 @@ pub struct SessionMeta {
     /// 该会话中所有消息的 ID 列表（用于关联代理数据库记录）
     #[serde(default, skip_serializing)]
     pub message_ids: Vec<String>,
+    /// 本地 telemetry 文件中读取的精确费用（USD），优先于从 token 数量估算的费用
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_estimated_cost: Option<f64>,
 }
 
 /// 本地 transcript 中抽取出的单条请求事实

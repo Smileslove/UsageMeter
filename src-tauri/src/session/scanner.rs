@@ -310,7 +310,11 @@ fn merge_parsed_session(
         parsed.requests.iter().map(|r| r.cache_create_tokens).sum();
     parsed.meta.total_cache_read_tokens = parsed.requests.iter().map(|r| r.cache_read_tokens).sum();
     parsed.meta.message_count = parsed.requests.len() as u64;
-    parsed.meta.message_ids = parsed.requests.iter().map(|r| r.message_id.clone()).collect();
+    parsed.meta.message_ids = parsed
+        .requests
+        .iter()
+        .map(|r| r.message_id.clone())
+        .collect();
 
     for request in &parsed.requests {
         message_to_session.insert(request.message_id.clone(), request.session_id.clone());
@@ -565,7 +569,10 @@ mod tests {
         assert_eq!(requests.len(), 5);
 
         // Fork session meta should reflect only its 2 new messages
-        let fork_meta = data.iter().find(|m| m.session_id == "project::fork").unwrap();
+        let fork_meta = data
+            .iter()
+            .find(|m| m.session_id == "project::fork")
+            .unwrap();
         assert_eq!(fork_meta.message_count, 2);
         assert_eq!(fork_meta.total_input_tokens, 20);
         assert_eq!(fork_meta.total_output_tokens, 20);

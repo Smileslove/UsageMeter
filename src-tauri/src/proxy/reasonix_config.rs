@@ -1,10 +1,8 @@
 //! Reasonix CLI/桌面端配置接管支持。
 //!
-//! Reasonix（Go）将 provider 配置写在 `<config_dir>/reasonix/config.toml`，
-//! 其中 `config_dir` 与 Rust `dirs::config_dir()` 逐平台一致：
-//! - macOS: `~/Library/Application Support/reasonix/`
-//! - Linux: `~/.config/reasonix/`
-//! - Windows: `%AppData%\reasonix\`
+//! Reasonix v1（Go）将 provider 配置写在：
+//! - macOS/Linux: `~/.reasonix/config.toml`
+//! - Windows: `%AppData%\reasonix\config.toml`
 //!
 //! provider 以 TOML 数组表 `[[providers]]` 声明，每项含 `name`/`kind`/`base_url`/
 //! `api_key_env`。UsageMeter 仅改写指向真实上游的 provider 的 `base_url`，将其
@@ -397,30 +395,28 @@ impl Default for ReasonixConfigManager {
 
 // === 辅助函数 ===
 
-/// 定位全局 config.toml：`<config_dir>/reasonix/config.toml`，
-/// 并兼容 Linux 风格 `~/.config/reasonix/config.toml`。
-fn resolve_reasonix_config_target() -> (PathBuf, bool) {
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(config_dir) = dirs::config_dir() {
-        candidates.push(config_dir.join("reasonix").join("config.toml"));
-    }
-    if let Some(home) = dirs::home_dir() {
-        let xdg = home.join(".config").join("reasonix").join("config.toml");
-        if !candidates.contains(&xdg) {
-            candidates.push(xdg);
+/// Reasonix 主目录：优先读取 `REASONIX_HOME` 环境变量，
+/// 否则使用平台默认值（macOS/Linux: `~/.reasonix`，Windows: `%AppData%\reasonix`）。
+fn reasonix_home_dir() -> Option<PathBuf> {
+    if let Ok(val) = std::env::var("REASONIX_HOME") {
+        let trimmed = val.trim().to_string();
+        if !trimmed.is_empty() {
+            return Some(PathBuf::from(trimmed));
         }
     }
+    #[cfg(not(target_os = "windows"))]
+    return dirs::home_dir().map(|h| h.join(".reasonix"));
+    #[cfg(target_os = "windows")]
+    return dirs::config_dir().map(|d| d.join("reasonix"));
+}
 
-    for candidate in &candidates {
-        if candidate.exists() {
-            return (candidate.clone(), true);
-        }
-    }
-    let fallback = candidates
-        .into_iter()
-        .next()
+/// 定位全局 config.toml（路径由 `reasonix_home_dir()` 决定）。
+fn resolve_reasonix_config_target() -> (PathBuf, bool) {
+    let config_path = reasonix_home_dir()
+        .map(|home| home.join("config.toml"))
         .unwrap_or_else(|| PathBuf::from("reasonix/config.toml"));
-    (fallback, false)
+    let exists = config_path.exists();
+    (config_path, exists)
 }
 
 /// 在 `[[providers]]` 数组表中按 name 定位 provider 并设置 base_url。

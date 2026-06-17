@@ -299,6 +299,7 @@ fn build_hermes_session(
             .iter()
             .map(|record| record.message_id.clone())
             .collect(),
+        explicit_estimated_cost: None,
         scope: None,
     };
 
