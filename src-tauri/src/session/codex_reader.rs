@@ -82,6 +82,10 @@ pub(super) struct CodexRolloutIdentity {
     pub(super) root_session_id: String,
     pub(super) cwd: Option<String>,
     pub(super) is_subagent: bool,
+    /// When this rollout is a fork, the Unix timestamp (seconds) at which the fork was
+    /// created. All replayed events from the original session carry this same outer
+    /// timestamp, so we can skip them to avoid double-counting.
+    pub(super) fork_start_ts: Option<i64>,
 }
 
 pub(super) fn collect_codex_session_files(root: &Path) -> Vec<SessionFile> {
@@ -217,6 +221,11 @@ pub(super) fn parse_codex_session_file(session: &SessionFile) -> CodexParsedData
             .as_ref()
             .map(|identity| identity.is_subagent)
             .unwrap_or(false);
+        // For forked rollouts, all events with ts < fork_start_ts are replays of the
+        // original session's history and must be skipped to avoid double-counting.
+        let fork_start_ts: Option<i64> = file_identity
+            .as_ref()
+            .and_then(|identity| identity.fork_start_ts);
         let mut prev_total: Option<CodexCumulativeTokens> = None;
         let mut current_model: String = "unknown".to_string();
 
@@ -356,6 +365,19 @@ pub(super) fn parse_codex_session_file(session: &SessionFile) -> CodexParsedData
                     let last_usage = info.get("last_token_usage");
                     let total = total_usage.and_then(parse_codex_cumulative_tokens);
                     let last = last_usage.and_then(parse_codex_cumulative_tokens);
+
+                    // Fork replay handling: events at or before fork_start_ts are history
+                    // replayed from the original session. Advance prev_total to establish
+                    // the correct baseline so the first genuinely new event's delta is
+                    // computed accurately — but do NOT emit a request record for them.
+                    let is_fork_replay =
+                        fork_start_ts.map(|fork_ts| ts <= fork_ts).unwrap_or(false);
+                    if is_fork_replay {
+                        if let Some(current_total) = total {
+                            prev_total = Some(current_total);
+                        }
+                        continue;
+                    }
 
                     let delta = if let Some(current_total) = total.clone() {
                         let delta = if let Some(previous_total) = prev_total.as_ref() {
@@ -509,10 +531,21 @@ pub(super) fn inspect_codex_rollout_identity(path: &Path) -> Option<CodexRollout
             .and_then(|value| value.as_str())
             .map(|value| value.to_string());
 
+        // When the rollout was forked from another session, Codex replays the entire
+        // original session history into the new file, stamping every replayed event
+        // with the fork-creation timestamp. We capture that timestamp so the parser
+        // can skip those events and avoid double-counting.
+        let fork_start_ts = if payload.get("forked_from_id").is_some() {
+            extract_timestamp(&json)
+        } else {
+            None
+        };
+
         return Some(CodexRolloutIdentity {
             root_session_id,
             cwd,
             is_subagent,
+            fork_start_ts,
         });
     }
 
@@ -520,6 +553,7 @@ pub(super) fn inspect_codex_rollout_identity(path: &Path) -> Option<CodexRollout
         root_session_id: session_id,
         cwd: None,
         is_subagent: false,
+        fork_start_ts: None,
     })
 }
 
@@ -833,5 +867,92 @@ mod tests {
         // Each rollout resets prev_total, so they're independent
         assert!(total_input > 0);
         assert!(total_output > 0);
+    }
+
+    #[test]
+    fn test_parse_codex_forked_session_skips_replayed_history() {
+        // Validates the fork-replay fix:
+        // - The fork rollout begins with the original session's full history (outer ts = fork time).
+        // - Only events with ts > fork_start_ts are genuinely new and should be counted.
+        // - prev_total must be advanced through the replay so the first new event delta is correct
+        //   even when last_token_usage is absent.
+        let temp = tempdir().unwrap();
+        let dir = temp.path().join("2026").join("06").join("16");
+        fs::create_dir_all(&dir).unwrap();
+
+        let fork_ts = "2026-06-16T10:00:00Z"; // fork creation time
+        let new_ts  = "2026-06-16T10:05:00Z"; // a real new turn, clearly after fork
+
+        let rollout_path = dir.join("rollout-fork-session.jsonl");
+        {
+            let mut f = fs::File::create(&rollout_path).unwrap();
+
+            // Fork's own session_meta (has forked_from_id, outer ts = fork_ts)
+            writeln!(f, "{}", serde_json::json!({
+                "timestamp": fork_ts,
+                "type": "session_meta",
+                "payload": {
+                    "id": "fork-session-id",
+                    "forked_from_id": "original-session-id",
+                    "cwd": "/work/project"
+                }
+            })).unwrap();
+
+            // Replayed history event 1: cumulative 100 input, 30 output (outer ts = fork_ts)
+            writeln!(f, "{}", serde_json::json!({
+                "timestamp": fork_ts,
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": { "input_tokens": 100, "output_tokens": 30 }
+                    }
+                }
+            })).unwrap();
+
+            // Replayed history event 2: cumulative 200 input, 60 output (outer ts = fork_ts)
+            writeln!(f, "{}", serde_json::json!({
+                "timestamp": fork_ts,
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": { "input_tokens": 200, "output_tokens": 60 }
+                    }
+                }
+            })).unwrap();
+
+            // First genuine new turn after fork: cumulative grows by 50 input, 20 output.
+            // No last_token_usage — the fix must derive delta via prev_total baseline.
+            writeln!(f, "{}", serde_json::json!({
+                "timestamp": new_ts,
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": { "input_tokens": 250, "output_tokens": 80 }
+                    }
+                }
+            })).unwrap();
+        }
+
+        let path = rollout_path.to_string_lossy().to_string();
+        let session = make_codex_session(
+            &format!("{}::fork-session-id", TOOL_CODEX),
+            "project",
+            vec![path],
+        );
+        let data = parse_codex_session_file(&session);
+
+        // Only the one genuinely new event should produce a record.
+        assert_eq!(data.requests.len(), 1,
+            "expected exactly 1 request (the new turn), got {}", data.requests.len());
+
+        // Delta = 250-200=50 input (net), 80-60=20 output.
+        // normalize_codex_delta may reclassify some input as cache_read; sum them all.
+        let total_input = data.requests[0].input_tokens + data.requests[0].cache_read_tokens;
+        let total_output = data.requests[0].output_tokens;
+        assert_eq!(total_input, 50, "input delta should be 50, got {total_input}");
+        assert_eq!(total_output, 20, "output delta should be 20, got {total_output}");
     }
 }

@@ -607,7 +607,7 @@ fn hash_path_signature(
     signature.mtime_ns.hash(hasher);
 }
 
-fn query_session_rows(conn: &Connection) -> HashMap<String, SessionRow> {
+pub(in crate::session) fn query_session_rows(conn: &Connection) -> HashMap<String, SessionRow> {
     let mut stmt = match conn.prepare(
         "SELECT id, directory, title, model,
                 COALESCE(tokens_input, 0), COALESCE(tokens_output, 0), COALESCE(tokens_reasoning, 0),

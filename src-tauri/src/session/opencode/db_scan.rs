@@ -178,23 +178,30 @@ fn query_db_message_rows(
     last_time_updated_ms: Option<i64>,
     last_rowid: Option<i64>,
 ) -> Vec<DbMessageRow> {
+    // LEFT JOIN session to filter out fork-replayed messages: a forked session copies historical
+    // messages with their original time_created (earlier than the fork session's time_created).
+    // Any message.time_created < session.time_created is a replayed copy and must be excluded.
     let (sql, params_vec): (&str, Vec<i64>) = if let (Some(last_time), Some(last_rowid)) =
         (last_time_updated_ms, last_rowid)
     {
         (
-            "SELECT rowid, id, session_id, COALESCE(time_updated, 0), data
-             FROM message
-             WHERE json_extract(data, '$.role') = 'assistant'
-               AND (COALESCE(time_updated, 0) > ?1 OR (COALESCE(time_updated, 0) = ?1 AND rowid > ?2))
-             ORDER BY COALESCE(time_updated, 0) ASC, rowid ASC",
+            "SELECT m.rowid, m.id, m.session_id, COALESCE(m.time_updated, 0), m.data
+             FROM message m
+             LEFT JOIN session s ON s.id = m.session_id
+             WHERE json_extract(m.data, '$.role') = 'assistant'
+               AND (s.time_created IS NULL OR m.time_created >= s.time_created)
+               AND (COALESCE(m.time_updated, 0) > ?1 OR (COALESCE(m.time_updated, 0) = ?1 AND m.rowid > ?2))
+             ORDER BY COALESCE(m.time_updated, 0) ASC, m.rowid ASC",
             vec![last_time, last_rowid],
         )
     } else {
         (
-            "SELECT rowid, id, session_id, COALESCE(time_updated, 0), data
-             FROM message
-             WHERE json_extract(data, '$.role') = 'assistant'
-             ORDER BY COALESCE(time_updated, 0) ASC, rowid ASC",
+            "SELECT m.rowid, m.id, m.session_id, COALESCE(m.time_updated, 0), m.data
+             FROM message m
+             LEFT JOIN session s ON s.id = m.session_id
+             WHERE json_extract(m.data, '$.role') = 'assistant'
+               AND (s.time_created IS NULL OR m.time_created >= s.time_created)
+             ORDER BY COALESCE(m.time_updated, 0) ASC, m.rowid ASC",
             Vec::new(),
         )
     };

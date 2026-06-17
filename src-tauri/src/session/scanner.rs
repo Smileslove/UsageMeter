@@ -78,8 +78,17 @@ fn full_scan_and_cache() -> CacheSnapshot {
         let source_id = snapshot.source_id.to_string();
         source_scan_fingerprints.insert(source_id.clone(), snapshot.scan_fingerprint);
 
+        // 最旧会话优先：确保 fork 前的原始会话先占据 message_id 所有权，
+        // fork 会话只贡献其新增消息。
+        let mut sorted_sessions = snapshot.sessions;
+        sorted_sessions.sort_by(|a, b| {
+            a.last_modified
+                .cmp(&b.last_modified)
+                .then(a.session_id.cmp(&b.session_id))
+        });
+
         let mut session_ids = HashSet::new();
-        for session_file in &snapshot.sessions {
+        for session_file in &sorted_sessions {
             let parsed = parse_session_file(session_file);
             merge_parsed_session(
                 &mut data,
@@ -233,10 +242,18 @@ fn apply_source_snapshot(entry: &mut CacheEntry, snapshot: SourceSnapshot) {
     let changed_set: HashSet<String> = changed_or_new_ids.iter().cloned().collect();
     remove_sessions(entry, &changed_set);
 
-    for session_id in changed_or_new_ids {
-        let Some(file) = current_file_map.get(&session_id) else {
-            continue;
-        };
+    // 最旧会话优先，保证原始会话先占据 message_id，fork 会话只贡献新增消息。
+    let mut to_parse: Vec<&SessionFile> = changed_or_new_ids
+        .iter()
+        .filter_map(|id| current_file_map.get(id))
+        .collect();
+    to_parse.sort_by(|a, b| {
+        a.last_modified
+            .cmp(&b.last_modified)
+            .then(a.session_id.cmp(&b.session_id))
+    });
+
+    for file in to_parse {
         let parsed = parse_session_file(file);
         merge_parsed_session(
             &mut entry.data,
@@ -278,8 +295,23 @@ fn merge_parsed_session(
     message_to_session: &mut HashMap<String, String>,
     session_fingerprints: &mut HashMap<String, u64>,
     session_file: &SessionFile,
-    parsed: ParsedSessionData,
+    mut parsed: ParsedSessionData,
 ) {
+    // Drop requests whose message_id is already owned by an earlier (original) session.
+    // This prevents fork sessions from double-counting the copied history.
+    parsed
+        .requests
+        .retain(|req| !message_to_session.contains_key(&req.message_id));
+
+    // Recompute meta totals to match the filtered request set.
+    parsed.meta.total_input_tokens = parsed.requests.iter().map(|r| r.input_tokens).sum();
+    parsed.meta.total_output_tokens = parsed.requests.iter().map(|r| r.output_tokens).sum();
+    parsed.meta.total_cache_create_tokens =
+        parsed.requests.iter().map(|r| r.cache_create_tokens).sum();
+    parsed.meta.total_cache_read_tokens = parsed.requests.iter().map(|r| r.cache_read_tokens).sum();
+    parsed.meta.message_count = parsed.requests.len() as u64;
+    parsed.meta.message_ids = parsed.requests.iter().map(|r| r.message_id.clone()).collect();
+
     for request in &parsed.requests {
         message_to_session.insert(request.message_id.clone(), request.session_id.clone());
     }
@@ -438,5 +470,115 @@ mod tests {
         let parsed = parse_session_file(&session);
         assert_eq!(parsed.meta.start_time, 100);
         assert_eq!(parsed.meta.end_time, 500);
+    }
+
+    #[test]
+    fn test_merge_parsed_session_deduplicates_fork_messages() {
+        use crate::session::constants::TOOL_CLAUDE_CODE;
+        use crate::session::meta::LocalRequestRecord;
+        use crate::session::source::ParsedSessionData;
+
+        let make_session = |id: &str, last_modified: i64| SessionFile {
+            session_id: id.to_string(),
+            tool: TOOL_CLAUDE_CODE.to_string(),
+            project_path: "project".to_string(),
+            file_path: format!("/tmp/{id}.jsonl"),
+            transcript_paths: vec![format!("/tmp/{id}.jsonl")],
+            file_size: 100,
+            last_modified,
+            fingerprint: last_modified as u64,
+        };
+
+        let make_request = |session_id: &str, msg_id: &str, tokens: u64| LocalRequestRecord {
+            session_id: session_id.to_string(),
+            tool: TOOL_CLAUDE_CODE.to_string(),
+            timestamp: 1000,
+            message_id: msg_id.to_string(),
+            input_tokens: tokens,
+            output_tokens: tokens,
+            total_tokens: tokens * 2,
+            ..Default::default()
+        };
+
+        let mut data: Vec<super::super::meta::SessionMeta> = Vec::new();
+        let mut requests: Vec<LocalRequestRecord> = Vec::new();
+        let mut message_to_session: HashMap<String, String> = HashMap::new();
+        let mut session_fingerprints: HashMap<String, u64> = HashMap::new();
+
+        // Original session: messages M1, M2, M3
+        let orig_file = make_session("project::orig", 100);
+        let orig_parsed = ParsedSessionData {
+            meta: {
+                let mut m = super::super::meta::SessionMeta::default();
+                m.session_id = "project::orig".to_string();
+                m.last_modified = 100;
+                m.total_input_tokens = 30;
+                m.total_output_tokens = 30;
+                m.message_count = 3;
+                m
+            },
+            requests: vec![
+                make_request("project::orig", "msg_1", 10),
+                make_request("project::orig", "msg_2", 10),
+                make_request("project::orig", "msg_3", 10),
+            ],
+        };
+        merge_parsed_session(
+            &mut data,
+            &mut requests,
+            &mut message_to_session,
+            &mut session_fingerprints,
+            &orig_file,
+            orig_parsed,
+        );
+
+        // Fork session: copies M1+M2+M3, adds M4+M5
+        let fork_file = make_session("project::fork", 200);
+        let fork_parsed = ParsedSessionData {
+            meta: {
+                let mut m = super::super::meta::SessionMeta::default();
+                m.session_id = "project::fork".to_string();
+                m.last_modified = 200;
+                m.total_input_tokens = 50;
+                m.total_output_tokens = 50;
+                m.message_count = 5;
+                m
+            },
+            requests: vec![
+                make_request("project::fork", "msg_1", 10), // duplicate
+                make_request("project::fork", "msg_2", 10), // duplicate
+                make_request("project::fork", "msg_3", 10), // duplicate
+                make_request("project::fork", "msg_4", 10), // new
+                make_request("project::fork", "msg_5", 10), // new
+            ],
+        };
+        merge_parsed_session(
+            &mut data,
+            &mut requests,
+            &mut message_to_session,
+            &mut session_fingerprints,
+            &fork_file,
+            fork_parsed,
+        );
+
+        // Global requests should have 3 (orig) + 2 (fork new) = 5, not 8
+        assert_eq!(requests.len(), 5);
+
+        // Fork session meta should reflect only its 2 new messages
+        let fork_meta = data.iter().find(|m| m.session_id == "project::fork").unwrap();
+        assert_eq!(fork_meta.message_count, 2);
+        assert_eq!(fork_meta.total_input_tokens, 20);
+        assert_eq!(fork_meta.total_output_tokens, 20);
+
+        // Each message_id should appear exactly once in the global map
+        let msg_1_owner = message_to_session.get("msg_1").unwrap();
+        assert_eq!(msg_1_owner, "project::orig");
+        let msg_4_owner = message_to_session.get("msg_4").unwrap();
+        assert_eq!(msg_4_owner, "project::fork");
+
+        // Fork meta.message_ids must also only list the 2 new messages
+        let mut fork_ids = fork_meta.message_ids.clone();
+        fork_ids.sort();
+        assert_eq!(fork_ids, vec!["msg_4", "msg_5"]);
     }
 }
