@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.1] - 2026-06-20
+
+### Added
+
+- **Reasonix Compatibility Refresh**: Added support for Reasonix v2 local statistics and session storage, and adapted the scanner to Reasonix v1 Go storage layout changes
+- **Qoder Source Cleanup**: Unified Qoder family labels and collapsed local source entries in sessions and cache management views
+
+### Changed
+
+- **Statistics Loading Pipeline**: Reworked overview and statistics loading with two-phase fetching and multi-level caches to improve responsiveness on larger datasets
+- **Rolling Weekly Window**: Updated the 7-day usage window to use a rolling 7-day range instead of a fixed calendar slice
+
+### Fixed
+
+- **Fork Session Token Deduplication**: Fixed duplicate token counting for forked Codex, Claude Code, and OpenCode sessions
+
+---
+
+### 新增
+
+- **Reasonix 兼容性更新**：新增对 Reasonix v2 本地统计与会话存储的支持，并适配 Reasonix v1 Go 存储结构变更
+- **Qoder 来源整理**：统一 Qoder 系列标签，并在会话与缓存管理视图中折叠本地来源条目
+
+### 变更
+
+- **统计加载链路**：重构概览与统计数据加载流程，采用两阶段获取与多级缓存，提升大数据量场景下的响应速度
+- **滚动周时间窗**：将 7 天用量窗口调整为滚动 7 天区间，而非固定自然周切片
+
+### 修复
+
+- **分叉会话 Token 去重**：修复 Codex、Claude Code 和 OpenCode 分叉会话的 token 重复统计问题
+
+---
+
 ## [0.8.0] - 2026-06-14
 
 ### Added
@@ -731,6 +765,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.8.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.8.1
 [0.8.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.8.0
 [0.7.3]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.3
 [0.7.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.2
