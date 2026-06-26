@@ -824,6 +824,42 @@
 
 ---
 
+### `A-overall-summary.md`
+
+本轮核实结论：
+
+1. 该文件属于全模块汇总报告，不是独立实现模块。
+   - 当前仓库状态下，它列出的多数严重问题已经在前几轮按模块分别核实并处理。
+   - 因此本轮不重复按总表逐项落代码，而是把“已修复 / 失准 / 暂缓”的状态校正写入总进度。
+
+2. 汇总表中的多项 Critical / High 问题已完成修复
+   - 已处理项包括：Session 解析 panic、session mutex poisoning、Qoder Work 集成、Codex UTF-8 切片、Proxy URL contains 误判、OpenAI fallback message id、Subscription 缓存键冲突、GPT stderr 敏感日志、生产 CSP、图标分类 i18n、多个前端定时器清理、统计模型 tooltip HTML 转义等。
+   - 这些问题在 `A-overall-summary.md` 中仍显示为待修，属于文档时间点滞后，不再重复提交相同修复。
+
+3. 汇总表中的部分结论需要降级或修正
+   - `DynamicIcon` 全量导入 lucide：代码形式仍然存在，但当前组件在仓库中没有实际使用点，不能按“当前用户可见的严重包体积问题”表述。
+   - “Backend Commands + Infra 进行中” 已过时；该模块已在 `A-backend-commands-deep.md` 轮次完成核实并补了局部修复。
+
+已核实但暂未修复：
+
+1. `src-tauri/src/proxy/collector.rs` 的 `ProxyDatabase::new().expect(...)`
+   - 问题成立。
+   - 但 `UsageCollector` 当前结构要求构造阶段必须持有可用数据库实例；若改成非 panic，需要连带调整收集器状态建模和调用方降级路径，超出本轮总汇文件的局部修补范围。
+
+2. `src-tauri/src/proxy/server.rs` 中自定义 builder 后的 `.build().expect(...)`
+   - 问题成立。
+   - 不过这里涉及代理启动阶段 HTTP client 初始化失败时的整体降级语义，需要与 `HttpClientFactory` 的既有 fallback 策略一起统一设计，当前先保留。
+
+3. `src-tauri/tauri.conf.dev.json` 仍保持 `csp: null`
+   - 现状属实。
+   - 但这是有意保留开发态宽松策略，避免直接影响 `tauri dev` 调试流程；生产配置已在前面轮次加固。
+
+4. 汇总表中的大规模结构性建议
+   - 如 `Sessions.vue` / `monitor.ts` 超大文件、连接池策略、密码存储模型、统一错误类型与日志体系等，结论仍成立。
+   - 这些属于专项重构或基础设施工程，当前阶段继续按“逐文件核实 + 局部修复”推进，不在总汇文件轮次强行展开。
+
+---
+
 ## 已核实但暂未修复
 
 ### `get_recent_request_records` 全量加载再分页
