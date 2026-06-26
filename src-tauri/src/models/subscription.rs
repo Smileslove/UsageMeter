@@ -133,10 +133,12 @@ impl SubscriptionQueryResult {
         }
     }
 
-    /// Create a result indicating no credentials
-    /// Provider parameter retained for future multi-provider support
-    #[allow(unused_variables)]
+    /// Create a result indicating no credentials.
+    ///
+    /// TODO(provider): consume the provider id once query results expose
+    /// multi-provider credential diagnostics.
     pub fn no_credentials(provider: &str) -> Self {
+        let _ = provider;
         Self {
             success: false,
             quota: None,
@@ -146,10 +148,12 @@ impl SubscriptionQueryResult {
         }
     }
 
-    /// Create an error result
-    /// Provider parameter retained for future multi-provider support
-    #[allow(unused_variables)]
+    /// Create an error result.
+    ///
+    /// TODO(provider): consume the provider id once query results expose
+    /// multi-provider credential diagnostics.
     pub fn error(provider: &str, status: CredentialStatus, error: String) -> Self {
+        let _ = provider;
         Self {
             success: false,
             quota: None,

@@ -918,26 +918,24 @@ pub fn normalize_sync_device_id(value: &str) -> String {
     let mut normalized = String::with_capacity(value.len());
     let mut last_was_dash = false;
     for ch in value.trim().chars() {
-        let next = if ch.is_ascii_alphanumeric() {
-            Some(ch.to_ascii_lowercase())
+        let normalized_ch = if ch.is_ascii_alphanumeric() {
+            ch.to_ascii_lowercase()
         } else if matches!(ch, '-' | '_' | '.') {
-            Some(ch)
+            ch
         } else {
-            Some('-')
+            '-'
         };
-        if let Some(ch) = next {
-            if ch == '-' {
-                if last_was_dash {
-                    continue;
-                }
-                last_was_dash = true;
-            } else {
-                last_was_dash = false;
+        if normalized_ch == '-' {
+            if last_was_dash {
+                continue;
             }
-            normalized.push(ch);
-            if normalized.len() >= SYNC_DEVICE_ID_MAX_LEN {
-                break;
-            }
+            last_was_dash = true;
+        } else {
+            last_was_dash = false;
+        }
+        normalized.push(normalized_ch);
+        if normalized.len() >= SYNC_DEVICE_ID_MAX_LEN {
+            break;
         }
     }
     normalized.trim_matches('-').to_string()

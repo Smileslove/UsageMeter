@@ -47,7 +47,6 @@ async-stream = "0.3"
 
 # Database
 rusqlite = { version = "0.32", features = ["bundled"] }
-tempfile = "3"  # For testing
 
 # Cryptography
 sha2 = "0.10"
@@ -62,3 +61,6 @@ tauri-plugin-updater = "2.9"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSColor", "NSView", "NSGraphics"] }
 objc2-foundation = { version = "0.3", features = ["NSObject"] }
+
+[dev-dependencies]
+tempfile = "3"
