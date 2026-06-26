@@ -964,6 +964,56 @@
 
 ---
 
+### `A-subscription-system-deep.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src-tauri/src/subscription/source_quota_util.rs`
+   - 已确认 `normalize_base_url()` 与 `source_resolver.rs` 的实现不一致：前者保留原大小写，后者转小写。
+   - 已统一为大小写不敏感规范化，避免同一 base URL 因大小写差异在“配置来源识别”和“已解析来源匹配”之间失配。
+
+2. `src-tauri/src/subscription/source_quota_executor.rs`
+   - 已确认 New API 余额构建时 `utilization` 未钳制到 `0..100`。
+   - 已在负 quota / 透支等边界场景下加上钳制，避免展示超过 100% 的利用率。
+
+3. `src-tauri/src/subscription/source_resolver.rs`
+   - 已补充大小写不敏感 base URL 匹配单测，确保规范化策略一致后能正确匹配已解析来源。
+
+已通过的定向验证：
+
+- `cargo fmt --manifest-path src-tauri/Cargo.toml`
+- `cargo test --manifest-path src-tauri/Cargo.toml subscription::source_resolver -- --nocapture`
+- `cargo test --manifest-path src-tauri/Cargo.toml subscription::source_quota_executor -- --nocapture`
+
+本轮新增/加强的测试覆盖：
+
+- `subscription::source_resolver::tests::find_resolved_source_matches_base_url_case_insensitively`
+- `subscription::source_quota_executor::tests::new_api_builder_clamps_utilization_when_quota_is_negative`
+
+已核实后不按文档结论修复：
+
+1. 订阅缓存键仅用 provider
+   - 该问题已在 `10-subscription-system.md` 轮次完成修复。
+
+2. GPT 解析错误时把完整响应体输出到 stderr
+   - 该问题已在 `10-subscription-system.md` 轮次完成修复。
+
+已核实但暂未修复：
+
+1. `relay.rs` 的 `endpoint()` 对大多数提供商忽略 `base_url`
+   - 问题仍成立。
+   - 但是否全面改成基于用户配置 base_url 拼接路径，需要逐提供商确认真实路径兼容性，避免把“官方固定端点”误改成错误 URL。
+
+2. `models/settings.rs` 中同步密码与网络代理密码明文存储
+   - 问题仍成立。
+   - 这是跨前后端与平台 keychain/secret 管理模型的重构，不适合在当前逐文件局部修复阶段直接替换。
+
+3. `claude.rs` 同步文件 I/O、`gpt.rs` 缺少响应式 token refresh、`gemini.rs` 的 `contains("2.0")` 启发式等
+   - 这些结论仍有合理性。
+   - 但要么涉及 async 边界，要么需要更明确的产品/协议语义，当前先记录为后续候选项。
+
+---
+
 ## 已核实但暂未修复
 
 ### `get_recent_request_records` 全量加载再分页
