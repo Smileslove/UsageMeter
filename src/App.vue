@@ -180,7 +180,7 @@ onUnmounted(() => {
             <div class="w-1.5 h-1.5 rounded-full bg-emerald-500 z-10"></div>
             <div class="absolute inset-0 rounded-full bg-emerald-400/20 shadow-[0_0_14px_rgba(16,185,129,0.48)]"></div>
           </div>
-          UsageMeter
+          {{ t(store.settings.locale, 'app.name') }}
         </div>
 
         <!-- 操作按钮（右侧） -->

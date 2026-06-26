@@ -783,6 +783,47 @@
 
 ---
 
+### `A-i18n-build-config-deep.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src/App.vue`
+   - 已确认主窗口标题仍直接硬编码为 `UsageMeter`。
+   - 已改为复用已有的 `t(store.settings.locale, 'app.name')`，与分享页等其它位置保持一致。
+
+已通过的定向验证：
+
+- `npm run build`
+
+已核实后不按文档结论修复：
+
+1. `src-tauri/tauri.conf.json` 的 CSP
+   - 当前生产配置已不再是 `null`，已在 `12-overall-summary.md` 轮次完成加固。
+   - `A-i18n-build-config-deep.md` 这里反映的是旧状态，不再重复修改。
+
+2. `iconConfig.ts` 的中文类目标签
+   - 已在 `A-cross-validation.md` 轮次完成国际化整改。
+
+3. “依赖版本可能预发布/过时”的结论
+   - 当前只能从仓库本地看到 semver 约束，无法仅凭本地文件证明这些版本在分析当日是否属于预发布或不稳定版本。
+   - 这类结论需要结合外部包生态状态单独审计，本轮不据此直接改依赖版本。
+
+已核实但暂未修复：
+
+1. i18n 类型安全仍依赖宽松索引签名
+   - 结论成立。
+   - 但要收紧成键级别类型，需要先引入类型生成或重构 `t()` 调用签名，影响面贯穿整个前端，不适合在当前阶段局部补丁推进。
+
+2. `vite.config.ts` 缺少更细的 build target / sourcemap 策略
+   - 结论有一定合理性。
+   - 但具体 target 需要结合 Tauri 目标 WebView、调试产物和发布体积策略统一设计，当前不做猜测式配置补丁。
+
+3. `tsconfig.json` 未启用 `exactOptionalPropertyTypes`
+   - 结论成立。
+   - 但这类严格度开关可能一次性暴露大量可选属性赋值问题，属于单独的类型收敛工程，本轮不直接打开。
+
+---
+
 ## 已核实但暂未修复
 
 ### `get_recent_request_records` 全量加载再分页
