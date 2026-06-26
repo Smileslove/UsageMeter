@@ -519,8 +519,8 @@
    - 已改为优先使用传入的 `data_dir/github-copilot` 作为凭据目录，保留空路径时回退到原默认目录的兼容行为。
 
 4. `src-tauri/src/subscription/gpt.rs`
-   - 已确认 GPT 查询路径在网络错误、响应读取失败、JSON 解析失败时会直接把原始信息写入 stderr，其中解析失败还会包含完整响应体。
-   - 已移除这组裸 `eprintln!` 调试输出，避免把潜在敏感响应内容直接暴露到 stderr；错误仍按原语义返回给调用方。
+   - 已确认 GPT 额度查询在错误分支会把原始响应体直接打印到 stderr。
+   - 已移除调试输出，避免把上游错误响应中的敏感上下文泄漏到日志。
 
 已通过的定向验证：
 
@@ -534,19 +534,34 @@
 - `subscription::tests::cache_separates_relay_and_source_tool_variants`
 - `copilot::auth::tests::new_uses_passed_data_dir`
 
+---
+
+### `12-overall-summary.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src-tauri/tauri.conf.json`
+   - 已确认生产配置中 `app.security.csp` 仍为 `null`，会完全关闭 WebView 的内容安全策略。
+   - 已按当前资源使用面补上最小可用 CSP：限制脚本只能来自应用自身，限制连接仅允许 Tauri 本地 IPC/asset 通道，并仅对白名单图片来源开放 `data:` / `blob:` / `https://unpkg.com`。
+   - 开发配置 `src-tauri/tauri.conf.dev.json` 维持现状，避免直接影响 `tauri dev` 的本地调试体验。
+
+已通过的定向验证：
+
+- `npm run build`
+
 已核实但暂未修复：
 
-1. Copilot 429 限流未映射到更明确的 `RateLimited` 语义
+1. `src/App.vue` 仍使用 `v-if` / `v-else-if` 切换顶级视图
+   - 问题成立，当前切换视图会销毁并重建组件实例。
+   - 但这会直接改变 Overview / Statistics / Sessions / Settings 的生命周期与刷新时机，需要补一轮视图级行为回归后再决定是否改成 `<KeepAlive>`。
+
+2. `src-tauri/src/local_usage/database/migrations.rs` 在多个历史迁移里重复调用 `create_unified_materialized_tables()`
    - 问题成立。
-   - 但这需要同时调整 `CopilotAuthError`、上层 `CredentialStatus` 映射和前端提示文案，本轮先不扩大修改面。
+   - 不过这些调用位于既有 schema 升级路径中，当前实现虽然冗余，但依赖 `IF NOT EXISTS` 保持幂等；若现在折叠迁移步骤，需要额外验证旧版本数据库跨多个版本升级的完整路径，当前先保留。
 
-2. GPT 查询流程未在调用层显式实现 401/403 后 refresh 重试
-   - 风险描述成立。
-   - 但当前 token 刷新职责已经下沉到 `TokenCache`，若要再在 provider 层加重试，需要先澄清两层职责边界，避免重复刷新。
-
-3. `normalize_base_url` 在 `source_quota_util.rs` 与 `source_resolver.rs` 中存在两套实现
-   - 结论成立。
-   - 这属于订阅来源识别的一致性重构，当前没有直接证据表明已造成用户可见错误，因此暂不在本轮合并。
+3. 前端 / 代理 / 测试体系相关的大规模结构性建议
+   - `monitor.ts`、`Sessions.vue`、代理子系统体量过大以及测试覆盖偏弱等结论仍然成立。
+   - 这些属于专项重构或测试建设议题，不适合作为本轮 `12-overall-summary.md` 的单独补丁处理。
 
 ---
 
