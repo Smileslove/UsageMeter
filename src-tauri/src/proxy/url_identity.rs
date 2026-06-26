@@ -6,7 +6,7 @@ fn is_local_proxy_host(url: &Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;
     };
-    host == "127.0.0.1" || host == "localhost"
+    host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]"
 }
 
 fn normalized_path(url: &Url) -> &str {
@@ -87,8 +87,10 @@ fn is_usagemeter_proxy_url_from_url(url: &Url, tool_prefixes: &[&str]) -> bool {
         let legacy_root = format!("/{tool_prefix}");
         path == new_root
             || path.starts_with(&format!("{new_root}/source/"))
+            || path.starts_with(&format!("{new_root}/provider/"))
             || path == legacy_root
             || path.starts_with(&format!("{legacy_root}/source/"))
+            || path.starts_with(&format!("{legacy_root}/provider/"))
     })
 }
 
@@ -121,6 +123,17 @@ mod tests {
         assert_eq!(
             extract_source_id_from_proxy_url(url, &["codex"]).as_deref(),
             Some("src_legacy")
+        );
+    }
+
+    #[test]
+    fn ipv6_loopback_proxy_url_is_detected() {
+        let url = "http://[::1]:18765/usagemeter/codex/source/src_ipv6/v1";
+        assert!(is_usagemeter_proxy_url(url, &["codex"]));
+        assert!(is_usagemeter_proxy_url_for_port(url, 18765, &["codex"]));
+        assert_eq!(
+            extract_source_id_from_proxy_url(url, &["codex"]).as_deref(),
+            Some("src_ipv6")
         );
     }
 }

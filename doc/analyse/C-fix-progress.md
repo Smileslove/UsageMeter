@@ -860,6 +860,60 @@
 
 ---
 
+### `A-proxy-system-deep.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src-tauri/src/proxy/url_identity.rs`
+   - 已确认本地代理 URL 识别仅接受 `127.0.0.1` / `localhost`，未覆盖 IPv6 回环地址。
+   - 已补充 `::1` / `[::1]` 支持，避免本地代理地址改为 IPv6 loopback 后无法识别为 UsageMeter 自身路由。
+
+2. `src-tauri/src/proxy/url_identity.rs`
+   - 已确认通用代理 URL 判定只覆盖 `/source/` 路径，未覆盖 OpenCode 的 `/provider/<id>/source/<id>` 形式。
+   - 已扩展 provider-scoped 路径识别，避免这类 URL 在统一“是否为本地代理地址”的判定中被误判为非代理地址。
+
+3. `src-tauri/src/proxy/opencode_config.rs`
+   - 已同步修正 OpenCode 本地代理 URL 主机白名单，确保与 `url_identity.rs` 的 IPv6 loopback 识别保持一致。
+
+已通过的定向验证：
+
+- `cargo fmt --manifest-path src-tauri/Cargo.toml`
+- `cargo test --manifest-path src-tauri/Cargo.toml proxy::url_identity -- --nocapture`
+- `cargo test --manifest-path src-tauri/Cargo.toml proxy_url_parser_supports_provider_scoped_paths -- --nocapture`
+
+本轮新增/加强的测试覆盖：
+
+- `proxy::url_identity::tests::ipv6_loopback_proxy_url_is_detected`
+- `proxy::opencode_config::tests::proxy_url_parser_supports_provider_scoped_paths` 增补 IPv6 loopback 场景
+
+已核实后不按文档结论修复：
+
+1. `source_detector.rs` 的 `contains("api.anthropic.com")`
+   - 该问题已在 `08-proxy-system.md` 轮次完成修复。
+   - `A-proxy-system-deep.md` 这里反映的是旧状态，不再重复提交。
+
+2. OpenAI fallback message id 近零值问题
+   - 已在 `08-proxy-system.md` 轮次改为原子递增 fallback id。
+
+3. collector 去重分支“重复写数据库”问题
+   - 已在 `08-proxy-system.md` 轮次清理误导性分支。
+
+已核实但暂未修复：
+
+1. `src-tauri/src/proxy/server.rs` 的 HTTP client `.build().expect(...)`
+   - 问题成立。
+   - 但要改成非 panic，需要先确定代理启动阶段在 client 构建失败时的整体降级语义，并与 `HttpClientFactory` 的 fallback 契约统一设计。
+
+2. `src-tauri/src/proxy/collector.rs` 的 `ProxyDatabase::new().expect(...)`
+   - 问题成立。
+   - 但 `UsageCollector` 当前类型要求构造时必须持有数据库实例；若放宽为可失败构造，需要连带调整 `ProxyState` 和调用方初始化路径。
+
+3. 连接池禁用、active_connections 计数器建模、非原子写入、同步文件 I/O 等深层代理基础设施问题
+   - 结论仍成立。
+   - 这些涉及性能、并发和跨平台文件系统语义的一整套重构，不在本轮局部补丁中强行展开。
+
+---
+
 ## 已核实但暂未修复
 
 ### `get_recent_request_records` 全量加载再分页

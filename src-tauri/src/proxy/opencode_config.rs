@@ -784,7 +784,7 @@ impl OpenCodeConfigManager {
         let Some(host) = url.host_str() else {
             return false;
         };
-        if host != "127.0.0.1" && host != "localhost" {
+        if host != "127.0.0.1" && host != "localhost" && host != "::1" {
             return false;
         }
         let path = url.path().trim_end_matches('/');
@@ -1707,6 +1707,12 @@ mod tests {
                 "http://127.0.0.1:18765/opencode/source/oc_legacy"
             ),
             Some("oc_legacy".to_string())
+        );
+        assert_eq!(
+            OpenCodeConfigManager::extract_source_id_from_proxy_url(
+                "http://[::1]:18765/opencode/source/oc_ipv6"
+            ),
+            Some("oc_ipv6".to_string())
         );
     }
 
