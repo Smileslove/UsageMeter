@@ -30,14 +30,31 @@ export const DARK_THEME_PALETTE_OPTIONS: ThemePaletteOption[] = [
   { id: 'forest', key: 'settings.paletteForest', preview: ['#101713', '#1D3A31', '#7BC4A1'], family: 'dark' }
 ]
 
+function isLightPalette(value: string): value is ThemeLightPalette {
+  return LIGHT_THEME_PALETTES.includes(value as ThemeLightPalette)
+}
+
+function isDarkPalette(value: string): value is ThemeDarkPalette {
+  return DARK_THEME_PALETTES.includes(value as ThemeDarkPalette)
+}
+
+function sanitizeTheme(theme: ThemeSettings): ThemeSettings {
+  return {
+    appearance: theme.appearance,
+    lightPalette: isLightPalette(theme.lightPalette) ? theme.lightPalette : DEFAULT_THEME_SETTINGS.lightPalette,
+    darkPalette: isDarkPalette(theme.darkPalette) ? theme.darkPalette : DEFAULT_THEME_SETTINGS.darkPalette
+  }
+}
+
 export function systemPrefersDark(): boolean {
   return window.matchMedia('(prefers-color-scheme: dark)').matches
 }
 
 export function resolveTheme(theme: ThemeSettings): ResolvedTheme {
-  const prefersDark = theme.appearance === 'system' ? systemPrefersDark() : theme.appearance === 'dark'
+  const sanitized = sanitizeTheme(theme)
+  const prefersDark = sanitized.appearance === 'system' ? systemPrefersDark() : sanitized.appearance === 'dark'
   const appearance = prefersDark ? 'dark' : 'light'
-  const palette = prefersDark ? theme.darkPalette : theme.lightPalette
+  const palette = prefersDark ? sanitized.darkPalette : sanitized.lightPalette
   return {
     appearance,
     palette,
@@ -63,3 +80,5 @@ export function nextAppearance(appearance: ThemeAppearance): ThemeAppearance {
 export function themeColorVar(name: string): string {
   return `var(${name})`
 }
+
+export { sanitizeTheme }
