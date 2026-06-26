@@ -914,6 +914,56 @@
 
 ---
 
+### `A-session-readers-deep.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src-tauri/src/session/hermes_reader.rs`
+   - 已确认 `SessionSource::scan()` / `parse()` 仍对实例缓存使用 `lock().unwrap()`。
+   - 已改为 `unwrap_or_else(|err| err.into_inner())`，避免前序异常导致 cache mutex poisoned 后再触发新的 panic。
+
+2. `src-tauri/src/session/qoder_ide_reader.rs`
+   - 已确认 `SessionSource::scan()` / `parse()` 同样仍使用 `lock().unwrap()`。
+   - 已统一改为 poison 恢复模式，和 `scanner.rs`、`qoder_work_reader.rs` 的既有处理保持一致。
+
+3. `src-tauri/src/session/opencode_reader.rs`
+   - 已确认全局 OpenCode 扫描缓存的多个读写入口仍直接 `lock().unwrap()`。
+   - 已统一改为 poison 恢复模式，避免一次缓存态异常把后续 schema 状态读取、hydrate 和扫描链路全部升级为 panic。
+
+已通过的定向验证：
+
+- `cargo fmt --manifest-path src-tauri/Cargo.toml`
+- `cargo test --manifest-path src-tauri/Cargo.toml session::scanner -- --nocapture`
+- `cargo test --manifest-path src-tauri/Cargo.toml qoder_work -- --nocapture`
+- `cargo test --manifest-path src-tauri/Cargo.toml qoder_ide_reader -- --nocapture`
+- `cargo test --manifest-path src-tauri/Cargo.toml hermes_reader -- --nocapture`
+
+验证中发现但未在本轮处理的既有问题：
+
+1. `session::opencode_reader::tests::missing_query_sessions_columns_are_reported_as_message_only`
+   - 复现命令：
+     `cargo test --manifest-path src-tauri/Cargo.toml opencode_reader -- --nocapture`
+   - 当前失败表现为测试期望 `MessageOnly`，实际返回 `Incompatible`。
+   - 本轮改动仅涉及 mutex poison 恢复，未触碰该 schema 兼容判定逻辑；此失败应视为既有问题，后续如处理 OpenCode schema 兼容策略时再单独跟进。
+
+已核实后不按文档结论修复：
+
+1. `scanner.rs` / `registry.rs` 的 parse panic、Qoder Work 未接入、Codex UTF-8 切片
+   - 这些问题已在 `07-session-readers.md` 轮次完成修复。
+   - `A-session-readers-deep.md` 这里反映的是旧状态，不再重复提交。
+
+已核实但暂未修复：
+
+1. `OpenCodeSource::parse()` 触发重复全量扫描 / 扫描期间持锁过长
+   - 结论仍成立。
+   - 但这会牵涉 OpenCode 双来源（DB + legacy file）缓存结构和增量语义，当前先不做半套重构。
+
+2. `openclaw_reader.rs` 重复读取 `sessions.json`、`qoder_cli_reader.rs` fallback `message_id` 碰撞、`wsl.rs` 同步子进程调用
+   - 这些都是当前仍存在的局部问题。
+   - 但优先级低于本轮剩余的 panic 风险收口，先记录为后续候选项。
+
+---
+
 ## 已核实但暂未修复
 
 ### `get_recent_request_records` 全量加载再分页

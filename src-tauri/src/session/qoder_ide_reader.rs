@@ -80,7 +80,7 @@ impl SessionSource for QoderIdeSource {
             })
             .collect::<Vec<_>>();
 
-        let mut cache = self.cache().lock().unwrap();
+        let mut cache = self.cache().lock().unwrap_or_else(|err| err.into_inner());
         cache.clear();
         cache.extend(
             scanned
@@ -98,7 +98,7 @@ impl SessionSource for QoderIdeSource {
     }
 
     fn parse(&self, session: &SessionFile) -> Result<ParsedSessionData, String> {
-        let cache = self.cache().lock().unwrap();
+        let cache = self.cache().lock().unwrap_or_else(|err| err.into_inner());
         let parsed = cache
             .get(&session.session_id)
             .cloned()

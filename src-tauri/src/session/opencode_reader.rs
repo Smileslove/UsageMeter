@@ -461,7 +461,9 @@ pub fn check_opencode_schema() -> OpenCodeSchemaStatus {
 }
 
 pub fn scan_opencode_sessions() -> Vec<OpenCodeSessionData> {
-    let mut cache = get_scan_cache().lock().unwrap();
+    let mut cache = get_scan_cache()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
     let roots = discover_opencode_storage_roots();
     let current_ids: HashSet<String> = roots.iter().map(|root| root.id.clone()).collect();
     cache.stores.retain(|id, _| current_ids.contains(id));
@@ -507,7 +509,9 @@ pub fn scan_opencode_sessions() -> Vec<OpenCodeSessionData> {
 
 #[allow(dead_code)]
 pub fn get_opencode_db_scan_state() -> OpenCodeDbScanState {
-    let cache = get_scan_cache().lock().unwrap();
+    let cache = get_scan_cache()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
     cache
         .stores
         .get("native")
@@ -516,7 +520,9 @@ pub fn get_opencode_db_scan_state() -> OpenCodeDbScanState {
 }
 
 pub fn get_opencode_db_scan_states() -> OpenCodeDbScanStates {
-    let cache = get_scan_cache().lock().unwrap();
+    let cache = get_scan_cache()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
     OpenCodeDbScanStates {
         stores: cache
             .stores
@@ -528,7 +534,9 @@ pub fn get_opencode_db_scan_states() -> OpenCodeDbScanStates {
 
 #[allow(dead_code)]
 pub fn hydrate_opencode_db_scan_state(state: &OpenCodeDbScanState) {
-    let mut cache = get_scan_cache().lock().unwrap();
+    let mut cache = get_scan_cache()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
     hydrate_db_state(
         &mut cache
             .stores
@@ -540,7 +548,9 @@ pub fn hydrate_opencode_db_scan_state(state: &OpenCodeDbScanState) {
 }
 
 pub fn hydrate_opencode_db_scan_states(states: &OpenCodeDbScanStates) {
-    let mut cache = get_scan_cache().lock().unwrap();
+    let mut cache = get_scan_cache()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
     for (id, state) in &states.stores {
         hydrate_db_state(
             &mut cache.stores.entry(id.clone()).or_default().db_state,
