@@ -77,7 +77,8 @@ export const useUpdaterStore = defineStore('updater', {
         monitorStore.settings.skippedUpdateVersion = skippedVersion
         this.reset()
       } catch {
-        this.errorMessage = 'checkFailed'
+        this.status = 'error'
+        this.errorMessage = 'skipFailed'
       }
     },
 

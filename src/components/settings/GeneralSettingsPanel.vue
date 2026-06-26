@@ -215,7 +215,12 @@ onUnmounted(() => {
         <span v-if="updaterStore.status === 'checking'">{{ t(store.settings.locale, 'settings.update.checking') }}</span>
         <span v-else-if="updaterStore.hasUpdate">{{ t(store.settings.locale, 'settings.update.viewUpdate') }}</span>
         <span v-else-if="checkUpdateFlash" class="text-green-500">✓ {{ t(store.settings.locale, 'settings.update.upToDate') }}</span>
-        <span v-else-if="updaterStore.status === 'error'" class="text-red-400">{{ t(store.settings.locale, updaterStore.errorMessage === 'downloadFailed' ? 'settings.update.downloadFailed' : 'settings.update.checkFailed') }}</span>
+        <span
+          v-else-if="updaterStore.status === 'error'"
+          class="text-red-400"
+        >
+          {{ t(store.settings.locale, updaterStore.errorMessage === 'downloadFailed' ? 'settings.update.downloadFailed' : updaterStore.errorMessage === 'skipFailed' ? 'settings.update.skipFailed' : 'settings.update.checkFailed') }}
+        </span>
         <span v-else>{{ t(store.settings.locale, 'settings.update.checkNow') }}</span>
       </button>
     </div>

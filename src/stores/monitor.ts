@@ -73,10 +73,15 @@ const defaultClientTools: ClientToolSettings = {
   activeToolFilter: null
 }
 
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  return String(error)
+}
+
 function invokeWithTimeout<T>(command: string, args: Record<string, unknown>, timeoutMs = 120000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject('ERR_STATISTICS_TIMEOUT'), timeoutMs)
+    timer = setTimeout(() => reject(new Error('ERR_STATISTICS_TIMEOUT')), timeoutMs)
   })
 
   return Promise.race([invoke<T>(command, args), timeout]).finally(() => {
@@ -126,7 +131,8 @@ export const useMonitorStore = defineStore('monitor', {
     error: '' as string,
     lastUpdatedEpoch: null as number | null,
     sessionViewsRevision: 0,
-    refreshTimer: null as ReturnType<typeof setInterval> | null,
+    refreshTimer: null as ReturnType<typeof setTimeout> | null,
+    autoRefreshGeneration: 0,
     // 会话相关状态
     sessions: [] as SessionStats[],
     sessionsLoading: false,
@@ -248,7 +254,7 @@ export const useMonitorStore = defineStore('monitor', {
         this.error = ''
         this.settings = await invoke<AppSettings>('load_settings')
       } catch (e) {
-        this.error = String(e)
+        this.error = errorMessage(e)
       }
     },
     async saveSettings() {
@@ -258,7 +264,7 @@ export const useMonitorStore = defineStore('monitor', {
         await invoke('save_settings', { settings: this.settings })
         // 不在这里调用 startAutoRefresh()，避免在设置页面时触发刷新
       } catch (e) {
-        this.error = String(e)
+        this.error = errorMessage(e)
         throw e
       } finally {
         this.saving = false
@@ -286,7 +292,7 @@ export const useMonitorStore = defineStore('monitor', {
         const summaryWindow = this.settings.summaryWindow
         void this.fetchOverviewDeferredBundle(summaryWindow)
       } catch (e) {
-        this.error = String(e)
+        this.error = errorMessage(e)
       } finally {
         // 确保最小加载时间为 300ms，让用户能看到刷新动画反馈
         const elapsed = Date.now() - startTime
@@ -321,7 +327,7 @@ export const useMonitorStore = defineStore('monitor', {
         }
       } catch (e) {
         if (requestSeq === this.statisticsRequestSeq) {
-          this.statisticsError = String(e)
+          this.statisticsError = errorMessage(e)
         }
       } finally {
         if (requestSeq === this.statisticsRequestSeq) {
@@ -350,7 +356,7 @@ export const useMonitorStore = defineStore('monitor', {
         }
       } catch (e) {
         if (requestSeq === this.monthActivityRequestSeq) {
-          this.statisticsError = String(e)
+          this.statisticsError = errorMessage(e)
         }
       } finally {
         if (requestSeq === this.monthActivityRequestSeq) {
@@ -378,7 +384,7 @@ export const useMonitorStore = defineStore('monitor', {
         }
       } catch (e) {
         if (requestSeq === this.yearActivityRequestSeq) {
-          this.statisticsError = String(e)
+          this.statisticsError = errorMessage(e)
         }
       } finally {
         if (requestSeq === this.yearActivityRequestSeq) {
@@ -400,7 +406,7 @@ export const useMonitorStore = defineStore('monitor', {
         }
       } catch (e) {
         if (requestSeq === this.overviewBreakdownRequestSeq) {
-          this.overviewBreakdownError = String(e)
+          this.overviewBreakdownError = errorMessage(e)
           this.overviewBreakdown = null
         }
       } finally {
@@ -439,7 +445,7 @@ export const useMonitorStore = defineStore('monitor', {
         }
       } catch (e) {
         if (overviewBreakdownRequestSeq === this.overviewBreakdownRequestSeq) {
-          this.overviewBreakdownError = String(e)
+          this.overviewBreakdownError = errorMessage(e)
           this.overviewBreakdown = null
         }
         if (rateSummaryRequestSeq === this.rateSummaryRequestSeq) {
@@ -479,7 +485,7 @@ export const useMonitorStore = defineStore('monitor', {
         await invoke('start_proxy', { port })
         await this.getProxyStatus()
       } catch (e) {
-        this.error = String(e)
+        this.error = errorMessage(e)
         throw e
       } finally {
         this.proxyLoading = false
@@ -487,16 +493,26 @@ export const useMonitorStore = defineStore('monitor', {
     },
     async startProxy(port?: number) {
       this.proxyLoading = true
+      let proxyStarted = false
       try {
         this.error = ''
         const proxyPort = port ?? this.settings.proxy.port ?? 18765
         await invoke('start_proxy', { port: proxyPort })
+        proxyStarted = true
         this.settings.proxy.enabled = true
         this.settings.proxy.port = proxyPort
         await this.saveSettings()
         await this.getProxyStatus()
       } catch (e) {
-        this.error = String(e)
+        if (proxyStarted) {
+          try {
+            await this.loadSettings()
+            await this.getProxyStatus()
+          } catch {
+            // Keep the original start error as the user-facing failure.
+          }
+        }
+        this.error = errorMessage(e)
       } finally {
         this.proxyLoading = false
       }
@@ -546,16 +562,24 @@ export const useMonitorStore = defineStore('monitor', {
     startAutoRefresh() {
       this.stopAutoRefresh()
       const interval = Math.max(5, this.settings.refreshIntervalSeconds) * 1000
-      this.refreshTimer = setInterval(() => {
-        this.refreshUsage()
-        if (this.settings.proxy.enabled) {
-          this.getProxyStatus()
-        }
-      }, interval)
+      const generation = ++this.autoRefreshGeneration
+      const scheduleNext = () => {
+        if (generation !== this.autoRefreshGeneration) return
+        this.refreshTimer = setTimeout(async () => {
+          if (generation !== this.autoRefreshGeneration) return
+          await this.refreshUsage()
+          if (this.settings.proxy.enabled) {
+            await this.getProxyStatus()
+          }
+          scheduleNext()
+        }, interval)
+      }
+      scheduleNext()
     },
     stopAutoRefresh() {
+      this.autoRefreshGeneration += 1
       if (this.refreshTimer) {
-        clearInterval(this.refreshTimer)
+        clearTimeout(this.refreshTimer)
         this.refreshTimer = null
       }
     },

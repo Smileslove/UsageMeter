@@ -11,6 +11,11 @@ const updaterStore = useUpdaterStore()
 const locale = computed(() => store.settings.locale)
 const isDownloading = computed(() => updaterStore.status === 'downloading')
 const hasError = computed(() => updaterStore.status === 'error')
+const updateErrorKey = computed(() => {
+  if (updaterStore.errorMessage === 'downloadFailed') return 'settings.update.downloadFailed'
+  if (updaterStore.errorMessage === 'skipFailed') return 'settings.update.skipFailed'
+  return 'settings.update.checkFailed'
+})
 
 const formattedDate = computed(() => {
   const rawDate = updaterStore.updateInfo?.date?.trim()
@@ -199,7 +204,7 @@ function escapeHtml(value: string): string {
 
             <div v-else-if="hasError" class="theme-status-danger relative mt-4 flex shrink-0 flex-col rounded-[24px] border p-4">
               <p class="text-[13px] font-semibold">
-                {{ t(locale, updaterStore.errorMessage === 'downloadFailed' ? 'settings.update.downloadFailed' : 'settings.update.checkFailed') }}
+                {{ t(locale, updateErrorKey) }}
               </p>
               <button
                 class="theme-status-danger mt-3 inline-flex h-9 items-center justify-center gap-1.5 self-start rounded-xl border px-3 text-[11px] font-medium transition-colors"
