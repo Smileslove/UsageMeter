@@ -1057,6 +1057,73 @@ fn soft_deleted_facts_do_not_disappear_from_query() {
 }
 
 #[test]
+fn local_request_query_saturates_negative_token_values() {
+    let (_tmp, db) = temp_db();
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO local_request_facts (
+                request_id, session_id, tool, project_key, timestamp, message_id, dedupe_key,
+                request_key, model, input_tokens, output_tokens, reasoning_tokens,
+                cache_create_tokens, cache_read_tokens, total_tokens, request_count,
+                source_file_path, source_file_present, created_at, raw_event_kind, sync_version, is_subagent
+             ) VALUES (
+                'rid-negative', 'sess-neg', 'claude_code', 'p', 123, 'msg-neg', 'sess-neg:msg-neg',
+                'claude_code:msg-neg', 'claude-3', -5, -7, -11, -13, -17, -19, -1,
+                '/tmp/neg.jsonl', 1, 123, 'request', 1, 0
+             )",
+            [],
+        )
+        .expect("insert negative local fact");
+    }
+
+    let records = db
+        .get_request_records_in_range(0, i64::MAX, &ToolFilter::All)
+        .expect("load local records");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].input_tokens, 0);
+    assert_eq!(records[0].output_tokens, 0);
+    assert_eq!(records[0].reasoning_tokens, 0);
+    assert_eq!(records[0].cache_create_tokens, 0);
+    assert_eq!(records[0].cache_read_tokens, 0);
+    assert_eq!(records[0].total_tokens, 0);
+    assert_eq!(records[0].request_count, 1);
+}
+
+#[test]
+fn remote_request_query_saturates_negative_token_values() {
+    let (_tmp, db) = temp_db();
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO remote_request_facts (
+                request_key, origin_device_id, session_id, tool, project_key, timestamp,
+                message_id, dedupe_key, model, input_tokens, output_tokens, cache_create_tokens,
+                cache_read_tokens, total_tokens, request_count, explicit_estimated_cost,
+                is_subagent, source_kind, imported_at, export_seq
+             ) VALUES (
+                'remote:msg-neg', 'device-a', 'sess-remote', 'reasonix', 'p', 456,
+                'msg-neg', 'dedupe-neg', 'model-x', -2, -3, -5, -7, -11, -13, NULL,
+                0, 'remote_sync', 456, 1
+             )",
+            [],
+        )
+        .expect("insert negative remote fact");
+    }
+
+    let records = db
+        .get_remote_request_records_in_range(0, i64::MAX, &ToolFilter::All)
+        .expect("load remote records");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].input_tokens, 0);
+    assert_eq!(records[0].output_tokens, 0);
+    assert_eq!(records[0].cache_create_tokens, 0);
+    assert_eq!(records[0].cache_read_tokens, 0);
+    assert_eq!(records[0].total_tokens, 0);
+    assert_eq!(records[0].request_count, 1);
+}
+
+#[test]
 fn unified_materialized_facts_round_trip() {
     let (_tmp, db) = temp_db();
     let local_date = "2026-05-26".to_string();

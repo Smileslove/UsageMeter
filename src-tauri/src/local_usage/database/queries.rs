@@ -25,18 +25,21 @@ impl LocalUsageDatabase {
                 tool: row.get(1)?,
                 timestamp: row.get(2)?,
                 message_id: row.get(3)?,
-                input_tokens: row.get::<_, i64>(4)? as u64,
-                output_tokens: row.get::<_, i64>(5)? as u64,
-                cache_create_tokens: row.get::<_, i64>(6)? as u64,
-                cache_read_tokens: row.get::<_, i64>(7)? as u64,
-                total_tokens: row.get::<_, i64>(8)? as u64,
-                request_count: row.get::<_, i64>(9)?.max(1) as u64,
+                input_tokens: LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(4)?),
+                output_tokens: LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(5)?),
+                cache_create_tokens: LocalUsageDatabase::saturating_i64_to_u64(
+                    row.get::<_, i64>(6)?,
+                ),
+                cache_read_tokens: LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(7)?),
+                total_tokens: LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(8)?),
+                request_count: LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(9)?)
+                    .max(1),
                 model: row.get(10)?,
                 is_subagent: row.get::<_, i64>(11)? != 0,
                 request_key: request_key.filter(|v| !v.trim().is_empty()),
                 explicit_estimated_cost: row.get(15)?,
                 source_file_present: source_file_present.map(|v| v != 0),
-                reasoning_tokens: row.get::<_, i64>(14)? as u64,
+                reasoning_tokens: LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(14)?),
             })
         };
         let mut result = Vec::new();
@@ -136,14 +139,22 @@ impl LocalUsageDatabase {
                 session_name: row.get(6)?,
                 scope: row.get(7)?,
                 file_path: row.get(8)?,
-                file_size: row.get::<_, i64>(9)? as u64,
+                file_size: LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(9)?),
                 last_modified: row.get(10)?,
-                total_input_tokens: row.get::<_, i64>(11)? as u64,
-                total_output_tokens: row.get::<_, i64>(12)? as u64,
-                total_cache_create_tokens: row.get::<_, i64>(13)? as u64,
-                total_cache_read_tokens: row.get::<_, i64>(14)? as u64,
+                total_input_tokens: LocalUsageDatabase::saturating_i64_to_u64(
+                    row.get::<_, i64>(11)?,
+                ),
+                total_output_tokens: LocalUsageDatabase::saturating_i64_to_u64(
+                    row.get::<_, i64>(12)?,
+                ),
+                total_cache_create_tokens: LocalUsageDatabase::saturating_i64_to_u64(
+                    row.get::<_, i64>(13)?,
+                ),
+                total_cache_read_tokens: LocalUsageDatabase::saturating_i64_to_u64(
+                    row.get::<_, i64>(14)?,
+                ),
                 models: serde_json::from_str(&model_list_json).unwrap_or_default(),
-                message_count: row.get::<_, i64>(15)? as u64,
+                message_count: LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(15)?),
                 start_time: row.get(16)?,
                 end_time: row.get(17)?,
                 source: row.get(18)?,

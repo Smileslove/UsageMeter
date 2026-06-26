@@ -1212,28 +1212,6 @@ fn request_key_for_fact(fact: &MergedRequestFact) -> String {
     if !fact.canonical_request_key.trim().is_empty() {
         return fact.canonical_request_key.clone();
     }
-    if !fact.tool.trim().is_empty()
-        && fact.timestamp_ms > 0
-        && fact
-            .api_key_prefix
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_some()
-    {
-        return format!(
-            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
-            fact.tool,
-            fact.session_id,
-            fact.timestamp_ms,
-            fact.model,
-            fact.input_tokens,
-            fact.output_tokens,
-            fact.cache_create_tokens,
-            fact.cache_read_tokens,
-            fact.total_tokens
-        );
-    }
     format!(
         "{}:{}:{}:{}:{}:{}:{}:{}:{}",
         fact.tool,

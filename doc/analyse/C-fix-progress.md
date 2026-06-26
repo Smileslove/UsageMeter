@@ -447,6 +447,61 @@
 
 ---
 
+### `09-database-unified-usage.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src-tauri/src/local_usage/database/mod.rs`
+   - 已确认 `ensure_synced_throttled()` 在 `Mutex` 或 `Condvar::wait()` 遇到 poisoned 状态时会直接 `unwrap()` panic。
+   - 已统一改为 `unwrap_or_else(|err| err.into_inner())`，避免同步门控在前序异常后把后续数据库同步链路全部拖垮。
+
+2. `src-tauri/src/local_usage/database/mod.rs`
+   - 已新增统一的 `saturating_i64_to_u64()` 转换辅助函数。
+   - 用于把数据库层读取到的异常负值安全钳制到 `0`，避免裸 `as u64` 产生巨大的 wraparound 数值。
+
+3. `src-tauri/src/local_usage/database/queries.rs`
+   - 已确认本地请求/会话查询中多处直接使用 `row.get::<_, i64>(...) as u64`。
+   - 已改为统一走饱和转换，覆盖 `input/output/cache/total/reasoning/message_count/file_size` 等字段。
+
+4. `src-tauri/src/local_usage/database/remote_sync.rs`
+   - 已同步修复远程同步导出、远程请求查询和远程会话查询中的同类 `i64 -> u64` 不安全转换。
+   - 现在远程数据即使遇到脏值，也会被安全归零而不是变成超大正数。
+
+5. `src-tauri/src/unified_usage/service.rs`
+   - 已确认 `request_key_for_fact()` 存在一段没有实际效果的重复分支，前后返回格式完全相同。
+   - 已删除冗余条件，保留 canonical key 优先和默认格式化逻辑不变，减少误导性控制流。
+
+已通过的定向验证：
+
+- `cargo fmt --manifest-path src-tauri/Cargo.toml`
+- `cargo test --manifest-path src-tauri/Cargo.toml local_request_query_saturates_negative_token_values -- --nocapture`
+- `cargo test --manifest-path src-tauri/Cargo.toml remote_request_query_saturates_negative_token_values -- --nocapture`
+
+本轮新增/加强的测试覆盖：
+
+- `local_request_query_saturates_negative_token_values`
+- `remote_request_query_saturates_negative_token_values`
+
+验证中发现但未在本轮处理的既有问题：
+
+1. `local_usage::database::tests` 中多条 `opencode_*` 用例当前失败
+   - 复现命令：
+     `cargo test --manifest-path src-tauri/Cargo.toml opencode_db_checkpoint_persists_across_reopen -- --nocapture --test-threads=1`
+   - 失败表现是 `get_request_records_in_range(...)` 返回 0 条，而测试预期 2 条，并进一步触发测试互斥锁 poisoned。
+   - 这组失败发生在本轮新增定向测试之外，且与本轮修改的负值饱和转换无直接因果证据；需在后续专门排查 Opencode 同步/状态恢复链路时单独处理。
+
+已核实但暂未修复：
+
+1. `unified_usage/service.rs` 的 `acquire_inflight_key()` 轮询等待没有超时
+   - 风险描述成立。
+   - 但当前 guard 在正常 drop 路径会释放 key，是否引入超时需要先明确调用方对“放弃合并任务”的容忍语义，否则容易把一次慢任务误判成失败。
+
+2. 数据库完整性检查与迁移前备份机制
+   - 问题成立。
+   - 但这属于数据库生命周期策略增强，不适合在当前逐文件缺陷修复阶段直接插入新的启动/迁移行为。
+
+---
+
 ## 已核实但暂未修复
 
 ### `get_recent_request_records` 全量加载再分页

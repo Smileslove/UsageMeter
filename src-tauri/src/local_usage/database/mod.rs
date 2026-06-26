@@ -66,6 +66,10 @@ struct SyncGateState {
 }
 
 impl LocalUsageDatabase {
+    fn saturating_i64_to_u64(value: i64) -> u64 {
+        value.max(0) as u64
+    }
+
     pub fn get_global() -> Result<Arc<Self>, String> {
         if let Some(db) = GLOBAL_LOCAL_USAGE_DB.get() {
             return Ok(db.clone());
@@ -124,7 +128,7 @@ impl LocalUsageDatabase {
         let (lock, cvar) = self.sync_gate.as_ref();
 
         loop {
-            let mut state = lock.lock().unwrap();
+            let mut state = lock.lock().unwrap_or_else(|err| err.into_inner());
             if let Some(last_completed_at) = state.last_completed_at {
                 if last_completed_at.elapsed() < min_interval {
                     return Ok(());
@@ -132,7 +136,7 @@ impl LocalUsageDatabase {
             }
 
             if state.sync_in_progress {
-                let _guard = cvar.wait(state).unwrap();
+                let _guard = cvar.wait(state).unwrap_or_else(|err| err.into_inner());
                 continue;
             }
 
@@ -141,7 +145,7 @@ impl LocalUsageDatabase {
 
             let result = self.sync_from_scanner();
 
-            let mut state = lock.lock().unwrap();
+            let mut state = lock.lock().unwrap_or_else(|err| err.into_inner());
             state.sync_in_progress = false;
             if result.is_ok() {
                 state.last_completed_at = Some(Instant::now());
