@@ -731,6 +731,58 @@
 
 ---
 
+### `A-frontend-views-stores-deep.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src/views/Sessions.vue`
+   - 已确认三个 watcher 里的 `setTimeout(observeLoadTriggers, 50)` 未集中管理，组件卸载时可能残留延迟回调。
+   - 已改为统一走 `scheduleObserveLoadTriggers()`，并在卸载时清理 `loadTriggerObserveTimer`。
+
+2. `src/components/ApiSourceList.vue`
+   - 已确认返回主设置页仍使用 `defineProps<{ onBack: () => void }>()` + `:onBack` 函数 prop。
+   - 已改为标准 `defineEmits(['back'])` 事件语义，避免继续使用 `on*` 命名 prop 传递回调。
+
+3. `src/views/Settings.vue`
+   - 已同步把 `<ApiSourceList :onBack="goBack" />` 改为 `@back="goBack"`，与组件事件契约保持一致。
+
+已通过的定向验证：
+
+- `npm run build`
+
+已核实后不按文档结论修复：
+
+1. `Statistics.vue` 的 `customRangeTimer` / `initialized` / `Sessions.vue` 的 `'Unknown'`
+   - 这些问题已在 `03-frontend-views.md` 轮次完成修复。
+   - `A-frontend-views-stores-deep.md` 这里反映的是旧状态，不再重复处理。
+
+2. `iconConfig.ts` 8 个中文类目标签
+   - 已在 `A-cross-validation.md` 轮次完成国际化整改。
+   - 这里不再重复提交同一问题。
+
+3. `monitor.ts` 的 `invokeWithTimeout()` 字符串 reject
+   - 已在 `02-frontend-stores-i18n-utils.md` 轮次改为 `Error('ERR_STATISTICS_TIMEOUT')`。
+
+已核实但暂未修复：
+
+1. `Sessions.vue` 直接在视图层写入 store 状态
+   - 问题成立。
+   - 但这需要把会话页缓存命中/分页恢复逻辑一起下沉回 store 或抽成 composable，不能只把几处赋值机械搬走。
+
+2. `Settings.vue` 对多个子视图使用 `v-show`
+   - 问题成立，但切回 `v-if` 会直接改变模型定价、来源管理、币种设置等子视图的驻留状态与用户返回体验。
+   - 需要结合缓存策略和重新加载成本整体评估，当前不做行为改写。
+
+3. `Sessions.vue` 的 `IntersectionObserver` 仍使用 `root: null`
+   - 风险成立。
+   - 但当前页面滚动层与模态层嵌套较多，若直接切到某个局部容器引用，需要补一轮实际滚动触发验证，当前先保留。
+
+4. `Sessions.vue` / `monitor.ts` 的超大文件与模板内函数调用
+   - 结论成立。
+   - 这是结构性重构问题，不适合在当前逐文件缺陷修复阶段展开。
+
+---
+
 ## 已核实但暂未修复
 
 ### `get_recent_request_records` 全量加载再分页

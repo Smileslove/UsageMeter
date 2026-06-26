@@ -58,6 +58,7 @@ const proxyRefreshDebounceMs = 1500
 const copiedProjectPath = ref<string | null>(null)
 let proxyRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let copiedProjectPathTimer: ReturnType<typeof setTimeout> | null = null
+let loadTriggerObserveTimer: ReturnType<typeof setTimeout> | null = null
 
 const cacheKey = () => `${selectedTool.value ?? '__all__'}`
 
@@ -754,16 +755,26 @@ const observeLoadTriggers = () => {
   }
 }
 
+const scheduleObserveLoadTriggers = () => {
+  if (loadTriggerObserveTimer) {
+    clearTimeout(loadTriggerObserveTimer)
+  }
+  loadTriggerObserveTimer = setTimeout(() => {
+    loadTriggerObserveTimer = null
+    observeLoadTriggers()
+  }, 50)
+}
+
 watch(activeTab, () => {
-  setTimeout(observeLoadTriggers, 50)
+  scheduleObserveLoadTriggers()
 })
 
 watch(() => store.requestRecords.length, () => {
-  setTimeout(observeLoadTriggers, 50)
+  scheduleObserveLoadTriggers()
 })
 
 watch(() => store.sessions.length, () => {
-  setTimeout(observeLoadTriggers, 50)
+  scheduleObserveLoadTriggers()
 })
 
 // 初始加载
@@ -801,6 +812,10 @@ onUnmounted(() => {
   if (copiedProjectPathTimer) {
     clearTimeout(copiedProjectPathTimer)
     copiedProjectPathTimer = null
+  }
+  if (loadTriggerObserveTimer) {
+    clearTimeout(loadTriggerObserveTimer)
+    loadTriggerObserveTimer = null
   }
 })
 </script>

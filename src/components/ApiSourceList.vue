@@ -11,6 +11,9 @@ import LobeIcon from './LobeIcon.vue'
 import { SOURCE_ICON_CATEGORIES } from '../iconConfig'
 
 const store = useMonitorStore()
+const emit = defineEmits<{
+  back: []
+}>()
 
 const editingSourceId = ref<string | null>(null)
 const iconPickerSourceId = ref<string | null>(null)
@@ -218,16 +221,13 @@ const deletingSource = computed(() => {
   return sources.value.find(s => s.id === deleteSourceId.value)
 })
 
-defineProps<{
-  onBack: () => void
-}>()
 </script>
 
 <template>
   <div class="space-y-3">
     <div class="flex items-center gap-2">
       <button
-        @click="$props.onBack"
+        @click="emit('back')"
         class="rounded-lg p-1 text-[var(--theme-text-tertiary)] transition-colors hover:bg-gray-100 hover:text-[var(--theme-text-primary)]"
       >
         <ChevronLeft class="w-4 h-4" />

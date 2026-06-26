@@ -82,7 +82,7 @@ const confirmQuit = async () => {
 
     <ApiSourceList
       v-show="subView === 'api-sources'"
-      :onBack="goBack"
+      @back="goBack"
     />
 
     <CurrencySettings
