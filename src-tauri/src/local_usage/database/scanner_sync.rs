@@ -215,7 +215,16 @@ impl LocalUsageDatabase {
                 match cached_fingerprints.get(&session.session_id) {
                     Some(existing) if existing == &fingerprint => None,
                     _ => {
-                        let (meta, requests) = parse_session_file_for_storage(&session);
+                        let (meta, requests) = match parse_session_file_for_storage(&session) {
+                            Ok(parsed) => parsed,
+                            Err(err) => {
+                                eprintln!(
+                                    "[UsageMeter] Failed to sync session {} from {}: {}",
+                                    session.session_id, session.file_path, err
+                                );
+                                return None;
+                            }
+                        };
                         let project_key = meta
                             .project_name
                             .clone()

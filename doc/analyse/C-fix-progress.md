@@ -1,0 +1,435 @@
+# UsageMeter 分析问题修复进度
+
+**更新时间**: 2026-06-26  
+**当前状态**: 进行中  
+**处理策略**: 逐个分析 `doc/analyse/` 中的问题结论，先核实是否真实存在，再按影响面决定修复或暂缓。
+
+---
+
+## 已处理文件
+
+### `06-backend-commands.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src-tauri/src/commands/proxy.rs`
+   - 已确认 `start_proxy` 在 `takeover_claude = false` 时会重复创建 `ProxyServer` 实例。
+   - 已修复为单一路径启动，避免无意义实例创建和句柄覆盖。
+
+2. `src-tauri/src/commands/updater.rs`
+   - 已确认 `skip_update_version` 绕过统一设置加载/迁移/密钥持久化链路，直接改 JSON 文件。
+   - 已改为复用 `load_settings` + `save_settings_internal`。
+   - 对网络代理热更新失败场景做了兼容：只要设置已成功落盘，就不阻止“跳过版本”生效。
+
+3. `src-tauri/src/commands/network_proxy.rs`
+   - 已确认未知 `target` 会静默回退到 GitHub，可能让错误配置得到误导性成功结果。
+   - 已改为对非法 target 返回显式错误 `ERR_INVALID_NETWORK_PROXY_TARGET`。
+
+4. `src-tauri/src/commands/currency.rs`
+   - 已确认汇率查询每次都会请求 `open.er-api.com`，没有缓存或失败回退。
+   - 已新增 1 小时内存缓存。
+   - 已新增失败回退逻辑：网络失败、HTTP 非成功、响应解析失败、API 非 success 时，优先返回最近一次成功缓存。
+
+5. `src-tauri/src/commands/usage/statistics/daily_summary.rs`
+   - 已确认 `success_request_count` 的成功判定与 `accumulator.rs` 不一致。
+   - 原实现将 `3xx` 视为 success；现已统一为仅 `2xx` 计入 success。
+
+6. `src-tauri/src/local_usage/database/materialized.rs`
+   - 已同步修复物化日汇总与模型日汇总中的 success 判定，避免数据库快路径和实时聚合路径再次分叉。
+
+7. `src-tauri/src/commands/usage/survival.rs`
+   - 已核实 `compute_current_block` 对时间戳乱序输入缺少防御。
+   - 已改为在块边界判断时拒绝“时间倒退”影响当前块起点。
+   - 已同步修正块内计数逻辑，确保和新的块起点索引一致。
+
+---
+
+## 验证过程中新增发现并已修复
+
+### `LocalUsageDatabase` 只读连接错库问题
+
+文件：
+- `src-tauri/src/local_usage/database/mod.rs`
+
+结论：
+- `open_readonly_connection()` 原先始终通过 `Self::db_path()` 打开全局默认数据库路径。
+- 当 `LocalUsageDatabase::new_with_path(...)` 用于测试或未来自定义路径实例时，写连接和只读连接会落在不同数据库文件。
+- 这会直接影响测试可信度，也会让“非默认路径实例”的读取行为错误。
+
+修复：
+- 为 `LocalUsageDatabase` 持久保存实例自己的 `db_path`。
+- `open_readonly_connection()` 改为始终读取当前实例路径。
+
+---
+
+## 已补充的验证
+
+已通过的定向测试：
+
+- `cargo test --manifest-path src-tauri/Cargo.toml commands::currency`
+- `cargo test --manifest-path src-tauri/Cargo.toml commands::usage::statistics::daily_summary`
+- `cargo test --manifest-path src-tauri/Cargo.toml commands::usage::survival`
+- `cargo test --manifest-path src-tauri/Cargo.toml unified_visible_counts_exclude_3xx_statuses`
+
+本轮新增/加强的测试覆盖：
+
+- `build_daily_summary_from_facts_excludes_redirects_from_success`
+- `unified_visible_counts_exclude_3xx_statuses` 增补 `success_request_count` 断言
+- `currency.rs` 缓存与回退逻辑单测 3 个
+- `out_of_order_timestamps_do_not_move_block_backwards`
+
+---
+
+### `02-frontend-stores-i18n-utils.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src/stores/updater.ts`
+   - 已确认 `skipVersion()` 失败时错误码误用了 `checkFailed`。
+   - 已修复为独立错误码 `skipFailed`，并把状态显式设为 `error`。
+
+2. `src/i18n/index.ts`
+   - 已新增 `settings.update.skipFailed` 的中英繁三语文案。
+
+3. `src/components/UpdateDialog.vue`
+   - 已按新的错误码区分显示 `downloadFailed` / `skipFailed` / `checkFailed`。
+
+4. `src/components/settings/GeneralSettingsPanel.vue`
+   - 已同步修正更新状态按钮中的错误文案映射，避免跳过版本失败时显示“检查失败”。
+
+5. `src/stores/monitor.ts`
+   - 已确认 `startProxy()` 在代理已成功启动但 `saveSettings()` 失败时，会留下未经校正的本地设置状态。
+   - 已改为在失败后重新加载磁盘设置并刷新代理状态，而不是盲目保留或盲目回滚内存状态。
+
+6. `src/stores/monitor.ts`
+   - 已将 `invokeWithTimeout()` 的超时拒绝值从字符串改为 `Error('ERR_STATISTICS_TIMEOUT')`。
+   - 已新增统一 `errorMessage()` 提取函数，减少前端直接 `String(e)` 带来的不稳定表现。
+
+7. `src/stores/monitor.ts`
+   - 已确认自动刷新仍使用固定 `setInterval`，存在请求重叠风险。
+   - 已改为串行 `setTimeout` 调度，确保一轮刷新完成后才安排下一轮。
+
+已通过的定向验证：
+
+- `npm run build`
+
+已核实但暂未修复：
+
+1. `configuredSourceQuota` 请求序号逻辑冗余
+   - `wantedSeq` 未实际参与后续控制流。
+   - 问题存在，但需要连带复审整段队列化刷新逻辑，避免局部删变量掩盖真实并发意图。
+
+2. `monitor.ts` 过大、订阅配额获取样板代码重复
+   - 结论成立。
+   - 这是结构性重构问题，不适合在当前“逐文件排雷 + 快速验证”阶段直接大拆。
+
+3. 自动刷新缺少 `visibilitychange` 感知
+   - 结论成立。
+   - 需要结合主窗口/分享窗口生命周期一起设计，避免把后台暂停策略做成新的状态源。
+
+---
+
+### `05-backend-models-entry.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src-tauri/src/models/settings.rs`
+   - 已确认 `normalize_sync_device_id()` 中的 `Option` 包装完全冗余。
+   - 已改为直接使用字符归一化值，去掉无意义的 `if let Some(...)`。
+
+2. `src-tauri/src/models/subscription.rs`
+   - 已确认 `SubscriptionQueryResult::no_credentials()` / `error()` 通过 `#[allow(unused_variables)]` 压制未使用参数告警。
+   - 已改为保留 `provider` 参数并显式记录 `TODO(provider)`，同时用 `let _ = provider;` 表达当前保留意图。
+
+3. `src-tauri/Cargo.toml`
+   - 已确认 `tempfile` 仅用于测试代码，却仍位于生产依赖。
+   - 已迁移到 `[dev-dependencies]`。
+
+已通过的定向验证：
+
+- `cargo fmt --manifest-path src-tauri/Cargo.toml`
+- `cargo check --manifest-path src-tauri/Cargo.toml`
+
+已核实但暂未修复：
+
+1. `HttpClientFactory::init()` fallback 中的 `expect("ERR_HTTP_CLIENT_FALLBACK")`
+   - 问题成立，但这是“初始化彻底失败时是否允许 panic”的启动策略问题。
+   - 需要先明确全局 HTTP 客户端在极端构建失败场景下的降级目标，再决定是继续 panic 还是返回软失败路径。
+
+2. `run()` / `monitor.ts` 等超大文件的结构性拆分
+   - 结论成立。
+   - 当前阶段仍以“逐条验证并修真实缺陷”为主，尚未进入大规模重构窗口。
+
+---
+
+### `11-build-config-cicd.md`
+
+本轮已完成核实并落地的修复：
+
+1. `.github/workflows/ci.yml`
+   - 已确认 CI 中 Rust 工具链使用 `dtolnay/rust-toolchain@stable`，与仓库锁定的 `rust-toolchain.toml = 1.94` 不一致。
+   - 已统一到 `dtolnay/rust-toolchain@1.94.0`。
+
+2. `.github/workflows/release.yml`
+   - 已同步把 Release workflow 的 Rust 工具链固定到 `1.94.0`，避免本地/CI/Release 三方版本漂移。
+
+3. `.github/workflows/release.yml`
+   - 已确认发布流程仍使用老的 `tauri-apps/tauri-action@v0`。
+   - 已升级到 `tauri-apps/tauri-action@v1`，减少继续依赖旧 major 的风险。
+
+4. `package.json`
+   - 已确认项目根配置缺少 `engines` 字段。
+   - 已新增 `node >= 24`、`npm >= 10` 约束，与当前 CI 环境保持一致。
+
+5. `package.json`
+   - 已新增 `npm run audit` 脚本。
+
+6. `.github/workflows/ci.yml`
+   - 已在前端 job 中加入 `npm run audit`，补上基础依赖安全扫描。
+
+已通过的定向验证：
+
+- `npm run build`
+
+已核实但暂未修复：
+
+1. `vite.config.ts` 缺少 chunk 拆分、路径别名与更细构建优化
+   - 结论基本成立。
+   - 但这里已经牵涉前端导入路径体系和产物体积分布，不能在未先做一轮 bundle 分析的情况下直接硬加配置。
+
+2. `server.host` 未显式限制到 `127.0.0.1`
+   - 需要先确认当前 Vite 默认行为及 Tauri dev 场景是否依赖外部访问，不宜仅凭文档结论直接改。
+
+3. `npm audit` / `cargo audit` 的扫描阈值与流水线失败策略
+   - 前端 audit 已补。
+   - `cargo audit` 仍需评估是否引入额外安装依赖与误报处理策略后再加到 CI。
+
+---
+
+### `01-frontend-entry-architecture.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src/main.ts`
+   - 已确认前端入口没有全局 Vue 错误处理器。
+   - 已补充 `app.config.errorHandler` 与 `app.config.warnHandler`，先做控制台级兜底，避免静默失败。
+
+2. `src/theme.ts`
+   - 已确认非法 `lightPalette` / `darkPalette` 值不会被校验，可能导致根节点挂载无效 palette。
+   - 已新增 `sanitizeTheme()`，对浅色/深色 palette 做白名单回退。
+
+3. `src/i18n/index.ts`
+   - 已修复 `zh-TW` 翻译中的损坏 Unicode 字符：`mergeConfirm` 文案恢复正常。
+
+已通过的定向验证：
+
+- `npm run build`
+
+已核实但暂未修复：
+
+1. `App.vue` 事件监听器集中管理
+   - 结论成立。
+   - 但这属于可维护性重构，不是当前优先级最高的行为缺陷。
+
+2. `types.ts` / `i18n/index.ts` 超大文件拆分
+   - 结论成立。
+   - 当前仍以逐条修复真实问题为主，尚未进入结构性拆分阶段。
+
+3. `ShareWindow` 预览比例硬编码
+   - 结论成立。
+   - 需要结合实际视觉约束和分享窗口布局一起改，不适合在未补 UI 验证前直接调整。
+
+---
+
+### `07-session-readers.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src-tauri/src/session/scanner.rs`
+   - 已确认多个 `cache.lock().unwrap()` 在 mutex poisoned 时会级联 panic。
+   - 已统一改为 `unwrap_or_else(|err| err.into_inner())`，避免一次异常把后续扫描链路全部拖垮。
+
+2. `src-tauri/src/session/scanner.rs`
+   - 已确认 `parse_session_file()` 会把单个会话解析失败升级为 `panic!`。
+   - 已改为返回 `Result`，并在扫描聚合阶段记录错误后跳过损坏会话，不再因单文件异常导致整体崩溃。
+
+3. `src-tauri/src/session/registry.rs`
+   - 已确认 `parse_session_file_for_storage()` 同样会因解析失败直接 `panic!`。
+   - 已改为返回 `Result`，由调用方决定错误处理策略。
+
+4. `src-tauri/src/local_usage/database/scanner_sync.rs`
+   - 已同步修正本地数据库扫描同步链路，对单个失败会话记录错误并跳过，而不是中断整批 dirty session 处理。
+
+5. `src-tauri/src/session/registry.rs`
+   - 已确认 `Qoder Work` / `Qoder Work CN` 虽有 reader 实现与数据库同步路径，但未注册到统一 `SessionSource` 列表，导致前端会话扫描视图不可见。
+   - 已新增 `QoderWorkSource` 并接入 `all_sources()`，使其参与统一会话扫描与详情解析。
+
+6. `src-tauri/src/session/qoder_work_reader.rs`
+   - 已为 `Qoder Work` 建立与 `Hermes/Qoder IDE` 对齐的 `scan() -> cache -> parse()` 路径，避免统一扫描入口查找不到对应会话数据。
+
+7. `src-tauri/src/session/codex_reader.rs`
+   - 已确认 `normalize_model_name()` 对 UTF-8 字符串使用字节偏移切片，存在特定模型名下的 panic 风险。
+   - 已改为基于 `char_indices()` 安全截取日期后缀，避免 Unicode 模型名触发崩溃。
+
+8. `src-tauri/src/session/opencode/schema.rs`
+   - 已确认 `verify_json_structure()` 仅检查 SQL 是否执行成功，没有验证计数是否大于 0。
+   - 已修复为只有存在匹配的 assistant token 结构时才返回 `true`。
+
+已通过的定向验证：
+
+- `cargo fmt --manifest-path src-tauri/Cargo.toml`
+- `cargo test --manifest-path src-tauri/Cargo.toml session::scanner -- --nocapture`
+- `cargo test --manifest-path src-tauri/Cargo.toml session::codex_reader -- --nocapture`
+- `cargo test --manifest-path src-tauri/Cargo.toml verify_json_structure -- --nocapture`
+
+本轮新增/加强的测试覆盖：
+
+- `test_parse_session_file_returns_error_for_unsupported_tool`
+- `test_all_sources_registers_qoder_work_variants`
+- `test_normalize_model_name_handles_unicode_without_panicking`
+- `verify_json_structure_requires_matching_assistant_tokens`
+- `verify_json_structure_accepts_matching_assistant_tokens`
+
+已核实但暂未修复：
+
+1. `scanner.rs` 增量更新在持锁状态下执行解析 I/O
+   - 结论成立。
+   - 需要把“解析结果构建”和“共享缓存落盘”拆成锁外准备、锁内提交两阶段，影响 `message_to_session` 去重顺序与增量替换语义，超出当前单文件缺陷修复窗口。
+
+2. `opencode_reader.rs` 的 `parse()` 仍然通过 `scan_opencode_sessions()` 间接复用全局缓存
+   - 问题成立。
+   - 但 OpenCode 当前缓存状态同时承载 schema 检测、DB/file 双来源合并与 persisted checkpoint，同步改成 source 内部二级缓存需要连带审查整个状态机，不适合在本轮局部补丁中直接重构。
+
+3. `copilot_cli_reader.rs` token 分配策略复杂且可能在 shutdown/request_count 不一致时失真
+   - 结论成立。
+   - 需要基于真实 Copilot CLI 样本设计更稳妥的分配规则，当前缺少足够回归样本，先保留现状。
+
+4. `hermes_reader.rs` 时间戳字段按 `f64` 读取
+   - 风险存在。
+   - 但当前代码后续会统一归一化时间戳，且未见现网 schema 漂移证据；若直接改为兼容多 SQLite 类型，需要补更完整的 schema 兼容测试。
+
+已核实后不按文档建议修复：
+
+1. `codex_reader.rs` fork replay 判定中的 `ts <= fork_start_ts`
+   - 文档建议改成 `<`，但结合当前 Codex fork 语义与现有回归测试，这会把 fork 创建时刻批量回放的历史事件重新计入统计，造成重复计算。
+   - 当前实现应保留 `<=`，否则会回退已修好的 fork 去重行为。
+
+---
+
+### `03-frontend-views.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src/views/Sessions.vue`
+   - 已确认最近会话卡片里仍有硬编码 `'Unknown'`。
+   - 已改为统一使用 `t(store.settings.locale, 'common.unknown')`。
+
+2. `src/views/Statistics.vue`
+   - 已确认自定义范围防抖定时器 `customRangeTimer` 在组件卸载时未清理。
+   - 已补充 `onUnmounted` 清理逻辑。
+
+3. `src/views/Statistics.vue`
+   - 已确认初始化阶段会在异步数据请求完成前把 `initialized` 置为 `true`。
+   - 已改为在 `Promise.all([fetchSummary(), fetchMonth()])` 完成后再置位。
+
+已通过的定向验证：
+
+- `npm run build`
+
+已核实但暂未修复：
+
+1. `Statistics.vue` 的初始化时序和自定义范围定时器清理
+   - 问题结论需要结合实际交互与组件卸载路径一起验证。
+   - 当前还未发现明确的运行时错误证据，先不做“为修而修”的异步改写。
+
+2. `Sessions.vue` 的超大模板/脚本拆分
+   - 结论成立。
+   - 这是结构性重构问题，不适合在当前逐条缺陷修复阶段直接展开。
+
+---
+
+### `04-frontend-components.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src/components/ModelDistribution.vue`
+   - 已确认中心文案 `Models` 为硬编码。
+   - 已改为使用 `metrics.modelDistribution` 的 i18n 文案。
+
+2. `src/components/SessionDetailModal.vue`
+   - 已确认多个字段标签仍保留中文 fallback（`工作目录`、`最后提示`、`错误`、`开始时间`、`结束时间`）。
+   - 已全部改为直接依赖现有 i18n key，不再保留自然语言兜底。
+
+3. `src/components/ModelPricingSettings.vue`
+   - 已确认价格列表中 `输入:` / `输出:` / `缓存读:` / `缓存写:` 为硬编码。
+   - 已统一改为 `settings.modelPricingInput` / `Output` / `CacheRead` / `CacheWrite`。
+
+4. `src/components/ModelPricingEditModal.vue`
+   - 已确认 `common.cancel` 仍带 `'取消'` fallback。
+   - 已移除 fallback，直接走 i18n。
+
+5. `src/components/ModelPricingEditModal.vue`
+   - 已确认汇率读取仍使用 `|| 1.0`。
+   - 已统一改为 `?? 1.0`，避免把显式 `0` 与“未配置”混为一谈。
+
+6. `src/components/DynamicIcon.vue`
+   - 已确认未知图标名会静默 fallback 到 `Globe`，缺少诊断信息。
+   - 已在开发环境增加 `console.warn` 提示。
+
+7. `src/components/SessionDetailModal.vue`
+   - 已补充 `Escape` 键关闭支持。
+
+已通过的定向验证：
+
+- `npm run build`
+
+已核实但暂未修复：
+
+1. `DynamicIcon.vue` 的类型安全与 fallback 诊断
+   - 问题成立。
+   - 需要先确认项目是否接受在运行期输出 icon fallback 警告，避免污染正常日志。
+
+2. `UpdateDialog.vue` 的 markdown / `v-html` 安全策略
+   - 当前实现存在人工转义，是否升级到 markdown 库 + sanitizer 需要单独评估依赖与兼容性。
+
+3. 多个超大组件与重复 CSS 抽取
+   - 结论成立。
+   - 属于后续可维护性重构，不是本轮优先处理的确定性行为缺陷。
+
+---
+
+## 已核实但暂未修复
+
+### `get_recent_request_records` 全量加载再分页
+
+文件：
+- `src-tauri/src/commands/usage/requests.rs`
+
+结论：
+- 问题真实存在，当前仍通过 `get_merged_request_facts(..., None, None, ...)` 拉取全部历史事实后排序分页。
+
+暂缓原因：
+- 若要彻底修正，需要把“最近请求”的排序/分页能力下推到统一合并层，并正确处理：
+  - 本地物化历史数据
+  - 当日热数据
+  - 代理/本地去重合并后的统一排序
+  - 现有 tool/source filter 语义
+- 这不是一个适合在未补齐更大范围验证面的情况下做的局部小改。
+
+后续建议：
+- 为 unified usage 增加“按时间倒序分页读取 merged facts”的专用查询入口，再让 command 层改用该入口。
+
+---
+
+## 下一步
+
+1. 继续处理 `06-backend-commands.md` 中剩余仍成立且可独立闭环的问题。
+2. 进入下一个未处理分析文件，重复执行：
+   - 阅读实现
+   - 核实问题真伪
+   - 判断是否需要修复
+   - 实施并验证
+3. 所有分析文件处理完成后，再统一做：
+   - 总体验证
+   - 最终总结文档整理
+   - git 提交信息生成与提交

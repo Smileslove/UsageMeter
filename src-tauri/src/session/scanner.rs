@@ -53,7 +53,7 @@ fn ensure_cache_ready() -> CacheSnapshot {
     let cache = get_cache();
 
     {
-        let cache_guard = cache.lock().unwrap();
+        let cache_guard = cache.lock().unwrap_or_else(|err| err.into_inner());
         if cache_guard.is_some() {
             drop(cache_guard);
             return incremental_update_cache();
@@ -89,14 +89,12 @@ fn full_scan_and_cache() -> CacheSnapshot {
 
         let mut session_ids = HashSet::new();
         for session_file in &sorted_sessions {
-            let parsed = parse_session_file(session_file);
-            merge_parsed_session(
+            let _ = load_parsed_session(
                 &mut data,
                 &mut requests,
                 &mut message_to_session,
                 &mut session_fingerprints,
                 session_file,
-                parsed,
             );
             session_ids.insert(session_file.session_id.clone());
         }
@@ -107,7 +105,7 @@ fn full_scan_and_cache() -> CacheSnapshot {
     sort_cache_vectors(&mut data, &mut requests);
 
     {
-        let mut cache_guard = cache.lock().unwrap();
+        let mut cache_guard = cache.lock().unwrap_or_else(|err| err.into_inner());
         *cache_guard = Some(CacheEntry {
             data: data.clone(),
             requests: requests.clone(),
@@ -128,7 +126,7 @@ fn incremental_update_cache() -> CacheSnapshot {
         .map(|source| source.scan())
         .collect();
 
-    let mut cache_guard = cache.lock().unwrap();
+    let mut cache_guard = cache.lock().unwrap_or_else(|err| err.into_inner());
     let entry = match cache_guard.as_mut() {
         Some(entry) => entry,
         None => return full_scan_and_cache(),
@@ -174,14 +172,14 @@ pub fn find_session_id_by_message_id(message_id: &str) -> Option<String> {
     let cache = get_cache();
 
     {
-        let cache_guard = cache.lock().unwrap();
+        let cache_guard = cache.lock().unwrap_or_else(|err| err.into_inner());
         if cache_guard.is_none() {
             drop(cache_guard);
             let _ = ensure_cache_ready();
         }
     }
 
-    let cache_guard = cache.lock().unwrap();
+    let cache_guard = cache.lock().unwrap_or_else(|err| err.into_inner());
     cache_guard
         .as_ref()
         .and_then(|entry| entry.message_to_session.get(message_id).cloned())
@@ -190,13 +188,41 @@ pub fn find_session_id_by_message_id(message_id: &str) -> Option<String> {
 #[allow(dead_code)]
 pub fn invalidate_cache() {
     let cache = get_cache();
-    let mut cache_guard = cache.lock().unwrap();
+    let mut cache_guard = cache.lock().unwrap_or_else(|err| err.into_inner());
     *cache_guard = None;
 }
 
-pub(crate) fn parse_session_file(session: &SessionFile) -> ParsedSessionData {
+pub(crate) fn parse_session_file(session: &SessionFile) -> Result<ParsedSessionData, String> {
     super::registry::parse_session_file(session)
-        .unwrap_or_else(|err| panic!("failed to parse session {}: {err}", session.session_id))
+}
+
+fn load_parsed_session(
+    data: &mut Vec<SessionMeta>,
+    requests: &mut Vec<LocalRequestRecord>,
+    message_to_session: &mut HashMap<String, String>,
+    session_fingerprints: &mut HashMap<String, u64>,
+    session_file: &SessionFile,
+) -> bool {
+    match parse_session_file(session_file) {
+        Ok(parsed) => {
+            merge_parsed_session(
+                data,
+                requests,
+                message_to_session,
+                session_fingerprints,
+                session_file,
+                parsed,
+            );
+            true
+        }
+        Err(err) => {
+            eprintln!(
+                "[UsageMeter] Failed to parse session {} ({}): {}",
+                session_file.session_id, session_file.file_path, err
+            );
+            false
+        }
+    }
 }
 
 fn apply_source_snapshot(entry: &mut CacheEntry, snapshot: SourceSnapshot) {
@@ -254,14 +280,12 @@ fn apply_source_snapshot(entry: &mut CacheEntry, snapshot: SourceSnapshot) {
     });
 
     for file in to_parse {
-        let parsed = parse_session_file(file);
-        merge_parsed_session(
+        let _ = load_parsed_session(
             &mut entry.data,
             &mut entry.requests,
             &mut entry.message_to_session,
             &mut entry.session_fingerprints,
             file,
-            parsed,
         );
     }
 
@@ -379,6 +403,7 @@ pub fn get_all_session_meta(limit: usize) -> Vec<SessionMeta> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::registry::all_sources;
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
@@ -471,9 +496,36 @@ mod tests {
             fingerprint: 0,
         };
 
-        let parsed = parse_session_file(&session);
+        let parsed = parse_session_file(&session).expect("claude session should parse");
         assert_eq!(parsed.meta.start_time, 100);
         assert_eq!(parsed.meta.end_time, 500);
+    }
+
+    #[test]
+    fn test_parse_session_file_returns_error_for_unsupported_tool() {
+        let session = SessionFile {
+            session_id: "broken::session".to_string(),
+            tool: "unsupported_tool".to_string(),
+            project_path: "broken".to_string(),
+            file_path: "/tmp/broken.jsonl".to_string(),
+            transcript_paths: vec!["/tmp/broken.jsonl".to_string()],
+            file_size: 0,
+            last_modified: 0,
+            fingerprint: 0,
+        };
+
+        let error = parse_session_file(&session).expect_err("unsupported tool should error");
+        assert!(error.contains("unsupported session tool"));
+    }
+
+    #[test]
+    fn test_all_sources_registers_qoder_work_variants() {
+        let tool_ids: Vec<&str> = all_sources()
+            .into_iter()
+            .map(|source| source.tool_id())
+            .collect();
+        assert!(tool_ids.contains(&crate::session::constants::TOOL_QODER_WORK));
+        assert!(tool_ids.contains(&crate::session::constants::TOOL_QODER_WORK_CN));
     }
 
     #[test]

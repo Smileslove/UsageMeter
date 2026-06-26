@@ -640,19 +640,8 @@ fn normalize_model_name(raw: &str) -> String {
         name = name[pos + 1..].to_string();
     }
 
-    if name.len() > 11 {
-        let suffix = &name[name.len() - 11..];
-        let bytes = suffix.as_bytes();
-        if bytes.len() == 11
-            && bytes[0] == b'-'
-            && suffix[1..5].chars().all(|c| c.is_ascii_digit())
-            && bytes[5] == b'-'
-            && suffix[6..8].chars().all(|c| c.is_ascii_digit())
-            && bytes[8] == b'-'
-            && suffix[9..11].chars().all(|c| c.is_ascii_digit())
-        {
-            name.truncate(name.len() - 11);
-        }
+    if let Some(stripped) = strip_model_date_suffix(&name) {
+        name = stripped;
     }
 
     if name.len() > 9 {
@@ -666,6 +655,25 @@ fn normalize_model_name(raw: &str) -> String {
     }
 
     name
+}
+
+fn strip_model_date_suffix(name: &str) -> Option<String> {
+    let (suffix_start, suffix) = name.char_indices().rev().nth(10).map(|(index, _)| {
+        let start = index;
+        (start, &name[start..])
+    })?;
+    let bytes = suffix.as_bytes();
+    if bytes.len() != 11
+        || bytes[0] != b'-'
+        || bytes[5] != b'-'
+        || bytes[8] != b'-'
+        || !suffix[1..5].chars().all(|c| c.is_ascii_digit())
+        || !suffix[6..8].chars().all(|c| c.is_ascii_digit())
+        || !suffix[9..11].chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    Some(name[..suffix_start].to_string())
 }
 
 // ── Token 差分计算 ────────────────────────────────────────────────────────────
@@ -759,6 +767,12 @@ mod tests {
             "id": "019e1048-37a3-72b2-983f-37bb2abd16f6"
         });
         assert_eq!(extract_codex_session_name(&payload), None);
+    }
+
+    #[test]
+    fn test_normalize_model_name_handles_unicode_without_panicking() {
+        let normalized = normalize_model_name("openai/模型-gpt-5-2026-03-05");
+        assert_eq!(normalized, "模型-gpt-5");
     }
 
     #[test]

@@ -73,5 +73,59 @@ fn verify_json_structure(conn: &Connection) -> bool {
         [],
         |row| row.get(0),
     );
-    result.is_ok()
+    result.ok().flatten().unwrap_or(0) > 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn create_message_table(conn: &Connection) {
+        conn.execute(
+            "CREATE TABLE message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                data TEXT NOT NULL
+            )",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn verify_json_structure_requires_matching_assistant_tokens() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_message_table(&conn);
+
+        conn.execute(
+            "INSERT INTO message (id, session_id, data) VALUES (?1, ?2, ?3)",
+            (
+                "m1",
+                "s1",
+                r#"{"role":"assistant","content":"hello without token payload"}"#,
+            ),
+        )
+        .unwrap();
+
+        assert!(!verify_json_structure(&conn));
+    }
+
+    #[test]
+    fn verify_json_structure_accepts_matching_assistant_tokens() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_message_table(&conn);
+
+        conn.execute(
+            "INSERT INTO message (id, session_id, data) VALUES (?1, ?2, ?3)",
+            (
+                "m1",
+                "s1",
+                r#"{"role":"assistant","tokens":{"input":12,"output":34}}"#,
+            ),
+        )
+        .unwrap();
+
+        assert!(verify_json_structure(&conn));
+    }
 }

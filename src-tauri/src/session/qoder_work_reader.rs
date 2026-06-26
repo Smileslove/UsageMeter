@@ -8,14 +8,22 @@
 //!
 //! 提取其中 `event.type == "message_delta"` 的 `input_tokens` 和 `output_tokens`。
 
-use super::meta::{LocalRequestRecord, SessionMeta};
+use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
+use super::source::{ParsedSessionData, SessionSource, SourceSnapshot, SourceUpdateMode};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 
 const QODER_WORK_SOURCE_KIND: &str = "qoder_work_mainlog";
+
+pub(super) struct QoderWorkSource {
+    tool: &'static str,
+    app_dir: &'static str,
+    cache: OnceLock<Mutex<std::collections::HashMap<String, QoderWorkSessionData>>>,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct QoderWorkSessionData {
@@ -23,6 +31,74 @@ pub(crate) struct QoderWorkSessionData {
     pub requests: Vec<LocalRequestRecord>,
     pub fingerprint: u64,
     pub source_locator: String,
+}
+
+impl QoderWorkSource {
+    pub(super) const fn new(tool: &'static str, app_dir: &'static str) -> Self {
+        Self {
+            tool,
+            app_dir,
+            cache: OnceLock::new(),
+        }
+    }
+
+    fn cache(&self) -> &Mutex<std::collections::HashMap<String, QoderWorkSessionData>> {
+        self.cache
+            .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+    }
+}
+
+impl SessionSource for QoderWorkSource {
+    fn tool_id(&self) -> &'static str {
+        self.tool
+    }
+
+    fn scan(&self) -> SourceSnapshot {
+        let scanned = scan_qoder_work_sessions_for(self.app_dir, self.tool);
+        let scan_fingerprint = compute_qoder_work_scan_fingerprint(&scanned);
+        let sessions = scanned
+            .iter()
+            .map(|session| SessionFile {
+                session_id: session.meta.session_id.clone(),
+                tool: session.meta.tool.clone(),
+                project_path: session.meta.project_name.clone().unwrap_or_default(),
+                file_path: session.source_locator.clone(),
+                transcript_paths: vec![session.meta.file_path.clone()],
+                file_size: session.meta.file_size,
+                last_modified: session.meta.last_modified,
+                fingerprint: session.fingerprint,
+            })
+            .collect::<Vec<_>>();
+
+        let mut cache = self.cache().lock().unwrap_or_else(|err| err.into_inner());
+        cache.clear();
+        cache.extend(
+            scanned
+                .into_iter()
+                .map(|session| (session.meta.session_id.clone(), session)),
+        );
+        drop(cache);
+
+        SourceSnapshot {
+            source_id: self.tool_id(),
+            update_mode: SourceUpdateMode::ReplaceAll,
+            sessions,
+            scan_fingerprint,
+        }
+    }
+
+    fn parse(&self, session: &SessionFile) -> Result<ParsedSessionData, String> {
+        let cache = self.cache().lock().unwrap_or_else(|err| err.into_inner());
+        let parsed = cache
+            .get(&session.session_id)
+            .cloned()
+            .ok_or_else(|| format!("qoder work session not found: {}", session.session_id))?;
+
+        Ok(ParsedSessionData {
+            meta: parsed.meta,
+            requests: parsed.requests,
+        })
+    }
 }
 
 /// 扫描 QoderWork（国际版）全部 main.log 虚拟会话
@@ -300,6 +376,15 @@ fn compute_work_session_fingerprint(log_path: &Path, file_size: u64, last_modifi
     log_path.to_string_lossy().hash(&mut hasher);
     file_size.hash(&mut hasher);
     last_modified.hash(&mut hasher);
+    hasher.finish()
+}
+
+pub(crate) fn compute_qoder_work_scan_fingerprint(sessions: &[QoderWorkSessionData]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for session in sessions {
+        session.meta.session_id.hash(&mut hasher);
+        session.fingerprint.hash(&mut hasher);
+    }
     hasher.finish()
 }
 

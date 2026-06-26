@@ -10,6 +10,7 @@ use super::openclaw_reader::OpenClawSource;
 use super::opencode_reader::OpenCodeSource;
 use super::qoder_cli_reader::QoderCliSource;
 use super::qoder_ide_reader::QoderIdeSource;
+use super::qoder_work_reader::QoderWorkSource;
 use super::reasonix_reader::ReasonixSource;
 use super::source::{ParsedSessionData, SessionSource};
 
@@ -23,10 +24,14 @@ static QODER_IDE_SOURCE: QoderIdeSource =
 static QODER_IDE_CN_SOURCE: QoderIdeSource =
     QoderIdeSource::new(super::constants::TOOL_QODER_IDE_CN, "QoderCN");
 static QODER_CLI_SOURCE: QoderCliSource = QoderCliSource;
+static QODER_WORK_SOURCE: QoderWorkSource =
+    QoderWorkSource::new(super::constants::TOOL_QODER_WORK, "QoderWork");
+static QODER_WORK_CN_SOURCE: QoderWorkSource =
+    QoderWorkSource::new(super::constants::TOOL_QODER_WORK_CN, "QoderWork CN");
 static REASONIX_SOURCE: ReasonixSource = ReasonixSource;
 static GEMINI_SOURCE: GeminiSource = GeminiSource;
 
-pub fn all_sources() -> [&'static dyn SessionSource; 11] {
+pub fn all_sources() -> [&'static dyn SessionSource; 13] {
     [
         &CLAUDE_SOURCE,
         &COPILOT_CLI_SOURCE,
@@ -36,6 +41,8 @@ pub fn all_sources() -> [&'static dyn SessionSource; 11] {
         &QODER_IDE_SOURCE,
         &QODER_IDE_CN_SOURCE,
         &QODER_CLI_SOURCE,
+        &QODER_WORK_SOURCE,
+        &QODER_WORK_CN_SOURCE,
         &REASONIX_SOURCE,
         &GEMINI_SOURCE,
         &HERMES_SOURCE,
@@ -66,10 +73,9 @@ pub fn scan_file_backed_session_files() -> Vec<SessionFile> {
 
 pub fn parse_session_file_for_storage(
     session: &SessionFile,
-) -> (SessionMeta, Vec<LocalRequestRecord>) {
-    let parsed = parse_session_file(session)
-        .unwrap_or_else(|err| panic!("failed to parse session {}: {err}", session.session_id));
-    (parsed.meta, parsed.requests)
+) -> Result<(SessionMeta, Vec<LocalRequestRecord>), String> {
+    let parsed = parse_session_file(session)?;
+    Ok((parsed.meta, parsed.requests))
 }
 
 pub fn parse_session_file(session: &SessionFile) -> Result<ParsedSessionData, String> {
