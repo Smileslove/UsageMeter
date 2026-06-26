@@ -633,6 +633,50 @@
 
 ---
 
+### `A-cross-validation.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src/iconConfig.ts`
+   - 已确认 `SOURCE_ICON_CATEGORIES` 仍包含 8 个中文类目标签硬编码，违反 i18n 约束。
+   - 已改为在配置层保存 i18n key，由组件渲染时再翻译，避免把自然语言常量继续保留在业务代码里。
+
+2. `src/components/ApiSourceList.vue`
+   - 已同步改为按 `labelKey` 渲染图标类目标题，搜索筛选时保留原有行为不变。
+
+3. `src/i18n/index.ts`
+   - 已补充图标类目标题的中英繁三语文案。
+
+已通过的定向验证：
+
+- `npm run build`
+
+已核实后确认前序分析需要修正的点：
+
+1. 后端测试覆盖评估偏低
+   - 当前仓库存在大量 Rust 内联单测，`rg -n '#\\[test\\]|mod tests' src-tauri/src` 统计结果远高于“仅 1 个测试文件”的原始说法。
+   - 更准确的表述应是：后端已有较多内联单测，但独立测试文件较少；前端测试仍基本缺失。
+
+2. `src/components/UpdateDialog.vue` 的 `v-html` 风险需要降级描述
+   - 当前实现不是把原始 release notes 直接塞进 DOM，而是先经过 `escapeHtml()` 与受限 markdown 渲染。
+   - 这仍属于“依赖手写 sanitizer 的安全敏感点”，但不能按“现成的裸 XSS 漏洞”表述。
+
+3. 交叉审计列出的多项严重遗漏，当前已在前几轮完成修复
+   - 包括 Session panic / mutex poisoning / Qoder Work 集成、Proxy URL contains 误判、Subscription 缓存键冲突、GPT stderr 敏感日志、CSP 禁用等。
+   - `A-cross-validation.md` 在当前仓库状态下更适合作为“复盘修正报告”，而不是新增缺陷清单。
+
+已核实但暂未修复：
+
+1. `DynamicIcon` 全量导入 `lucide-vue-next`
+   - 风险成立，属于前端包体积优化议题。
+   - 但是否改为显式按需映射需要先评估现有图标动态性和维护成本，本轮先不动。
+
+2. `StatisticsModelList.vue` tooltip formatter 直接拼接 HTML 字符串
+   - 当前模型名来源并未见明确的 HTML 转义保障。
+   - 但这条需要结合 ECharts tooltip 渲染方式和真实模型名输入面一起验证，避免在未确认攻击面前做推断式修复。
+
+---
+
 ## 已核实但暂未修复
 
 ### `get_recent_request_records` 全量加载再分页
