@@ -398,6 +398,55 @@
 
 ---
 
+### `08-proxy-system.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src-tauri/src/proxy/source_detector.rs`
+   - 已确认 `normalize_base_url()` 通过 `contains("api.anthropic.com")` 判定官方地址，匹配范围过宽。
+   - 已改为按 host 精确识别 `api.anthropic.com`，避免把 `api.anthropic.com.evil.example` 或路径中包含该字符串的第三方地址误归并为官方源。
+
+2. `src-tauri/src/proxy/collector.rs`
+   - 已确认 `UsageCollector::record()` 中 `is_duplicate` 分支在数据库写入阶段执行完全相同逻辑，判断结果没有实际意义。
+   - 已移除无效分支，保留“内存去重/替换 + 数据库存储”语义不变，减少误导性控制流。
+
+3. `src-tauri/src/proxy/openai_forwarder.rs`
+   - 已确认 OpenAI/Codex usage 缺少上游 message id 时，fallback id 通过 `Instant::now().elapsed().as_nanos()` 生成，熵极低且语义错误。
+   - 已改为使用进程内原子递增计数器生成稳定唯一的 fallback message id，避免近零值导致的潜在去重冲突。
+
+已通过的定向验证：
+
+- `cargo fmt --manifest-path src-tauri/Cargo.toml`
+- `cargo test --manifest-path src-tauri/Cargo.toml proxy::source_detector -- --nocapture`
+- `cargo test --manifest-path src-tauri/Cargo.toml proxy::collector -- --nocapture`
+- `cargo test --manifest-path src-tauri/Cargo.toml fallback_message_ids_are_unique_without_usage_ids -- --nocapture`
+
+本轮新增/加强的测试覆盖：
+
+- `test_normalize_base_url` 增补端口、大小写与恶意相似域名场景
+- `recent_duplicate_replaces_cached_snapshot`
+- `fallback_message_ids_are_unique_without_usage_ids`
+
+已核实但暂未修复：
+
+1. `openai_forwarder.rs` / `gemini_forwarder.rs` 显式 `pool_max_idle_per_host(0)`
+   - 问题成立，会关闭 keep-alive 连接复用。
+   - 但这里与当前 `http1_only`、流式连接隔离和部分上游兼容性绑定在一起，直接放开连接池需要补更完整的代理实测与回归，不适合在本轮局部补丁中贸然修改。
+
+2. 多个 ConfigManager / Registry 直接 `fs::write(...)`
+   - 非原子写入风险成立。
+   - 但这是跨 Claude/Codex/OpenCode/Reasonix/Gemini 的一致性修复，需统一设计 write-then-rename 策略和 Windows/macOS 差异处理，本轮先不拆散做半套修补。
+
+3. `ProxySourceRegistry` 的 Claude handle id 仍基于完整 settings snapshot
+   - 结论成立。
+   - 但这会影响既有 handle 稳定性与恢复路径，需要连带评估迁移兼容和旧 registry 数据归并，当前先保留现状，后续单独处理。
+
+4. OpenCode `Unknown` 协议默认走 OpenAI passthrough
+   - 结论成立。
+   - 需要基于真实未知 provider 样本定义协议推断策略，否则容易引入新的误判路径，本轮不做推测式修复。
+
+---
+
 ## 已核实但暂未修复
 
 ### `get_recent_request_records` 全量加载再分页

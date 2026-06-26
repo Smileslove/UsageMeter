@@ -79,8 +79,7 @@ impl UsageCollector {
 
     /// 记录使用事件（持久化到数据库并更新内存缓存）
     pub async fn record(&self, record: UsageRecord) {
-        // 检查最近缓存中是否有重复
-        let is_duplicate = {
+        {
             let mut recent = self.recent_records.write().await;
             let record_key = Self::recent_dedupe_key(&record);
             if !record_key.is_empty() {
@@ -96,15 +95,13 @@ impl UsageCollector {
                         {
                             recent[idx] = record.clone();
                         }
-                    }
-                    true // 是重复的，已在缓存中处理
+                    } // 是重复的，仅更新内存中的最新快照
                 } else {
                     // 不是重复的，添加到最近缓存
                     recent.push(record.clone());
                     if recent.len() > self.max_recent {
                         recent.remove(0);
                     }
-                    false
                 }
             } else {
                 // 没有 message_id，直接添加到缓存
@@ -112,22 +109,13 @@ impl UsageCollector {
                 if recent.len() > self.max_recent {
                     recent.remove(0);
                 }
-                false
             }
             // 此处作用域结束，锁被释放
-        };
+        }
 
         // 保存到数据库以持久化（在锁外部）
-        if is_duplicate {
-            // 对于重复记录，仍然保存到数据库进行更新
-            if let Err(e) = self.database.insert_record(&record).await {
-                eprintln!("Failed to save record to database: {}", e);
-            }
-        } else {
-            // 保存新记录
-            if let Err(e) = self.database.insert_record(&record).await {
-                eprintln!("Failed to save record to database: {}", e);
-            }
+        if let Err(e) = self.database.insert_record(&record).await {
+            eprintln!("Failed to save record to database: {}", e);
         }
 
         // 增量更新 session_stats 表
@@ -483,5 +471,41 @@ mod tests {
         assert_eq!(record.total_tokens, 330); // input(100) + cache_create(10) + cache_read(20) + output(200)
         assert_eq!(record.duration_ms, 5000);
         assert_eq!(record.output_tokens_per_second, Some(40.0));
+    }
+
+    #[tokio::test]
+    async fn recent_duplicate_replaces_cached_snapshot() {
+        let path = tempfile::tempdir().unwrap().path().join("collector.db");
+        let collector = UsageCollector::with_database(Arc::new(
+            ProxyDatabase::new_with_path(&path).expect("open temp db"),
+        ));
+
+        let base_time = 1_700_000_000_000i64;
+        let first = UsageRecord {
+            timestamp: base_time,
+            message_id: "dup-msg".to_string(),
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            client_tool: "codex".to_string(),
+            ..Default::default()
+        };
+        let updated = UsageRecord {
+            timestamp: base_time + 1,
+            message_id: "dup-msg".to_string(),
+            input_tokens: 10,
+            output_tokens: 20,
+            total_tokens: 30,
+            client_tool: "codex".to_string(),
+            ..Default::default()
+        };
+
+        collector.record(first).await;
+        collector.record(updated.clone()).await;
+
+        let recent = collector.recent_records.read().await;
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].total_tokens, updated.total_tokens);
+        assert_eq!(recent[0].output_tokens, updated.output_tokens);
     }
 }

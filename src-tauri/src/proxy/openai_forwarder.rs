@@ -12,12 +12,14 @@ use hyper::body::Frame;
 use hyper::{header, HeaderMap, Method};
 use reqwest::Client;
 use serde_json::Value;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 pub type BoxBody = http_body_util::combinators::UnsyncBoxBody<Bytes, std::io::Error>;
 const USAGE_MISSING_STATUS_CODE: u16 = 599;
+static OPENAI_FALLBACK_MESSAGE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub enum OpenAiForwardResult {
     Streaming {
@@ -384,11 +386,7 @@ async fn record_usage_with_collector(
         None
     };
     let message_id = if usage.message_id.is_empty() {
-        format!(
-            "codex_{}_{}",
-            now,
-            std::time::Instant::now().elapsed().as_nanos()
-        )
+        next_openai_fallback_message_id(now)
     } else {
         usage.message_id.clone()
     };
@@ -1276,4 +1274,21 @@ mod tests {
         assert!(!collected.iter().any(|(name, _)| name == "connection"));
         assert!(!collected.iter().any(|(name, _)| name == "content-length"));
     }
+
+    #[test]
+    fn fallback_message_ids_are_unique_without_usage_ids() {
+        let first = next_openai_fallback_message_id(1_700_000_000_100i64);
+        let second = next_openai_fallback_message_id(1_700_000_000_100i64);
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("codex_1700000000100_"));
+        assert!(second.starts_with("codex_1700000000100_"));
+    }
+}
+fn next_openai_fallback_message_id(now: i64) -> String {
+    format!(
+        "codex_{}_{}",
+        now,
+        OPENAI_FALLBACK_MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
 }

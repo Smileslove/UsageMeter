@@ -32,12 +32,29 @@ pub fn compute_source_id(key_prefix: &str, base_url: Option<&str>) -> String {
 /// - https://api.anthropic.com
 /// - api.anthropic.com (无协议前缀)
 pub fn normalize_base_url(url: &str) -> Option<String> {
-    let url_lower = url.to_lowercase();
-    // 官方 Anthropic 地址返回 None
-    if url_lower.contains("api.anthropic.com") {
+    let trimmed = url.trim();
+    let without_scheme = trimmed
+        .strip_prefix("https://")
+        .or_else(|| trimmed.strip_prefix("http://"))
+        .unwrap_or(trimmed);
+    let host_port_and_path = without_scheme
+        .split_once('/')
+        .map(|(host_port, _)| host_port)
+        .unwrap_or(without_scheme);
+    let host = host_port_and_path
+        .split_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(host_port_and_path)
+        .split_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or(host_port_and_path)
+        .trim_matches(|ch| ch == '[' || ch == ']')
+        .to_ascii_lowercase();
+
+    if host == "api.anthropic.com" {
         None
     } else {
-        Some(url.to_string())
+        Some(trimmed.to_string())
     }
 }
 
@@ -185,6 +202,7 @@ mod tests {
         assert_eq!(normalize_base_url("https://api.anthropic.com"), None);
         assert_eq!(normalize_base_url("api.anthropic.com"), None);
         assert_eq!(normalize_base_url("https://api.anthropic.com/v1"), None);
+        assert_eq!(normalize_base_url("https://API.ANTHROPIC.COM:443/v1"), None);
 
         // 第三方返回原值
         assert_eq!(
@@ -194,6 +212,14 @@ mod tests {
         assert_eq!(
             normalize_base_url("https://bedrock.amazonaws.com"),
             Some("https://bedrock.amazonaws.com".to_string())
+        );
+        assert_eq!(
+            normalize_base_url("https://api.anthropic.com.evil.example/v1"),
+            Some("https://api.anthropic.com.evil.example/v1".to_string())
+        );
+        assert_eq!(
+            normalize_base_url("https://proxy.example.com/forward/api.anthropic.com"),
+            Some("https://proxy.example.com/forward/api.anthropic.com".to_string())
         );
     }
 
