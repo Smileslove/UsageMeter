@@ -59,6 +59,22 @@ struct CachedSubscription {
     cached_at: i64,
 }
 
+fn cache_key_for_provider(provider: &str) -> String {
+    let normalized = provider.trim();
+    format!("{normalized}::{normalized}")
+}
+
+fn cache_key_for_quota(quota: &SubscriptionQuota) -> String {
+    let source_tool = quota.source_tool.as_deref().unwrap_or("").trim();
+    let tool = quota.tool.trim();
+    let provider = quota.provider.trim();
+    if source_tool.is_empty() {
+        format!("{provider}::{tool}")
+    } else {
+        format!("{provider}::{tool}::{source_tool}")
+    }
+}
+
 /// Cache validity duration in milliseconds (5 minutes)
 const CACHE_VALIDITY_MS: i64 = 5 * 60 * 1000;
 
@@ -107,19 +123,28 @@ impl SubscriptionState {
     /// Get cached subscription if still valid
     pub async fn get_cached(&self, provider: &str) -> Option<SubscriptionQuota> {
         let cache = self.cache.read().await;
-        if let Some(cached) = cache.get(provider) {
-            let now = chrono::Utc::now().timestamp_millis();
+        let cache_key = cache_key_for_provider(provider);
+        let now = chrono::Utc::now().timestamp_millis();
+
+        if let Some(cached) = cache.get(&cache_key) {
             if now - cached.cached_at < CACHE_VALIDITY_MS {
                 return Some(cached.quota.clone());
             }
         }
-        None
+
+        let prefix = format!("{}::", provider.trim());
+        cache
+            .iter()
+            .filter(|(key, _)| key.starts_with(&prefix))
+            .filter(|(_, cached)| now - cached.cached_at < CACHE_VALIDITY_MS)
+            .max_by_key(|(_, cached)| cached.cached_at)
+            .map(|(_, cached)| cached.quota.clone())
     }
 
     /// Update cache with new subscription data
     pub async fn update_cache(&self, quota: SubscriptionQuota) {
         let mut cache = self.cache.write().await;
-        let provider = quota.provider.clone();
+        let provider = cache_key_for_quota(&quota);
         cache.insert(
             provider,
             CachedSubscription {
@@ -132,7 +157,7 @@ impl SubscriptionState {
     /// Clear cache for a specific provider
     pub async fn clear_cache(&self, provider: &str) {
         let mut cache = self.cache.write().await;
-        cache.remove(provider);
+        cache.retain(|key, _| !key.starts_with(&format!("{}::", cache_key_for_provider(provider))));
     }
 
     /// Clear all cached data
@@ -152,5 +177,54 @@ impl SubscriptionState {
             .write()
             .await
             .insert(state.source_id.clone(), state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::SubscriptionQuota;
+
+    #[tokio::test]
+    async fn cache_separates_relay_and_source_tool_variants() {
+        let state = SubscriptionState::new();
+        let now = chrono::Utc::now().timestamp_millis();
+
+        let deepseek = SubscriptionQuota {
+            provider: "relay".to_string(),
+            tool: "deepseek".to_string(),
+            source_tool: Some("codex".to_string()),
+            credential_status: "valid".to_string(),
+            credential_message: None,
+            success: true,
+            tiers: Vec::new(),
+            updated_at: now,
+            from_cache: false,
+            error: None,
+            plan_label: None,
+            account_label: None,
+        };
+        let openrouter = SubscriptionQuota {
+            provider: "relay".to_string(),
+            tool: "openrouter".to_string(),
+            source_tool: Some("claude-code".to_string()),
+            credential_status: "valid".to_string(),
+            credential_message: None,
+            success: true,
+            tiers: Vec::new(),
+            updated_at: now,
+            from_cache: false,
+            error: None,
+            plan_label: None,
+            account_label: None,
+        };
+        state.update_cache(deepseek.clone()).await;
+        state.update_cache(openrouter).await;
+
+        let cached = state.get_cached("relay").await.expect("relay cache");
+        assert_eq!(cached.tool, "openrouter");
+        assert_eq!(cached.source_tool.as_deref(), Some("claude-code"));
+        assert_ne!(cached.tool, "relay");
+        assert_ne!(cached.tool, deepseek.tool);
     }
 }

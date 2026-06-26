@@ -502,6 +502,54 @@
 
 ---
 
+### `10-subscription-system.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src-tauri/src/subscription/mod.rs`
+   - 已确认订阅缓存此前仅使用 `provider` 作为 key。
+   - 对 `relay` 与 `source-config` 这类多实例结果，会出现后一次查询覆盖前一次查询的问题。
+   - 已改为按 `provider + tool + source_tool` 生成稳定缓存 key，并在按 provider 读取缓存时返回该 provider 下最新的一条有效结果，避免不同来源额度互相污染。
+
+2. `src-tauri/src/subscription/mod.rs`
+   - 已同步修正 `clear_cache(provider)` 的清理逻辑，使其按 provider 前缀清除整组缓存，而不是只删除旧的单键形式。
+
+3. `src-tauri/src/copilot/auth.rs`
+   - 已确认 `CopilotAuthManager::new(data_dir)` 完全忽略传入参数，始终硬编码到 `~/.config/github-copilot`。
+   - 已改为优先使用传入的 `data_dir/github-copilot` 作为凭据目录，保留空路径时回退到原默认目录的兼容行为。
+
+4. `src-tauri/src/subscription/gpt.rs`
+   - 已确认 GPT 查询路径在网络错误、响应读取失败、JSON 解析失败时会直接把原始信息写入 stderr，其中解析失败还会包含完整响应体。
+   - 已移除这组裸 `eprintln!` 调试输出，避免把潜在敏感响应内容直接暴露到 stderr；错误仍按原语义返回给调用方。
+
+已通过的定向验证：
+
+- `cargo fmt --manifest-path src-tauri/Cargo.toml`
+- `cargo test --manifest-path src-tauri/Cargo.toml cache_separates_relay_and_source_tool_variants -- --nocapture`
+- `cargo test --manifest-path src-tauri/Cargo.toml new_uses_passed_data_dir -- --nocapture`
+- `cargo test --manifest-path src-tauri/Cargo.toml subscription:: -- --nocapture`
+
+本轮新增/加强的测试覆盖：
+
+- `subscription::tests::cache_separates_relay_and_source_tool_variants`
+- `copilot::auth::tests::new_uses_passed_data_dir`
+
+已核实但暂未修复：
+
+1. Copilot 429 限流未映射到更明确的 `RateLimited` 语义
+   - 问题成立。
+   - 但这需要同时调整 `CopilotAuthError`、上层 `CredentialStatus` 映射和前端提示文案，本轮先不扩大修改面。
+
+2. GPT 查询流程未在调用层显式实现 401/403 后 refresh 重试
+   - 风险描述成立。
+   - 但当前 token 刷新职责已经下沉到 `TokenCache`，若要再在 provider 层加重试，需要先澄清两层职责边界，避免重复刷新。
+
+3. `normalize_base_url` 在 `source_quota_util.rs` 与 `source_resolver.rs` 中存在两套实现
+   - 结论成立。
+   - 这属于订阅来源识别的一致性重构，当前没有直接证据表明已造成用户可见错误，因此暂不在本轮合并。
+
+---
+
 ## 已核实但暂未修复
 
 ### `get_recent_request_records` 全量加载再分页

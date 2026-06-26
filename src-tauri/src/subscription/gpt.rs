@@ -182,17 +182,13 @@ impl GptSubscriptionProvider {
             .header("Accept", "application/json")
             .send()
             .await
-            .map_err(|e| {
-                eprintln!("[Subscription] Network error: {}", e);
-                SubscriptionError::NetworkError {
-                    message: e.to_string(),
-                }
+            .map_err(|e| SubscriptionError::NetworkError {
+                message: e.to_string(),
             })?;
 
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            eprintln!("[Subscription] API error ({}): {}", status, body);
             return Err(SubscriptionError::ApiError {
                 status: status.as_u16(),
                 message: body,
@@ -200,22 +196,17 @@ impl GptSubscriptionProvider {
         }
 
         // Get raw text first for debugging
-        let text = response.text().await.map_err(|e| {
-            eprintln!("[Subscription] Failed to read response: {}", e);
-            SubscriptionError::ParseError {
+        let text = response
+            .text()
+            .await
+            .map_err(|e| SubscriptionError::ParseError {
                 message: e.to_string(),
-            }
-        })?;
+            })?;
 
-        let data: GptUsageResponse = serde_json::from_str(&text).map_err(|e| {
-            eprintln!(
-                "[Subscription] Failed to parse JSON: {}\nResponse: {}",
-                e, text
-            );
-            SubscriptionError::ParseError {
+        let data: GptUsageResponse =
+            serde_json::from_str(&text).map_err(|e| SubscriptionError::ParseError {
                 message: format!("{}: {}", e, text),
-            }
-        })?;
+            })?;
 
         // Convert to SubscriptionQuota
         let mut tiers = Vec::new();

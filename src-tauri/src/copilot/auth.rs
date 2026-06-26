@@ -92,13 +92,16 @@ pub struct CopilotAuthManager {
 }
 
 impl CopilotAuthManager {
-    pub fn new(_data_dir: PathBuf) -> Self {
-        Self {
-            config_dir: dirs::home_dir()
+    pub fn new(data_dir: PathBuf) -> Self {
+        let config_dir = if data_dir.as_os_str().is_empty() {
+            dirs::home_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join(".config")
-                .join("github-copilot"),
-        }
+                .join("github-copilot")
+        } else {
+            data_dir.join("github-copilot")
+        };
+        Self { config_dir }
     }
 
     fn http_client(&self) -> Client {
@@ -277,4 +280,18 @@ fn is_no_copilot_subscription_response(body: &str) -> bool {
         || normalized.contains("not subscribed")
         || normalized.contains("no subscription")
         || normalized.contains("copilot business is not enabled")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_uses_passed_data_dir() {
+        let manager = CopilotAuthManager::new(PathBuf::from("/tmp/usagemeter-data"));
+        assert_eq!(
+            manager.config_dir,
+            PathBuf::from("/tmp/usagemeter-data").join("github-copilot")
+        );
+    }
 }
