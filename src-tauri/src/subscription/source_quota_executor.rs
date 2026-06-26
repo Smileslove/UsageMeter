@@ -74,7 +74,7 @@ fn build_new_api_quota(
     let total = quota + used;
     let remaining = quota.max(0.0);
     let utilization = if total > 0.0 {
-        (used / total) * 100.0
+        ((used / total) * 100.0).clamp(0.0, 100.0)
     } else {
         0.0
     };
@@ -372,5 +372,24 @@ mod tests {
         );
         assert!(quota.success);
         assert_eq!(quota.tiers[0].remaining_value, Some(12.5));
+    }
+
+    #[test]
+    fn new_api_builder_clamps_utilization_when_quota_is_negative() {
+        let quota = build_new_api_quota(
+            &source(),
+            Some("codex".to_string()),
+            &serde_json::json!({
+                "data": {
+                    "quota": -100000.0,
+                    "used_quota": 600000.0,
+                    "group": "demo"
+                }
+            }),
+        );
+
+        assert!(quota.success);
+        assert_eq!(quota.tiers[0].remaining_value, Some(0.0));
+        assert_eq!(quota.tiers[0].utilization, 100.0);
     }
 }

@@ -64,5 +64,5 @@ pub(crate) fn first_bool(body: &serde_json::Value, paths: &[&[&str]]) -> Option<
 }
 
 pub(crate) fn normalize_base_url(base_url: &str) -> String {
-    base_url.trim().trim_end_matches('/').to_string()
+    base_url.trim().trim_end_matches('/').to_ascii_lowercase()
 }

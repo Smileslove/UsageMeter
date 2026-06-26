@@ -268,4 +268,17 @@ mod tests {
         );
         assert_eq!(base_url.as_deref(), Some("https://relay.example.com/v1"));
     }
+
+    #[test]
+    fn find_resolved_source_matches_base_url_case_insensitively() {
+        let sources = vec![ResolvedRelaySource {
+            tool: ToolKind::ClaudeCode,
+            base_url: "https://API.DeepSeek.com/".to_string(),
+            api_key: "sk-demo".to_string(),
+        }];
+
+        let found = find_resolved_source_for_base_url(&sources, "https://api.deepseek.com");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().api_key, "sk-demo");
+    }
 }
