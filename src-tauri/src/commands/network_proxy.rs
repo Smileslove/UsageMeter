@@ -12,11 +12,12 @@ use crate::net::HttpClientFactory;
 
 const TEST_TIMEOUT_SECS: u64 = 8;
 
-fn endpoint_for_target(target: &str) -> &'static str {
+fn endpoint_for_target(target: &str) -> Result<&'static str, String> {
     match target {
-        "anthropic" => "https://api.anthropic.com",
-        "openai" => "https://api.openai.com",
-        _ => "https://api.github.com/zen",
+        "github" => Ok("https://api.github.com/zen"),
+        "anthropic" => Ok("https://api.anthropic.com"),
+        "openai" => Ok("https://api.openai.com"),
+        other => Err(format!("ERR_INVALID_NETWORK_PROXY_TARGET: {other}")),
     }
 }
 
@@ -43,7 +44,7 @@ pub async fn test_network_proxy(
     config: NetworkProxyConfig,
     target: Option<String>,
 ) -> Result<NetworkProxyTestResult, String> {
-    let endpoint = endpoint_for_target(target.as_deref().unwrap_or("github"));
+    let endpoint = endpoint_for_target(target.as_deref().unwrap_or("github"))?;
     let client = HttpClientFactory::build_ephemeral(&config, TEST_TIMEOUT_SECS)?;
 
     let start = Instant::now();

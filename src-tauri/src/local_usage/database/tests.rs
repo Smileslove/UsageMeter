@@ -1633,6 +1633,7 @@ fn unified_visible_counts_exclude_3xx_statuses() {
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].request_count, 2);
     assert_eq!(summaries[0].visible_request_count, 1);
+    assert_eq!(summaries[0].success_request_count, 1);
 
     let model_rows = db
         .get_unified_daily_model_summaries_between("2026-05-26", "2026-05-27")
@@ -1640,6 +1641,7 @@ fn unified_visible_counts_exclude_3xx_statuses() {
     assert_eq!(model_rows.len(), 1);
     assert_eq!(model_rows[0].request_count, 2);
     assert_eq!(model_rows[0].visible_request_count, 1);
+    assert_eq!(model_rows[0].success_request_count, 1);
 }
 
 #[test]

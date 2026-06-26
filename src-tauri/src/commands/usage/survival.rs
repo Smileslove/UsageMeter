@@ -112,12 +112,14 @@ fn compute_current_block(
 ) -> Option<AnchoredBlock> {
     let first = facts.first()?;
     let mut block_start = first.timestamp_sec;
+    let mut block_start_index = 0usize;
     let mut prev = first.timestamp_sec;
 
-    for fact in facts.iter().skip(1) {
-        let ts = fact.timestamp_sec;
+    for (index, fact) in facts.iter().enumerate().skip(1) {
+        let ts = fact.timestamp_sec.max(prev);
         if ts - block_start >= BLOCK_SECONDS || ts - prev >= BLOCK_SECONDS {
             block_start = ts;
+            block_start_index = index;
         }
         prev = ts;
     }
@@ -130,10 +132,7 @@ fn compute_current_block(
 
     let mut used_tokens: u64 = 0;
     let mut used_requests: u64 = 0;
-    for fact in facts.iter().rev() {
-        if fact.timestamp_sec < block_start {
-            break;
-        }
+    for fact in facts.iter().skip(block_start_index) {
         used_tokens = used_tokens.saturating_add(fact.total_tokens);
         used_requests = used_requests.saturating_add(1);
     }
@@ -324,6 +323,21 @@ mod tests {
         let block = compute_current_block(&facts, now, 0.0).expect("active block");
         assert_eq!(block.start_epoch, t0 + BLOCK_SECONDS);
         assert_eq!(block.used_tokens, 750);
+    }
+
+    #[test]
+    fn out_of_order_timestamps_do_not_move_block_backwards() {
+        let now = 1_000_000;
+        let facts = vec![
+            fact(now - 4 * 3600, 100),
+            fact(now - 300, 200),
+            fact(now - 5 * 3600, 300),
+        ];
+
+        let block = compute_current_block(&facts, now, 0.0).expect("active block");
+        assert_eq!(block.start_epoch, now - 4 * 3600);
+        assert_eq!(block.used_tokens, 600);
+        assert_eq!(block.used_requests, 3);
     }
 
     #[test]

@@ -58,7 +58,7 @@ impl LocalUsageDatabase {
             }
 
             if let Some(status_code) = fact.status_code {
-                if status_code < 400 {
+                if (200..300).contains(&status_code) {
                     summary.success_request_count += request_count;
                     summary.success_total_tokens += fact.total_tokens;
                     summary.success_input_tokens += fact.input_tokens;
@@ -135,7 +135,7 @@ impl LocalUsageDatabase {
             }
             if let Some(status_code) = fact.status_code {
                 *entry.status_code_counts.entry(status_code).or_insert(0) += request_count;
-                if status_code < 400 {
+                if (200..300).contains(&status_code) {
                     entry.success_request_count += request_count;
                     entry.success_total_tokens += fact.total_tokens;
                     entry.success_input_tokens += fact.input_tokens;

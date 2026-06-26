@@ -185,35 +185,13 @@ pub async fn download_and_install_update(
 /// 使用 JSON patch 方式：只修改目标字段，保留其余内容原样。
 #[tauri::command]
 pub fn skip_update_version(version: String, state: State<'_, UpdaterState>) -> Result<(), String> {
-    use std::fs;
-
-    let path = crate::models::AppSettings::settings_path()?;
-
-    // 读取现有 JSON（文件不存在时以空对象起步）
-    let raw = if path.exists() {
-        fs::read_to_string(&path).map_err(|e| format!("ERR_READ_SETTINGS: {e}"))?
-    } else {
-        "{}".to_string()
-    };
-
-    let mut json: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| format!("ERR_PARSE_SETTINGS: {e}"))?;
-
-    // 仅写入目标字段，其余键保持原样
-    if let serde_json::Value::Object(ref mut map) = json {
-        map.insert(
-            "skippedUpdateVersion".to_string(),
-            serde_json::Value::String(version),
-        );
+    let mut settings = crate::commands::load_settings().unwrap_or_default();
+    settings.skipped_update_version = version;
+    match crate::commands::save_settings_internal(settings) {
+        Ok(()) => {}
+        Err(crate::commands::SaveSettingsError::ReloadFailed(_)) => {}
+        Err(crate::commands::SaveSettingsError::Other(err)) => return Err(err),
     }
-
-    let content =
-        serde_json::to_string_pretty(&json).map_err(|e| format!("ERR_SERIALIZE_SETTINGS: {e}"))?;
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("ERR_CREATE_SETTINGS_DIR: {e}"))?;
-    }
-    fs::write(&path, content).map_err(|e| format!("ERR_WRITE_SETTINGS: {e}"))?;
     *state.pending_update.lock().unwrap() = None;
 
     Ok(())

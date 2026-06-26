@@ -180,7 +180,7 @@ fn build_daily_summary_from_facts(
             models.insert(fact.model.clone());
         }
         if let Some(status_code) = fact.status_code {
-            if status_code < 400 {
+            if (200..300).contains(&status_code) {
                 summary.success_request_count += request_count;
                 summary.success_total_tokens += fact.total_tokens;
                 summary.success_input_tokens += fact.input_tokens;
@@ -259,7 +259,7 @@ fn build_daily_model_summaries_from_facts(
         }
         if let Some(status_code) = fact.status_code {
             *entry.status_code_counts.entry(status_code).or_insert(0) += request_count;
-            if status_code < 400 {
+            if (200..300).contains(&status_code) {
                 entry.success_request_count += request_count;
                 entry.success_total_tokens += fact.total_tokens;
                 entry.success_input_tokens += fact.input_tokens;
@@ -863,5 +863,36 @@ mod tests {
         assert_eq!(rows[1].model_name, "unknown");
         assert_eq!(rows[1].local_only_requests, 1);
         assert_eq!(rows[1].success_request_count, 1);
+    }
+
+    #[test]
+    fn build_daily_summary_from_facts_excludes_redirects_from_success() {
+        let facts = vec![
+            test_fact(
+                "model-a",
+                Some(200),
+                CoverageOrigin::ProxyOnly,
+                10,
+                5,
+                0,
+                0,
+                0.1,
+            ),
+            test_fact(
+                "model-a",
+                Some(302),
+                CoverageOrigin::ProxyOnly,
+                10,
+                5,
+                0,
+                0,
+                0.1,
+            ),
+        ];
+
+        let row = build_daily_summary_from_facts("2026-06-01", &facts, 1234);
+        assert_eq!(row.request_count, 2);
+        assert_eq!(row.visible_request_count, 1);
+        assert_eq!(row.success_request_count, 1);
     }
 }

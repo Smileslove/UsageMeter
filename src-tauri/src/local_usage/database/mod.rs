@@ -55,6 +55,7 @@ struct DirtySessionSync {
 
 pub struct LocalUsageDatabase {
     pub(super) conn: Arc<Mutex<Connection>>,
+    db_path: PathBuf,
     sync_gate: Arc<(Mutex<SyncGateState>, Condvar)>,
 }
 
@@ -97,6 +98,7 @@ impl LocalUsageDatabase {
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            db_path: path.clone(),
             sync_gate: Arc::new((Mutex::new(SyncGateState::default()), Condvar::new())),
         })
     }
@@ -106,9 +108,8 @@ impl LocalUsageDatabase {
     }
 
     pub(super) fn open_readonly_connection(&self) -> Result<Connection, String> {
-        let path = Self::db_path()?;
         let conn = Connection::open_with_flags(
-            &path,
+            &self.db_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
                 | rusqlite::OpenFlags::SQLITE_OPEN_URI
                 | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,

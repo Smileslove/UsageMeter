@@ -114,42 +114,35 @@ pub async fn start_proxy(
         .iter()
         .any(|profile| profile.tool != "claude_code" && profile.enabled);
     let config = proxy_config_from_settings(port, &settings);
-
-    let server = if takeover_claude {
-        ProxyServer::new(config.clone())
-    } else {
-        ProxyServer::new_without_claude_takeover(config.clone())
-    };
-    server.set_app_handle(app.clone()).await;
-    if takeover_claude {
-        if let Err(e) = server.start().await {
-            if !has_non_claude_tool {
-                return Err(e);
-            }
-
-            mark_client_tool_enabled("claude_code", false)?;
-            let fallback_server = ProxyServer::new_without_claude_takeover(config);
-            fallback_server.set_app_handle(app).await;
-            fallback_server.start().await.map_err(|fallback_error| {
-                format!(
-                    "Failed to start Claude takeover: {}; fallback proxy also failed: {}",
-                    e, fallback_error
-                )
-            })?;
-            *server_guard = Some(fallback_server);
-            return Ok(());
-        }
-    }
     if !takeover_claude {
+        let server = ProxyServer::new_without_claude_takeover(config);
+        server.set_app_handle(app).await;
+        server.start().await?;
+        *server_guard = Some(server);
+        return Ok(());
+    }
+
+    let server = ProxyServer::new(config.clone());
+    server.set_app_handle(app.clone()).await;
+    if let Err(e) = server.start().await {
+        if !has_non_claude_tool {
+            return Err(e);
+        }
+
+        mark_client_tool_enabled("claude_code", false)?;
         let fallback_server = ProxyServer::new_without_claude_takeover(config);
         fallback_server.set_app_handle(app).await;
-        fallback_server.start().await?;
+        fallback_server.start().await.map_err(|fallback_error| {
+            format!(
+                "Failed to start Claude takeover: {}; fallback proxy also failed: {}",
+                e, fallback_error
+            )
+        })?;
         *server_guard = Some(fallback_server);
         return Ok(());
     }
 
     *server_guard = Some(server);
-
     Ok(())
 }
 
