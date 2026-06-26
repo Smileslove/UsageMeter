@@ -565,6 +565,74 @@
 
 ---
 
+### `A-backend-commands-deep.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src-tauri/src/lib.rs`
+   - 已确认 macOS `make_window_rounded()` 中对 `window.ns_window()` 的直接取值存在崩溃风险。
+   - 已改为在原生窗口句柄获取失败时记录错误并提前返回，不再因圆角窗口增强失败导致应用 panic。
+
+2. `src-tauri/src/lib.rs`
+   - 已确认后台更新检查把 `Update` 写入 `pending_update` 时仍直接 `lock().unwrap()`。
+   - 已改为在 mutex poisoned 时恢复内部值继续执行，避免前序异常把后续更新检查链路再次拖崩。
+
+3. `src-tauri/src/commands/updater.rs`
+   - 已确认 `check_for_update()`、`download_and_install_update()`、`skip_update_version()` 对 `pending_update` 均仍使用 `lock().unwrap()`。
+   - 已统一改为 `unwrap_or_else(|err| err.into_inner())`，保证 poisoned mutex 只降级为状态恢复，不再演变为新的 panic。
+
+4. `src-tauri/src/commands/settings.rs`
+   - 已确认设置保存仍直接 `fs::write(settings.json)`，写盘中断时可能留下半写入文件。
+   - 已改为先写入同目录临时文件再 `rename` 覆盖目标文件，补上基础原子写盘保障。
+
+已通过的定向验证：
+
+- `cargo fmt --manifest-path src-tauri/Cargo.toml`
+- `cargo test --manifest-path src-tauri/Cargo.toml commands::updater::tests -- --nocapture`
+- `cargo test --manifest-path src-tauri/Cargo.toml commands::settings::tests -- --nocapture`
+
+本轮新增/加强的测试覆盖：
+
+- `commands::settings::tests::atomic_write_replaces_target_file_contents`
+
+已核实但不按文档结论修复：
+
+1. `src-tauri/src/commands/window.rs` 重复打开分享窗口
+   - 当前实现已先通过 `get_webview_window("share")` 复用现有窗口，不会重复创建。
+   - 文档结论与现代码不符，不做修改。
+
+2. `src-tauri/src/proxy/database/pricing.rs` 批量定价“无事务”
+   - 当前实现已在 `apply_pricing_to_records()` 中显式开启 `transaction()` 并在同一事务内批量更新与刷新日汇总。
+   - 文档结论与现代码不符，不做修改。
+
+3. `src-tauri/src/commands/model_pricing.rs` 搜索无分页
+   - 当前 `search_model_pricing()` 已接收 `limit` / `offset`，默认值为 `100 / 0`。
+   - 文档结论与现代码不符，不做修改。
+
+4. `src-tauri/src/unified_usage/service.rs` 缓存无限增长
+   - 当前各运行时缓存已设置固定容量常量并在存储时裁剪。
+   - 文档结论与现代码不符，不做修改。
+
+已核实但暂未修复：
+
+1. `lib.rs` 的 `.run(...).expect(...)`
+   - 问题成立，但这里位于应用主入口，改成“非 panic”后也无法在同一进程内继续运行。
+   - 若要优化，只能改成更友好的启动失败上报/日志策略，不属于当前局部补丁范围。
+
+2. `menu_labels()` 仍是本地硬编码的双语菜单标签
+   - 问题成立。
+   - 但托盘菜单构建发生在 Rust 侧启动流程，若要接入统一 i18n，需要先定义一套后端可消费的稳定 locale 字典或共享翻译导出机制，当前先保留。
+
+3. `load_settings()` 在多条命令路径中重复读盘
+   - 结论成立。
+   - 这会牵涉设置缓存、热更新、secret hydrate/persist、一致性失效策略等整套状态模型，当前不做局部缓存补丁。
+
+4. 全局 `eprintln!` 与统一错误类型问题
+   - 结论成立。
+   - 但这属于跨模块基础设施收敛，影响范围远大于单文件缺陷修复，本轮先只修确定性的 panic / 数据落盘风险。
+
+---
+
 ## 已核实但暂未修复
 
 ### `get_recent_request_records` 全量加载再分页
