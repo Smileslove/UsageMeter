@@ -10,8 +10,12 @@ const props = defineProps<{
 
 const iconVNode = computed(() => {
   const key = props.name as keyof typeof icons
-  const component = (icons[key] || icons.Globe) as any
-  return h(component, { size: props.size || 16, color: props.color })
+  const component = icons[key]
+  if (!component && import.meta.env.DEV) {
+    console.warn(`[DynamicIcon] Unknown icon: ${props.name}`)
+  }
+  const resolvedComponent = (component ?? icons.Globe) as typeof icons.Globe
+  return h(resolvedComponent, { size: props.size || 16, color: props.color })
 })
 </script>
 

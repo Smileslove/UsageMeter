@@ -39,7 +39,7 @@ watch(() => [props.pricing, props.copySource], ([pricing, copySource]) => {
     isEdit.value = true
     modelId.value = pricing.modelId
     displayName.value = pricing.displayName || ''
-    const r = store.settings.currency.exchangeRates[inputCurrency.value] || 1.0
+    const r = store.settings.currency.exchangeRates[inputCurrency.value] ?? 1.0
     inputPrice.value = parseFloat((pricing.inputPrice * r).toFixed(4))
     outputPrice.value = parseFloat((pricing.outputPrice * r).toFixed(4))
     cacheReadPrice.value = pricing.cacheReadPrice != null ? parseFloat((pricing.cacheReadPrice * r).toFixed(4)) : undefined
@@ -48,7 +48,7 @@ watch(() => [props.pricing, props.copySource], ([pricing, copySource]) => {
     isEdit.value = false
     modelId.value = copySource.modelId
     displayName.value = copySource.displayName || ''
-    const r = store.settings.currency.exchangeRates[inputCurrency.value] || 1.0
+    const r = store.settings.currency.exchangeRates[inputCurrency.value] ?? 1.0
     inputPrice.value = parseFloat((copySource.inputPrice * r).toFixed(4))
     outputPrice.value = parseFloat((copySource.outputPrice * r).toFixed(4))
     cacheReadPrice.value = copySource.cacheReadPrice != null ? parseFloat((copySource.cacheReadPrice * r).toFixed(4)) : undefined
@@ -68,7 +68,7 @@ watch(() => [props.pricing, props.copySource], ([pricing, copySource]) => {
 watch(inputCurrency, (newCurrency) => {
   const source = props.pricing || props.copySource
   if (!source) return
-  const r = store.settings.currency.exchangeRates[newCurrency] || 1.0
+  const r = store.settings.currency.exchangeRates[newCurrency] ?? 1.0
   inputPrice.value = parseFloat((source.inputPrice * r).toFixed(4))
   outputPrice.value = parseFloat((source.outputPrice * r).toFixed(4))
   cacheReadPrice.value = source.cacheReadPrice != null ? parseFloat((source.cacheReadPrice * r).toFixed(4)) : undefined
@@ -80,7 +80,7 @@ const handleSave = () => {
   if (!modelId.value.trim()) return
   if (isNaN(inputPrice.value) || isNaN(outputPrice.value) || inputPrice.value < 0 || outputPrice.value < 0) return
 
-  const r = store.settings.currency.exchangeRates[inputCurrency.value] || 1.0
+  const r = store.settings.currency.exchangeRates[inputCurrency.value] ?? 1.0
 
   const pricing: ModelPricingConfig = {
     modelId: modelId.value.trim(),
@@ -225,7 +225,7 @@ const isValid = () => {
         @click="emit('close')"
         class="theme-button-secondary flex-1 rounded-lg py-1.5 text-xs transition-colors"
       >
-        {{ t(props.locale, 'common.cancel') || '取消' }}
+        {{ t(props.locale, 'common.cancel') }}
       </button>
       <button
         @click="handleSave"

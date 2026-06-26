@@ -523,10 +523,10 @@ const formatTime = (timestamp: number | null): string => {
 
             <!-- 第二行：价格信息 -->
             <div class="flex items-center gap-3 font-mono text-[10px] text-[var(--theme-text-secondary)]">
-              <span><span class="text-[var(--theme-text-tertiary)]">输入:</span>{{ formatPrice(pricing.inputPrice) }}/M</span>
-              <span><span class="text-[var(--theme-text-tertiary)]">输出:</span>{{ formatPrice(pricing.outputPrice) }}/M</span>
-              <span v-if="pricing.cacheReadPrice"><span class="text-[var(--theme-text-tertiary)]">缓存读:</span>{{ formatPrice(pricing.cacheReadPrice) }}/M</span>
-              <span v-if="pricing.cacheWritePrice"><span class="text-[var(--theme-text-tertiary)]">缓存写:</span>{{ formatPrice(pricing.cacheWritePrice) }}/M</span>
+              <span><span class="text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.modelPricingInput') }}:</span>{{ formatPrice(pricing.inputPrice) }}/M</span>
+              <span><span class="text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.modelPricingOutput') }}:</span>{{ formatPrice(pricing.outputPrice) }}/M</span>
+              <span v-if="pricing.cacheReadPrice"><span class="text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.modelPricingCacheRead') }}:</span>{{ formatPrice(pricing.cacheReadPrice) }}/M</span>
+              <span v-if="pricing.cacheWritePrice"><span class="text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.modelPricingCacheWrite') }}:</span>{{ formatPrice(pricing.cacheWritePrice) }}/M</span>
             </div>
           </div>
         </div>
@@ -615,10 +615,10 @@ const formatTime = (timestamp: number | null): string => {
 
             <!-- 第二行：价格信息 -->
             <div class="flex items-center gap-3 font-mono text-[10px] text-[var(--theme-text-secondary)]">
-              <span><span class="text-[var(--theme-text-tertiary)]">输入:</span>{{ formatPrice(pricing.inputPrice) }}/M</span>
-              <span><span class="text-[var(--theme-text-tertiary)]">输出:</span>{{ formatPrice(pricing.outputPrice) }}/M</span>
-              <span v-if="pricing.cacheReadPrice"><span class="text-[var(--theme-text-tertiary)]">缓存读:</span>{{ formatPrice(pricing.cacheReadPrice) }}/M</span>
-              <span v-if="pricing.cacheWritePrice"><span class="text-[var(--theme-text-tertiary)]">缓存写:</span>{{ formatPrice(pricing.cacheWritePrice) }}/M</span>
+              <span><span class="text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.modelPricingInput') }}:</span>{{ formatPrice(pricing.inputPrice) }}/M</span>
+              <span><span class="text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.modelPricingOutput') }}:</span>{{ formatPrice(pricing.outputPrice) }}/M</span>
+              <span v-if="pricing.cacheReadPrice"><span class="text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.modelPricingCacheRead') }}:</span>{{ formatPrice(pricing.cacheReadPrice) }}/M</span>
+              <span v-if="pricing.cacheWritePrice"><span class="text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.modelPricingCacheWrite') }}:</span>{{ formatPrice(pricing.cacheWritePrice) }}/M</span>
             </div>
           </div>
         </div>

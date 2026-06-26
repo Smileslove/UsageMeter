@@ -141,7 +141,7 @@ const chartOptions = computed(() => {
       <v-chart class="w-full h-full" :option="chartOptions" autoresize />
       <!-- 中心空心部分可放置说明文本，相对图表位置做偏移 -->
       <div class="absolute left-[25%] top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
-        <span class="text-[9px] uppercase tracking-widest text-[var(--theme-text-quaternary)] opacity-50">Models</span>
+        <span class="text-[9px] uppercase tracking-widest text-[var(--theme-text-quaternary)] opacity-50">{{ t(store.settings.locale, 'metrics.modelDistribution') }}</span>
       </div>
     </div>
   </div>

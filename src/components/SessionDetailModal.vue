@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import type { SessionStats } from '../types'
 import { formatCost as formatCostUtil, formatTokenValue } from '../utils/format'
 
@@ -136,6 +136,20 @@ const inputOutputRatio = computed(() => {
     output: (props.session.totalOutputTokens / total) * 100
   }
 })
+
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && props.visible) {
+    emit('close')
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', handleKeydown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeydown)
+})
 </script>
 
 <template>
@@ -199,11 +213,11 @@ const inputOutputRatio = computed(() => {
           <!-- 元信息 -->
           <div v-if="session.cwd || session.lastPrompt" class="bg-gray-50 dark:bg-neutral-800/50 rounded-xl p-3">
             <div v-if="session.cwd" class="mb-2">
-              <div class="text-[10px] text-gray-400 mb-0.5">{{ t(store.settings.locale, 'settings.cwd') || '工作目录' }}</div>
+              <div class="text-[10px] text-gray-400 mb-0.5">{{ t(store.settings.locale, 'settings.cwd') }}</div>
               <div class="text-xs text-gray-600 dark:text-gray-300 truncate">{{ session.cwd }}</div>
             </div>
             <div v-if="session.lastPrompt">
-              <div class="text-[10px] text-gray-400 mb-0.5">{{ t(store.settings.locale, 'sessions.lastPrompt') || '最后提示' }}</div>
+              <div class="text-[10px] text-gray-400 mb-0.5">{{ t(store.settings.locale, 'sessions.lastPrompt') }}</div>
               <div class="text-xs text-gray-600 dark:text-gray-300 line-clamp-2">{{ session.lastPrompt }}</div>
             </div>
           </div>
@@ -261,7 +275,7 @@ const inputOutputRatio = computed(() => {
               <span class="text-xs font-mono text-green-600">{{ sessionUsageVisible ? (session.successRequests || 0) : '—' }}</span>
             </div>
             <div class="flex justify-between items-center py-1.5">
-              <span class="text-xs text-gray-500">{{ t(store.settings.locale, 'common.error') || '错误' }}</span>
+              <span class="text-xs text-gray-500">{{ t(store.settings.locale, 'common.error') }}</span>
               <span class="text-xs font-mono text-red-500">{{ sessionUsageVisible ? (session.errorRequests || 0) : '—' }}</span>
             </div>
           </div>
@@ -288,11 +302,11 @@ const inputOutputRatio = computed(() => {
           <!-- 时间信息 -->
           <div class="text-[10px] text-gray-400 space-y-1">
             <div class="flex justify-between">
-              <span>{{ t(store.settings.locale, 'sessions.startTime') || '开始时间' }}</span>
+              <span>{{ t(store.settings.locale, 'sessions.startTime') }}</span>
               <span>{{ formatTime(session.firstRequestTime) }}</span>
             </div>
             <div class="flex justify-between">
-              <span>{{ t(store.settings.locale, 'sessions.endTime') || '结束时间' }}</span>
+              <span>{{ t(store.settings.locale, 'sessions.endTime') }}</span>
               <span>{{ formatTime(session.lastRequestTime) }}</span>
             </div>
           </div>
