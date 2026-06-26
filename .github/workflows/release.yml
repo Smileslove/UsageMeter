@@ -98,7 +98,7 @@ jobs:
           cache: 'npm'
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.94.0
         with:
           targets: ${{ matrix.target }}
 
@@ -126,7 +126,7 @@ jobs:
           echo "Extracted release notes for version $VERSION"
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         with:
           tagName: v${{ needs.verify.outputs.version }}
           releaseName: 'UsageMeter v${{ needs.verify.outputs.version }}'
@@ -162,7 +162,7 @@ jobs:
           cache: 'npm'
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.94.0
         with:
           targets: ${{ matrix.target }}
 
@@ -195,7 +195,7 @@ jobs:
           Write-Host "Extracted release notes for version $VERSION"
 
       - name: Build Tauri app
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         with:
           tagName: v${{ needs.verify.outputs.version }}
           releaseName: 'UsageMeter v${{ needs.verify.outputs.version }}'

@@ -6,6 +6,10 @@
   "license": "MIT",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=24",
+    "npm": ">=10"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/smileslove/UsageMeter"
@@ -28,6 +32,7 @@
     "build:tauri": "tauri build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "audit": "npm audit --audit-level=high",
     "lint": "vue-tsc --noEmit && cd src-tauri && cargo fmt -- --check && cargo clippy -- -D warnings && cargo check"
   },
   "dependencies": {
