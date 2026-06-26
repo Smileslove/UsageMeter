@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import type { DayActivity, StatisticsBucket, StatisticsMetric, StatisticsRangePreset } from '../types'
 import ActivityGrid from '../components/statistics/ActivityGrid.vue'
@@ -223,11 +223,16 @@ watch(
   }
 )
 
-onMounted(() => {
-  fetchSummary()
-  fetchMonth()
-  // 延迟设置初始化标志，确保初始加载完成后才响应用户操作
+onMounted(async () => {
+  await Promise.all([fetchSummary(), fetchMonth()])
   initialized.value = true
+})
+
+onUnmounted(() => {
+  if (customRangeTimer) {
+    clearTimeout(customRangeTimer)
+    customRangeTimer = null
+  }
 })
 
 </script>
