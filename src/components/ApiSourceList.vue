@@ -25,7 +25,7 @@ const filteredCategories = computed(() => {
   const q = iconSearch.value.toLowerCase().trim()
   if (!q) return SOURCE_ICON_CATEGORIES
   return SOURCE_ICON_CATEGORIES.map(cat => ({
-    label: cat.label,
+    labelKey: cat.labelKey,
     icons: cat.icons.filter(icon => icon.toLowerCase().includes(q)),
   })).filter(cat => cat.icons.length > 0)
 })
@@ -389,11 +389,13 @@ defineProps<{
 
           <div
             v-for="category in filteredCategories"
-            :key="category.label"
+            :key="category.labelKey"
             v-show="category.icons.length > 0"
             class="mb-2 last:mb-0"
           >
-            <p class="mb-1 px-0.5 text-[10px] text-[var(--theme-text-tertiary)]">{{ category.label }} · {{ category.icons.length }}</p>
+            <p class="mb-1 px-0.5 text-[10px] text-[var(--theme-text-tertiary)]">
+              {{ t(store.settings.locale, category.labelKey) }} · {{ category.icons.length }}
+            </p>
             <div class="grid grid-cols-9 gap-0.5 max-h-[120px] overflow-y-auto">
               <button
                 v-for="icon in category.icons"

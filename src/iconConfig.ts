@@ -40,9 +40,9 @@ export const COLOR_ICON_SLUGS: Set<string> = new Set([
 ])
 
 /** 所有可用图标的 slug（按类目分组） */
-export const SOURCE_ICON_CATEGORIES: { label: string; icons: string[] }[] = [
+export const SOURCE_ICON_CATEGORIES: { labelKey: string; icons: string[] }[] = [
   {
-    label: '大模型',
+    labelKey: 'sources.iconCategory.foundationModels',
     icons: [
       'claude', 'deepseek', 'openai', 'gemini', 'qwen', 'doubao',
       'mistral', 'grok', 'hunyuan', 'spark', 'baichuan', 'chatglm',
@@ -60,7 +60,7 @@ export const SOURCE_ICON_CATEGORIES: { label: string; icons: string[] }[] = [
     ],
   },
   {
-    label: '国内模型',
+    labelKey: 'sources.iconCategory.domesticModels',
     icons: [
       'qwen', 'doubao', 'hunyuan', 'spark', 'baichuan', 'chatglm',
       'kimi', 'moonshot', 'yi', 'wenxin', 'minimax', 'stepfun',
@@ -72,7 +72,7 @@ export const SOURCE_ICON_CATEGORIES: { label: string; icons: string[] }[] = [
     ],
   },
   {
-    label: '提供商',
+    labelKey: 'sources.iconCategory.providers',
     icons: [
       'anthropic', 'openai', 'google', 'meta', 'microsoft',
       'alibaba', 'baidu', 'bytedance', 'tencent', 'zhipu',
@@ -92,7 +92,7 @@ export const SOURCE_ICON_CATEGORIES: { label: string; icons: string[] }[] = [
     ],
   },
   {
-    label: '工具',
+    labelKey: 'sources.iconCategory.tools',
     icons: [
       'claudecode', 'cursor', 'opencode', 'codex', 'copilot',
       'windsurf', 'v0', 'lovable', 'replit', 'cline', 'roocode',
@@ -110,7 +110,7 @@ export const SOURCE_ICON_CATEGORIES: { label: string; icons: string[] }[] = [
     ],
   },
   {
-    label: '创意与媒体',
+    labelKey: 'sources.iconCategory.creativeMedia',
     icons: [
       'midjourney', 'dalle', 'sora', 'flux', 'stability',
       'runway', 'luma', 'kling', 'pika', 'viggle',
@@ -122,7 +122,7 @@ export const SOURCE_ICON_CATEGORIES: { label: string; icons: string[] }[] = [
     ],
   },
   {
-    label: '国际模型',
+    labelKey: 'sources.iconCategory.internationalModels',
     icons: [
       'claude', 'gemini', 'gemma', 'palm', 'openai',
       'mistral', 'cohere', 'commanda', 'grok', 'llava',
@@ -133,7 +133,7 @@ export const SOURCE_ICON_CATEGORIES: { label: string; icons: string[] }[] = [
     ],
   },
   {
-    label: '品牌与平台',
+    labelKey: 'sources.iconCategory.brandsPlatforms',
     icons: [
       'adobe', 'apple', 'alibaba', 'tencent', 'baidu',
       'bytedance', 'huawei', 'google', 'microsoft', 'meta',
@@ -143,7 +143,7 @@ export const SOURCE_ICON_CATEGORIES: { label: string; icons: string[] }[] = [
     ],
   },
   {
-    label: '所有图标',
+    labelKey: 'sources.iconCategory.allIcons',
     icons: [
       'ace', 'adobe', 'adobefirefly', 'agentvoice', 'agui', 'ai2', 'ai21',
       'ai302', 'ai360', 'aihubmix', 'aimass', 'aionlabs', 'aistudio',
