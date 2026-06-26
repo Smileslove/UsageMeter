@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import {
   AlertCircle,
@@ -27,6 +27,7 @@ const store = useMonitorStore()
 const syncing = ref(false)
 const syncError = ref('')
 const syncSuccess = ref(false)
+let syncSuccessTimer: ReturnType<typeof setTimeout> | null = null
 
 // 搜索关键字
 const searchQuery = ref('')
@@ -103,7 +104,11 @@ async function syncRates() {
     localCurrency.value.lastRateUpdate = Date.now()
     syncSuccess.value = true
     await save()
-    setTimeout(() => { syncSuccess.value = false }, 3000)
+    if (syncSuccessTimer) clearTimeout(syncSuccessTimer)
+    syncSuccessTimer = setTimeout(() => {
+      syncSuccess.value = false
+      syncSuccessTimer = null
+    }, 3000)
   } catch (e) {
     syncError.value = t(store.settings.locale, 'settings.currencySyncError')
   } finally {
@@ -116,6 +121,13 @@ async function save() {
   store.settings.currency = JSON.parse(JSON.stringify(localCurrency.value)) as CurrencySettingsType
   await store.saveSettings()
 }
+
+onUnmounted(() => {
+  if (syncSuccessTimer) {
+    clearTimeout(syncSuccessTimer)
+    syncSuccessTimer = null
+  }
+})
 </script>
 
 <template>

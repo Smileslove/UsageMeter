@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
@@ -13,6 +13,7 @@ const wsEnabled = ref(store.settings.wslScan?.enabled ?? false)
 const wsExtraRoots = ref((store.settings.wslScan?.extraRoots ?? []).join(', '))
 const wsAdvanced = ref(false)
 const wsSavedFlash = ref(false)
+let wsSavedFlashTimer: ReturnType<typeof setTimeout> | null = null
 const availableDistros = ref<string[]>([])
 const distroLoading = ref(false)
 
@@ -116,7 +117,11 @@ async function selectAll() {
 
 async function saveAdvanced() {
   wsSavedFlash.value = true
-  setTimeout(() => (wsSavedFlash.value = false), 1200)
+  if (wsSavedFlashTimer) clearTimeout(wsSavedFlashTimer)
+  wsSavedFlashTimer = setTimeout(() => {
+    wsSavedFlash.value = false
+    wsSavedFlashTimer = null
+  }, 1200)
   await persist()
 }
 
@@ -127,6 +132,13 @@ async function persist() {
     // rollback handled by watch
   }
 }
+
+onUnmounted(() => {
+  if (wsSavedFlashTimer) {
+    clearTimeout(wsSavedFlashTimer)
+    wsSavedFlashTimer = null
+  }
+})
 </script>
 
 <template>

@@ -677,6 +677,60 @@
 
 ---
 
+### `A-frontend-components-deep.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src/components/ModelPricingSettings.vue`
+   - 已确认自定义/同步模型搜索防抖定时器在组件卸载时未清理。
+   - 已补充 `onUnmounted` 清理 `customSearchTimeout` / `syncedSearchTimeout`，避免组件销毁后残留异步回调。
+
+2. `src/components/CurrencySettings.vue`
+   - 已确认汇率同步成功提示的 `setTimeout` 未跟踪和清理。
+   - 已改为持有 `syncSuccessTimer` 并在卸载时清理。
+
+3. `src/components/settings/NetworkProxyPanel.vue`
+   - 已确认“已保存”闪烁提示的 `setTimeout` 未清理。
+   - 已改为持有 `npSavedFlashTimer` 并在卸载时清理。
+
+4. `src/components/settings/WslScanPanel.vue`
+   - 已确认高级设置保存成功提示的 `setTimeout` 未清理。
+   - 已改为持有 `wsSavedFlashTimer` 并在卸载时清理。
+
+5. `src/components/statistics/StatisticsModelList.vue`
+   - 已确认 donut tooltip 会把 `model.modelName` 直接拼接进 HTML 字符串。
+   - 已新增最小 HTML 转义，避免模型名称中的特殊字符被直接解释为标签。
+
+已通过的定向验证：
+
+- `npm run build`
+
+已核实后不按文档结论修复：
+
+1. `ModelDistribution.vue` / `SessionDetailModal.vue` / `ModelPricingSettings.vue` 中多处硬编码文案
+   - 这些问题已在 `04-frontend-components.md` 轮次完成修复。
+   - `A-frontend-components-deep.md` 这里反映的是旧状态，不再重复修改。
+
+2. `UpdateDialog.vue` 的 `v-html` 结论
+   - 当前实现会先经过 `escapeHtml()` 与受限 markdown 渲染，不是把原始远端内容直接注入 DOM。
+   - 这仍是安全敏感点，但不能按“现成裸 XSS”定性；已在 `A-cross-validation.md` 轮次中同步修正文档结论。
+
+已核实但暂未修复：
+
+1. `src/components/DynamicIcon.vue` 全量导入 `lucide-vue-next`
+   - 风险成立。
+   - 但要改成按需映射，需要先盘点调用端的动态图标集合和回退策略，当前先不做包体积方向的大改。
+
+2. 组件层系统性 ARIA/键盘导航补齐
+   - 结论成立，尤其是多个模态框和选择器缺少完整的无障碍语义。
+   - 但这是跨多组件的一致性工程，当前先修确定性的生命周期缺陷和 HTML 注入点。
+
+3. `StatisticsModelList.vue` / `StatisticsTrendChart.vue` 的深色模式颜色与 tooltip 样式硬编码
+   - 风险成立。
+   - 需要和现有主题变量体系一起重构，避免只改局部颜色导致风格割裂，本轮先不展开。
+
+---
+
 ## 已核实但暂未修复
 
 ### `get_recent_request_records` 全量加载再分页

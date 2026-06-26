@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, computed } from 'vue'
+import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
@@ -172,6 +172,17 @@ watch(syncedSearchQuery, () => {
 watch(activeTab, (newTab) => {
   if (newTab === 'synced') {
     loadSyncedPricings()
+  }
+})
+
+onUnmounted(() => {
+  if (customSearchTimeout) {
+    clearTimeout(customSearchTimeout)
+    customSearchTimeout = null
+  }
+  if (syncedSearchTimeout) {
+    clearTimeout(syncedSearchTimeout)
+    syncedSearchTimeout = null
   }
 })
 

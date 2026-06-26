@@ -132,6 +132,15 @@ function trendMetricLabel(metric: 'requests' | 'tokens' | 'cost' | 'rate'): stri
   return t(props.locale, 'statistics.avgSpeed')
 }
 
+function escapeTooltipHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 function normalizedTrend(metric: 'requests' | 'tokens' | 'cost' | 'rate'): number[] {
   const values = selectedModel.value?.trend.map(point => trendValue(point, metric)) ?? []
   const max = Math.max(...values, 0)
@@ -173,8 +182,9 @@ const chartOptions = computed(() => {
       formatter: (params: any) => {
         const model = displayModels.value[params.dataIndex]
         if (!model) return ''
+        const safeModelName = escapeTooltipHtml(model.modelName)
         return `
-          <div style="font-weight:600;margin-bottom:5px;">${model.modelName}</div>
+          <div style="font-weight:600;margin-bottom:5px;">${safeModelName}</div>
           <div style="display:flex;justify-content:space-between;gap:16px;"><span>${t(props.locale, 'statistics.modelShare')}</span><b>${model.percent.toFixed(1)}%</b></div>
           <div style="display:flex;justify-content:space-between;gap:16px;"><span>${t(props.locale, 'statistics.requests')}</span><b>${formatRequestCount(model.requestCount)}</b></div>
           <div style="display:flex;justify-content:space-between;gap:16px;"><span>${t(props.locale, 'statistics.cost')}</span><b>${formatCost(model.cost, store.settings.currency)}</b></div>

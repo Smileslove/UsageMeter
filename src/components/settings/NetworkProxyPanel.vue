@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
@@ -37,6 +37,7 @@ const npUrl = ref(
     : ''
 )
 const npSavedFlash = ref(false)
+let npSavedFlashTimer: ReturnType<typeof setTimeout> | null = null
 const npError = ref('')
 const npTests = ref<Record<string, TestState>>({
   github: { status: 'idle' },
@@ -158,8 +159,10 @@ const saveNetworkProxy = async () => {
   try {
     await store.saveSettings()
     npSavedFlash.value = true
-    setTimeout(() => {
+    if (npSavedFlashTimer) clearTimeout(npSavedFlashTimer)
+    npSavedFlashTimer = setTimeout(() => {
       npSavedFlash.value = false
+      npSavedFlashTimer = null
     }, 1500)
     if (npEnabled.value) {
       testAllTargets()
@@ -220,6 +223,13 @@ function networkProxyTestLabel(state: TestState) {
   }
   return t(store.settings.locale, `settings.networkProxyErr_${state.errorKey ?? 'testUnknownError'}`)
 }
+
+onUnmounted(() => {
+  if (npSavedFlashTimer) {
+    clearTimeout(npSavedFlashTimer)
+    npSavedFlashTimer = null
+  }
+})
 </script>
 
 <template>
