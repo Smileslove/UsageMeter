@@ -11,12 +11,12 @@ export function useCurrency() {
   }
 
   function convertToUSD(amount: number, fromCurrency: string): number {
-    const rate = currency.value.exchangeRates[fromCurrency] || 1.0
+    const rate = currency.value.exchangeRates[fromCurrency] ?? 1.0
     return amount / rate
   }
 
   function fromUSD(amount: number): number {
-    const rate = currency.value.exchangeRates[currency.value.displayCurrency] || 1.0
+    const rate = currency.value.exchangeRates[currency.value.displayCurrency] ?? 1.0
     return amount * rate
   }
 

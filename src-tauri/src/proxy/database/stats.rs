@@ -178,7 +178,7 @@ impl ProxyDatabase {
         let result = stmt.query_row(
             rusqlite::params![session_id, crate::models::DEFAULT_CLIENT_TOOL],
             |row| {
-                let total_output_tokens: i64 = row.get(3)?;
+                let total_output_tokens: i64 = row.get(4)?;
                 let total_duration_ms: i64 = row.get(7)?;
                 let models_str: String = row.get::<_, String>(10)?;
                 let total_input_tokens: i64 = row.get(3)?;
@@ -509,6 +509,8 @@ mod tests {
 
         assert!((stats.estimated_cost - 4.0).abs() < f64::EPSILON);
         assert_eq!(stats.models.len(), 2);
+        assert_eq!(stats.total_input_tokens, 150);
+        assert_eq!(stats.total_output_tokens, 275);
     }
 
     #[test]

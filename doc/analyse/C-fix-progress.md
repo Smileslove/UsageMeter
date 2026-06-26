@@ -1014,6 +1014,57 @@
 
 ---
 
+### `B-comprehensive-verification.md`
+
+本轮已完成核实并落地的修复：
+
+1. `src-tauri/src/proxy/database/stats.rs`
+   - 已确认 `get_session_stats()` 中 `total_output_tokens` 读取了错误列索引，导致输出 token 统计直接等于输入 token。
+   - 已修正为读取真正的 `SUM(output_tokens)` 列，并补强断言覆盖输入/输出 token 汇总值。
+
+2. `src/composables/useCurrency.ts`
+   - 已确认 `convertToUSD()` / `fromUSD()` 仍使用 `|| 1.0`，会把显式 0 汇率误判成“未配置”。
+   - 已改为 `?? 1.0`，只在缺失值时回退默认汇率。
+
+3. `src/utils/format.ts`
+   - 已确认 `formatTokenValue()` 对负数没有按绝对值判断量级，`-5000` 会显示为 `-5000.00` 而非 `-5.00K`。
+   - 已改为以绝对值决定单位档位，同时保留原始符号。
+
+已通过的定向验证：
+
+- `cargo test --manifest-path src-tauri/Cargo.toml session_stats_sum_estimated_costs_across_models -- --nocapture`
+- `npm run build`
+
+本轮新增/加强的测试覆盖：
+
+- `proxy::database::stats::tests::session_stats_sum_estimated_costs_across_models` 增补 `total_input_tokens` / `total_output_tokens` 断言
+
+验证中发现但未在本轮处理的既有问题：
+
+1. `proxy::database::stats::tests::ensure_daily_rollup_mode_current_resets_rollups_on_mode_mismatch`
+   - 复现命令：
+     `cargo test --manifest-path src-tauri/Cargo.toml proxy::database::stats -- --nocapture`
+   - 当前失败表现为预期 `daily_summary` / `model_usage` 被清空，但实际 `daily_summary` 仍保留 1 条记录。
+   - 本轮只修复了会话输出 token 列索引错误，未改动该日汇总状态刷新逻辑；此失败应视为既有问题。
+
+已核实后不按文档结论修复：
+
+1. `parse_session_file panic`、session mutex poisoning、`verify_json_structure`、`normalize_base_url` 不一致等
+   - 这些问题已在前序轮次完成修复。
+   - `B-comprehensive-verification.md` 这里更多是在汇总旧状态，不再重复提交相同补丁。
+
+已核实但暂未修复：
+
+1. `proxy/url_identity.rs` 的 `source_id` 未消毒
+   - 风险仍成立。
+   - 但当前需要先明确 source id 的允许字符集和与既有 registry 数据的兼容迁移策略，不能在总复审轮次里直接拍板收紧。
+
+2. `net/http_client.rs` 的中毒 `RwLock` 处理、`unified_usage/service.rs` 的 `acquire_inflight_key` 无限等待、`appExit.ts` 半关闭态等
+   - 这些都是当前仍成立的高优先级问题。
+   - 但它们各自牵涉独立模块的控制流与降级语义，适合后续继续按单文件/单模块方式推进，而不是在本轮总复审里混做一组补丁。
+
+---
+
 ## 已核实但暂未修复
 
 ### `get_recent_request_records` 全量加载再分页
