@@ -5,7 +5,7 @@
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter, State};
 
 use super::usage::ProxyState;
@@ -23,6 +23,16 @@ impl Default for UpdaterState {
             pending_update: Mutex::new(None),
         }
     }
+}
+
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
+fn pending_update_guard(
+    state: &UpdaterState,
+) -> MutexGuard<'_, Option<tauri_plugin_updater::Update>> {
+    state
+        .pending_update
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
 }
 
 /// 返回给前端的更新信息 DTO
@@ -109,11 +119,11 @@ pub async fn check_for_update(
         match updater.check().await {
             Ok(Some(update)) => {
                 let dto = build_dto(&update);
-                *state.pending_update.lock().unwrap() = Some(update);
+                *pending_update_guard(&state) = Some(update);
                 Ok(Some(dto))
             }
             Ok(None) => {
-                *state.pending_update.lock().unwrap() = None;
+                *pending_update_guard(&state) = None;
                 Ok(None)
             }
             Err(e) => Err(format!("ERR_UPDATE_CHECK: {e}")),
@@ -144,7 +154,7 @@ pub async fn download_and_install_update(
         let update = state
             .pending_update
             .lock()
-            .unwrap()
+            .unwrap_or_else(|err| err.into_inner())
             .take()
             .ok_or_else(|| "ERR_NO_PENDING_UPDATE".to_string())?;
 
@@ -192,7 +202,7 @@ pub fn skip_update_version(version: String, state: State<'_, UpdaterState>) -> R
         Err(crate::commands::SaveSettingsError::ReloadFailed(_)) => {}
         Err(crate::commands::SaveSettingsError::Other(err)) => return Err(err),
     }
-    *state.pending_update.lock().unwrap() = None;
+    *pending_update_guard(&state) = None;
 
     Ok(())
 }

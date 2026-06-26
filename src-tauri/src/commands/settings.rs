@@ -3,6 +3,7 @@
 use crate::models::{AppSettings, CurrencySettings};
 use crate::net::HttpClientFactory;
 use std::fs;
+use std::path::Path;
 use tauri::{AppHandle, Emitter};
 
 /// 加载应用设置
@@ -81,8 +82,7 @@ pub fn save_settings_internal(settings: AppSettings) -> Result<(), SaveSettingsE
 
     let content = serde_json::to_string_pretty(&settings)
         .map_err(|e| SaveSettingsError::Other(format!("ERR_SERIALIZE_SETTINGS: {e}")))?;
-    fs::write(path, content)
-        .map_err(|e| SaveSettingsError::Other(format!("ERR_WRITE_SETTINGS: {e}")))?;
+    atomic_write(&path, &content).map_err(SaveSettingsError::Other)?;
 
     if previous_settings.day_boundary_mode != settings.day_boundary_mode {
         reset_day_boundary_caches().map_err(SaveSettingsError::Other)?;
@@ -92,6 +92,24 @@ pub fn save_settings_internal(settings: AppSettings) -> Result<(), SaveSettingsE
         eprintln!("[UsageMeter] {err}");
         return Err(SaveSettingsError::ReloadFailed(err));
     }
+    Ok(())
+}
+
+fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "ERR_SETTINGS_PARENT_DIR_NOT_FOUND".to_string())?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "ERR_SETTINGS_FILE_NAME_INVALID".to_string())?;
+    let temp_path = parent.join(format!("{file_name}.tmp"));
+
+    fs::write(&temp_path, content).map_err(|e| format!("ERR_WRITE_SETTINGS: {e}"))?;
+    fs::rename(&temp_path, path).map_err(|err| {
+        let _ = fs::remove_file(&temp_path);
+        format!("ERR_RENAME_SETTINGS: {err}")
+    })?;
     Ok(())
 }
 
@@ -278,6 +296,7 @@ mod tests {
     use super::*;
     use crate::models::{AppSettings, CurrencySettings, SyncSettings};
     use std::collections::HashMap;
+    use tempfile::tempdir;
 
     #[test]
     fn migrate_proxy_config_fills_missing_timeout_fields() {
@@ -357,5 +376,17 @@ mod tests {
             settings.sync.device_id,
             crate::models::default_sync_device_id()
         );
+    }
+
+    #[test]
+    fn atomic_write_replaces_target_file_contents() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("settings.json");
+
+        fs::write(&path, "old").expect("seed file");
+        atomic_write(&path, "new").expect("atomic write");
+
+        assert_eq!(fs::read_to_string(&path).expect("read back"), "new");
+        assert!(!dir.path().join("settings.json.tmp").exists());
     }
 }

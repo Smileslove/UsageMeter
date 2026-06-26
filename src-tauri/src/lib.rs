@@ -150,7 +150,15 @@ fn make_window_rounded(window: &tauri::WebviewWindow) {
     use objc2::runtime::AnyClass;
     use objc2_app_kit::{NSColor, NSWindow, NSWindowButton, NSWindowStyleMask};
 
-    let ns_window = window.ns_window().unwrap() as *mut AnyClass;
+    let ns_window = match window.ns_window() {
+        Ok(handle) => handle as *mut AnyClass,
+        Err(err) => {
+            eprintln!(
+                "[UsageMeter] Failed to access native window handle for rounded corners: {err}"
+            );
+            return;
+        }
+    };
     unsafe {
         let window: &NSWindow = &*ns_window.cast();
 
@@ -432,7 +440,10 @@ pub fn run() {
                             let dto = commands::build_dto(&update);
                             // 将 Update 对象存入 UpdaterState 供用户触发安装时使用
                             if let Some(state) = app_handle.try_state::<commands::UpdaterState>() {
-                                *state.pending_update.lock().unwrap() = Some(update);
+                                *state
+                                    .pending_update
+                                    .lock()
+                                    .unwrap_or_else(|err| err.into_inner()) = Some(update);
                             }
                             let _ = app_handle.emit("update-available", dto);
                         }
