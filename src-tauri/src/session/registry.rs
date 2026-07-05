@@ -25,9 +25,12 @@ static QODER_IDE_CN_SOURCE: QoderIdeSource =
     QoderIdeSource::new(super::constants::TOOL_QODER_IDE_CN, "QoderCN");
 static QODER_CLI_SOURCE: QoderCliSource = QoderCliSource;
 static QODER_WORK_SOURCE: QoderWorkSource =
-    QoderWorkSource::new(super::constants::TOOL_QODER_WORK, "QoderWork");
-static QODER_WORK_CN_SOURCE: QoderWorkSource =
-    QoderWorkSource::new(super::constants::TOOL_QODER_WORK_CN, "QoderWork CN");
+    QoderWorkSource::new(super::constants::TOOL_QODER_WORK, "QoderWork", ".qoderwork");
+static QODER_WORK_CN_SOURCE: QoderWorkSource = QoderWorkSource::new(
+    super::constants::TOOL_QODER_WORK_CN,
+    "QoderWork CN",
+    ".qoderworkcn",
+);
 static REASONIX_SOURCE: ReasonixSource = ReasonixSource;
 static GEMINI_SOURCE: GeminiSource = GeminiSource;
 

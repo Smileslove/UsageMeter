@@ -167,7 +167,11 @@ fn fallback_model_name_for_tool(tool: &str) -> Option<&'static str> {
 
 pub(crate) fn normalize_model_bucket(tool: &str, model: &str) -> String {
     if !is_opaque_model_name(model) {
-        return model.trim().to_string();
+        return if tool.starts_with("qoder_") {
+            crate::qoder_models::normalize_qoder_model_name(model)
+        } else {
+            model.trim().to_string()
+        };
     }
 
     fallback_model_name_for_tool(tool)
@@ -577,6 +581,18 @@ mod tests {
         let local = local_with(100, 200, 0, 0, "sess", 1_700_000_000);
         let fact = MergedRequestFact::from_local(&local, None, 0.0);
         assert_eq!(fact.source_label, None);
+    }
+
+    #[test]
+    fn qoder_model_bucket_uses_display_name_without_changing_local_record() {
+        let mut local = local_with(100, 200, 0, 0, "sess", 1_700_000_000);
+        local.tool = "qoder_work_cn".to_string();
+        local.model = "gm51model".to_string();
+
+        let fact = MergedRequestFact::from_local(&local, None, 0.0);
+
+        assert_eq!(local.model, "gm51model");
+        assert_eq!(fact.model, "GLM-5.2");
     }
 
     #[test]

@@ -8,6 +8,7 @@ mod local_usage;
 mod models;
 mod net;
 mod proxy;
+mod qoder_models;
 mod session;
 mod subscription;
 mod sync;

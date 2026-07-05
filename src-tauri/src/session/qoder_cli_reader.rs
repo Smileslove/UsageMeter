@@ -270,11 +270,8 @@ fn extract_cli_request_record(
     json: &serde_json::Value,
     session: &SessionFile,
 ) -> Option<LocalRequestRecord> {
-    let usage = extract_cli_token_usage(json)?;
+    let usage = extract_cli_token_usage(json).unwrap_or_default();
     let total = usage.input + usage.output + usage.cache_create + usage.cache_read;
-    if total == 0 {
-        return None;
-    }
 
     // Use the per-event uuid as message_id; fall back to a timestamp+token hash
     let message_id = json
@@ -318,6 +315,18 @@ struct CliTokenUsage {
     reasoning: u64,
 }
 
+impl Default for CliTokenUsage {
+    fn default() -> Self {
+        Self {
+            input: 0,
+            output: 0,
+            cache_create: 0,
+            cache_read: 0,
+            reasoning: 0,
+        }
+    }
+}
+
 fn extract_cli_token_usage(json: &serde_json::Value) -> Option<CliTokenUsage> {
     // Qoder CLI: usage is at message.usage (same as Claude Code)
     let usage = json
@@ -348,17 +357,13 @@ fn extract_cli_token_usage(json: &serde_json::Value) -> Option<CliTokenUsage> {
         &["reasoning_tokens", "reasoningTokens", "thinking_tokens"],
     );
 
-    if input > 0 || output > 0 || cache_create > 0 || cache_read > 0 {
-        Some(CliTokenUsage {
-            input,
-            output,
-            cache_create,
-            cache_read,
-            reasoning,
-        })
-    } else {
-        None
-    }
+    Some(CliTokenUsage {
+        input,
+        output,
+        cache_create,
+        cache_read,
+        reasoning,
+    })
 }
 
 fn extract_cli_model(json: &serde_json::Value) -> Option<String> {
@@ -501,6 +506,48 @@ mod tests {
         assert_eq!(requests[0].cache_read_tokens, 20);
         assert_eq!(requests[0].model, "qwen-max");
         assert_eq!(requests[0].message_id, "uuid-assistant-1");
+    }
+
+    #[test]
+    fn parse_qoder_cli_session_keeps_missing_usage_requests() {
+        let tmpdir = tempdir().unwrap();
+        let session_path = tmpdir.path().join("abc-123.jsonl");
+        let mut f = fs::File::create(&session_path).unwrap();
+
+        writeln!(
+            f,
+            "{}",
+            serde_json::json!({
+                "type": "assistant",
+                "sessionId": "abc-123",
+                "uuid": "uuid-assistant-1",
+                "timestamp": "2026-06-11T03:01:10Z",
+                "message": {
+                    "role": "assistant",
+                    "model": "gm51model",
+                    "content": []
+                }
+            })
+        )
+        .unwrap();
+
+        let session = SessionFile {
+            session_id: "qoder_cli::-Users-test-myproject::abc-123".to_string(),
+            tool: TOOL_QODER_CLI.to_string(),
+            project_path: "-Users-test-myproject".to_string(),
+            file_path: session_path.to_string_lossy().to_string(),
+            transcript_paths: vec![session_path.to_string_lossy().to_string()],
+            file_size: fs::metadata(&session_path).unwrap().len(),
+            last_modified: 1_781_000_000,
+            fingerprint: 42,
+        };
+
+        let (meta, requests) = parse_qoder_cli_session(&session);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(meta.message_count, 1);
+        assert_eq!(requests[0].total_tokens, 0);
+        assert_eq!(requests[0].request_count, 1);
+        assert_eq!(requests[0].model, "gm51model");
     }
 
     #[test]
