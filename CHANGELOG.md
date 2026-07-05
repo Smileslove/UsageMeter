@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] - 2026-07-05
+
+### Added
+
+- **Qoder Local Usage Parsing**: Expanded Qoder Work and Qoder CLI local session parsing with shared model display handling and unified usage source mapping
+
+### Changed
+
+- **Release Checks**: Aligned CI and local lint checks with the current Rust toolchain and added frontend dependency security scanning
+
+### Fixed
+
+- **Proxy and Source Detection**: Fixed duplicate proxy startup handling, IPv6 local proxy identity matching, OpenCode provider path detection, source merge false positives, and proxy fallback request IDs
+- **Subscription Quota Resolution**: Fixed quota cache conflicts, source URL normalization, New API utilization clamping, and Copilot credential directory handling
+- **Local Statistics Stability**: Hardened session scanning, reader cache lock recovery, sync gating, saturated numeric database conversion, and Qoder Work session ingestion
+- **UI and Formatting Correctness**: Fixed session output totals, currency conversion, negative number formatting, model tooltip escaping, timer cleanup, update skip persistence, and remaining hardcoded source/category labels
+- **Settings and Update Persistence**: Added atomic settings writes and update-state lock recovery to reduce partial-write and poisoned-lock failures
+
+---
+
+### 新增
+
+- **Qoder 本地用量解析**：扩展 Qoder Work 与 Qoder CLI 本地会话解析，并统一模型展示处理与用量来源映射
+
+### 变更
+
+- **发布检查**：对齐 CI 与本地 lint 使用的 Rust 工具链，并补充前端依赖安全扫描
+
+### 修复
+
+- **代理与来源识别**：修复代理重复启动、本地 IPv6 代理身份匹配、OpenCode provider 路径识别、来源归并误判和代理回退请求 ID 问题
+- **订阅额度解析**：修复额度缓存冲突、来源 URL 规范化、New API 利用率钳制和 Copilot 凭据目录处理
+- **本地统计稳定性**：增强会话扫描、reader 缓存锁恢复、同步门控、数据库数值饱和转换和 Qoder Work 会话接入稳定性
+- **界面与格式正确性**：修复会话输出统计、货币换算、负数格式化、模型提示转义、定时器清理、跳过更新持久化和残留硬编码来源/分类文案
+- **设置与更新持久化**：新增设置原子写盘与更新状态锁恢复，降低半写入和锁污染导致的失败
+
+---
+
 ## [0.8.1] - 2026-06-20
 
 ### Added
@@ -765,6 +803,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.9.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.9.0
 [0.8.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.8.1
 [0.8.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.8.0
 [0.7.3]: https://github.com/smileslove/UsageMeter/releases/tag/v0.7.3

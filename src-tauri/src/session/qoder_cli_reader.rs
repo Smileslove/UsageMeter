@@ -307,24 +307,13 @@ fn extract_cli_request_record(
     })
 }
 
+#[derive(Default)]
 struct CliTokenUsage {
     input: u64,
     output: u64,
     cache_create: u64,
     cache_read: u64,
     reasoning: u64,
-}
-
-impl Default for CliTokenUsage {
-    fn default() -> Self {
-        Self {
-            input: 0,
-            output: 0,
-            cache_create: 0,
-            cache_read: 0,
-            reasoning: 0,
-        }
-    }
 }
 
 fn extract_cli_token_usage(json: &serde_json::Value) -> Option<CliTokenUsage> {
