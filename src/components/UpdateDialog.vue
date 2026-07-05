@@ -142,7 +142,7 @@ function escapeHtml(value: string): string {
         @click.self="updaterStore.closeDialog()"
       >
         <div class="theme-border theme-surface-elevated h-[min(88vh,596px)] w-full max-w-[392px] overflow-hidden rounded-[28px] border" style="box-shadow: var(--theme-shadow-card);">
-          <div class="relative flex h-full flex-col overflow-hidden px-5 pb-4 pt-4">
+          <div class="relative flex h-full flex-col overflow-hidden px-5 pb-3.5 pt-4">
             <div
               class="pointer-events-none absolute inset-x-0 top-0 h-28"
               style="background: radial-gradient(circle at top, color-mix(in srgb, var(--theme-accent-soft) 78%, transparent) 0%, transparent 72%);"
@@ -156,13 +156,13 @@ function escapeHtml(value: string): string {
             </button>
 
             <div class="relative shrink-0 pr-10">
-              <div class="theme-status-info mb-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-medium">
+              <div class="theme-status-info mb-2 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[11px] font-medium">
                 <Sparkles class="h-3.5 w-3.5" />
                 {{ t(locale, 'settings.update.available') }}
               </div>
 
-              <div class="space-y-2">
-                <h3 class="text-[21px] font-semibold tracking-[-0.03em] text-[var(--theme-text-primary)]">
+              <div class="space-y-1.5">
+                <h3 class="text-[21px] font-semibold tracking-[-0.02em] text-[var(--theme-text-primary)]">
                   UsageMeter v{{ updaterStore.updateInfo.version }}
                 </h3>
                 <div class="flex flex-wrap gap-2">
@@ -178,13 +178,9 @@ function escapeHtml(value: string): string {
                   </div>
                 </div>
               </div>
-
-              <p class="mt-3 text-[12px] leading-relaxed text-[var(--theme-text-secondary)]">
-                {{ t(locale, 'settings.update.releaseNotes') }}
-              </p>
             </div>
 
-            <div v-if="isDownloading" class="theme-surface-muted relative mt-4 flex shrink-0 flex-col rounded-[24px] border p-4">
+            <div v-if="isDownloading" class="theme-surface-muted relative mt-3 flex shrink-0 flex-col rounded-[22px] border p-4">
               <p class="text-[13px] font-semibold text-[var(--theme-text-primary)]">
                 {{ t(locale, 'settings.update.downloading', { version: updaterStore.updateInfo.version }) }}
               </p>
@@ -202,7 +198,7 @@ function escapeHtml(value: string): string {
               </div>
             </div>
 
-            <div v-else-if="hasError" class="theme-status-danger relative mt-4 flex shrink-0 flex-col rounded-[24px] border p-4">
+            <div v-else-if="hasError" class="theme-status-danger relative mt-3 flex shrink-0 flex-col rounded-[22px] border p-4">
               <p class="text-[13px] font-semibold">
                 {{ t(locale, updateErrorKey) }}
               </p>
@@ -217,42 +213,41 @@ function escapeHtml(value: string): string {
 
             <div
               v-else-if="releaseNotesHtml"
-              class="theme-surface-muted update-notes-card relative mt-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[24px] border"
+              class="theme-surface-muted update-notes-card relative mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[24px] border"
             >
-              <div class="shrink-0 border-b px-4 py-3" style="border-color: color-mix(in srgb, var(--theme-border-default) 72%, transparent);">
-                <p class="text-[12px] font-semibold tracking-[0.02em] text-[var(--theme-text-primary)]">
+              <div class="update-notes-heading shrink-0 border-b px-4 py-2.5" style="border-color: color-mix(in srgb, var(--theme-border-default) 72%, transparent);">
+                <p class="text-[12px] font-semibold text-[var(--theme-text-primary)]">
                   {{ t(locale, 'settings.update.releaseNotes') }}
                 </p>
               </div>
-              <div class="release-notes-scroll min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-3">
+              <div class="release-notes-scroll min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-3.5">
                 <div class="update-release-notes" v-html="releaseNotesHtml"></div>
               </div>
             </div>
 
-            <div v-if="!isDownloading" class="relative mt-4 shrink-0">
-              <div class="grid grid-cols-2 gap-2">
+            <div v-if="!isDownloading" class="relative mt-3 shrink-0">
+              <div class="grid grid-cols-[0.86fr_1.05fr_1.08fr] gap-2">
                 <button
-                  class="theme-button-secondary rounded-2xl px-3 py-2.5 text-[12px] font-medium transition-colors"
+                  class="theme-button-secondary flex h-11 min-w-0 items-center justify-center rounded-2xl px-2 text-[11px] font-medium leading-tight transition-colors"
                   @click="updaterStore.closeDialog()"
                 >
-                  {{ t(locale, 'settings.update.remindLater') }}
+                  <span class="text-center leading-tight">{{ t(locale, 'settings.update.remindLater') }}</span>
                 </button>
                 <button
-                  class="theme-button-secondary flex items-center justify-center gap-1.5 rounded-2xl px-3 py-2.5 text-[12px] font-medium transition-colors"
+                  class="theme-button-secondary flex h-11 min-w-0 items-center justify-center gap-1 rounded-2xl px-1.5 text-[11px] font-medium leading-tight transition-colors"
                   @click="handleSkip"
                 >
-                  <SkipForward class="h-3.5 w-3.5" />
-                  {{ t(locale, 'settings.update.skipVersion') }}
+                  <SkipForward class="h-3.5 w-3.5 shrink-0" />
+                  <span class="min-w-0 text-center leading-tight">{{ t(locale, 'settings.update.skipVersion') }}</span>
+                </button>
+                <button
+                  class="theme-button-accent flex h-11 min-w-0 items-center justify-center gap-1.5 rounded-2xl px-2 text-[12px] font-semibold leading-tight transition-colors"
+                  @click="handleInstall"
+                >
+                  <Download class="h-4 w-4 shrink-0" />
+                  <span class="min-w-0 text-center leading-tight">{{ t(locale, 'settings.update.installNow') }}</span>
                 </button>
               </div>
-
-              <button
-                class="theme-button-accent mt-2 flex w-full items-center justify-center gap-1.5 rounded-2xl px-3 py-3 text-[13px] font-semibold transition-colors"
-                @click="handleInstall"
-              >
-                <Download class="h-4 w-4" />
-                {{ t(locale, 'settings.update.installNow') }}
-              </button>
             </div>
           </div>
         </div>

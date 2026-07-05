@@ -17,6 +17,7 @@ export const useUpdaterStore = defineStore('updater', {
     totalBytes: null as number | null,
     errorMessage: null as string | null,
     isDialogOpen: false,
+    dismissedDialogVersion: null as string | null,
   }),
 
   getters: {
@@ -44,6 +45,7 @@ export const useUpdaterStore = defineStore('updater', {
         if (result) {
           this.updateInfo = result
           this.status = 'available'
+          this.dismissedDialogVersion = null
           this.isDialogOpen = true
         } else {
           this.status = 'idle'
@@ -59,6 +61,7 @@ export const useUpdaterStore = defineStore('updater', {
       this.downloadedBytes = 0
       this.totalBytes = null
       this.errorMessage = null
+      this.dismissedDialogVersion = null
       try {
         await invoke('download_and_install_update')
         // app.restart() 在 Rust 侧调用，前端不会执行到此处
@@ -85,6 +88,9 @@ export const useUpdaterStore = defineStore('updater', {
     onUpdateAvailable(info: UpdateInfo): void {
       this.updateInfo = info
       this.status = 'available'
+      if (this.dismissedDialogVersion === info.version) {
+        return
+      }
       this.isDialogOpen = true
     },
 
@@ -97,10 +103,12 @@ export const useUpdaterStore = defineStore('updater', {
 
     openDialog(): void {
       if (!this.updateInfo) return
+      this.dismissedDialogVersion = null
       this.isDialogOpen = true
     },
 
     closeDialog(): void {
+      this.dismissedDialogVersion = this.updateInfo?.version ?? null
       this.isDialogOpen = false
     },
 
@@ -111,6 +119,7 @@ export const useUpdaterStore = defineStore('updater', {
       this.totalBytes = null
       this.errorMessage = null
       this.isDialogOpen = false
+      this.dismissedDialogVersion = null
     },
   },
 })
