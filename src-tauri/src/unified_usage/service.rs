@@ -1,10 +1,14 @@
 use super::types::{
-    canonical_request_key_for_local, canonical_request_key_for_proxy, has_partial_coverage,
-    CoverageOrigin, MergedCoverage, MergedRequestFact,
+    canonical_request_key_for_local, canonical_request_key_for_proxy, codex_orphan_pools,
+    find_codex_fuzzy_matches, has_partial_coverage, CodexFuzzyOutcome, CoverageOrigin,
+    MergedCoverage, MergedRequestFact,
 };
 use crate::models::{AppSettings, ToolFilter, UsageQueryFilter};
 use crate::proxy::ProxyMergeCacheSignature;
-use crate::proxy::{ProjectStats, ProjectToolStats, ProxyDatabase, SessionStats, UsageRecord};
+use crate::proxy::{
+    CodexConfigManager, CodexSourceRegistry, ProjectStats, ProjectToolStats, ProxyDatabase,
+    SessionStats, UsageRecord,
+};
 use crate::session::{wsl_distro_from_path, LocalRequestRecord, SessionMeta};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
@@ -1027,7 +1031,7 @@ pub(crate) fn build_coverage(facts: &[MergedRequestFact]) -> MergedCoverage {
         match fact.coverage_origin {
             CoverageOrigin::ProxyOnly => coverage.proxy_backed_requests += 1,
             CoverageOrigin::LocalOnly => coverage.local_only_requests += 1,
-            CoverageOrigin::MergedProxyPreferred => {
+            CoverageOrigin::MergedProxyPreferred | CoverageOrigin::MergedFuzzyMatched => {
                 coverage.proxy_backed_requests += 1;
                 coverage.merged_overlap_requests += 1;
             }
@@ -1127,13 +1131,75 @@ async fn merge_realtime_range(
     let local_index = build_local_request_index(&local_records);
     let index_build_elapsed_ms = index_build_started_at.elapsed().as_millis();
 
+    // Codex's local JSONL scanner fabricates a per-request message_id (see codex_reader.rs),
+    // so it can never exact-key-match its real proxy counterpart. Reconcile the leftover
+    // Codex-only orphans on both sides via a bounded fuzzy match (same session/model/
+    // total_tokens, close timestamp) before the exact-match loop runs, so the same physical
+    // request doesn't surface twice (once unattributed via from_local, once via from_proxy).
+    let (codex_local_orphans, codex_proxy_orphans_visible, codex_proxy_orphans_all_extra) =
+        codex_orphan_pools(&local_index, &proxy_index, &all_proxy_index);
+    let codex_fuzzy_outcomes = find_codex_fuzzy_matches(
+        &codex_local_orphans,
+        &codex_proxy_orphans_visible,
+        &codex_proxy_orphans_all_extra,
+    );
+
+    let mut fuzzy_consumed_local_keys: HashSet<String> = HashSet::new();
+    let mut fuzzy_consumed_proxy_keys: HashSet<String> = HashSet::new();
+    let mut fuzzy_suppressed_local_keys: HashSet<String> = HashSet::new();
+
     let merge_loop_started_at = Instant::now();
     let mut pricing_cache: HashMap<String, crate::models::ModelPricing> = HashMap::new();
+    let mut merged = Vec::new();
+
+    for outcome in codex_fuzzy_outcomes {
+        match outcome {
+            CodexFuzzyOutcome::MatchedVisible {
+                local_key,
+                proxy_key,
+            } => {
+                if let (Some(local), Some(proxy)) =
+                    (local_index.get(&local_key), proxy_index.get(&proxy_key))
+                {
+                    let meta = session_meta_by_id.get(&local.session_id);
+                    let fallback_cost = compute_local_request_cost_cached(
+                        local,
+                        pricings,
+                        pricing_match_mode,
+                        &mut pricing_cache,
+                    );
+                    let mut fact =
+                        MergedRequestFact::merge_proxy_preferred(proxy, local, meta, fallback_cost);
+                    fact.coverage_origin = CoverageOrigin::MergedFuzzyMatched;
+                    merged.push(fact);
+                    fuzzy_consumed_local_keys.insert(local_key);
+                    fuzzy_consumed_proxy_keys.insert(proxy_key);
+                }
+            }
+            CodexFuzzyOutcome::SuppressedByFilteredProxy { local_key } => {
+                fuzzy_suppressed_local_keys.insert(local_key);
+            }
+        }
+    }
+
+    // Fix B: best-effort attribution for local Codex records that remain genuinely
+    // local-only after fuzzy matching (proxy wasn't running for that request). Resolved once
+    // per merge call — this is a blocking config.toml read — and only when there's any Codex
+    // local material in range, to avoid the FS read for non-Codex users.
+    let codex_fallback_base_url: Option<String> = if local_records.iter().any(|r| r.tool == "codex")
+    {
+        CodexConfigManager::new()
+            .active_source_id()
+            .and_then(|id| CodexSourceRegistry::new().get(&id))
+            .map(|handle| handle.real_base_url)
+    } else {
+        None
+    };
+
     let mut keys = HashSet::new();
     keys.extend(proxy_index.keys().cloned());
     keys.extend(local_index.keys().cloned());
 
-    let mut merged = Vec::new();
     for key in keys {
         match (proxy_index.get(&key), local_index.get(&key)) {
             (Some(proxy), Some(local)) => {
@@ -1152,6 +1218,10 @@ async fn merge_realtime_range(
                 ));
             }
             (Some(proxy), None) => {
+                if fuzzy_consumed_proxy_keys.contains(&key) {
+                    // Already emitted as a fuzzy-merged fact above — avoid double counting.
+                    continue;
+                }
                 let meta = proxy
                     .session_id
                     .as_ref()
@@ -1162,6 +1232,13 @@ async fn merge_realtime_range(
                 if all_proxy_index.contains_key(&key) {
                     continue;
                 }
+                if fuzzy_consumed_local_keys.contains(&key)
+                    || fuzzy_suppressed_local_keys.contains(&key)
+                {
+                    // Either already emitted as a fuzzy-merged fact, or intentionally dropped
+                    // because its only candidate was filtered out on the proxy side.
+                    continue;
+                }
                 let meta = session_meta_by_id.get(&local.session_id);
                 let cost = compute_local_request_cost_cached(
                     local,
@@ -1169,7 +1246,17 @@ async fn merge_realtime_range(
                     pricing_match_mode,
                     &mut pricing_cache,
                 );
-                merged.push(MergedRequestFact::from_local(local, meta, cost));
+                let fallback_base_url = if local.tool == "codex" {
+                    codex_fallback_base_url.as_deref()
+                } else {
+                    None
+                };
+                merged.push(MergedRequestFact::from_local(
+                    local,
+                    meta,
+                    cost,
+                    fallback_base_url,
+                ));
             }
             (None, None) => {}
         }
@@ -1975,7 +2062,9 @@ pub async fn get_merged_sessions(
 
             match fact.coverage_origin {
                 CoverageOrigin::LocalOnly => local_only_requests += 1,
-                CoverageOrigin::ProxyOnly | CoverageOrigin::MergedProxyPreferred => {
+                CoverageOrigin::ProxyOnly
+                | CoverageOrigin::MergedProxyPreferred
+                | CoverageOrigin::MergedFuzzyMatched => {
                     proxy_backed_requests += 1;
                 }
             }

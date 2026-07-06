@@ -171,7 +171,7 @@ fn build_daily_summary_from_facts(
         match fact.coverage_origin {
             CoverageOrigin::ProxyOnly => summary.proxy_backed_requests += request_count,
             CoverageOrigin::LocalOnly => summary.local_only_requests += request_count,
-            CoverageOrigin::MergedProxyPreferred => {
+            CoverageOrigin::MergedProxyPreferred | CoverageOrigin::MergedFuzzyMatched => {
                 summary.proxy_backed_requests += request_count;
                 summary.merged_overlap_requests += request_count;
             }

@@ -148,6 +148,42 @@ fn source_meta_for_fact(settings: &AppSettings, fact: &MergedRequestFact) -> Bre
         };
     }
 
+    // Best-effort fallback for local-only records that have no api_key_prefix (never
+    // reconstructable without the real Authorization header) but do carry a request_base_url
+    // (e.g. Codex local-only facts filled from the currently-configured upstream — see
+    // unified_usage::service::merge_realtime_range's codex_fallback_base_url). Only attribute
+    // when exactly one registered source shares that base_url; 0 or 2+ matches stay ambiguous
+    // and fall through to __unknown__ rather than guessing wrong. This is inherently a
+    // heuristic based on Codex's *current* config, not necessarily what was active when a
+    // historical local-only record was produced.
+    if fact.api_key_prefix.is_none() {
+        if let Some(base_url) = fact
+            .request_base_url
+            .as_deref()
+            .filter(|url| !url.trim().is_empty())
+        {
+            let candidates: Vec<_> = settings
+                .source_aware
+                .sources
+                .iter()
+                .filter(|source| source.base_url.as_deref() == Some(base_url))
+                .collect();
+            if candidates.len() == 1 {
+                let source = candidates[0];
+                return BreakdownMeta {
+                    id: source.id.clone(),
+                    label: source
+                        .display_name
+                        .clone()
+                        .unwrap_or_else(|| source_label_from_url(source.base_url.as_deref())),
+                    kind: "source".to_string(),
+                    color: Some(source.color.clone()),
+                    icon: source.icon.clone(),
+                };
+            }
+        }
+    }
+
     BreakdownMeta {
         id: "__unknown__".to_string(),
         label: "__unknown__".to_string(),
@@ -398,5 +434,75 @@ mod tests {
         assert_eq!(breakdown.tool_ranking[0].label, "__unknown__");
         assert_eq!(breakdown.model_ranking[0].label, "__unknown__");
         assert!((breakdown.model_ranking[0].percent - (40.0 / 60.0 * 100.0)).abs() < 0.0001);
+    }
+
+    fn test_source(id: &str, base_url: &str, display_name: &str) -> ApiSource {
+        ApiSource {
+            id: id.to_string(),
+            display_name: Some(display_name.to_string()),
+            base_url: Some(base_url.to_string()),
+            api_key_prefixes: vec!["sk-unrelated".to_string()],
+            api_key_notes: HashMap::new(),
+            color: "#445566".to_string(),
+            icon: None,
+            auto_detected: true,
+            quota_query: None,
+            first_seen_ms: 1,
+            last_seen_ms: 1,
+        }
+    }
+
+    #[test]
+    fn source_meta_falls_back_to_single_base_url_match_without_api_key_prefix() {
+        // Codex local-only fact: no api_key_prefix (not reconstructable), but request_base_url
+        // was best-effort filled from Codex's currently-configured upstream.
+        let mut settings = AppSettings::default();
+        settings.source_aware.sources = vec![test_source(
+            "src-codex",
+            "https://sui-xiang.com",
+            "sui-xiang.com",
+        )];
+
+        let fact = test_fact(
+            "codex",
+            "gpt-5",
+            10,
+            20,
+            0.0,
+            None,
+            Some("https://sui-xiang.com"),
+            Some(200),
+            None,
+            None,
+        );
+
+        let meta = source_meta_for_fact(&settings, &fact);
+        assert_eq!(meta.id, "src-codex");
+        assert_eq!(meta.label, "sui-xiang.com");
+    }
+
+    #[test]
+    fn source_meta_stays_unknown_when_base_url_is_ambiguous() {
+        let mut settings = AppSettings::default();
+        settings.source_aware.sources = vec![
+            test_source("src-a", "https://shared.example.com", "Account A"),
+            test_source("src-b", "https://shared.example.com", "Account B"),
+        ];
+
+        let fact = test_fact(
+            "codex",
+            "gpt-5",
+            10,
+            20,
+            0.0,
+            None,
+            Some("https://shared.example.com"),
+            Some(200),
+            None,
+            None,
+        );
+
+        let meta = source_meta_for_fact(&settings, &fact);
+        assert_eq!(meta.id, "__unknown__");
     }
 }

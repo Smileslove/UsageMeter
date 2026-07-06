@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::models::SourceFilter;
 use crate::proxy::UsageRecord;
 use crate::session::{LocalRequestRecord, SessionMeta};
@@ -7,6 +9,11 @@ pub enum CoverageOrigin {
     ProxyOnly,
     LocalOnly,
     MergedProxyPreferred,
+    /// Codex-only: local record synthesizes a fake message_id (codex_reader.rs), so it can
+    /// never exact-key-match its real proxy counterpart. Reconciled via a bounded fuzzy match
+    /// (same session/model/total_tokens, close timestamp) instead. Kept distinct from
+    /// `MergedProxyPreferred` purely for observability — same field-merge semantics otherwise.
+    MergedFuzzyMatched,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -107,12 +114,160 @@ pub(crate) fn canonical_request_key_for_proxy(record: &UsageRecord) -> String {
     }
 }
 
+/// Codex local JSONL scanning fabricates a per-request message_id (see codex_reader.rs), so
+/// exact canonical-key matching against the proxy's real API response id is structurally
+/// impossible. This bounds a second-chance fuzzy reconciliation pass:
+///   - local timestamps are whole-second-truncated (session/shared.rs::extract_timestamp)
+///   - proxy timestamps are ms-precision, captured at response-parse time
+///   - both represent the same real-world instant for a given HTTP call, modulo <1s
+///     truncation error plus normal local disk-write/event-loop latency.
+///
+/// 5s comfortably absorbs that without routinely spanning distinct turns in a fast Codex loop.
+pub(crate) const CODEX_FUZZY_MATCH_TOLERANCE_SECS: i64 = 5;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CodexFuzzyOutcome {
+    /// Local record fuzzy-matched a proxy record that's actually visible (counted) in this
+    /// query. Both should be consumed and replaced by one proxy-preferred merged fact.
+    MatchedVisible {
+        local_key: String,
+        proxy_key: String,
+    },
+    /// Local record's only candidate lives in the unfiltered-but-excluded pool (e.g. an
+    /// errored response filtered out of `proxy_index`). Mirrors the existing exact-key
+    /// `all_proxy_index.contains_key(&key) => continue` guard: the real request is already
+    /// accounted for (or intentionally hidden) elsewhere, so the local record must not
+    /// surface as a separate `from_local` fact either.
+    SuppressedByFilteredProxy { local_key: String },
+}
+
+/// Pure pool-partitioning helper: given the exact-match indexes already built by
+/// `merge_realtime_range`, extract the Codex-only orphan subsets the fuzzy pass operates on.
+/// No I/O — safe to unit test with hand-built maps. Non-Codex tools (in particular Claude
+/// Code, whose local reader sets a real message id and matches exactly today) are untouched.
+pub(crate) fn codex_orphan_pools<'a>(
+    local_index: &'a HashMap<String, LocalRequestRecord>,
+    proxy_index: &'a HashMap<String, UsageRecord>,
+    all_proxy_index: &'a HashMap<String, UsageRecord>,
+) -> (
+    Vec<&'a LocalRequestRecord>,
+    Vec<&'a UsageRecord>,
+    Vec<&'a UsageRecord>,
+) {
+    let mut local_orphans: Vec<&LocalRequestRecord> = local_index
+        .iter()
+        .filter(|(key, rec)| rec.tool == "codex" && !proxy_index.contains_key(*key))
+        .map(|(_, rec)| rec)
+        .collect();
+
+    let mut proxy_orphans_visible: Vec<&UsageRecord> = proxy_index
+        .iter()
+        .filter(|(key, rec)| rec.client_tool == "codex" && !local_index.contains_key(*key))
+        .map(|(_, rec)| rec)
+        .collect();
+
+    // Records only present in the unfiltered index (filtered out by status/source, or from a
+    // different range) — used only as a second-chance suppression signal, never to produce a
+    // real match.
+    let mut proxy_orphans_all_extra: Vec<&UsageRecord> = all_proxy_index
+        .iter()
+        .filter(|(key, rec)| {
+            rec.client_tool == "codex"
+                && !local_index.contains_key(*key)
+                && !proxy_index.contains_key(*key)
+        })
+        .map(|(_, rec)| rec)
+        .collect();
+
+    // HashMap iteration order is not stable — sort so the greedy algorithm below (and any
+    // test asserting on it) is deterministic.
+    local_orphans.sort_by(|a, b| {
+        a.timestamp
+            .cmp(&b.timestamp)
+            .then_with(|| a.message_id.cmp(&b.message_id))
+    });
+    proxy_orphans_visible.sort_by(|a, b| {
+        a.timestamp
+            .cmp(&b.timestamp)
+            .then_with(|| a.message_id.cmp(&b.message_id))
+    });
+    proxy_orphans_all_extra.sort_by(|a, b| {
+        a.timestamp
+            .cmp(&b.timestamp)
+            .then_with(|| a.message_id.cmp(&b.message_id))
+    });
+
+    (
+        local_orphans,
+        proxy_orphans_visible,
+        proxy_orphans_all_extra,
+    )
+}
+
+fn codex_fuzzy_candidate_matches(local: &LocalRequestRecord, proxy: &UsageRecord) -> bool {
+    proxy.session_id.as_deref() == Some(local.session_id.as_str())
+        && proxy.model.trim() == local.model.trim()
+        && proxy.total_tokens == local.total_tokens
+        && (proxy.timestamp / 1000 - local.timestamp).abs() <= CODEX_FUZZY_MATCH_TOLERANCE_SECS
+}
+
+/// Second-chance fuzzy match for orphaned Codex records. Greedy, ascending-by-time: process
+/// local orphans oldest-first, and for each pick the nearest *unclaimed* visible-pool
+/// candidate within tolerance, so no proxy record is ever consumed by more than one local
+/// record.
+pub(crate) fn find_codex_fuzzy_matches(
+    local_orphans: &[&LocalRequestRecord],
+    proxy_orphans_visible: &[&UsageRecord],
+    proxy_orphans_all_extra: &[&UsageRecord],
+) -> Vec<CodexFuzzyOutcome> {
+    let mut used_visible = vec![false; proxy_orphans_visible.len()];
+    let mut used_all = vec![false; proxy_orphans_all_extra.len()];
+    let mut outcomes = Vec::new();
+
+    for local in local_orphans {
+        let best_visible = proxy_orphans_visible
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| !used_visible[*idx])
+            .filter(|(_, p)| codex_fuzzy_candidate_matches(local, p))
+            .min_by_key(|(_, p)| (p.timestamp / 1000 - local.timestamp).abs());
+
+        if let Some((idx, proxy)) = best_visible {
+            used_visible[idx] = true;
+            outcomes.push(CodexFuzzyOutcome::MatchedVisible {
+                local_key: canonical_request_key_for_local(local),
+                proxy_key: canonical_request_key_for_proxy(proxy),
+            });
+            continue;
+        }
+
+        let best_all = proxy_orphans_all_extra
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| !used_all[*idx])
+            .filter(|(_, p)| codex_fuzzy_candidate_matches(local, p))
+            .min_by_key(|(_, p)| (p.timestamp / 1000 - local.timestamp).abs());
+
+        if let Some((idx, _)) = best_all {
+            used_all[idx] = true;
+            outcomes.push(CodexFuzzyOutcome::SuppressedByFilteredProxy {
+                local_key: canonical_request_key_for_local(local),
+            });
+        }
+        // else: genuinely local-only (proxy wasn't running for this request) — falls through
+        // untouched to the ordinary `from_local` path.
+    }
+
+    outcomes
+}
+
 impl CoverageOrigin {
     pub fn as_storage_str(self) -> &'static str {
         match self {
             CoverageOrigin::ProxyOnly => "proxy_only",
             CoverageOrigin::LocalOnly => "local_only",
             CoverageOrigin::MergedProxyPreferred => "merged_proxy_preferred",
+            CoverageOrigin::MergedFuzzyMatched => "merged_fuzzy_matched",
         }
     }
 
@@ -121,6 +276,7 @@ impl CoverageOrigin {
             "proxy_only" => CoverageOrigin::ProxyOnly,
             "local_only" => CoverageOrigin::LocalOnly,
             "merged_proxy_preferred" => CoverageOrigin::MergedProxyPreferred,
+            "merged_fuzzy_matched" => CoverageOrigin::MergedFuzzyMatched,
             _ => CoverageOrigin::LocalOnly,
         }
     }
@@ -206,7 +362,12 @@ pub(crate) fn matches_source_filter(fact: &MergedRequestFact, filter: &SourceFil
 }
 
 impl MergedRequestFact {
-    pub fn from_local(record: &LocalRequestRecord, meta: Option<&SessionMeta>, cost: f64) -> Self {
+    pub fn from_local(
+        record: &LocalRequestRecord,
+        meta: Option<&SessionMeta>,
+        cost: f64,
+        fallback_base_url: Option<&str>,
+    ) -> Self {
         let project_name = meta.and_then(|m| m.project_name.clone());
         let project_path = meta.and_then(|m| m.cwd.clone());
 
@@ -215,8 +376,11 @@ impl MergedRequestFact {
             session_id: record.session_id.clone(),
             project_name,
             project_path,
+            // api_key_prefix is never reconstructable for local-only records (no Authorization
+            // header was observed); request_base_url can be best-effort filled by the caller
+            // from Codex's currently-configured upstream (see service.rs's codex_fallback_base_url).
             api_key_prefix: None,
-            request_base_url: None,
+            request_base_url: fallback_base_url.map(str::to_string),
             tool: record.tool.clone(),
             timestamp_sec: record.timestamp,
             timestamp_ms: record.timestamp.saturating_mul(1000),
@@ -566,7 +730,7 @@ mod tests {
         // Local transcript requests are treated as successful 200s, but proxy-only performance
         // fields must remain absent.
         let local = local_with(100, 200, 50, 60, "sess", 1_700_000_000);
-        let fact = MergedRequestFact::from_local(&local, None, 0.05);
+        let fact = MergedRequestFact::from_local(&local, None, 0.05, None);
         assert!(matches!(fact.coverage_origin, CoverageOrigin::LocalOnly));
         assert_eq!(fact.status_code, Some(200));
         assert_eq!(fact.duration_ms, None);
@@ -579,7 +743,7 @@ mod tests {
     fn local_only_has_no_source_label() {
         // 本地 transcript 没有 source 维度，必须明确为 None 进入「未识别来源」桶
         let local = local_with(100, 200, 0, 0, "sess", 1_700_000_000);
-        let fact = MergedRequestFact::from_local(&local, None, 0.0);
+        let fact = MergedRequestFact::from_local(&local, None, 0.0, None);
         assert_eq!(fact.source_label, None);
     }
 
@@ -589,7 +753,7 @@ mod tests {
         local.tool = "qoder_work_cn".to_string();
         local.model = "gm51model".to_string();
 
-        let fact = MergedRequestFact::from_local(&local, None, 0.0);
+        let fact = MergedRequestFact::from_local(&local, None, 0.0, None);
 
         assert_eq!(local.model, "gm51model");
         assert_eq!(fact.model, "GLM-5.2");
@@ -656,7 +820,7 @@ mod tests {
         let merged = MergedRequestFact::merge_proxy_preferred(&proxy, &local, None, 0.0);
         assert_eq!(merged.canonical_request_key, "claude_code:msg-1");
 
-        let local_only = MergedRequestFact::from_local(&local, None, 0.0);
+        let local_only = MergedRequestFact::from_local(&local, None, 0.0, None);
         assert_eq!(local_only.canonical_request_key, "claude_code:msg-1");
 
         let proxy_only = MergedRequestFact::from_proxy(&proxy, None);
@@ -691,5 +855,234 @@ mod tests {
         assert!(!has_partial_coverage(0, 1));
         assert!(!has_partial_coverage(3, 0));
         assert!(has_partial_coverage(2, 1));
+    }
+
+    // --- Codex fuzzy-match reconciliation (Fix A) ---
+
+    fn codex_local_with(
+        session_id: &str,
+        timestamp: i64,
+        message_id: &str,
+        model: &str,
+        total: u64,
+    ) -> LocalRequestRecord {
+        LocalRequestRecord {
+            session_id: session_id.to_string(),
+            tool: "codex".to_string(),
+            timestamp,
+            message_id: message_id.to_string(),
+            input_tokens: total / 2,
+            output_tokens: total - total / 2,
+            total_tokens: total,
+            model: model.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn codex_proxy_with(
+        session_id: &str,
+        timestamp_ms: i64,
+        message_id: &str,
+        model: &str,
+        total: u64,
+    ) -> UsageRecord {
+        UsageRecord {
+            client_tool: "codex".to_string(),
+            session_id: Some(session_id.to_string()),
+            timestamp: timestamp_ms,
+            message_id: message_id.to_string(),
+            input_tokens: total / 2,
+            output_tokens: total - total / 2,
+            total_tokens: total,
+            model: model.to_string(),
+            status_code: 200,
+            duration_ms: 1_000,
+            estimated_cost: 0.01,
+            api_key_prefix: Some("sk-codexprefix".to_string()),
+            request_base_url: Some("https://sui-xiang.com".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fuzzy_match_reconciles_close_timestamps_same_session_and_tokens() {
+        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let proxy = codex_proxy_with("sess-1", 1_700_000_002_000, "resp_abc123", "gpt-5", 300);
+
+        let outcomes = find_codex_fuzzy_matches(&[&local], &[&proxy], &[]);
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(
+            &outcomes[0],
+            CodexFuzzyOutcome::MatchedVisible { local_key, proxy_key }
+                if *local_key == canonical_request_key_for_local(&local)
+                    && *proxy_key == canonical_request_key_for_proxy(&proxy)
+        ));
+    }
+
+    #[test]
+    fn fuzzy_match_rejects_candidate_outside_tolerance_window() {
+        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let proxy = codex_proxy_with("sess-1", 1_700_000_010_000, "resp_abc123", "gpt-5", 300);
+
+        let outcomes = find_codex_fuzzy_matches(&[&local], &[&proxy], &[]);
+        assert!(outcomes.is_empty());
+    }
+
+    #[test]
+    fn fuzzy_match_rejects_mismatched_total_tokens() {
+        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let proxy = codex_proxy_with("sess-1", 1_700_000_001_000, "resp_abc123", "gpt-5", 400);
+
+        let outcomes = find_codex_fuzzy_matches(&[&local], &[&proxy], &[]);
+        assert!(outcomes.is_empty());
+    }
+
+    #[test]
+    fn fuzzy_match_rejects_mismatched_session_or_model() {
+        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+
+        let wrong_session = codex_proxy_with("sess-2", 1_700_000_001_000, "resp_a", "gpt-5", 300);
+        assert!(find_codex_fuzzy_matches(&[&local], &[&wrong_session], &[]).is_empty());
+
+        let wrong_model = codex_proxy_with("sess-1", 1_700_000_001_000, "resp_b", "gpt-4", 300);
+        assert!(find_codex_fuzzy_matches(&[&local], &[&wrong_model], &[]).is_empty());
+    }
+
+    #[test]
+    fn fuzzy_match_prefers_nearest_unclaimed_candidate_when_multiple_ties_exist() {
+        // Both proxy candidates are within tolerance of BOTH local records (max diff 4s <= 5s),
+        // so a naive first-match algorithm could wrongly pair local_a with `far`. The greedy
+        // nearest-first algorithm must instead give each local record its closest candidate.
+        let local_a = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let local_b = codex_local_with("sess-1", 1_700_000_004, "codex:sess-1:2", "gpt-5", 300);
+        let near = codex_proxy_with("sess-1", 1_700_000_000_000, "resp_near", "gpt-5", 300);
+        let far = codex_proxy_with("sess-1", 1_700_000_004_000, "resp_far", "gpt-5", 300);
+
+        let outcomes = find_codex_fuzzy_matches(&[&local_a, &local_b], &[&far, &near], &[]);
+        assert_eq!(outcomes.len(), 2);
+        assert!(matches!(
+            &outcomes[0],
+            CodexFuzzyOutcome::MatchedVisible { proxy_key, .. }
+                if *proxy_key == canonical_request_key_for_proxy(&near)
+        ));
+        assert!(matches!(
+            &outcomes[1],
+            CodexFuzzyOutcome::MatchedVisible { proxy_key, .. }
+                if *proxy_key == canonical_request_key_for_proxy(&far)
+        ));
+    }
+
+    #[test]
+    fn fuzzy_match_suppresses_local_when_only_filtered_proxy_candidate_exists() {
+        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let filtered_proxy =
+            codex_proxy_with("sess-1", 1_700_000_001_000, "resp_filtered", "gpt-5", 300);
+
+        let outcomes = find_codex_fuzzy_matches(&[&local], &[], &[&filtered_proxy]);
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(
+            &outcomes[0],
+            CodexFuzzyOutcome::SuppressedByFilteredProxy { local_key }
+                if *local_key == canonical_request_key_for_local(&local)
+        ));
+    }
+
+    #[test]
+    fn fuzzy_match_produces_no_outcome_when_no_candidate_at_all() {
+        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let outcomes = find_codex_fuzzy_matches(&[&local], &[], &[]);
+        assert!(outcomes.is_empty());
+    }
+
+    #[test]
+    fn codex_orphan_pools_excludes_non_codex_records() {
+        let codex_local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let claude_local = local_with(100, 200, 0, 0, "claude-sess", 1_700_000_000);
+
+        let mut local_index = HashMap::new();
+        local_index.insert(
+            canonical_request_key_for_local(&codex_local),
+            codex_local.clone(),
+        );
+        local_index.insert(
+            canonical_request_key_for_local(&claude_local),
+            claude_local.clone(),
+        );
+
+        let proxy_index: HashMap<String, UsageRecord> = HashMap::new();
+        let all_proxy_index: HashMap<String, UsageRecord> = HashMap::new();
+
+        let (local_orphans, _, _) =
+            codex_orphan_pools(&local_index, &proxy_index, &all_proxy_index);
+        assert_eq!(local_orphans.len(), 1);
+        assert_eq!(local_orphans[0].tool, "codex");
+    }
+
+    #[test]
+    fn from_local_uses_fallback_base_url_when_provided() {
+        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let fact = MergedRequestFact::from_local(&local, None, 0.0, Some("https://sui-xiang.com"));
+        assert_eq!(
+            fact.request_base_url.as_deref(),
+            Some("https://sui-xiang.com")
+        );
+        assert!(fact.api_key_prefix.is_none());
+    }
+
+    #[test]
+    fn from_local_leaves_request_base_url_none_without_fallback() {
+        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let fact = MergedRequestFact::from_local(&local, None, 0.0, None);
+        assert!(fact.request_base_url.is_none());
+    }
+
+    #[test]
+    fn end_to_end_fuzzy_reconciliation_prevents_double_count_and_attributes_correctly() {
+        // Reproduces the reported bug: one local-scanned Codex record and one proxy-captured
+        // Codex record for the *same* real request (same session/model/tokens, close
+        // timestamps, different message_ids). Without fuzzy matching, both would surface as
+        // separate facts (double count), and the local one would be "未归因" (unattributed).
+        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let proxy = codex_proxy_with("sess-1", 1_700_000_002_000, "resp_abc123", "gpt-5", 300);
+
+        let mut local_index = HashMap::new();
+        local_index.insert(canonical_request_key_for_local(&local), local.clone());
+        let mut proxy_index = HashMap::new();
+        proxy_index.insert(canonical_request_key_for_proxy(&proxy), proxy.clone());
+        let all_proxy_index = proxy_index.clone();
+
+        // Exact-key match must fail (that's the bug) — the two canonical keys differ.
+        assert_ne!(
+            canonical_request_key_for_local(&local),
+            canonical_request_key_for_proxy(&proxy)
+        );
+
+        let (local_orphans, proxy_orphans_visible, proxy_orphans_all_extra) =
+            codex_orphan_pools(&local_index, &proxy_index, &all_proxy_index);
+        let outcomes = find_codex_fuzzy_matches(
+            &local_orphans,
+            &proxy_orphans_visible,
+            &proxy_orphans_all_extra,
+        );
+
+        assert_eq!(outcomes.len(), 1);
+        let CodexFuzzyOutcome::MatchedVisible { .. } = &outcomes[0] else {
+            panic!("expected a MatchedVisible outcome");
+        };
+
+        let mut fact = MergedRequestFact::merge_proxy_preferred(&proxy, &local, None, 0.02);
+        fact.coverage_origin = CoverageOrigin::MergedFuzzyMatched;
+
+        // Exactly one fact should represent this request, correctly attributed to the proxy's
+        // source — not split into an unattributed local fact plus a proxy fact.
+        assert_eq!(fact.api_key_prefix.as_deref(), Some("sk-codexprefix"));
+        assert_eq!(
+            fact.request_base_url.as_deref(),
+            Some("https://sui-xiang.com")
+        );
+        assert!(matches!(
+            fact.coverage_origin,
+            CoverageOrigin::MergedFuzzyMatched
+        ));
     }
 }

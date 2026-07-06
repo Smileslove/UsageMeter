@@ -130,7 +130,8 @@ impl CoverageAccumulator {
             crate::unified_usage::CoverageOrigin::LocalOnly => {
                 self.local_only_requests = self.local_only_requests.saturating_add(request_count);
             }
-            crate::unified_usage::CoverageOrigin::MergedProxyPreferred => {
+            crate::unified_usage::CoverageOrigin::MergedProxyPreferred
+            | crate::unified_usage::CoverageOrigin::MergedFuzzyMatched => {
                 self.proxy_backed_requests =
                     self.proxy_backed_requests.saturating_add(request_count);
             }

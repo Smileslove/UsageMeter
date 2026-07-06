@@ -83,6 +83,7 @@ pub async fn get_recent_request_records(
                 CoverageOrigin::ProxyOnly => "proxy_only",
                 CoverageOrigin::LocalOnly => "local_only",
                 CoverageOrigin::MergedProxyPreferred => "merged_proxy_preferred",
+                CoverageOrigin::MergedFuzzyMatched => "merged_fuzzy_matched",
             }
             .to_string(),
             status_code: fact.status_code,
