@@ -1,7 +1,7 @@
 use super::types::{
     canonical_request_key_for_local, canonical_request_key_for_proxy, codex_orphan_pools,
-    find_codex_fuzzy_matches, has_partial_coverage, CodexFuzzyOutcome, CoverageOrigin,
-    MergedCoverage, MergedRequestFact,
+    find_codex_fuzzy_matches, has_partial_coverage, session_meta_lookup_key_for_proxy,
+    CodexFuzzyOutcome, CoverageOrigin, MergedCoverage, MergedRequestFact,
 };
 use crate::models::{AppSettings, ToolFilter, UsageQueryFilter};
 use crate::proxy::ProxyMergeCacheSignature;
@@ -1222,10 +1222,12 @@ async fn merge_realtime_range(
                     // Already emitted as a fuzzy-merged fact above — avoid double counting.
                     continue;
                 }
-                let meta = proxy
-                    .session_id
-                    .as_ref()
-                    .and_then(|session_id| session_meta_by_id.get(session_id));
+                let meta = proxy.session_id.as_deref().and_then(|session_id| {
+                    session_meta_by_id.get(&session_meta_lookup_key_for_proxy(
+                        &proxy.client_tool,
+                        session_id,
+                    ))
+                });
                 merged.push(MergedRequestFact::from_proxy(proxy, meta));
             }
             (None, Some(local)) => {

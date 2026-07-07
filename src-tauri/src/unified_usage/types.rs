@@ -116,14 +116,43 @@ pub(crate) fn canonical_request_key_for_proxy(record: &UsageRecord) -> String {
 
 /// Codex local JSONL scanning fabricates a per-request message_id (see codex_reader.rs), so
 /// exact canonical-key matching against the proxy's real API response id is structurally
-/// impossible. This bounds a second-chance fuzzy reconciliation pass:
+/// impossible. This bounds the time window of the second-chance fuzzy reconciliation pass:
 ///   - local timestamps are whole-second-truncated (session/shared.rs::extract_timestamp)
-///   - proxy timestamps are ms-precision, captured at response-parse time
-///   - both represent the same real-world instant for a given HTTP call, modulo <1s
-///     truncation error plus normal local disk-write/event-loop latency.
+///     and come from the JSONL token_count event
+///   - proxy timestamps are captured at response-completion time
 ///
-/// 5s comfortably absorbs that without routinely spanning distinct turns in a fast Codex loop.
-pub(crate) const CODEX_FUZZY_MATCH_TOLERANCE_SECS: i64 = 5;
+/// Both mark the same real request, but session-file flush latency, retries, and slow
+/// streaming responses routinely space the two out by far more than a few seconds. The
+/// original 5s window under-matched badly for exactly this reason. cc-switch, which solved the
+/// identical local-vs-proxy Codex reconciliation, uses a 10-minute window in production; we
+/// match it. The strong per-field token fingerprint in `codex_fuzzy_candidate_matches` (in
+/// particular the large, request-specific cache_read count) keeps accidental collisions inside
+/// this wider window negligible for the normal single-active-process case.
+pub(crate) const CODEX_FUZZY_MATCH_TOLERANCE_SECS: i64 = 10 * 60;
+
+/// Namespacing prefix the local scanner puts on every Codex session id (see
+/// codex_reader.rs::collect_codex_session_files) to keep it globally unique across tools. The
+/// proxy only ever sees the bare id Codex CLI sends, so any lookup keyed by session id that
+/// needs to bridge the two sides — fuzzy matching, session-meta lookup for proxy-only facts —
+/// must add or strip this prefix explicitly rather than compare/format the literal inline.
+pub(crate) const CODEX_SESSION_ID_PREFIX: &str = "codex::";
+
+/// Builds the key to look up a proxy-only fact's session metadata in a map indexed by the
+/// *local* reader's session id (e.g. `session_meta_by_id`). Only Codex needs translation today:
+/// its local session id is namespaced with `CODEX_SESSION_ID_PREFIX`, while the proxy only ever
+/// captures the bare id Codex CLI sends — without this, a genuinely proxy-only Codex fact (no
+/// local counterpart in range) silently loses its project attribution even when the matching
+/// local session metadata exists.
+pub(crate) fn session_meta_lookup_key_for_proxy(
+    client_tool: &str,
+    proxy_session_id: &str,
+) -> String {
+    if client_tool == "codex" {
+        format!("{CODEX_SESSION_ID_PREFIX}{proxy_session_id}")
+    } else {
+        proxy_session_id.to_string()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CodexFuzzyOutcome {
@@ -204,10 +233,47 @@ pub(crate) fn codex_orphan_pools<'a>(
     )
 }
 
+/// Per-field token fingerprint reconciling a local Codex record with its proxy counterpart,
+/// modeled on cc-switch's production-proven dedup key (`has_matching_proxy_usage_log`).
+///
+/// session_id is deliberately NOT part of the fingerprint: real Codex CLI requests carry no
+/// session/conversation id the proxy can observe (confirmed against production proxy_data.db —
+/// `session_id` is empty for every captured Codex record), so requiring it made the match fail
+/// for every request and silently double-count.
+///
+/// All of the following must hold:
+///   - input / output / cache_read tokens: exact per-field equality. This is strictly stronger
+///     than the previous single `total_tokens == total_tokens` check — two different requests
+///     can share a total while differing in breakdown — and, crucially, it isolates the one
+///     component the two sides genuinely can't agree on (cache_create, below) instead of
+///     folding it into a total that then never matches.
+///   - cache_create tokens: "unknown passthrough". Codex's JSONL token_count events don't
+///     expose a cache-creation figure, so the local side is effectively always 0; when it is,
+///     accept any proxy value rather than forcing `0 == proxy.cache_create`.
+///   - model: case-insensitive equality, with either side empty or "unknown" accepted — the
+///     proxy sometimes only learns the model from the response and may leave it blank or
+///     normalize it differently than the local reader.
+///   - timestamp: within CODEX_FUZZY_MATCH_TOLERANCE_SECS.
 fn codex_fuzzy_candidate_matches(local: &LocalRequestRecord, proxy: &UsageRecord) -> bool {
-    proxy.session_id.as_deref() == Some(local.session_id.as_str())
-        && proxy.model.trim() == local.model.trim()
-        && proxy.total_tokens == local.total_tokens
+    let model_matches = {
+        let local_model = local.model.trim();
+        let proxy_model = proxy.model.trim();
+        local_model.eq_ignore_ascii_case(proxy_model)
+            || local_model.is_empty()
+            || proxy_model.is_empty()
+            || local_model.eq_ignore_ascii_case("unknown")
+            || proxy_model.eq_ignore_ascii_case("unknown")
+    };
+    // Local (session-log) side is the "unknown" one for cache_create: when it's 0 we can't
+    // distinguish "genuinely zero" from "not reported", so we don't let it veto the match.
+    let cache_create_matches =
+        local.cache_create_tokens == 0 || local.cache_create_tokens == proxy.cache_create_tokens;
+
+    model_matches
+        && local.input_tokens == proxy.input_tokens
+        && local.output_tokens == proxy.output_tokens
+        && local.cache_read_tokens == proxy.cache_read_tokens
+        && cache_create_matches
         && (proxy.timestamp / 1000 - local.timestamp).abs() <= CODEX_FUZZY_MATCH_TOLERANCE_SECS
 }
 
@@ -866,8 +932,13 @@ mod tests {
         model: &str,
         total: u64,
     ) -> LocalRequestRecord {
+        // Real Codex local records always carry the `codex::` namespacing prefix (see
+        // codex_reader.rs::collect_codex_session_files) — build fixtures the same way so
+        // these tests actually exercise the prefix-stripping comparison in
+        // `codex_fuzzy_candidate_matches` instead of passing on a same-bare-string false
+        // positive that production data would never hit.
         LocalRequestRecord {
-            session_id: session_id.to_string(),
+            session_id: format!("{CODEX_SESSION_ID_PREFIX}{session_id}"),
             tool: "codex".to_string(),
             timestamp,
             message_id: message_id.to_string(),
@@ -921,15 +992,27 @@ mod tests {
 
     #[test]
     fn fuzzy_match_rejects_candidate_outside_tolerance_window() {
+        // Just past the (now 10-minute) window: 601s apart must not match.
         let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
-        let proxy = codex_proxy_with("sess-1", 1_700_000_010_000, "resp_abc123", "gpt-5", 300);
+        let proxy = codex_proxy_with("sess-1", 1_700_000_601_000, "resp_abc123", "gpt-5", 300);
 
         let outcomes = find_codex_fuzzy_matches(&[&local], &[&proxy], &[]);
         assert!(outcomes.is_empty());
     }
 
     #[test]
-    fn fuzzy_match_rejects_mismatched_total_tokens() {
+    fn fuzzy_match_accepts_candidate_minutes_apart_within_window() {
+        // Session-file flush latency / slow streaming can space the two timestamps out by
+        // minutes; the widened window plus the exact token fingerprint must still reconcile.
+        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let proxy = codex_proxy_with("sess-1", 1_700_000_120_000, "resp_slow", "gpt-5", 300);
+
+        let outcomes = find_codex_fuzzy_matches(&[&local], &[&proxy], &[]);
+        assert_eq!(outcomes.len(), 1);
+    }
+
+    #[test]
+    fn fuzzy_match_rejects_mismatched_tokens() {
         let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
         let proxy = codex_proxy_with("sess-1", 1_700_000_001_000, "resp_abc123", "gpt-5", 400);
 
@@ -938,12 +1021,65 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_match_rejects_mismatched_session_or_model() {
+    fn fuzzy_match_rejects_same_total_but_different_breakdown() {
+        // Per-field matching must reject two requests that happen to share a total but split it
+        // differently between input and output — the old total-only check would wrongly merge.
         let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let mut proxy = codex_proxy_with("sess-1", 1_700_000_001_000, "resp_x", "gpt-5", 300);
+        proxy.input_tokens = 100;
+        proxy.output_tokens = 200; // total still 300
 
-        let wrong_session = codex_proxy_with("sess-2", 1_700_000_001_000, "resp_a", "gpt-5", 300);
-        assert!(find_codex_fuzzy_matches(&[&local], &[&wrong_session], &[]).is_empty());
+        let outcomes = find_codex_fuzzy_matches(&[&local], &[&proxy], &[]);
+        assert!(outcomes.is_empty());
+    }
 
+    #[test]
+    fn fuzzy_match_allows_missing_local_cache_create_against_proxy_value() {
+        // Codex JSONL never reports a cache-creation figure, so the local side is 0. A proxy
+        // record that *did* observe cache_creation (making its total_tokens larger) must still
+        // match — this is exactly the case the old total-equality check silently dropped.
+        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let mut proxy = codex_proxy_with("sess-1", 1_700_000_001_000, "resp_cc", "gpt-5", 300);
+        proxy.cache_create_tokens = 4096;
+        proxy.total_tokens += 4096;
+
+        let outcomes = find_codex_fuzzy_matches(&[&local], &[&proxy], &[]);
+        assert_eq!(outcomes.len(), 1);
+    }
+
+    #[test]
+    fn fuzzy_match_allows_model_case_and_unknown_differences() {
+        // Proxy may only learn the model from the response (blank / differently cased /
+        // "unknown"); none of those should block an otherwise-exact token+time match.
+        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "GPT-5", 300);
+        let cased = codex_proxy_with("sess-1", 1_700_000_001_000, "resp_a", "gpt-5", 300);
+        assert_eq!(find_codex_fuzzy_matches(&[&local], &[&cased], &[]).len(), 1);
+
+        let unknown = codex_proxy_with("sess-1", 1_700_000_001_000, "resp_b", "unknown", 300);
+        assert_eq!(
+            find_codex_fuzzy_matches(&[&local], &[&unknown], &[]).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn fuzzy_match_ignores_session_id_since_proxy_never_captures_it_for_codex() {
+        // Real Codex CLI requests carry no session/conversation identifier the proxy can
+        // observe (verified against production data: session_id is empty for every captured
+        // Codex proxy record), so a differing — or entirely absent — proxy session_id must not
+        // block an otherwise-good match on model + per-field tokens + timestamp.
+        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let different_session =
+            codex_proxy_with("sess-2", 1_700_000_001_000, "resp_a", "gpt-5", 300);
+        assert_eq!(
+            find_codex_fuzzy_matches(&[&local], &[&different_session], &[]).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn fuzzy_match_rejects_mismatched_model() {
+        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
         let wrong_model = codex_proxy_with("sess-1", 1_700_000_001_000, "resp_b", "gpt-4", 300);
         assert!(find_codex_fuzzy_matches(&[&local], &[&wrong_model], &[]).is_empty());
     }
@@ -1084,5 +1220,23 @@ mod tests {
             fact.coverage_origin,
             CoverageOrigin::MergedFuzzyMatched
         ));
+    }
+
+    #[test]
+    fn session_meta_lookup_key_adds_codex_prefix_only_for_codex() {
+        // Regression guard: session_meta_by_id is indexed by the *local* reader's session id,
+        // which for Codex is namespaced `codex::<uuid>` — the proxy only ever captures the bare
+        // uuid. A genuinely proxy-only Codex fact (no local counterpart in range) must still
+        // resolve to the same key the local session was indexed under.
+        assert_eq!(
+            session_meta_lookup_key_for_proxy("codex", "sess-1"),
+            "codex::sess-1"
+        );
+        // Other tools' local session ids aren't namespaced the same way — the bare proxy id is
+        // already the right lookup key and must not be altered.
+        assert_eq!(
+            session_meta_lookup_key_for_proxy("claude_code", "sess-1"),
+            "sess-1"
+        );
     }
 }

@@ -20,7 +20,7 @@ impl LocalUsageDatabase {
 
     pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 16 {
+        if schema_version >= 19 {
             return Ok(());
         }
         let mut cleared_runtime_caches = false;
@@ -537,6 +537,89 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to update v16 schema version: {}", e))?;
             tx.commit()
                 .map_err(|e| format!("Failed to commit v16 schema migration: {}", e))?;
+        }
+
+        if schema_version < 17 {
+            // The v16 fuzzy-match reconciliation itself never actually matched anything: the
+            // local scanner's session id is namespaced `codex::<uuid>` while the proxy captures
+            // the bare uuid Codex CLI sends, so the exact `==` comparison in
+            // `codex_fuzzy_candidate_matches` failed for every single Codex request. Every day
+            // materialized under v16 is still silently double-counted (and, after the v16 fix,
+            // misattributed to the *real* source instead of "未归因" — worse to spot). Clear
+            // again now that the comparison strips the prefix.
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v17 schema migration: {}", e))?;
+
+            Self::clear_unified_materialization_tx(&tx, chrono::Utc::now().timestamp())?;
+            cleared_runtime_caches = true;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '17', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v17 schema version: {}", e))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v17 schema migration: {}", e))?;
+        }
+
+        if schema_version < 18 {
+            // The v17 fix still required `proxy.session_id == local.session_id` (after prefix
+            // stripping) — but real Codex CLI requests carry no session/conversation
+            // identifier the proxy can observe at all (confirmed against production data:
+            // session_id is empty for every captured Codex proxy record). So the equality
+            // check failed for every request just like v16 did, for a different reason. The
+            // match now relies on model + total_tokens + close timestamp only. Every day
+            // materialized under v16/v17 is still double-counted — clear again.
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v18 schema migration: {}", e))?;
+
+            Self::clear_unified_materialization_tx(&tx, chrono::Utc::now().timestamp())?;
+            cleared_runtime_caches = true;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '18', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v18 schema version: {}", e))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v18 schema migration: {}", e))?;
+        }
+
+        if schema_version < 19 {
+            // v18 dropped session_id but still required the local-vs-proxy match on a single
+            // `total_tokens` equality. Two independent per-request divergences defeat that:
+            // (1) Codex's JSONL token_count events never report cache_creation, so the local
+            // total omits a component the proxy total includes; (2) the two sides derive tokens
+            // differently (cumulative-delta vs single-response usage), so totals rarely line up
+            // exactly. The match now uses cc-switch's per-field fingerprint (input/output/
+            // cache_read exact + cache_create "unknown passthrough") over a 10-minute window.
+            // Days materialized under v16–v18 are still double-counted — clear once more so they
+            // recompute under the corrected match.
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v19 schema migration: {}", e))?;
+
+            Self::clear_unified_materialization_tx(&tx, chrono::Utc::now().timestamp())?;
+            cleared_runtime_caches = true;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '19', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v19 schema version: {}", e))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v19 schema migration: {}", e))?;
         }
 
         if cleared_runtime_caches {

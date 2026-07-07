@@ -1438,6 +1438,261 @@ fn v16_migration_clears_stale_unified_materialization_from_codex_fuzzy_match_fix
 }
 
 #[test]
+fn v17_migration_clears_stale_unified_materialization_from_codex_session_id_prefix_fix() {
+    // Regression guard: the v16 fuzzy-match reconciliation never actually matched anything in
+    // practice — the local scanner's session id is namespaced `codex::<uuid>` while the proxy
+    // captures the bare uuid, so every Codex request materialized under v16 was still
+    // double-counted. Days materialized under v16 must not keep serving those stale numbers.
+    let (_tmp, db) = temp_db();
+    let local_date = "2026-05-26".to_string();
+    let fact = MergedRequestFact {
+        canonical_request_key: "codex:sess-1:1".to_string(),
+        session_id: "codex::sess-1".to_string(),
+        project_name: None,
+        project_path: None,
+        api_key_prefix: None,
+        request_base_url: None,
+        tool: "codex".to_string(),
+        timestamp_sec: 1_779_811_200,
+        timestamp_ms: 1_779_811_200_123,
+        model: "gpt-5".to_string(),
+        input_tokens: 100,
+        output_tokens: 200,
+        cache_create_tokens: 0,
+        cache_read_tokens: 0,
+        total_tokens: 300,
+        request_count: 1,
+        estimated_cost: 1.0,
+        coverage_origin: CoverageOrigin::LocalOnly,
+        status_code: Some(200),
+        duration_ms: None,
+        output_tokens_per_second: None,
+        ttft_ms: None,
+        source_label: None,
+    };
+    db.replace_unified_day_materialization(
+        &local_date,
+        &[(String::from("codex:sess-1:1"), fact)],
+        &UnifiedDayMaterializationState {
+            local_date: local_date.clone(),
+            day_boundary_mode: "standard".to_string(),
+            fact_count: 1,
+            local_request_count: 1,
+            local_max_sync_version: 1,
+            local_max_timestamp: 1_779_811_200,
+            remote_request_count: 0,
+            remote_max_export_seq: 0,
+            remote_max_timestamp: 0,
+            proxy_record_count: 0,
+            proxy_all_record_count: 0,
+            proxy_max_timestamp_ms: 0,
+            proxy_max_updated_at: 0,
+            max_fact_timestamp_ms: 1_779_811_200_123,
+            pricing_fingerprint: 99,
+            is_finalized: true,
+            finalized_at: Some(100),
+            materialized_at: 100,
+        },
+    )
+    .unwrap();
+
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE local_sync_state SET state_value = '16' WHERE state_key = 'schema_version'",
+            [],
+        )
+        .expect("degrade schema version");
+    }
+
+    let reopened = LocalUsageDatabase::new_with_path(&_tmp.path().join("local_usage.db"))
+        .expect("reopen and migrate");
+
+    assert!(reopened
+        .get_unified_day_materialization_state(&local_date)
+        .unwrap()
+        .is_none());
+    assert!(reopened
+        .get_unified_daily_summaries_between("2026-05-26", "2026-05-27")
+        .unwrap()
+        .is_empty());
+    assert!(reopened
+        .get_unified_daily_model_summaries_between("2026-05-26", "2026-05-27")
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn v18_migration_clears_stale_unified_materialization_from_codex_session_id_removal_fix() {
+    // Regression guard: the v17 fix still required matching `session_id`, but real Codex CLI
+    // requests never carry one that the proxy can observe, so the fuzzy match kept silently
+    // failing for every request just like v16. Days materialized under v16/v17 must not keep
+    // serving those stale double-counted numbers.
+    let (_tmp, db) = temp_db();
+    let local_date = "2026-05-26".to_string();
+    let fact = MergedRequestFact {
+        canonical_request_key: "codex:sess-1:1".to_string(),
+        session_id: "codex::sess-1".to_string(),
+        project_name: None,
+        project_path: None,
+        api_key_prefix: None,
+        request_base_url: None,
+        tool: "codex".to_string(),
+        timestamp_sec: 1_779_811_200,
+        timestamp_ms: 1_779_811_200_123,
+        model: "gpt-5".to_string(),
+        input_tokens: 100,
+        output_tokens: 200,
+        cache_create_tokens: 0,
+        cache_read_tokens: 0,
+        total_tokens: 300,
+        request_count: 1,
+        estimated_cost: 1.0,
+        coverage_origin: CoverageOrigin::LocalOnly,
+        status_code: Some(200),
+        duration_ms: None,
+        output_tokens_per_second: None,
+        ttft_ms: None,
+        source_label: None,
+    };
+    db.replace_unified_day_materialization(
+        &local_date,
+        &[(String::from("codex:sess-1:1"), fact)],
+        &UnifiedDayMaterializationState {
+            local_date: local_date.clone(),
+            day_boundary_mode: "standard".to_string(),
+            fact_count: 1,
+            local_request_count: 1,
+            local_max_sync_version: 1,
+            local_max_timestamp: 1_779_811_200,
+            remote_request_count: 0,
+            remote_max_export_seq: 0,
+            remote_max_timestamp: 0,
+            proxy_record_count: 0,
+            proxy_all_record_count: 0,
+            proxy_max_timestamp_ms: 0,
+            proxy_max_updated_at: 0,
+            max_fact_timestamp_ms: 1_779_811_200_123,
+            pricing_fingerprint: 99,
+            is_finalized: true,
+            finalized_at: Some(100),
+            materialized_at: 100,
+        },
+    )
+    .unwrap();
+
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE local_sync_state SET state_value = '17' WHERE state_key = 'schema_version'",
+            [],
+        )
+        .expect("degrade schema version");
+    }
+
+    let reopened = LocalUsageDatabase::new_with_path(&_tmp.path().join("local_usage.db"))
+        .expect("reopen and migrate");
+
+    assert!(reopened
+        .get_unified_day_materialization_state(&local_date)
+        .unwrap()
+        .is_none());
+    assert!(reopened
+        .get_unified_daily_summaries_between("2026-05-26", "2026-05-27")
+        .unwrap()
+        .is_empty());
+    assert!(reopened
+        .get_unified_daily_model_summaries_between("2026-05-26", "2026-05-27")
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn v19_migration_clears_stale_unified_materialization_from_per_field_match_fix() {
+    // Regression guard: v18 dropped session_id but still matched local vs proxy on a single
+    // `total_tokens` equality, which never holds for Codex (cache_creation is absent locally
+    // and the two sides derive tokens differently). Days materialized under v16–v18 are still
+    // double-counted and must be cleared so they recompute under the per-field fingerprint.
+    let (_tmp, db) = temp_db();
+    let local_date = "2026-05-26".to_string();
+    let fact = MergedRequestFact {
+        canonical_request_key: "codex:sess-1:1".to_string(),
+        session_id: "codex::sess-1".to_string(),
+        project_name: None,
+        project_path: None,
+        api_key_prefix: None,
+        request_base_url: None,
+        tool: "codex".to_string(),
+        timestamp_sec: 1_779_811_200,
+        timestamp_ms: 1_779_811_200_123,
+        model: "gpt-5".to_string(),
+        input_tokens: 100,
+        output_tokens: 200,
+        cache_create_tokens: 0,
+        cache_read_tokens: 0,
+        total_tokens: 300,
+        request_count: 1,
+        estimated_cost: 1.0,
+        coverage_origin: CoverageOrigin::LocalOnly,
+        status_code: Some(200),
+        duration_ms: None,
+        output_tokens_per_second: None,
+        ttft_ms: None,
+        source_label: None,
+    };
+    db.replace_unified_day_materialization(
+        &local_date,
+        &[(String::from("codex:sess-1:1"), fact)],
+        &UnifiedDayMaterializationState {
+            local_date: local_date.clone(),
+            day_boundary_mode: "standard".to_string(),
+            fact_count: 1,
+            local_request_count: 1,
+            local_max_sync_version: 1,
+            local_max_timestamp: 1_779_811_200,
+            remote_request_count: 0,
+            remote_max_export_seq: 0,
+            remote_max_timestamp: 0,
+            proxy_record_count: 0,
+            proxy_all_record_count: 0,
+            proxy_max_timestamp_ms: 0,
+            proxy_max_updated_at: 0,
+            max_fact_timestamp_ms: 1_779_811_200_123,
+            pricing_fingerprint: 99,
+            is_finalized: true,
+            finalized_at: Some(100),
+            materialized_at: 100,
+        },
+    )
+    .unwrap();
+
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE local_sync_state SET state_value = '18' WHERE state_key = 'schema_version'",
+            [],
+        )
+        .expect("degrade schema version");
+    }
+
+    let reopened = LocalUsageDatabase::new_with_path(&_tmp.path().join("local_usage.db"))
+        .expect("reopen and migrate");
+
+    assert!(reopened
+        .get_unified_day_materialization_state(&local_date)
+        .unwrap()
+        .is_none());
+    assert!(reopened
+        .get_unified_daily_summaries_between("2026-05-26", "2026-05-27")
+        .unwrap()
+        .is_empty());
+    assert!(reopened
+        .get_unified_daily_model_summaries_between("2026-05-26", "2026-05-27")
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
 fn today_local_date_with_settings_uses_passed_day_boundary_mode() {
     let tmp_home = tempfile::tempdir().expect("create temp home");
     let old_home = std::env::var_os("HOME");
