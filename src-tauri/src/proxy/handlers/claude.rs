@@ -123,7 +123,7 @@ fn extract_claude_auth_token(headers: &hyper::HeaderMap) -> Option<String> {
 }
 
 fn extract_bearer_token(value: &str) -> Option<&str> {
-    let mut parts = value.trim().split_whitespace();
+    let mut parts = value.split_whitespace();
     let scheme = parts.next()?;
     let token = parts.next()?;
     if !scheme.eq_ignore_ascii_case("bearer") || token.is_empty() || parts.next().is_some() {

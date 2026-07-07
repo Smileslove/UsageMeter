@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.1] - 2026-07-07
+
+### Fixed
+
+- **Codex Request Deduplication**: Fixed duplicate counting and missing source attribution when the same Codex request appears in both local session data and proxy captures
+- **Claude Source Attribution**: Fixed Claude-compatible bearer-token requests so source attribution still resolves when providers use `Authorization: Bearer` instead of `x-api-key`
+- **Update Dialog Polish**: Refined the update dialog layout and dismissal flow for a cleaner, more reliable update experience
+
+---
+
+### 修复
+
+- **Codex 请求去重**：修复同一条 Codex 请求同时出现在本地会话与代理采集时的重复计数与来源未归因问题
+- **Claude 来源归因**：修复 Claude 兼容供应商使用 `Authorization: Bearer` 而非 `x-api-key` 时的来源归因失效问题
+- **更新弹窗细节**：优化更新弹窗布局与关闭流程，提升更新交互的稳定性与一致性
+
+---
+
 ## [0.9.0] - 2026-07-05
 
 ### Added
@@ -803,6 +821,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.9.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.9.1
 [0.9.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.9.0
 [0.8.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.8.1
 [0.8.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.8.0
