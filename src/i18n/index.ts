@@ -52,6 +52,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       daysAgo: '天前',
       confirm: '确认',
       custom: '自定义',
+      success: '成功',
       error: '错误'
     },
     source: {
@@ -956,6 +957,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       daysAgo: '天前',
       confirm: '確認',
       custom: '自定義',
+      success: '成功',
       error: '錯誤'
     },
     source: {
@@ -1859,6 +1861,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       daysAgo: 'd ago',
       confirm: 'Confirm',
       custom: 'Custom',
+      success: 'Success',
       error: 'Error'
     },
     source: {

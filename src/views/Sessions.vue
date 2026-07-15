@@ -361,14 +361,6 @@ const formatDuration = (ms?: number | null) => {
   return `${minutes}m ${seconds}s`
 }
 
-const compactModelName = (request: RequestRecord) => {
-  const value = formatModelDisplayName(request.model, request.tool, store.settings.locale, store.settings.clientTools.profiles)
-  return value
-    .replace(/^claude-/, '')
-    .replace(/^gpt-/, 'gpt-')
-    .replace(/-20\d{6}$/, '')
-}
-
 const requestModelLabel = (request: RequestRecord) => (
   formatModelDisplayName(request.model, request.tool, store.settings.locale, store.settings.clientTools.profiles)
 )
@@ -398,7 +390,9 @@ const requestStatusClasses = (request: RequestRecord) => {
 
 const requestCoverageLabel = (origin: RequestRecord['coverageOrigin']) => {
   if (origin === 'proxy_only') return t(store.settings.locale, 'sessions.requestCoverageProxy')
-  if (origin === 'merged_proxy_preferred') return t(store.settings.locale, 'sessions.requestCoverageMerged')
+  if (origin === 'merged_proxy_preferred' || origin === 'merged_fuzzy_matched') {
+    return t(store.settings.locale, 'sessions.requestCoverageMerged')
+  }
   return t(store.settings.locale, 'sessions.requestCoverageLocal')
 }
 
@@ -412,7 +406,7 @@ const requestProjectLabel = (request: RequestRecord) => {
 const requestSourceLabel = (request: RequestRecord) => (
   request.sourceLabel?.trim()
     || request.requestBaseUrl?.trim()
-    || t(store.settings.locale, 'sources.unknown')
+    || t(store.settings.locale, 'source.unknown')
 )
 
 const requestToolLabel = (tool: string) => {
@@ -1055,9 +1049,11 @@ onUnmounted(() => {
 
     <!-- 2. 最近请求流 -->
     <template v-else-if="activeTab === 'requests'">
-      <div class="request-stream-note">
-        <span>{{ t(store.settings.locale, 'sessions.requestsRecentHint') }}</span>
-        <span class="font-mono">{{ store.requestRecords.length }}/200</span>
+      <div class="flex items-center justify-between gap-2 rounded-xl border border-gray-100 bg-white px-2.5 py-1.5 text-[10px] text-gray-400 shadow-[0_2px_10px_rgba(0,0,0,0.02)] dark:border-white/5 dark:bg-[#1E2024] dark:text-gray-500">
+        <span class="font-medium">{{ t(store.settings.locale, 'sessions.requestsRecentHint') }}</span>
+        <span class="rounded-md bg-gray-50 px-1.5 py-0.5 font-mono font-semibold text-gray-600 dark:bg-white/[0.04] dark:text-gray-300">
+          {{ store.requestRecords.length }}/200
+        </span>
       </div>
 
       <div v-if="store.requestRecordsLoading" class="flex justify-center py-8">
@@ -1073,45 +1069,91 @@ onUnmounted(() => {
           v-for="request in store.requestRecords"
           :key="request.requestKey"
           type="button"
-          class="request-card"
+          class="w-full cursor-pointer rounded-xl border border-gray-100 bg-white px-2.5 py-2 text-left shadow-[0_2px_10px_rgba(0,0,0,0.02)] transition-colors hover:bg-gray-50 dark:border-white/5 dark:bg-[#1E2024] dark:hover:bg-white/5"
           @click="openRequestDetail(request)"
         >
-          <div class="request-card__top">
-            <div class="min-w-0 flex items-center gap-1.5">
-              <span class="request-card__time">{{ formatTime(request.timestampSec) }}</span>
-              <span class="request-card__model" :title="requestModelLabel(request)">{{ compactModelName(request) }}</span>
+          <div class="flex min-w-0 items-center justify-between gap-2">
+            <div class="flex min-w-0 items-center gap-1.5">
+              <span class="max-w-[128px] shrink-0 truncate rounded px-1.5 py-px text-[10px] font-semibold text-indigo-600 border border-indigo-100 bg-indigo-50 dark:border-indigo-500/30 dark:bg-indigo-500/20 dark:text-indigo-300">
+                {{ requestProjectLabel(request) }}
+              </span>
+              <div class="flex min-w-0 items-center gap-1 text-[10px] text-gray-400 dark:text-gray-500">
+                <LobeIcon
+                  v-if="getToolIcon(request.tool)"
+                  :slug="getToolIcon(request.tool) ?? 'claudecode'"
+                  :size="12"
+                  @error="() => {}"
+                />
+                <span v-else class="h-1.5 w-1.5 shrink-0 rounded-full bg-gray-400"></span>
+                <span class="truncate">{{ requestToolLabel(request.tool) }}</span>
+              </div>
             </div>
-            <div class="flex shrink-0 items-center gap-1.5">
-              <span class="request-card__tokens">{{ formatTokens(request.totalTokens) }}</span>
-              <span class="request-card__cost">{{ formatCost(request.estimatedCost) }}</span>
+            <div class="flex shrink-0 items-center gap-1 text-[10px] text-gray-400 dark:text-gray-500">
+              <svg class="h-2.5 w-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span>{{ formatTime(request.timestampSec) }}</span>
             </div>
           </div>
 
-          <div class="request-card__meta">
-            <div class="min-w-0 flex items-center gap-1">
-              <LobeIcon
-                v-if="getToolIcon(request.tool)"
-                :slug="getToolIcon(request.tool) ?? 'claudecode'"
-                :size="12"
-                @error="() => {}"
-              />
-              <span v-else class="h-1.5 w-1.5 shrink-0 rounded-full bg-gray-400"></span>
-              <span class="truncate">{{ requestProjectLabel(request) }}</span>
-              <span class="text-gray-300 dark:text-gray-600">/</span>
-              <span class="truncate">{{ requestToolLabel(request.tool) }}</span>
-              <span class="text-gray-300 dark:text-gray-600">/</span>
-              <span class="truncate">{{ requestSourceLabel(request) }}</span>
+          <div class="mt-1.5 flex items-start justify-between gap-2">
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-[12px] font-medium leading-snug text-gray-800 dark:text-gray-200" :title="requestModelLabel(request)">
+                {{ requestModelLabel(request) }}
+              </p>
+              <div class="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] text-gray-400 dark:text-gray-500">
+                <svg class="h-2.5 w-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span class="truncate">{{ requestSourceLabel(request) }}</span>
+              </div>
             </div>
-            <span class="request-card__status" :class="requestStatusClasses(request)">
-              {{ requestStatusLabel(request) }}
-            </span>
+            <div class="flex shrink-0 flex-col items-end gap-1">
+              <span class="request-card__status" :class="requestStatusClasses(request)">
+                {{ requestStatusLabel(request) }}
+              </span>
+              <div class="flex items-center gap-2">
+                <span class="font-mono text-[10px] font-semibold text-gray-700 dark:text-gray-200">
+                  {{ formatTokens(request.totalTokens) }}
+                </span>
+                <span class="font-mono text-[10px] font-semibold text-[var(--theme-chart-cost)]">
+                  {{ formatCost(request.estimatedCost) }}
+                </span>
+              </div>
+            </div>
           </div>
 
-          <div class="request-card__metrics">
-            <span>{{ t(store.settings.locale, 'sessions.input') }} {{ formatTokens(request.inputTokens) }}</span>
-            <span>{{ t(store.settings.locale, 'sessions.output') }} {{ formatTokens(request.outputTokens) }}</span>
-            <span>{{ t(store.settings.locale, 'statistics.cache') }} {{ formatTokens(requestCacheTokens(request)) }}</span>
-            <span class="ml-auto">{{ requestHasProxyPerformance(request) ? formatDuration(request.durationMs) : requestCoverageLabel(request.coverageOrigin) }}</span>
+          <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-gray-100 pt-1.5 text-[10px] dark:border-white/5">
+            <div class="flex items-center gap-0.5">
+              <svg class="h-[10px] w-[10px] shrink-0 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.input') }}</span>
+              <span class="font-mono font-semibold text-gray-700 dark:text-gray-300">{{ formatTokens(request.inputTokens) }}</span>
+            </div>
+            <div class="flex items-center gap-0.5">
+              <svg class="h-[10px] w-[10px] shrink-0 text-sky-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+              </svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.output') }}</span>
+              <span class="font-mono font-semibold text-gray-700 dark:text-gray-300">{{ formatTokens(request.outputTokens) }}</span>
+            </div>
+            <div class="flex items-center gap-0.5">
+              <svg class="h-[10px] w-[10px] shrink-0 text-violet-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+              </svg>
+              <span class="text-gray-400">{{ t(store.settings.locale, 'statistics.cache') }}</span>
+              <span class="font-mono font-semibold text-gray-700 dark:text-gray-300">{{ formatTokens(requestCacheTokens(request)) }}</span>
+            </div>
+            <div class="ml-auto flex items-center gap-0.5">
+              <svg class="h-[10px] w-[10px] shrink-0 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              <span class="text-gray-400">{{ requestHasProxyPerformance(request) ? t(store.settings.locale, 'sessions.duration') : t(store.settings.locale, 'sessions.requestCoverage') }}</span>
+              <span class="font-mono font-semibold text-gray-700 dark:text-gray-300">
+                {{ requestHasProxyPerformance(request) ? formatDuration(request.durationMs) : requestCoverageLabel(request.coverageOrigin) }}
+              </span>
+            </div>
           </div>
         </button>
 
@@ -1551,90 +1593,6 @@ onUnmounted(() => {
   padding: 5px 8px;
 }
 
-.request-stream-note {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: 12px;
-  background:
-    linear-gradient(135deg, color-mix(in srgb, var(--theme-accent-primary) 8%, transparent), transparent 58%),
-    var(--theme-bg-elevated);
-  padding: 7px 10px;
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--theme-text-tertiary);
-}
-
-.request-card {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: 16px;
-  background: var(--theme-bg-elevated);
-  padding: 10px;
-  text-align: left;
-  cursor: pointer;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.018);
-  transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
-}
-
-.request-card:hover {
-  transform: translateY(-1px);
-  border-color: var(--theme-border-strong);
-  background: color-mix(in srgb, var(--theme-bg-elevated) 88%, var(--theme-accent-primary) 12%);
-}
-
-.request-card__top,
-.request-card__meta,
-.request-card__metrics {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-width: 0;
-  gap: 8px;
-}
-
-.request-card__time {
-  flex-shrink: 0;
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--theme-text-tertiary);
-}
-
-.request-card__model {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--theme-text-primary);
-}
-
-.request-card__tokens {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 11px;
-  font-weight: 800;
-  color: var(--theme-text-primary);
-}
-
-.request-card__cost {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 11px;
-  font-weight: 800;
-  color: var(--theme-chart-cost);
-}
-
-.request-card__meta {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--theme-text-tertiary);
-}
-
 .request-card__status {
   display: inline-flex;
   align-items: center;
@@ -1646,14 +1604,6 @@ onUnmounted(() => {
   font-size: 9px;
   font-weight: 800;
   line-height: 1;
-}
-
-.request-card__metrics {
-  border-top: 1px solid var(--theme-border-subtle);
-  padding-top: 7px;
-  font-size: 9.5px;
-  font-weight: 700;
-  color: var(--theme-text-tertiary);
 }
 
 .request-detail-stat {

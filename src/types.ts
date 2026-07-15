@@ -563,7 +563,11 @@ export interface ProjectToolStats {
   uncoveredRequests?: number
 }
 
-export type RequestCoverageOrigin = 'proxy_only' | 'local_only' | 'merged_proxy_preferred'
+export type RequestCoverageOrigin =
+  | 'proxy_only'
+  | 'local_only'
+  | 'merged_proxy_preferred'
+  | 'merged_fuzzy_matched'
 
 // 最近请求记录
 export interface RequestRecord {
