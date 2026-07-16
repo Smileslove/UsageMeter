@@ -27,12 +27,15 @@ watch(
   { immediate: true }
 )
 
+// 新窗口数据未返回前沿用上一份数据渲染，保持面板结构稳定不塌陷
 const summaryWindowData = computed(() => {
-  const current = currentSummaryWindowData.value
-  if (current) return current
-  const last = lastSummaryWindowData.value
-  return last?.window === store.settings.summaryWindow ? last : null
+  return currentSummaryWindowData.value ?? lastSummaryWindowData.value
 })
+
+// 当前所选窗口的数据尚在加载（正展示旧窗口数据）
+const isWindowDataPending = computed(
+  () => !currentSummaryWindowData.value && !!lastSummaryWindowData.value
+)
 
 // 计算总输入 Token（包含缓存读取）
 const totalInputTokens = computed(() => {
@@ -46,23 +49,27 @@ const getWindowLabel = (window: string): string => {
   return windowNameLabel(store.settings.locale, window)
 }
 
-// 切换时间窗口
+// 切换时间窗口：只拉取窗口维度的数据包（不走全量刷新，避免其 loading 互斥与最小加载延迟），
+// 设置保存与数据拉取并行，缩短切换等待
 async function selectWindow(window: WindowName) {
+  if (store.settings.summaryWindow === window) return
+  store.settings.summaryWindow = window
   try {
-    store.settings.summaryWindow = window
-    await store.saveSettings()
-    await store.refreshUsage()
+    await Promise.all([
+      store.saveSettings(),
+      store.fetchOverviewDeferredBundle(window)
+    ])
   } catch (e) {
-    console.error('Failed to save settings:', e)
+    console.error('Failed to switch summary window:', e)
   }
 }
 
 // 速率摘要数据
 const rateSummary = computed(() => store.rateSummary)
-// 是否有速率数据（窗口匹配且有实际请求时展示速率）
+// 是否有速率数据。切换窗口期间沿用旧窗口速率（配合整体淡化提示），
+// 避免行结构在加载中途切换占位再切回造成抖动
 const hasRateData = computed(() => {
   if (!rateSummary.value) return false
-  if (rateSummary.value.window !== store.settings.summaryWindow) return false
   // 必须有实际请求才算有数据，避免错误时返回的空统计显示为 0.00
   return rateSummary.value.overall.requestCount > 0
 })
@@ -213,7 +220,7 @@ function detailPairSizeClass(first: string, second: string): string {
     </div>
 
     <!-- 2x2 卡片网格 -->
-    <div class="summary-grid">
+    <div class="summary-grid" :class="{ 'summary-grid-pending': isWindowDataPending }">
       <!-- 请求统计 -->
       <div
         class="metric-card metric-card-toggle metric-card-emerald group !bg-white border-emerald-200/90 dark:!bg-[#1C1C1E] dark:border-emerald-500/15"
@@ -431,6 +438,13 @@ function detailPairSizeClass(first: string, second: string): string {
   gap: 0.5rem;
   flex: 1;
   min-width: 0;
+  transition: opacity 0.2s ease;
+}
+
+/* 新窗口数据加载中：沿用旧数据渲染并整体淡化，避免布局跳动 */
+.summary-grid-pending {
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 /* Metric card styles - aligned with StatisticsMetricCards */
