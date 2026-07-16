@@ -1,4 +1,51 @@
-import type { CurrencySettings } from '../types'
+import { ref } from 'vue'
+import type { CurrencySettings, NumberFormatMode } from '../types'
+import { t } from '../i18n'
+
+// 数值单位显示模式（international: K/M/B；chinese: 万/亿）。
+// 使用响应式 ref 使模板与 computed 中的格式化结果随设置切换自动更新。
+// 由 monitor store 在 loadSettings/saveSettings 中统一同步，主窗口与分享窗口
+// （#/share，不挂载 App.vue）都经过这两个 action，避免几十处调用点逐一传参。
+const numberFormatMode = ref<NumberFormatMode>('international')
+const unitLocale = ref('zh-CN')
+
+export function setNumberFormatMode(mode: NumberFormatMode, locale?: string) {
+  numberFormatMode.value = mode === 'chinese' ? 'chinese' : 'international'
+  if (locale) unitLocale.value = locale
+}
+
+// 单位刻度表：threshold 同时是该档的判定阈值与除数。
+// 中文单位后缀（万/亿 与 萬/億）随界面语言取自 i18n，不在此硬编码。
+interface UnitScale {
+  threshold: number
+  suffix: () => string
+}
+
+const INTERNATIONAL_SCALES: UnitScale[] = [
+  { threshold: 1_000_000_000, suffix: () => 'B' },
+  { threshold: 1_000_000, suffix: () => 'M' },
+  { threshold: 1_000, suffix: () => 'K' },
+]
+
+const CHINESE_SCALES: UnitScale[] = [
+  { threshold: 100_000_000, suffix: () => t(unitLocale.value, 'common.unitYi') },
+  { threshold: 10_000, suffix: () => t(unitLocale.value, 'common.unitWan') },
+]
+
+// 依据数值大小选择单位档位。保留 2 位小数四舍五入后恰好进位到更大单位时晋级，
+// 避免出现 "10000.00万"、"1000.00M" 这类越过本档上限的显示。
+function pickScale(base: number): UnitScale | null {
+  const scales = numberFormatMode.value === 'chinese' ? CHINESE_SCALES : INTERNATIONAL_SCALES
+  let index = scales.findIndex(scale => base >= scale.threshold)
+  if (index === -1) return null
+  while (
+    index > 0 &&
+    (Math.round((base / scales[index].threshold) * 100) / 100) * scales[index].threshold >= scales[index - 1].threshold
+  ) {
+    index--
+  }
+  return scales[index]
+}
 
 // 货币符号映射
 const CURRENCY_SYMBOLS: Record<string, string> = {
@@ -412,18 +459,28 @@ export function formatCost(value: number, currency?: CurrencySettings, precision
 }
 
 export function formatRequestCount(value: number): string {
-  if (value >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`
-  if (value >= 1_000) return `${(value / 1_000).toFixed(2)}K`
-  return String(Math.round(value))
+  const scale = pickScale(value)
+  if (!scale) return String(Math.round(value))
+  return `${(value / scale.threshold).toFixed(2)}${scale.suffix()}`
 }
 
 export function formatTokenValue(value: number, unitBase?: number): string {
-  const base = Math.abs(unitBase ?? value)
-  if (base >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`
-  if (base >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`
-  if (base >= 1_000) return `${(value / 1_000).toFixed(2)}K`
-  return value.toFixed(2)
+  const scale = pickScale(Math.abs(unitBase ?? value))
+  if (!scale) return value.toFixed(2)
+  return `${(value / scale.threshold).toFixed(2)}${scale.suffix()}`
+}
+
+// 「已用 / 限额」联合展示：两值共用单位，已用保留 2 位小数，
+// 限额去掉多余的 0（如 0.68K / 1K、1.25M / 2M、3.40万 / 5万）。
+export function formatUsedTotal(used: number, total: number): string {
+  const safeUsed = Math.max(0, Math.round(used))
+  const safeTotal = Math.max(0, Math.round(total))
+  const scale = pickScale(Math.max(safeUsed, safeTotal))
+  if (!scale) return `${safeUsed} / ${safeTotal}`
+  const suffix = scale.suffix()
+  const usedStr = (safeUsed / scale.threshold).toFixed(2)
+  const totalStr = String(Number((safeTotal / scale.threshold).toFixed(2)))
+  return `${usedStr}${suffix} / ${totalStr}${suffix}`
 }
 
 export function formatTokenPair(input: number, output: number): { input: string; output: string } {

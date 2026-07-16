@@ -779,6 +779,8 @@ pub struct AppSettings {
     pub summary_window: String,
     #[serde(default = "default_day_boundary_mode")]
     pub day_boundary_mode: String,
+    #[serde(default = "default_number_format")]
+    pub number_format: String,
     #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(
@@ -990,6 +992,10 @@ pub fn default_day_boundary_mode() -> String {
     crate::utils::business_time::default_day_boundary_mode()
 }
 
+pub fn default_number_format() -> String {
+    "international".to_string()
+}
+
 pub fn default_theme() -> ThemeSettings {
     ThemeSettings::default()
 }
@@ -1002,6 +1008,7 @@ impl Default for AppSettings {
             refresh_interval_seconds: default_refresh_interval_seconds(),
             summary_window: default_summary_window(),
             day_boundary_mode: default_day_boundary_mode(),
+            number_format: default_number_format(),
             proxy: ProxyConfig::default_config(),
             theme: default_theme(),
             model_pricing: ModelPricingSettings::default(),

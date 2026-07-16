@@ -4,7 +4,7 @@ import { Activity } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
 import LobeIcon from '../LobeIcon.vue'
-import { formatTokenValue } from '../../utils/format'
+import { formatTokenValue, formatUsedTotal as formatUsedTotalPair } from '../../utils/format'
 import type { QuotaTier, SubscriptionQuota } from '../../types'
 
 const store = useMonitorStore()
@@ -167,20 +167,7 @@ function formatUsedTotal(tier?: QuotaTier): string {
   const total = Math.max(0, Math.round(tier.maxValue))
   const remaining = Math.max(0, Math.round(tier.remainingValue ?? 0))
   const used = Math.max(0, total - remaining)
-  const peak = Math.max(used, total)
-  let usedStr: string
-  let totalStr: string
-  if (peak >= 1_000_000) {
-    usedStr = `${(used / 1_000_000).toFixed(2)}M`
-    totalStr = `${(total / 1_000_000).toFixed(2)}M`
-  } else if (peak >= 1_000) {
-    usedStr = `${(used / 1_000).toFixed(2)}K`
-    totalStr = `${Math.round(total / 1_000)}K`
-  } else {
-    usedStr = String(used)
-    totalStr = String(total)
-  }
-  return `${usedStr} / ${totalStr}`
+  return formatUsedTotalPair(used, total)
 }
 
 function usedPercentText(tier?: QuotaTier): string {

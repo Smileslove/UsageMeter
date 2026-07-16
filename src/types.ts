@@ -107,6 +107,7 @@ export interface AppSettings {
   refreshIntervalSeconds: number
   summaryWindow: WindowName  // 概览面板汇总展示区显示的窗口
   dayBoundaryMode: 'standard' | 'night_owl'
+  numberFormat: NumberFormatMode  // 数值单位显示：国际单位 K/M 或中文单位 万/亿
   proxy: ProxyConfig         // 代理配置
   theme: ThemeSettings       // 主题设置：外观模式 + 色板
   modelPricing: ModelPricingSettings  // 模型价格设置
@@ -122,6 +123,8 @@ export interface AppSettings {
 }
 
 export type DayBoundaryMode = AppSettings['dayBoundaryMode']
+
+export type NumberFormatMode = 'international' | 'chinese'
 
 // WSL 被动扫描设置（仅 Windows 生效）
 export interface WslScanSettings {

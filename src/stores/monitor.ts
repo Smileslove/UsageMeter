@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
+import { setNumberFormatMode } from '../utils/format'
 import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, OverviewDeferredBundle, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SubscriptionQuota, SyncSettings, NetworkProxyConfig, ThemeSettings, WslScanSettings, LimitSurvivalSnapshot, SourceQuotaBindingConfig, ConfiguredSourceQuotaQueryResult, CopilotAuthStatus, GitHubAccount, SourceQuotaBindingTestResult, SourceQuotaBindingRuntimeState, SourceQuotaProfileDescriptor } from '../types'
 
 const defaultModelPricing: ModelPricingSettings = {
@@ -97,6 +98,7 @@ const defaultSettings: AppSettings = {
   refreshIntervalSeconds: 30,
   summaryWindow: '24h',
   dayBoundaryMode: 'standard',
+  numberFormat: 'international',
   proxy: {
     enabled: false,
     port: 18765,
@@ -253,12 +255,20 @@ export const useMonitorStore = defineStore('monitor', {
       try {
         this.error = ''
         this.settings = await invoke<AppSettings>('load_settings')
+        // 后端按 String 持久化，手改配置文件可能出现未知值，归一化避免设置页下拉框空白
+        if (this.settings.numberFormat !== 'chinese') {
+          this.settings.numberFormat = 'international'
+        }
       } catch (e) {
         this.error = errorMessage(e)
+      } finally {
+        // 主窗口与分享窗口（#/share）都经此同步数值单位显示模式
+        setNumberFormatMode(this.settings.numberFormat, this.settings.locale)
       }
     },
     async saveSettings() {
       this.saving = true
+      setNumberFormatMode(this.settings.numberFormat, this.settings.locale)
       try {
         this.error = ''
         await invoke('save_settings', { settings: this.settings })

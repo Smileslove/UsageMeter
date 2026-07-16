@@ -11,6 +11,7 @@ const updaterStore = useUpdaterStore()
 
 const appVersion = ref('')
 const localLocale = ref(store.settings.locale)
+const localNumberFormat = ref(store.settings.numberFormat)
 const localRefreshInterval = ref(store.settings.refreshIntervalSeconds)
 const dayBoundaryMode = ref(store.settings.dayBoundaryMode)
 const autoStartEnabled = ref(store.settings.autoStart)
@@ -19,6 +20,10 @@ let checkUpdateFlashTimer: ReturnType<typeof setTimeout> | null = null
 
 watch(() => store.settings.locale, (value) => {
   localLocale.value = value
+})
+
+watch(() => store.settings.numberFormat, (value) => {
+  localNumberFormat.value = value
 })
 
 watch(() => store.settings.refreshIntervalSeconds, (value) => {
@@ -31,6 +36,11 @@ watch(() => store.settings.dayBoundaryMode, (value) => {
 
 const handleLocaleChange = async () => {
   store.settings.locale = localLocale.value
+  await store.saveSettings()
+}
+
+const handleNumberFormatChange = async () => {
+  store.settings.numberFormat = localNumberFormat.value
   await store.saveSettings()
 }
 
@@ -140,6 +150,22 @@ onUnmounted(() => {
         <option value="zh-CN">{{ t(store.settings.locale, 'settings.zhCN') }}</option>
         <option value="zh-TW">{{ t(store.settings.locale, 'settings.zhTW') }}</option>
         <option value="en-US">{{ t(store.settings.locale, 'settings.enUS') }}</option>
+      </select>
+    </div>
+
+    <!-- 数值单位 -->
+    <div class="flex items-center justify-between py-2 px-4 text-[13px]">
+      <div class="flex flex-col">
+        <span class="text-[var(--theme-text-primary)]">{{ t(store.settings.locale, 'settings.numberFormat') }}</span>
+        <span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'settings.numberFormatDesc') }}</span>
+      </div>
+      <select
+        v-model="localNumberFormat"
+        class="cursor-pointer appearance-none bg-transparent text-right text-sm tracking-tight text-[var(--theme-text-secondary)] outline-none"
+        @change="handleNumberFormatChange"
+      >
+        <option value="international">{{ t(store.settings.locale, 'settings.numberFormatInternational') }}</option>
+        <option value="chinese">{{ t(store.settings.locale, 'settings.numberFormatChinese') }}</option>
       </select>
     </div>
 
