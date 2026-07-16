@@ -452,6 +452,9 @@ pub struct TakeoverConflictState {
     pub reclaim_events: VecDeque<i64>,
     pub paused_conflict: bool,
     pub paused_external_base_url: Option<String>,
+    /// 检测到外部管理器（如 cc-switch 内置代理）已接管配置时的礼让状态。
+    /// Some(管理器标识) 表示 UsageMeter 主动暂停接管，与 paused_conflict（抢写冲突）语义不同。
+    pub yielded_to_external_manager: Option<String>,
 }
 
 /// 接管冲突状态表，按工具 ID 存储。

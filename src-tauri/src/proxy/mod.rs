@@ -1,5 +1,6 @@
 //! 代理模块 - 本地 HTTP 代理，用于拦截 Claude API 请求
 
+pub(crate) mod ccswitch_compat;
 mod codex_api;
 mod codex_config;
 mod collector;

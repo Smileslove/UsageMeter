@@ -1,6 +1,7 @@
 //! Tauri 命令模块
 
 mod autostart;
+mod ccswitch;
 mod copilot;
 mod currency;
 mod model_pricing;
@@ -15,6 +16,7 @@ mod usage;
 mod window;
 
 pub use autostart::*;
+pub use ccswitch::*;
 pub use copilot::*;
 pub use currency::*;
 pub use model_pricing::*;

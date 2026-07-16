@@ -1,5 +1,6 @@
 //! HTTP 代理服务器，用于拦截客户端 API 请求
 
+use super::ccswitch_compat;
 use super::codex_config::{CodexConfigManager, CodexSourceRegistry};
 use super::collector::UsageCollector;
 use super::config_manager::ClaudeConfigManager;
@@ -68,6 +69,72 @@ async fn clear_takeover_conflict(state: &Arc<ProxyState>, tool: &str) {
     tool_state.reclaim_events.clear();
     tool_state.paused_conflict = false;
     tool_state.paused_external_base_url = None;
+    tool_state.yielded_to_external_manager = None;
+}
+
+async fn clear_reclaim_events(state: &Arc<ProxyState>, tool: &str) {
+    let mut conflicts = state.takeover_conflicts.write().await;
+    if let Some(tool_state) = conflicts.tools.get_mut(tool) {
+        tool_state.reclaim_events.clear();
+    }
+}
+
+/// 进入对外部配置管理器（cc-switch 内置代理）的礼让状态。返回 true 表示新进入。
+async fn yield_to_external_manager(state: &Arc<ProxyState>, tool: &str) -> bool {
+    let mut conflicts = state.takeover_conflicts.write().await;
+    let tool_state = conflicts.tools.entry(tool.to_string()).or_default();
+    if tool_state.yielded_to_external_manager.is_some() {
+        return false;
+    }
+    tool_state.yielded_to_external_manager =
+        Some(ccswitch_compat::CCSWITCH_MANAGER_NAME.to_string());
+    true
+}
+
+/// 清除礼让状态。返回 true 表示此前处于礼让中（用于发送恢复事件）。
+async fn clear_external_manager_yield(state: &Arc<ProxyState>, tool: &str) -> bool {
+    let mut conflicts = state.takeover_conflicts.write().await;
+    conflicts
+        .tools
+        .get_mut(tool)
+        .and_then(|tool_state| tool_state.yielded_to_external_manager.take())
+        .is_some()
+}
+
+async fn yielded_external_manager(state: &Arc<ProxyState>, tool: &str) -> Option<String> {
+    state
+        .takeover_conflicts
+        .read()
+        .await
+        .tools
+        .get(tool)
+        .and_then(|tool_state| tool_state.yielded_to_external_manager.clone())
+}
+
+/// 检测到/解除外部配置管理器接管时发送给前端的事件载荷。
+#[derive(serde::Serialize, Clone)]
+struct ExternalManagerEventPayload {
+    tool: String,
+    manager: String,
+    config_path: String,
+}
+
+async fn emit_external_manager_event(
+    state: &Arc<ProxyState>,
+    event: &str,
+    tool: &str,
+    config_path: String,
+) {
+    if let Some(ref app_handle) = *state.app_handle.read().await {
+        let _ = app_handle.emit(
+            event,
+            ExternalManagerEventPayload {
+                tool: tool.to_string(),
+                manager: ccswitch_compat::CCSWITCH_MANAGER_NAME.to_string(),
+                config_path,
+            },
+        );
+    }
 }
 
 async fn pause_takeover_conflict(
@@ -243,13 +310,102 @@ pub(crate) async fn sync_external_config_change(
         return;
     };
 
+    // cc-switch 内置代理已接管 live 配置时礼让：不注册其为上游、不抢回，
+    // 避免双代理互相覆盖或链式套娃。痕迹消失后自动恢复正常接管。
+    // 门槛用 db_exists：目录残留但 DB 已删时不再拦截合法本地上游。
+    let ccswitch_env = ccswitch_compat::CcSwitchEnv::new();
+    if ccswitch_env.db_exists()
+        && ccswitch_compat::detect_ccswitch_takeover_claude(
+            &settings,
+            ccswitch_env.proxy_listen_port(),
+        )
+    {
+        if yield_to_external_manager(&state, "claude_code").await {
+            emit_external_manager_event(
+                &state,
+                "external_manager_detected",
+                "claude_code",
+                config_manager.settings_path().display().to_string(),
+            )
+            .await;
+        }
+        return;
+    }
+    if clear_external_manager_yield(&state, "claude_code").await {
+        emit_external_manager_event(
+            &state,
+            "external_manager_released",
+            "claude_code",
+            config_manager.settings_path().display().to_string(),
+        )
+        .await;
+    }
+
     if let Some(base_url) = settings.get_base_url() {
-        if ClaudeConfigManager::is_usagemeter_proxy_url_for_port(&base_url, proxy_port) {
+        // 任意端口的 UsageMeter 代理 URL 都要处理：换端口后 cc-switch 写回的
+        // 旧端口污染地址同样需要归因或降级恢复，否则请求会打到无人监听的端口。
+        if ClaudeConfigManager::is_usagemeter_proxy_url(&base_url) {
             if let Some(source_id) =
                 ClaudeConfigManager::extract_source_id_from_proxy_url(&base_url)
             {
-                if ProxySourceRegistry::new().get(&source_id).is_some() {
-                    *state.active_source_id.write().await = Some(source_id);
+                let registry = ProxySourceRegistry::new();
+                if let Some(handle) = registry.get(&source_id) {
+                    // 外部切换器（cc-switch）可能把先前吸收的代理 URL 写回 live，
+                    // source_id 变化等价于一次供应商切换而非冲突：更新归因、
+                    // 清空抢写计数并通知前端。不置 recent_self_write 标志——
+                    // 这是 cc-switch 的写入而非自己的，复用标志会让用户随后
+                    // 切换真实供应商时更容易误触发 paused_conflict。
+                    let previous = state.active_source_id.read().await.clone();
+                    if previous.as_deref() != Some(source_id.as_str()) {
+                        *state.active_source_id.write().await = Some(source_id.clone());
+                        let _ = registry.touch_used(&source_id);
+                        clear_reclaim_events(&state, "claude_code").await;
+                        if let Some(ref app_handle) = *state.app_handle.read().await {
+                            let _ = app_handle.emit(
+                                "proxy_config_changed",
+                                ProxyConfigChangedPayload {
+                                    new_real_base_url: handle.real_base_url.clone(),
+                                    source_id: source_id.clone(),
+                                },
+                            );
+                        }
+                    }
+                    // URL 端口不是当前监听端口（换端口前吸收的旧地址）：
+                    // 以当前端口重写接管，这次是真实的自写。
+                    if !ClaudeConfigManager::is_usagemeter_proxy_url_for_port(&base_url, proxy_port)
+                    {
+                        if let Err(e) = config_manager.takeover_with_path_prefix_and_source(
+                            proxy_port,
+                            Some("claude-code"),
+                            Some(&source_id),
+                        ) {
+                            eprintln!(
+                                "[proxy] Failed to rewrite stale-port Claude proxy URL: {}",
+                                e
+                            );
+                        } else {
+                            mark_takeover_config_write(&state, "claude_code").await;
+                        }
+                    }
+                    return;
+                }
+
+                // source_id 无法在 registry 解析（映射丢失/handle 被手工删除）：
+                // 降级恢复而非放任请求 502。有备份走备份，否则清掉代理地址，
+                // 下一轮 tick 会按 live 真实配置重新注册并接管。
+                eprintln!(
+                    "[proxy] Claude config points at unknown source handle {}, recovering",
+                    source_id
+                );
+                if config_manager.has_backup() {
+                    if let Err(e) = config_manager.restore() {
+                        eprintln!("[proxy] Failed to restore Claude config from backup: {}", e);
+                    }
+                } else if let Ok(mut live_settings) = config_manager.read_settings() {
+                    live_settings.env.remove("ANTHROPIC_BASE_URL");
+                    if let Err(e) = config_manager.write_settings(&live_settings) {
+                        eprintln!("[proxy] Failed to clear stale Claude proxy URL: {}", e);
+                    }
                 }
             }
             return;
@@ -325,11 +481,49 @@ pub(crate) async fn sync_codex_external_config_change(
 
     let config_manager = CodexConfigManager::new();
 
-    // config.toml 已正确指向代理且携带有效 source ID，无需重写。
+    // cc-switch 内置代理已接管 Codex 配置时礼让（对齐 Claude 链路）。
+    let ccswitch_env = ccswitch_compat::CcSwitchEnv::new();
+    if ccswitch_env.db_exists() {
+        let config_toml_text =
+            std::fs::read_to_string(config_manager.config_path()).unwrap_or_default();
+        if ccswitch_compat::detect_ccswitch_takeover_codex(
+            config_manager.read_api_key().as_deref(),
+            &config_toml_text,
+            ccswitch_env.proxy_listen_port(),
+        ) {
+            if yield_to_external_manager(&state, "codex").await {
+                emit_external_manager_event(
+                    &state,
+                    "external_manager_detected",
+                    "codex",
+                    config_manager.config_path().display().to_string(),
+                )
+                .await;
+            }
+            return;
+        }
+    }
+    if clear_external_manager_yield(&state, "codex").await {
+        emit_external_manager_event(
+            &state,
+            "external_manager_released",
+            "codex",
+            config_manager.config_path().display().to_string(),
+        )
+        .await;
+    }
+
+    // config.toml 已正确指向代理且携带 registry 可解析的 source ID，无需重写。
     // 过去此处会无条件调用 takeover_with_source，每 5 秒覆写一次文件，
     // 与 Codex 读取配置产生竞争，导致 experimental_bearer_token 短暂丢失。
+    // source_id 必须能在 registry 解析才可早退，否则落入后续降级分支
+    //（latest_for_provider 回退），与 Claude 链路对称。
     if let Ok(is_active) = config_manager.is_takeover_active(proxy_port) {
-        if is_active && config_manager.active_source_id().is_some() {
+        let source_resolvable = config_manager
+            .active_source_id()
+            .map(|source_id| CodexSourceRegistry::new().get(&source_id).is_some())
+            .unwrap_or(false);
+        if is_active && source_resolvable {
             return;
         }
     }
@@ -340,7 +534,9 @@ pub(crate) async fn sync_codex_external_config_change(
         Err(_) => return,
     };
 
-    if CodexConfigManager::is_usagemeter_proxy_url_for_port(&snapshot.real_base_url, proxy_port) {
+    // 任意端口的 UsageMeter 代理 URL 都要恢复（含换端口前吸收的旧地址），
+    // takeover_with_source 会以当前端口重写。
+    if CodexConfigManager::is_usagemeter_proxy_url(&snapshot.real_base_url) {
         let registry = CodexSourceRegistry::new();
         if let Some(handle) = config_manager
             .active_source_id()
@@ -349,6 +545,12 @@ pub(crate) async fn sync_codex_external_config_change(
         {
             let _ = config_manager.takeover_with_source(proxy_port, &handle.id);
             mark_takeover_config_write(&state, "codex").await;
+            clear_reclaim_events(&state, "codex").await;
+        } else {
+            // registry 无任何可用 handle 时无法安全还原（不猜上游），仅记日志。
+            eprintln!(
+                "[proxy] Codex config points at UsageMeter proxy but no source handle is known"
+            );
         }
         return;
     }
@@ -644,7 +846,34 @@ impl ProxyServer {
         }
 
         let config_manager = ClaudeConfigManager::new();
-        let (_source_handle, target_base_url) = if self.takeover_claude {
+        // cc-switch 内置代理已接管 live 配置时，启动阶段直接礼让：不覆盖其
+        // 配置、不把它注册为上游（否则会形成链式代理）。监控循环会在其痕迹
+        // 消失后自动恢复接管。
+        let ccswitch_env = ccswitch_compat::CcSwitchEnv::new();
+        let claude_yielded_at_start = self.takeover_claude
+            && ccswitch_env.db_exists()
+            && config_manager
+                .read_settings()
+                .map(|settings| {
+                    ccswitch_compat::detect_ccswitch_takeover_claude(
+                        &settings,
+                        ccswitch_env.proxy_listen_port(),
+                    )
+                })
+                .unwrap_or(false);
+        if claude_yielded_at_start {
+            yield_to_external_manager(&self.state, "claude_code").await;
+            emit_external_manager_event(
+                &self.state,
+                "external_manager_detected",
+                "claude_code",
+                config_manager.settings_path().display().to_string(),
+            )
+            .await;
+        }
+
+        let (_source_handle, target_base_url) = if self.takeover_claude && !claude_yielded_at_start
+        {
             // 从 Claude 配置获取 API 密钥和目标 URL
             let registry = ProxySourceRegistry::new();
             let current_settings = config_manager.read_settings()?;
@@ -834,6 +1063,9 @@ impl ProxyServer {
                             ExternalConfigSyncMode::RunningTakeover,
                         )
                         .await;
+                        // 检测 cc-switch 退出边沿或 pending 清洗（阻塞检查在线程池内进行）。
+                        let app_handle = state.app_handle.read().await.clone();
+                        crate::commands::poll_ccswitch_exit_and_clean(app_handle);
                         None
                     }
                     _ = &mut shutdown_rx => {
@@ -980,6 +1212,11 @@ impl ProxyServer {
         takeover_conflict_external_base_url(&self.state, tool).await
     }
 
+    /// 指定工具当前礼让的外部配置管理器（如 cc-switch 内置代理），无则为 None。
+    pub async fn yielded_external_manager(&self, tool: &str) -> Option<String> {
+        yielded_external_manager(&self.state, tool).await
+    }
+
     /// 将指定工具标记为冲突暂停。
     pub async fn pause_takeover_conflict(&self, tool: &str) {
         pause_takeover_conflict(&self.state, tool, None).await;
@@ -1003,6 +1240,20 @@ impl ProxyServer {
         let config_manager = ClaudeConfigManager::new();
         let registry = ProxySourceRegistry::new();
         let settings = config_manager.read_settings()?;
+
+        // cc-switch 内置代理接管态下无法安全夺回：registry 不存完整密钥，
+        // 直接接管会把 PROXY_MANAGED 占位符当真实凭据转发。返回稳定错误码
+        // 并保持礼让状态，由用户先在 cc-switch 中关闭其代理。
+        let ccswitch_env = ccswitch_compat::CcSwitchEnv::new();
+        if ccswitch_env.db_exists()
+            && ccswitch_compat::detect_ccswitch_takeover_claude(
+                &settings,
+                ccswitch_env.proxy_listen_port(),
+            )
+        {
+            return Err("ccswitchProxyActive".to_string());
+        }
+
         let active_source_id = self.state.active_source_id.read().await.clone();
         let source_handle = match settings.get_base_url() {
             Some(base_url) if ClaudeConfigManager::is_usagemeter_proxy_url(&base_url) => {
@@ -1014,7 +1265,17 @@ impl ProxyServer {
                             .and_then(|source_id| registry.get(source_id))
                     })
             }
-            _ => registry.upsert_from_settings(&settings).ok().flatten(),
+            // live 已是真实地址：优先注册当前配置；被守卫拒绝或无 key 时
+            // 回退到已记录的 active source（如冲突暂停期间的最后归因）。
+            _ => registry
+                .upsert_from_settings(&settings)
+                .ok()
+                .flatten()
+                .or_else(|| {
+                    active_source_id
+                        .as_deref()
+                        .and_then(|source_id| registry.get(source_id))
+                }),
         };
         let Some(handle) = source_handle else {
             return Err("Unable to resolve Claude takeover source".to_string());
@@ -1033,6 +1294,21 @@ impl ProxyServer {
     async fn force_reclaim_codex_takeover(&self) -> Result<(), String> {
         let config_manager = CodexConfigManager::new();
         let registry = CodexSourceRegistry::new();
+
+        // 同 Claude：cc-switch 接管态下凭据是占位符，夺回不安全。
+        let ccswitch_env = ccswitch_compat::CcSwitchEnv::new();
+        if ccswitch_env.db_exists() {
+            let config_toml_text =
+                std::fs::read_to_string(config_manager.config_path()).unwrap_or_default();
+            if ccswitch_compat::detect_ccswitch_takeover_codex(
+                config_manager.read_api_key().as_deref(),
+                &config_toml_text,
+                ccswitch_env.proxy_listen_port(),
+            ) {
+                return Err("ccswitchProxyActive".to_string());
+            }
+        }
+
         let snapshot = config_manager.read_live_snapshot()?;
         let handle = if CodexConfigManager::is_usagemeter_proxy_url_for_port(
             &snapshot.real_base_url,

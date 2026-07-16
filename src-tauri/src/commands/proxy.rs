@@ -82,6 +82,9 @@ pub async fn ensure_passive_proxy_monitor_started(state: &ProxyState) {
                         server::ExternalConfigSyncMode::PassiveRecoveryOnly,
                     )
                     .await;
+                    // 检测 cc-switch 退出边沿或 pending 清洗（被动模式无 AppHandle，
+                    // 完成后由面板轮询刷新状态）。
+                    super::ccswitch::poll_ccswitch_exit_and_clean(None);
                 }
             } => {}
             _ = &mut shutdown_rx => {}
@@ -148,8 +151,8 @@ pub async fn start_proxy(
 
 /// 停止代理服务器
 #[tauri::command]
-pub async fn stop_proxy(state: State<'_, ProxyState>) -> Result<(), String> {
-    stop_proxy_runtime_only_inner(&state).await?;
+pub async fn stop_proxy(state: State<'_, ProxyState>, app: tauri::AppHandle) -> Result<(), String> {
+    stop_proxy_runtime_only_inner(&state, Some(app)).await?;
     mark_all_client_tools_enabled(false)?;
     Ok(())
 }
@@ -160,12 +163,18 @@ pub async fn stop_proxy(state: State<'_, ProxyState>) -> Result<(), String> {
 /// - 需要确保 Claude/Codex 不再指向本地代理
 /// - 但下次打开应用时仍应按用户上次偏好自动恢复代理/接管
 #[tauri::command]
-pub async fn stop_proxy_runtime_only(state: State<'_, ProxyState>) -> Result<(), String> {
-    stop_proxy_runtime_only_inner(&state).await
+pub async fn stop_proxy_runtime_only(
+    state: State<'_, ProxyState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    stop_proxy_runtime_only_inner(&state, Some(app)).await
 }
 
 /// 共享的运行时停机逻辑：停止本地服务并恢复外部配置，但不改用户偏好。
-pub async fn stop_proxy_runtime_only_inner(state: &State<'_, ProxyState>) -> Result<(), String> {
+pub async fn stop_proxy_runtime_only_inner(
+    state: &State<'_, ProxyState>,
+    app_handle: Option<tauri::AppHandle>,
+) -> Result<(), String> {
     let settings = load_settings().unwrap_or_default();
     let port = settings.proxy.port;
     let mut server_guard = state.server.write().await;
@@ -177,6 +186,15 @@ pub async fn stop_proxy_runtime_only_inner(state: &State<'_, ProxyState>) -> Res
     restore_codex_takeover_if_active(port)?;
     restore_opencode_takeover_if_active(port)?;
     restore_gemini_takeover_if_active(port)?;
+
+    // 代理停止后 live 配置已恢复真实地址，顺带清理 cc-switch 库内残留的代理地址。
+    // 等待完成（上限 5 秒）：应用退出流程随后会 app.exit(0)，fire-and-forget 跑不完。
+    super::ccswitch::run_ccswitch_auto_clean_blocking(
+        app_handle,
+        "proxy_stop",
+        std::time::Duration::from_secs(5),
+    )
+    .await;
 
     Ok(())
 }
@@ -803,6 +821,8 @@ pub struct ToolTakeoverStatus {
     pub active_source_id: Option<String>,
     pub managed_provider_ids: Option<Vec<String>>,
     pub conflict_external_base_url: Option<String>,
+    /// 当前礼让的外部配置管理器标识（如 "cc-switch"），无礼让时为 None。
+    pub yielded_to: Option<String>,
     pub scope_warning_key: Option<String>,
     pub last_error: Option<String>,
 }
@@ -827,9 +847,17 @@ pub async fn get_takeover_statuses(
         }
         None => None,
     };
+    let claude_yielded_to = match server {
+        Some(server) => server.yielded_external_manager("claude_code").await,
+        None => None,
+    };
     let codex_conflict_paused = match server {
         Some(server) => server.is_takeover_conflict_paused("codex").await,
         None => false,
+    };
+    let codex_yielded_to = match server {
+        Some(server) => server.yielded_external_manager("codex").await,
+        None => None,
     };
     let codex_conflict_external_base_url = match server {
         Some(server) => server.takeover_conflict_external_base_url("codex").await,
@@ -964,6 +992,7 @@ pub async fn get_takeover_statuses(
             active_source_id: None,
             managed_provider_ids: None,
             conflict_external_base_url: claude_conflict_external_base_url,
+            yielded_to: claude_yielded_to,
             scope_warning_key: None,
             last_error: None,
         },
@@ -979,6 +1008,7 @@ pub async fn get_takeover_statuses(
             active_source_id: codex_source,
             managed_provider_ids: None,
             conflict_external_base_url: codex_conflict_external_base_url,
+            yielded_to: codex_yielded_to,
             scope_warning_key: None,
             last_error: codex_error,
         },
@@ -994,6 +1024,7 @@ pub async fn get_takeover_statuses(
             active_source_id: opencode_source,
             managed_provider_ids: Some(opencode_managed_provider_ids),
             conflict_external_base_url: opencode_conflict_external_base_url,
+            yielded_to: None,
             scope_warning_key: Some("settings.opencodeConfigScopeWarning".to_string()),
             last_error: opencode_error,
         },
@@ -1009,6 +1040,7 @@ pub async fn get_takeover_statuses(
             active_source_id: reasonix_source,
             managed_provider_ids: Some(reasonix_managed_provider_ids),
             conflict_external_base_url: reasonix_conflict_external_base_url,
+            yielded_to: None,
             scope_warning_key: Some("settings.reasonixConfigScopeWarning".to_string()),
             last_error: reasonix_error,
         },
@@ -1024,6 +1056,7 @@ pub async fn get_takeover_statuses(
             active_source_id: gemini_source,
             managed_provider_ids: None,
             conflict_external_base_url: gemini_conflict_external_base_url,
+            yielded_to: None,
             scope_warning_key: Some("settings.geminiConfigScopeWarning".to_string()),
             last_error: gemini_error,
         },
@@ -1136,8 +1169,11 @@ pub struct ProxyUsageSnapshot {
 /// 准备退出：停止代理并恢复配置
 /// 在应用退出前调用，确保 Claude 配置被恢复
 #[tauri::command]
-pub async fn prepare_exit(state: State<'_, ProxyState>) -> Result<(), String> {
-    stop_proxy_runtime_only_inner(&state).await
+pub async fn prepare_exit(
+    state: State<'_, ProxyState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    stop_proxy_runtime_only_inner(&state, Some(app)).await
 }
 
 /// 确认退出：前端清理完成后调用

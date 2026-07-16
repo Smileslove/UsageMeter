@@ -4,6 +4,11 @@
 //! `~/.codex/auth.json`. UsageMeter rewrites only routing-related base URL fields
 //! to point at the local proxy, and persists only the minimal route state needed
 //! to restore those fields later.
+//!
+//! INVARIANT: `CodexSourceRegistry` handles may be referenced by polluted records
+//! inside external switchers' databases (e.g. cc-switch). The cc-switch DB cleaner
+//! relies on `id -> real_base_url` staying resolvable indefinitely, so the registry
+//! must never grow time-based GC (see `proxy::ccswitch_compat`).
 
 use super::url_identity;
 use serde::{Deserialize, Serialize};
@@ -112,6 +117,10 @@ impl CodexSourceRegistry {
             return Err(
                 "Refusing to register UsageMeter proxy URL as a Codex upstream".to_string(),
             );
+        }
+        // cc-switch 内置代理接管期间的地址不是真实上游，注册会形成链式代理。
+        if super::ccswitch_compat::is_ccswitch_proxy_url(&snapshot.real_base_url) {
+            return Err("Refusing to register cc-switch proxy URL as a Codex upstream".to_string());
         }
 
         let id = compute_handle_id(&snapshot)?;

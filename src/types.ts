@@ -264,8 +264,33 @@ export interface ToolTakeoverStatus {
   activeSourceId?: string
   managedProviderIds?: string[]
   conflictExternalBaseUrl?: string
+  /** 当前礼让的外部配置管理器标识（如 "cc-switch"） */
+  yieldedTo?: string
   scopeWarningKey?: string
   lastError?: string
+}
+
+/** cc-switch 供应商库单次清理的结果报告 */
+export interface CcSwitchCleanReport {
+  scanned: number
+  cleaned: number
+  unresolved: number
+  skippedParseErrors: number
+  backupPath?: string | null
+  cleanedAtMs: number
+}
+
+/** cc-switch 兼容层状态快照 */
+export interface CcSwitchCompatStatus {
+  installed: boolean
+  running: boolean
+  dbExists: boolean
+  yieldedTools: string[]
+  lastCleanAtMs?: number | null
+  lastReport?: CcSwitchCleanReport | null
+  pendingClean: boolean
+  /** 最近一次清理失败的错误码（如 ccswitchSchemaMismatch），成功后为空 */
+  lastErrorCode?: string | null
 }
 
 export interface WindowUsage {

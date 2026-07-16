@@ -149,7 +149,7 @@ pub async fn download_and_install_update(
 ) -> Result<(), String> {
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
-        crate::commands::stop_proxy_runtime_only_inner(&proxy_state).await?;
+        crate::commands::stop_proxy_runtime_only_inner(&proxy_state, Some(app.clone())).await?;
 
         let update = state
             .pending_update

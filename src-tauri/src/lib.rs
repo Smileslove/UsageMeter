@@ -303,6 +303,10 @@ pub fn run() {
                 }
             }
 
+            // 启动时尝试清洗 cc-switch 供应商库中残留的 UsageMeter 代理地址
+            // （cc-switch 运行中会自动推迟到其退出后的监控 tick）
+            commands::spawn_ccswitch_auto_clean(Some(app.handle().clone()), "startup");
+
             // 启动时执行 session_stats 表数据迁移（一次性）
             // 将现有 usage_records 中的数据聚合到 session_stats 表
             {
@@ -491,6 +495,8 @@ pub fn run() {
             commands::set_takeover_for_app,
             commands::get_takeover_statuses,
             commands::resolve_takeover_conflict,
+            commands::get_ccswitch_compat_status,
+            commands::run_ccswitch_db_clean,
             // 模型价格命令
             commands::sync_model_pricing_from_api,
             commands::search_model_pricing,

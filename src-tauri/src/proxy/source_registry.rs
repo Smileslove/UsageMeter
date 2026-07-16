@@ -2,6 +2,13 @@
 //!
 //! A handle lets UsageMeter encode the real upstream identity in the local
 //! proxy URL without exposing the upstream URL or storing request-time secrets.
+//!
+//! INVARIANT: handles may be referenced by polluted provider records inside
+//! external switchers' databases (e.g. cc-switch absorbs our proxy URL with its
+//! `/source/<id>` path). The cc-switch DB cleaner and write-back attribution
+//! both rely on `id -> real_base_url` staying resolvable indefinitely, so this
+//! registry must never grow time-based GC. If pruning ever becomes necessary,
+//! run a cc-switch DB clean first (see `proxy::ccswitch_compat`).
 
 use super::config_manager::ClaudeConfigManager;
 use super::source_detector::{compute_source_id, extract_key_prefix, normalize_base_url};
@@ -76,6 +83,18 @@ impl ProxySourceRegistry {
             .unwrap_or_else(|| DEFAULT_ANTHROPIC_BASE_URL.to_string());
         if ClaudeConfigManager::is_usagemeter_proxy_url(&real_base_url) {
             return Err("Refusing to register UsageMeter proxy URL as an upstream".to_string());
+        }
+        // cc-switch 内置代理接管期间的 live 配置不是真实上游：注册它会形成
+        // 双代理链式套娃，且其凭据占位符无法用于归因。占位符可能落在 4 个
+        // 凭据键中的任意一个，不能只查 ANTHROPIC 两键。
+        if super::ccswitch_compat::settings_contain_proxy_managed_placeholder(settings) {
+            return Err(
+                "Refusing to register external proxy placeholder credentials as an upstream"
+                    .to_string(),
+            );
+        }
+        if super::ccswitch_compat::is_ccswitch_proxy_url(&real_base_url) {
+            return Err("Refusing to register cc-switch proxy URL as an upstream".to_string());
         }
 
         let api_key = settings.get_api_key();
@@ -252,5 +271,56 @@ mod tests {
             compute_handle_id(&first).unwrap(),
             compute_handle_id(&second).unwrap()
         );
+    }
+
+    #[test]
+    fn upsert_rejects_external_proxy_placeholder_credentials() {
+        let mut settings = ClaudeSettings::default();
+        settings.env.insert(
+            "ANTHROPIC_BASE_URL".to_string(),
+            serde_json::Value::String("http://127.0.0.1:15721".to_string()),
+        );
+        settings.env.insert(
+            "ANTHROPIC_API_KEY".to_string(),
+            serde_json::Value::String(
+                super::super::ccswitch_compat::CCSWITCH_PROXY_PLACEHOLDER.to_string(),
+            ),
+        );
+
+        let registry = ProxySourceRegistry {
+            path: std::env::temp_dir().join("usagemeter_upsert_placeholder_test.json"),
+        };
+        let err = registry.upsert_from_settings(&settings).unwrap_err();
+        assert!(err.contains("placeholder"));
+    }
+
+    #[test]
+    fn upsert_rejects_placeholder_in_any_known_credential_key() {
+        // cc-switch 会把 4 个凭据键中已存在者改写为占位符，任一命中都应拒绝
+        for key in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_AUTH_TOKEN",
+            "OPENROUTER_API_KEY",
+            "OPENAI_API_KEY",
+        ] {
+            let mut settings = ClaudeSettings::default();
+            settings.env.insert(
+                "ANTHROPIC_BASE_URL".to_string(),
+                serde_json::Value::String("http://127.0.0.1:15721".to_string()),
+            );
+            settings.env.insert(
+                key.to_string(),
+                serde_json::Value::String(
+                    super::super::ccswitch_compat::CCSWITCH_PROXY_PLACEHOLDER.to_string(),
+                ),
+            );
+
+            let registry = ProxySourceRegistry {
+                path: std::env::temp_dir()
+                    .join(format!("usagemeter_upsert_placeholder_{key}_test.json")),
+            };
+            let err = registry.upsert_from_settings(&settings).unwrap_err();
+            assert!(err.contains("placeholder"), "{key} should be rejected");
+        }
     }
 }
