@@ -7,12 +7,9 @@ mod breakdown;
 mod rate;
 mod refresh;
 
-#[tauri::command]
-pub async fn refresh_usage_bundle(
-    settings: AppSettings,
-    _proxy_state: tauri::State<'_, ProxyState>,
-) -> Result<UsageRefreshBundle, String> {
-    let started_at = std::time::Instant::now();
+/// 把本地会话文件的全量扫描同步丢到后台执行，不阻塞当前命令响应：
+/// 查询侧走 no_sync 路径直接读现有数据，后台同步完成后下一次查询自然拿到新鲜数据。
+fn spawn_background_local_usage_sync() {
     tauri::async_runtime::spawn(async move {
         let _ = tauri::async_runtime::spawn_blocking(|| {
             if let Err(err) = crate::local_usage::ensure_local_usage_synced() {
@@ -21,6 +18,15 @@ pub async fn refresh_usage_bundle(
         })
         .await;
     });
+}
+
+#[tauri::command]
+pub async fn refresh_usage_bundle(
+    settings: AppSettings,
+    _proxy_state: tauri::State<'_, ProxyState>,
+) -> Result<UsageRefreshBundle, String> {
+    let started_at = std::time::Instant::now();
+    spawn_background_local_usage_sync();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -45,11 +51,13 @@ pub async fn get_overview_breakdown(
     window: String,
     settings: AppSettings,
 ) -> Result<OverviewBreakdown, String> {
+    // 同步扫描放后台，避免切换时间窗口时阻塞等待全盘扫描。
+    spawn_background_local_usage_sync();
     let now = chrono::Utc::now().timestamp();
     let include_errors = settings.proxy.include_error_requests;
     let cutoff_ms =
         crate::utils::business_time::business_window_cutoff_epoch(&window, &settings) * 1000;
-    let (facts, _) = crate::unified_usage::get_merged_request_facts(
+    let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
         &settings,
         Some(cutoff_ms / 1000),
         Some(now + 1),
@@ -66,11 +74,13 @@ pub async fn get_window_rate_summary(
     window: String,
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<WindowRateSummary, String> {
+    // 同步扫描放后台，避免切换时间窗口时阻塞等待全盘扫描。
+    spawn_background_local_usage_sync();
     let settings = crate::commands::load_settings()?;
     let cutoff_ms =
         crate::utils::business_time::business_window_cutoff_epoch(&window, &settings) * 1000;
     let include_errors = settings.proxy.include_error_requests;
-    let (facts, _) = crate::unified_usage::get_merged_request_facts(
+    let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
         &settings,
         Some(cutoff_ms / 1000),
         None,
@@ -78,7 +88,7 @@ pub async fn get_window_rate_summary(
     )
     .await?;
 
-    Ok(rate::build_window_rate_summary_from_facts(window, facts))
+    Ok(rate::build_window_rate_summary_from_facts(window, &facts))
 }
 
 #[tauri::command]
@@ -87,11 +97,13 @@ pub async fn get_overview_deferred_bundle(
     settings: AppSettings,
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<OverviewDeferredBundle, String> {
+    // 同步扫描放后台，避免切换时间窗口时阻塞等待全盘扫描。
+    spawn_background_local_usage_sync();
     let now = chrono::Utc::now().timestamp();
     let include_errors = settings.proxy.include_error_requests;
     let cutoff_epoch =
         crate::utils::business_time::business_window_cutoff_epoch(&window, &settings);
-    let (facts, _) = crate::unified_usage::get_merged_request_facts(
+    let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
         &settings,
         Some(cutoff_epoch),
         Some(now + 1),
@@ -110,7 +122,7 @@ pub async fn get_overview_deferred_bundle(
         client_error_requests,
         server_error_requests,
     );
-    let rate_summary = rate::build_window_rate_summary_from_facts(window.clone(), facts.clone());
+    let rate_summary = rate::build_window_rate_summary_from_facts(window.clone(), &facts);
     let overview_breakdown =
         breakdown::build_overview_breakdown_from_facts(&settings, window.clone(), now, &facts);
 

@@ -361,6 +361,42 @@ impl LocalUsageDatabase {
         .map_err(|e| format!("Failed to load unified materialization state: {}", e))
     }
 
+    /// 批量取给定历史日物化状态的轻量指纹：`(状态行数, MAX(materialized_at))`。
+    ///
+    /// 任何一天被重建（materialized_at 更新）或状态行新增/删除都会改变指纹，
+    /// 供进程内冷段缓存判断"这些历史日的物化事实是否完全未变"。这是一次
+    /// SQLite 点查（state 表按 local_date 主键索引），成本远低于重读事实行。
+    pub fn get_unified_days_materialization_fingerprint(
+        &self,
+        local_dates: &[String],
+    ) -> Result<(i64, i64), String> {
+        if local_dates.is_empty() {
+            return Ok((0, 0));
+        }
+        let conn = self.conn.lock().unwrap();
+        let date_placeholders = std::iter::repeat_n("?", local_dates.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            r#"
+            SELECT COUNT(*), COALESCE(MAX(materialized_at), 0)
+            FROM unified_daily_materialization_state
+            WHERE local_date IN ({date_placeholders})
+            "#
+        );
+        conn.query_row(
+            &sql,
+            rusqlite::params_from_iter(local_dates.iter()),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .map_err(|e| {
+            format!(
+                "Failed to compute unified materialization fingerprint: {}",
+                e
+            )
+        })
+    }
+
     pub fn invalidate_unified_materialization_dates(
         &self,
         local_dates: &[String],

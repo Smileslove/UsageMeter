@@ -55,6 +55,38 @@ struct HotMergeCacheEntry {
     facts: Vec<MergedRequestFact>,
 }
 
+/// 冷段（历史日物化事实）缓存 key。
+///
+/// 与外层 MergeCacheKey 不同，这里刻意**不含** local/proxy 实时签名：今日新
+/// 请求落库只抖动实时签名，不触碰历史日物化状态；冷段数据是否可复用完全由
+/// "实际日期列表 + 物化状态指纹 (state_row_count, max_materialized_at)" 决定。
+/// 任何历史日被重建/新增/删除都会改变指纹，从而自然失效。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ColdFactsCacheKey {
+    /// 排序后日期列表的首日（空列表为空串）。
+    first_date: String,
+    /// 排序后日期列表的末日（空列表为空串）。
+    last_date: String,
+    /// 日期数量。
+    dates_count: usize,
+    /// 排序后逐日拼接的 hash，防止首末日相同但中间日期不同的碰撞。
+    dates_fingerprint: u64,
+    day_boundary_mode: String,
+    tool_filter: String,
+    /// unified_daily_materialization_state 中命中日期的行数。
+    state_row_count: i64,
+    /// 命中日期中最大的 materialized_at。
+    max_materialized_at: i64,
+}
+
+#[derive(Debug, Clone)]
+struct ColdFactsCacheEntry {
+    key: ColdFactsCacheKey,
+    /// 未做 retain 过滤前的完整冷段事实（retain 的 range/source/include_errors
+    /// 条件因查询而异，留在命中后每次执行——纯内存线性过滤远比 SQLite 重读便宜）。
+    facts: Vec<MergedRequestFact>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct HistoryMaterializationCacheKey {
     start_epoch: i64,
@@ -98,13 +130,19 @@ struct ProjectDerivedCacheEntry {
 
 static MERGED_REQUEST_FACTS_CACHE: OnceLock<Mutex<Vec<MergeCacheEntry>>> = OnceLock::new();
 static HOT_MERGED_REQUEST_FACTS_CACHE: OnceLock<Mutex<Vec<HotMergeCacheEntry>>> = OnceLock::new();
+static COLD_MERGED_FACTS_CACHE: OnceLock<Mutex<Vec<ColdFactsCacheEntry>>> = OnceLock::new();
 static HISTORY_MATERIALIZATION_CACHE: OnceLock<Mutex<Vec<HistoryMaterializationCacheEntry>>> =
     OnceLock::new();
 static MERGED_SESSIONS_CACHE: OnceLock<Mutex<Vec<SessionDerivedCacheEntry>>> = OnceLock::new();
 static MERGED_PROJECTS_CACHE: OnceLock<Mutex<Vec<ProjectDerivedCacheEntry>>> = OnceLock::new();
 static UNIFIED_INFLIGHT_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-const MERGED_REQUEST_FACTS_CACHE_CAPACITY: usize = 8;
+// 概览 6 个时间窗口 + 统计页 7 个预设可能同时驻留，8 条会互相挤出，提高到 16。
+const MERGED_REQUEST_FACTS_CACHE_CAPACITY: usize = 16;
 const HOT_MERGED_REQUEST_FACTS_CACHE_CAPACITY: usize = 4;
+// 冷段缓存每条 value 是整段历史日的完整事实向量（30 天以上范围可达几十 MB），
+// 容量刻意压到 3 条以控制常驻内存；典型命中场景是同一时间范围在今日签名抖动
+// 下的反复重算 + 少量相邻范围切换，小容量已经足够。
+const COLD_MERGED_FACTS_CACHE_CAPACITY: usize = 3;
 const HISTORY_MATERIALIZATION_CACHE_CAPACITY: usize = 8;
 const MERGED_SESSIONS_CACHE_CAPACITY: usize = 6;
 const MERGED_PROJECTS_CACHE_CAPACITY: usize = 6;
@@ -140,6 +178,10 @@ fn history_materialization_cache() -> &'static Mutex<Vec<HistoryMaterializationC
     HISTORY_MATERIALIZATION_CACHE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+fn cold_merged_facts_cache() -> &'static Mutex<Vec<ColdFactsCacheEntry>> {
+    COLD_MERGED_FACTS_CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
 fn inflight_keys() -> &'static Mutex<HashSet<String>> {
     UNIFIED_INFLIGHT_KEYS.get_or_init(|| Mutex::new(HashSet::new()))
 }
@@ -151,6 +193,7 @@ fn normalized_day_boundary_mode(settings: &AppSettings) -> String {
 pub(crate) fn clear_runtime_caches() {
     merge_cache().lock().unwrap().clear();
     hot_merge_cache().lock().unwrap().clear();
+    cold_merged_facts_cache().lock().unwrap().clear();
     history_materialization_cache().lock().unwrap().clear();
     merged_sessions_cache().lock().unwrap().clear();
     merged_projects_cache().lock().unwrap().clear();
@@ -292,6 +335,68 @@ fn store_hot_merge_cache(key: HotMergeCacheKey, facts: &[MergedRequestFact]) {
     );
     if guard.len() > HOT_MERGED_REQUEST_FACTS_CACHE_CAPACITY {
         guard.truncate(HOT_MERGED_REQUEST_FACTS_CACHE_CAPACITY);
+    }
+}
+
+fn build_cold_facts_cache_key(
+    local_dates: &[String],
+    tool_filter: &ToolFilter,
+    day_boundary_mode: &str,
+    state_row_count: i64,
+    max_materialized_at: i64,
+) -> ColdFactsCacheKey {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut sorted_dates: Vec<&String> = local_dates.iter().collect();
+    sorted_dates.sort();
+    let mut hasher = DefaultHasher::new();
+    for date in &sorted_dates {
+        date.hash(&mut hasher);
+    }
+    ColdFactsCacheKey {
+        first_date: sorted_dates
+            .first()
+            .map(|d| d.to_string())
+            .unwrap_or_default(),
+        last_date: sorted_dates
+            .last()
+            .map(|d| d.to_string())
+            .unwrap_or_default(),
+        dates_count: sorted_dates.len(),
+        dates_fingerprint: hasher.finish(),
+        day_boundary_mode: day_boundary_mode.to_string(),
+        tool_filter: cache_key_for_tool_filter(tool_filter),
+        state_row_count,
+        max_materialized_at,
+    }
+}
+
+fn lookup_cold_facts_cache(key: &ColdFactsCacheKey) -> Option<Vec<MergedRequestFact>> {
+    let cache = cold_merged_facts_cache();
+    let mut guard = cache.lock().unwrap();
+    let idx = guard.iter().position(|entry| entry.key == *key)?;
+    let entry = guard.remove(idx);
+    let result = entry.facts.clone();
+    guard.insert(0, entry);
+    Some(result)
+}
+
+fn store_cold_facts_cache(key: ColdFactsCacheKey, facts: &[MergedRequestFact]) {
+    let cache = cold_merged_facts_cache();
+    let mut guard = cache.lock().unwrap();
+    if let Some(idx) = guard.iter().position(|entry| entry.key == key) {
+        guard.remove(idx);
+    }
+    guard.insert(
+        0,
+        ColdFactsCacheEntry {
+            key,
+            facts: facts.to_vec(),
+        },
+    );
+    if guard.len() > COLD_MERGED_FACTS_CACHE_CAPACITY {
+        guard.truncate(COLD_MERGED_FACTS_CACHE_CAPACITY);
     }
 }
 
@@ -850,6 +955,28 @@ fn normalize_range_bounds(start_epoch: Option<i64>, end_epoch: Option<i64>) -> (
     let start = start_epoch.unwrap_or(0);
     let end = end_epoch.unwrap_or(i64::MAX);
     (start.max(0), end.max(start.max(0)))
+}
+
+/// 归一化"查询到此刻"的开放式 range_end，用于稳定合并缓存 key。
+///
+/// 调用方（概览传 end=now+1、统计页传 end=当前秒）每次查询的 end 都是流动的
+/// "此刻"，若直接进入缓存 key，则 key 每秒都不同，LRU 永远 miss。
+///
+/// 归一化规则：当 range_end >= now（开放式查询）时，把有效 range_end 上调到
+/// 下一个整分钟边界 ((now / 60) + 1) * 60；range_end 严格小于 now 的历史精确
+/// 范围（用户自定义历史区间、单个历史日等）保持原值不动，语义不变。
+///
+/// 正确性论证：
+/// 1. now 之后的事实尚不存在，把过滤上界扩到下一分钟不会引入额外数据；
+/// 2. 新数据到达会改变 local/proxy signature（缓存 key 的一部分），缓存自动失效；
+/// 3. 因此同一分钟内、签名不变时的重复查询可以安全命中同一条缓存。
+fn normalize_open_ended_range_end(range_end: i64, now: i64) -> i64 {
+    if range_end < now {
+        // 历史精确范围：保持原值，不改变查询语义。
+        return range_end;
+    }
+    // 开放式查询：上调到下一个整分钟边界，让同一分钟内的 key 保持稳定。
+    ((now / 60) + 1) * 60
 }
 
 struct MergeCacheKeyParts<'a> {
@@ -1735,7 +1862,18 @@ async fn get_merged_request_facts_with_db(
     include_errors: bool,
 ) -> Result<(Vec<MergedRequestFact>, MergedCoverage), String> {
     let overall_started_at = Instant::now();
-    let (range_start, range_end) = normalize_range_bounds(start_epoch, end_epoch);
+    let (range_start, raw_range_end) = normalize_range_bounds(start_epoch, end_epoch);
+    // 对开放式 range_end 做整分钟归一化（详见 normalize_open_ended_range_end），
+    // 归一化后的 end 同时作为缓存 key 与事实过滤上界；再 max(range_start) 保持
+    // end >= start 的不变量（未来起点的空区间仍返回空结果）。
+    let range_end = normalize_open_ended_range_end(raw_range_end, chrono::Utc::now().timestamp())
+        .max(range_start);
+    if range_end != raw_range_end {
+        perf_log(
+            "merge_range_end_normalized",
+            format!("raw_end={raw_range_end} normalized_end={range_end}"),
+        );
+    }
     let tool_filter = settings.client_tools.build_filter();
     let source_filter = settings.source_aware.build_filter();
     let mut pricings = settings.model_pricing.pricings.clone();
@@ -1823,47 +1961,156 @@ async fn get_merged_request_facts_with_db(
             Vec::new()
         };
         let history_materialize_elapsed_ms = history_materialize_started_at.elapsed().as_millis();
+        let history_dates_count = history_ready_dates.len();
         perf_log(
             "merge_history_materialize",
             format!(
                 "range={range_start}..{range_end} dates={} elapsed_ms={}",
-                history_ready_dates.len(),
-                history_materialize_elapsed_ms,
+                history_dates_count, history_materialize_elapsed_ms,
             ),
         );
 
-        let cold_read_started_at = Instant::now();
-        let mut merged =
-            local_db.get_unified_facts_for_dates(&history_ready_dates, &tool_filter)?;
-        let cold_facts_count = merged.len();
-        let cold_read_elapsed_ms = cold_read_started_at.elapsed().as_millis();
-        perf_log(
-            "merge_cold_read",
-            format!(
-                "range={range_start}..{range_end} dates={} facts={} elapsed_ms={}",
-                history_ready_dates.len(),
-                cold_facts_count,
-                cold_read_elapsed_ms,
-            ),
-        );
+        // 冷读是 SQLite 全行读取 + 反序列化，随后的 retain 是大向量过滤，
+        // 两者是合并路径上最重的同步阻塞段；一并移入阻塞线程池，避免占住
+        // tauri async runtime 的工作线程拖慢并发命令。perf 埋点随逻辑一起
+        // 进入闭包，elapsed 计时含义保持不变。
+        let cold_db = local_db.clone();
+        let cold_dates = history_ready_dates;
+        let cold_tool_filter = tool_filter.clone();
+        let cold_source_filter = source_filter.clone();
+        let cold_day_boundary_mode = normalized_day_boundary_mode(settings);
+        let (mut merged, filtered_cold_facts_count) =
+            tauri::async_runtime::spawn_blocking(move || {
+                let cold_read_started_at = Instant::now();
+                // 冷段缓存：今日新请求只抖动 local/proxy 实时签名（外层合并缓存
+                // 因此失效），但不触碰历史日的物化状态。这里以 ensure_materialized
+                // 校验后的实际日期列表 + 物化状态指纹为 key，命中即跳过对全部
+                // 历史日事实行的 SQLite 全量重读。指纹查询是一次轻量点查，必须
+                // 与冷读同处本阻塞闭包内执行。
+                let cold_fingerprint = if cold_dates.is_empty() {
+                    None
+                } else {
+                    match cold_db.get_unified_days_materialization_fingerprint(&cold_dates) {
+                        // 状态行数必须与就绪日期数一致才可信；缺行说明某日状态
+                        // 异常（如并发失效清理），此时跳过缓存直读数据库。
+                        Ok((count, max_at)) if count == cold_dates.len() as i64 => {
+                            Some((count, max_at))
+                        }
+                        Ok((count, _)) => {
+                            perf_log(
+                                "merge_cold_cache_skip",
+                                format!(
+                                    "range={range_start}..{range_end} dates={} state_rows={count} reason=state_row_mismatch",
+                                    cold_dates.len(),
+                                ),
+                            );
+                            None
+                        }
+                        Err(err) => {
+                            perf_log(
+                                "merge_cold_cache_skip",
+                                format!(
+                                    "range={range_start}..{range_end} dates={} reason=fingerprint_error error={err}",
+                                    cold_dates.len(),
+                                ),
+                            );
+                            None
+                        }
+                    }
+                };
+                let cold_cache_key = cold_fingerprint.map(|(count, max_at)| {
+                    build_cold_facts_cache_key(
+                        &cold_dates,
+                        &cold_tool_filter,
+                        &cold_day_boundary_mode,
+                        count,
+                        max_at,
+                    )
+                });
+                let cached_cold_facts = cold_cache_key.as_ref().and_then(lookup_cold_facts_cache);
+                let mut merged = match cached_cold_facts {
+                    Some(facts) => {
+                        perf_log(
+                            "merge_cold_cache_hit",
+                            format!(
+                                "range={range_start}..{range_end} dates={} facts={} elapsed_ms={}",
+                                cold_dates.len(),
+                                facts.len(),
+                                cold_read_started_at.elapsed().as_millis(),
+                            ),
+                        );
+                        facts
+                    }
+                    None => {
+                        let facts =
+                            cold_db.get_unified_facts_for_dates(&cold_dates, &cold_tool_filter)?;
+                        perf_log(
+                            "merge_cold_read",
+                            format!(
+                                "range={range_start}..{range_end} dates={} facts={} elapsed_ms={}",
+                                cold_dates.len(),
+                                facts.len(),
+                                cold_read_started_at.elapsed().as_millis(),
+                            ),
+                        );
+                        if let Some(key) = cold_cache_key {
+                            // 写缓存前复核指纹：若读事实期间恰有历史日被重建，
+                            // 本次结果与 key 已不对应，放弃写入避免污染缓存。
+                            match cold_db
+                                .get_unified_days_materialization_fingerprint(&cold_dates)
+                            {
+                                Ok((count, max_at))
+                                    if count == key.state_row_count
+                                        && max_at == key.max_materialized_at =>
+                                {
+                                    perf_log(
+                                        "merge_cold_cache_store",
+                                        format!(
+                                            "range={range_start}..{range_end} dates={} facts={}",
+                                            cold_dates.len(),
+                                            facts.len(),
+                                        ),
+                                    );
+                                    store_cold_facts_cache(key, &facts);
+                                }
+                                _ => {
+                                    perf_log(
+                                        "merge_cold_cache_skip",
+                                        format!(
+                                            "range={range_start}..{range_end} dates={} reason=fingerprint_changed_during_read",
+                                            cold_dates.len(),
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                        facts
+                    }
+                };
+                let cold_facts_count = merged.len();
 
-        let filter_started_at = Instant::now();
-        merged.retain(|fact| {
-            fact.timestamp_sec >= range_start
-                && fact.timestamp_sec < range_end
-                && crate::unified_usage::matches_source_filter(fact, &source_filter)
-                && (include_errors || fact.status_code.map(|code| code < 300).unwrap_or(true))
-        });
-        let filtered_cold_facts_count = merged.len();
-        perf_log(
-            "merge_cold_filter",
-            format!(
-                "range={range_start}..{range_end} before={} after={} elapsed_ms={}",
-                cold_facts_count,
-                filtered_cold_facts_count,
-                filter_started_at.elapsed().as_millis(),
-            ),
-        );
+                let filter_started_at = Instant::now();
+                merged.retain(|fact| {
+                    fact.timestamp_sec >= range_start
+                        && fact.timestamp_sec < range_end
+                        && crate::unified_usage::matches_source_filter(fact, &cold_source_filter)
+                        && (include_errors
+                            || fact.status_code.map(|code| code < 300).unwrap_or(true))
+                });
+                let filtered_cold_facts_count = merged.len();
+                perf_log(
+                    "merge_cold_filter",
+                    format!(
+                        "range={range_start}..{range_end} before={} after={} elapsed_ms={}",
+                        cold_facts_count,
+                        filtered_cold_facts_count,
+                        filter_started_at.elapsed().as_millis(),
+                    ),
+                );
+                Ok::<(Vec<MergedRequestFact>, usize), String>((merged, filtered_cold_facts_count))
+            })
+            .await
+            .map_err(|e| format!("Task error: {}", e))??;
 
         let today_start = {
             let today = crate::local_usage::LocalUsageDatabase::today_local_date_with_settings(settings);
@@ -1911,23 +2158,30 @@ async fn get_merged_request_facts_with_db(
         );
         merged.extend(filtered_hot_facts);
 
-        merged.sort_by_key(|fact| fact.timestamp_ms);
-        let coverage = build_coverage(&merged);
-        let query_elapsed_ms = query_started_at.elapsed().as_millis();
-        store_merge_cache(cache_key, &merged, &coverage);
-        perf_log(
-            "merge_cache_store",
-            format!(
-                "range={range_start}..{range_end} cold_days={} cold_facts={} hot_facts={} facts={} query_ms={} merge_ms={} total_ms={}",
-                history_ready_dates.len(),
-                filtered_cold_facts_count,
-                hot_facts_count,
-                merged.len(),
-                query_elapsed_ms,
-                history_materialize_elapsed_ms,
-                overall_started_at.elapsed().as_millis(),
-            ),
-        );
+        // 大向量排序、覆盖率统计与缓存写入（含整表克隆）同为 CPU 重活，
+        // 同样移入阻塞线程池；Instant 是 Copy，计时语义与原实现一致。
+        let (merged, coverage) = tauri::async_runtime::spawn_blocking(move || {
+            merged.sort_by_key(|fact| fact.timestamp_ms);
+            let coverage = build_coverage(&merged);
+            let query_elapsed_ms = query_started_at.elapsed().as_millis();
+            store_merge_cache(cache_key, &merged, &coverage);
+            perf_log(
+                "merge_cache_store",
+                format!(
+                    "range={range_start}..{range_end} cold_days={} cold_facts={} hot_facts={} facts={} query_ms={} merge_ms={} total_ms={}",
+                    history_dates_count,
+                    filtered_cold_facts_count,
+                    hot_facts_count,
+                    merged.len(),
+                    query_elapsed_ms,
+                    history_materialize_elapsed_ms,
+                    overall_started_at.elapsed().as_millis(),
+                ),
+            );
+            (merged, coverage)
+        })
+        .await
+        .map_err(|e| format!("Task error: {}", e))?;
         Ok::<(Vec<MergedRequestFact>, MergedCoverage), String>((merged, coverage))
     }
     .await;
@@ -1940,7 +2194,12 @@ pub async fn get_merged_request_facts(
     end_epoch: Option<i64>,
     include_errors: bool,
 ) -> Result<(Vec<MergedRequestFact>, MergedCoverage), String> {
-    let local_db = crate::local_usage::ensure_local_usage_synced()?;
+    // ensure_local_usage_synced 内部有 condvar 等待与全盘会话文件扫描，
+    // 是最典型的同步阻塞源；经 spawn_blocking 执行避免占住 async 工作线程。
+    let local_db =
+        tauri::async_runtime::spawn_blocking(crate::local_usage::ensure_local_usage_synced)
+            .await
+            .map_err(|e| format!("Task error: {}", e))??;
     get_merged_request_facts_with_db(local_db, settings, start_epoch, end_epoch, include_errors)
         .await
 }
@@ -1972,7 +2231,11 @@ pub async fn get_merged_sessions(
             pricings.extend(db_pricings);
         }
     }
-    let local_db = crate::local_usage::ensure_local_usage_synced()?;
+    // 同上：全盘扫描同步放阻塞线程池执行，避免拖慢并发命令。
+    let local_db =
+        tauri::async_runtime::spawn_blocking(crate::local_usage::ensure_local_usage_synced)
+            .await
+            .map_err(|e| format!("Task error: {}", e))??;
     let local_signature = local_db.get_merge_cache_signature()?;
     let proxy_signature = ProxyDatabase::get_global()
         .map(|db| db.get_merge_cache_signature())
@@ -2228,7 +2491,11 @@ pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<Proj
             pricings.extend(db_pricings);
         }
     }
-    let local_db = crate::local_usage::ensure_local_usage_synced()?;
+    // 同上：全盘扫描同步放阻塞线程池执行，避免拖慢并发命令。
+    let local_db =
+        tauri::async_runtime::spawn_blocking(crate::local_usage::ensure_local_usage_synced)
+            .await
+            .map_err(|e| format!("Task error: {}", e))??;
     let local_signature = local_db.get_merge_cache_signature()?;
     let proxy_signature = ProxyDatabase::get_global()
         .map(|db| db.get_merge_cache_signature())
@@ -2549,6 +2816,40 @@ mod tests {
     }
 
     #[test]
+    fn open_ended_range_end_aligns_to_next_minute_boundary() {
+        let now = 1_750_000_123; // 非整分钟时刻
+        let next_minute = ((now / 60) + 1) * 60;
+
+        // end == now（统计页传当前秒）与 end == now + 1（概览传 now+1）
+        // 都应归一化到同一个下一分钟边界，保证同一分钟内缓存 key 稳定。
+        assert_eq!(normalize_open_ended_range_end(now, now), next_minute);
+        assert_eq!(normalize_open_ended_range_end(now + 1, now), next_minute);
+        // 远未来上界（如 i64::MAX 开放区间）同样收敛到下一分钟边界。
+        assert_eq!(normalize_open_ended_range_end(i64::MAX, now), next_minute);
+        // 归一化结果严格大于 now：now 之后的事实尚不存在，不会引入额外数据。
+        assert!(next_minute > now);
+
+        // now 恰好落在整分钟边界时，仍上调到"下一个"边界而非原地保留。
+        let aligned_now = 1_750_000_200; // 整分钟
+        assert_eq!(
+            normalize_open_ended_range_end(aligned_now, aligned_now),
+            aligned_now + 60
+        );
+    }
+
+    #[test]
+    fn historical_range_end_is_left_untouched() {
+        let now = 1_750_000_123;
+        // 历史精确范围（end < now）必须原样返回，不能改变查询语义。
+        assert_eq!(normalize_open_ended_range_end(now - 1, now), now - 1);
+        assert_eq!(normalize_open_ended_range_end(0, now), 0);
+        assert_eq!(
+            normalize_open_ended_range_end(1_700_000_000, now),
+            1_700_000_000
+        );
+    }
+
+    #[test]
     fn merge_cache_key_includes_day_boundary_mode() {
         let standard = sample_settings("standard");
         let night_owl = sample_settings("night_owl");
@@ -2654,6 +2955,86 @@ mod tests {
         assert!(lookup_history_materialization_cache(&history_key).is_none());
         assert!(lookup_sessions_cache(&session_key).is_none());
         assert!(lookup_projects_cache(&project_key).is_none());
+    }
+
+    #[test]
+    fn cold_facts_cache_key_ignores_date_order_but_tracks_content() {
+        let dates = vec![
+            "2026-06-01".to_string(),
+            "2026-06-02".to_string(),
+            "2026-06-03".to_string(),
+        ];
+        let shuffled = vec![
+            "2026-06-03".to_string(),
+            "2026-06-01".to_string(),
+            "2026-06-02".to_string(),
+        ];
+        let base = build_cold_facts_cache_key(&dates, &ToolFilter::All, "standard", 3, 1_000);
+
+        // 同一批日期不同顺序 → key 相同（缓存可复用）。
+        assert_eq!(
+            base,
+            build_cold_facts_cache_key(&shuffled, &ToolFilter::All, "standard", 3, 1_000)
+        );
+
+        // 首末日与数量相同但中间日期不同 → dates_fingerprint 区分。
+        let different_middle = vec![
+            "2026-06-01".to_string(),
+            "2026-06-02T".to_string(),
+            "2026-06-03".to_string(),
+        ];
+        assert_ne!(
+            base,
+            build_cold_facts_cache_key(&different_middle, &ToolFilter::All, "standard", 3, 1_000)
+        );
+
+        // 任一历史日重建（max_materialized_at 变化）或状态行数变化 → key 不同。
+        assert_ne!(
+            base,
+            build_cold_facts_cache_key(&dates, &ToolFilter::All, "standard", 3, 1_001)
+        );
+        assert_ne!(
+            base,
+            build_cold_facts_cache_key(&dates, &ToolFilter::All, "standard", 2, 1_000)
+        );
+
+        // tool_filter 与 day_boundary_mode 参与 key。
+        assert_ne!(
+            base,
+            build_cold_facts_cache_key(
+                &dates,
+                &ToolFilter::Tool("claude_code".to_string()),
+                "standard",
+                3,
+                1_000
+            )
+        );
+        assert_ne!(
+            base,
+            build_cold_facts_cache_key(&dates, &ToolFilter::All, "night_owl", 3, 1_000)
+        );
+    }
+
+    #[test]
+    fn cold_facts_cache_round_trips_and_respects_capacity() {
+        clear_runtime_caches();
+        let dates = vec!["2026-06-01".to_string()];
+        let key = build_cold_facts_cache_key(&dates, &ToolFilter::All, "standard", 1, 500);
+        assert!(lookup_cold_facts_cache(&key).is_none());
+        store_cold_facts_cache(key.clone(), &[]);
+        assert!(matches!(
+            lookup_cold_facts_cache(&key),
+            Some(facts) if facts.is_empty()
+        ));
+
+        // 超出容量后最旧条目被淘汰。
+        for offset in 0..COLD_MERGED_FACTS_CACHE_CAPACITY as i64 {
+            let evicting_key =
+                build_cold_facts_cache_key(&dates, &ToolFilter::All, "standard", 1, 600 + offset);
+            store_cold_facts_cache(evicting_key, &[]);
+        }
+        assert!(lookup_cold_facts_cache(&key).is_none());
+        clear_runtime_caches();
     }
 
     #[test]

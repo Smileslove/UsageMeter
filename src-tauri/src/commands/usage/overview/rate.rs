@@ -22,12 +22,12 @@ fn empty_window_rate_summary(window: String) -> WindowRateSummary {
 
 pub(super) fn build_window_rate_summary_from_facts(
     window: String,
-    facts: Vec<MergedRequestFact>,
+    facts: &[MergedRequestFact],
 ) -> WindowRateSummary {
     let mut overall = FactAccumulator::default();
     let mut by_model: HashMap<String, FactAccumulator> = HashMap::new();
 
-    for fact in &facts {
+    for fact in facts {
         overall.add_fact(fact);
         if !fact.model.trim().is_empty() {
             by_model
@@ -163,7 +163,7 @@ mod tests {
     fn build_window_rate_summary_returns_empty_when_no_valid_rate_samples() {
         let summary = build_window_rate_summary_from_facts(
             "5h".to_string(),
-            vec![test_fact("model-a", 10, None, None, None)],
+            &[test_fact("model-a", 10, None, None, None)],
         );
 
         assert_eq!(summary.window, "5h");
@@ -176,7 +176,7 @@ mod tests {
     fn build_window_rate_summary_aggregates_rate_and_ttft_by_model() {
         let summary = build_window_rate_summary_from_facts(
             "24h".to_string(),
-            vec![
+            &[
                 test_fact("model-a", 100, Some(2000), Some(50.0), Some(300)),
                 test_fact("model-a", 80, Some(2000), Some(40.0), Some(500)),
                 test_fact("model-b", 60, Some(3000), Some(20.0), Some(700)),

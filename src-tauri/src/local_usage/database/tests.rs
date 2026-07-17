@@ -1277,6 +1277,68 @@ fn unified_materialization_state_persists_day_boundary_mode() {
 }
 
 #[test]
+fn unified_days_materialization_fingerprint_tracks_rows_and_rebuilds() {
+    let (_tmp, db) = temp_db();
+    let build_state = |local_date: &str, materialized_at: i64| UnifiedDayMaterializationState {
+        local_date: local_date.to_string(),
+        day_boundary_mode: "standard".to_string(),
+        fact_count: 0,
+        local_request_count: 0,
+        local_max_sync_version: 0,
+        local_max_timestamp: 0,
+        remote_request_count: 0,
+        remote_max_export_seq: 0,
+        remote_max_timestamp: 0,
+        proxy_record_count: 0,
+        proxy_all_record_count: 0,
+        proxy_max_timestamp_ms: 0,
+        proxy_max_updated_at: 0,
+        max_fact_timestamp_ms: 0,
+        pricing_fingerprint: 0,
+        is_finalized: true,
+        finalized_at: Some(materialized_at),
+        materialized_at,
+    };
+
+    // 空日期列表 → 恒定 (0, 0)，不触发 SQL。
+    assert_eq!(
+        db.get_unified_days_materialization_fingerprint(&[]).unwrap(),
+        (0, 0)
+    );
+
+    let day1 = "2026-06-01".to_string();
+    let day2 = "2026-06-02".to_string();
+    db.replace_unified_day_materialization(&day1, &[], &build_state(&day1, 100))
+        .unwrap();
+    db.replace_unified_day_materialization(&day2, &[], &build_state(&day2, 200))
+        .unwrap();
+
+    let both = vec![day1.clone(), day2.clone()];
+    assert_eq!(
+        db.get_unified_days_materialization_fingerprint(&both)
+            .unwrap(),
+        (2, 200)
+    );
+
+    // 缺失日期不计入行数：调用方以 count != dates.len() 判定不可信。
+    let with_missing = vec![day1.clone(), day2.clone(), "2026-06-03".to_string()];
+    assert_eq!(
+        db.get_unified_days_materialization_fingerprint(&with_missing)
+            .unwrap(),
+        (2, 200)
+    );
+
+    // 任一日重建（materialized_at 更新）→ 指纹变化。
+    db.replace_unified_day_materialization(&day1, &[], &build_state(&day1, 300))
+        .unwrap();
+    assert_eq!(
+        db.get_unified_days_materialization_fingerprint(&both)
+            .unwrap(),
+        (2, 300)
+    );
+}
+
+#[test]
 fn unified_day_local_snapshot_with_settings_uses_passed_day_boundary_mode() {
     let (_tmp, db) = temp_db();
     let tmp_home = tempfile::tempdir().expect("create temp home");

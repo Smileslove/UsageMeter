@@ -209,7 +209,10 @@ function setActivityView(mode: 'month' | 'year') {
   }
 }
 
-watch([range, bucket, analysisMetric], scheduleSummaryFetch, { deep: true })
+// 切换分析指标（analysisMetric）无需重新请求后端：trend 每个点已包含全部指标字段，
+// 图表在前端按 metric 本地取值即可；后端仅 insights 随 metric 变化，而前端当前未展示 insights。
+// 下一次范围/粒度变化时会自然带上最新的 metric。
+watch([range, bucket], scheduleSummaryFetch, { deep: true })
 watch([activityView, monthYear, monthNumber, monthMetric], fetchMonth)
 watch(
   () => [
