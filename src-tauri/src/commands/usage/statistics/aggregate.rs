@@ -1,4 +1,3 @@
-use super::super::helpers::perf_log;
 use super::super::types::{
     StatisticsCapability, StatisticsModelBreakdown, StatisticsPerformance, StatisticsQuery,
     StatisticsRange, StatisticsStatusBreakdown, StatisticsSummary, StatisticsTotals,
@@ -49,7 +48,6 @@ pub(super) fn build_merged_statistics(
     facts: &[MergedRequestFact],
     query: &StatisticsQuery,
 ) -> StatisticsSummary {
-    let started_at = std::time::Instant::now();
     let (start_epoch, end_epoch) = normalize_range(query);
     let mut total = StatAccumulator::default();
     let mut trend_map: HashMap<i64, StatAccumulator> = HashMap::new();
@@ -218,7 +216,7 @@ pub(super) fn build_merged_statistics(
         total.success_requests + total.client_error_requests + total.server_error_requests > 0,
     );
 
-    let summary = StatisticsSummary {
+    StatisticsSummary {
         generated_at_epoch: chrono::Utc::now().timestamp(),
         source: MERGED_SOURCE.to_string(),
         capability,
@@ -233,21 +231,7 @@ pub(super) fn build_merged_statistics(
         models,
         performance,
         status,
-    };
-    perf_log(
-        "statistics_memory_aggregate",
-        format!(
-            "range={}..{} bucket={} facts={} models={} trend_points={} elapsed_ms={}",
-            start_epoch,
-            end_epoch,
-            bucket_name(&query.bucket),
-            facts.len(),
-            summary.models.len(),
-            summary.trend.len(),
-            started_at.elapsed().as_millis(),
-        ),
-    );
-    summary
+    }
 }
 
 #[cfg(test)]

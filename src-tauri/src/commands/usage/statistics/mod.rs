@@ -1,4 +1,3 @@
-use super::helpers::perf_log;
 use super::types::{
     MonthActivity, ProxyState, StatisticsMetric, StatisticsQuery, StatisticsSummary, YearActivity,
 };
@@ -16,40 +15,15 @@ pub async fn get_statistics_summary(
     settings: AppSettings,
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<StatisticsSummary, String> {
-    let started_at = std::time::Instant::now();
     if let Some(summary) =
         daily_summary::try_build_statistics_summary_from_daily_summary(&query, &settings).await?
     {
-        perf_log(
-            "get_statistics_summary",
-            format!(
-                "range={}..{} bucket={} path=summary+hot models={} trend_points={} total_ms={}",
-                summary.range.start_epoch,
-                summary.range.end_epoch,
-                summary.range.bucket,
-                summary.models.len(),
-                summary.trend.len(),
-                started_at.elapsed().as_millis(),
-            ),
-        );
         return Ok(summary);
     }
 
     if let Some(summary) =
         hourly_summary::try_build_statistics_summary_from_hourly_cache(&query, &settings).await?
     {
-        perf_log(
-            "get_statistics_summary",
-            format!(
-                "range={}..{} bucket={} path=hourly-cache models={} trend_points={} total_ms={}",
-                summary.range.start_epoch,
-                summary.range.end_epoch,
-                summary.range.bucket,
-                summary.models.len(),
-                summary.trend.len(),
-                started_at.elapsed().as_millis(),
-            ),
-        );
         return Ok(summary);
     }
 
@@ -62,21 +36,7 @@ pub async fn get_statistics_summary(
         include_errors,
     )
     .await?;
-    let facts_count = facts.len();
-    let build_started_at = std::time::Instant::now();
     let summary = aggregate::build_merged_statistics(&facts, &query);
-    perf_log(
-        "get_statistics_summary",
-        format!(
-            "range={}..{} bucket={} facts={} build_ms={} total_ms={}",
-            start_epoch,
-            end_epoch,
-            shared::bucket_name(&query.bucket),
-            facts_count,
-            build_started_at.elapsed().as_millis(),
-            started_at.elapsed().as_millis(),
-        ),
-    );
     Ok(summary)
 }
 

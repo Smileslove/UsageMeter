@@ -1,16 +1,14 @@
-use super::super::helpers::perf_log;
 use super::super::types::{DayActivity, MonthActivity, StatisticsMetric, YearActivity};
 use super::daily_summary::{
     can_use_unified_daily_summary, load_day_activity_from_summary_with_hot_overlay,
 };
 use super::shared::{
     cache_key_for_source_filter, cache_key_for_tool_filter, collect_day_activity_from_facts,
-    fingerprint_pricings, month_day_count, normalized_day_boundary_mode, to_date_key,
-    DayAccumulatorMap,
+    fingerprint_pricings, month_day_count, normalized_day_boundary_mode, DayAccumulatorMap,
 };
 use crate::models::AppSettings;
 use crate::proxy::{ProxyDatabase, ProxyMergeCacheSignature};
-use chrono::{Local, NaiveDate};
+use chrono::NaiveDate;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -140,19 +138,15 @@ async fn load_activity_day_map(
     end_epoch: i64,
     include_errors: bool,
     settings: &AppSettings,
-) -> Result<(HashMap<String, DayActivity>, usize, &'static str), String> {
+) -> Result<HashMap<String, DayActivity>, String> {
     if can_use_unified_daily_summary(settings) {
-        return Ok((
-            load_day_activity_from_summary_with_hot_overlay(
-                start_epoch,
-                end_epoch,
-                include_errors,
-                settings,
-            )
-            .await?,
-            0,
-            "summary+hot",
-        ));
+        return load_day_activity_from_summary_with_hot_overlay(
+            start_epoch,
+            end_epoch,
+            include_errors,
+            settings,
+        )
+        .await;
     }
 
     let mut day_map: DayAccumulatorMap = HashMap::new();
@@ -163,7 +157,6 @@ async fn load_activity_day_map(
         include_errors,
     )
     .await?;
-    let facts_count = facts.len();
     collect_day_activity_from_facts(&facts, &mut day_map, settings);
     let mut days_by_date = HashMap::new();
     for (date, (acc, models)) in day_map {
@@ -186,7 +179,7 @@ async fn load_activity_day_map(
         );
     }
 
-    Ok((days_by_date, facts_count, "facts"))
+    Ok(days_by_date)
 }
 
 pub(super) async fn get_month_activity_impl(
@@ -195,7 +188,6 @@ pub(super) async fn get_month_activity_impl(
     metric: StatisticsMetric,
     settings: AppSettings,
 ) -> Result<MonthActivity, String> {
-    let started_at = std::time::Instant::now();
     let day_count = month_day_count(year, month);
     let next_month = if month == 12 {
         (year + 1, 1)
@@ -218,22 +210,11 @@ pub(super) async fn get_month_activity_impl(
         &settings,
     )?;
     if let Some(ActivityCacheValue::Month(activity)) = lookup_activity_cache(&cache_key) {
-        perf_log(
-            "get_month_activity_cache_hit",
-            format!(
-                "year={} month={} days={} elapsed_ms={}",
-                year,
-                month,
-                activity.days.len(),
-                started_at.elapsed().as_millis(),
-            ),
-        );
         return Ok(activity);
     }
 
     let include_errors = settings.proxy.include_error_requests;
-    let aggregate_started_at = std::time::Instant::now();
-    let (days_by_date, facts_count, path_label) =
+    let days_by_date =
         load_activity_day_map(month_start, month_end, include_errors, &settings).await?;
 
     let mut days = Vec::new();
@@ -255,27 +236,6 @@ pub(super) async fn get_month_activity_impl(
         metric: metric.clone(),
         days,
     };
-    let today_key = to_date_key(Local::now().timestamp(), &settings);
-    let today_requests = activity
-        .days
-        .iter()
-        .find(|day| day.date == today_key)
-        .map(|day| day.request_count)
-        .unwrap_or(0);
-    perf_log(
-        "get_month_activity",
-        format!(
-            "year={} month={} path={} facts={} days={} today_requests={} aggregate_ms={} total_ms={}",
-            year,
-            month,
-            path_label,
-            facts_count,
-            activity.days.len(),
-            today_requests,
-            aggregate_started_at.elapsed().as_millis(),
-            started_at.elapsed().as_millis(),
-        ),
-    );
     store_activity_cache(cache_key, ActivityCacheValue::Month(activity.clone()));
     Ok(activity)
 }
@@ -285,7 +245,6 @@ pub(super) async fn get_year_activity_impl(
     metric: StatisticsMetric,
     settings: AppSettings,
 ) -> Result<YearActivity, String> {
-    let started_at = std::time::Instant::now();
     let (year_start, year_end) = resolve_period_bounds(
         &format!("{year}-01-01"),
         &format!("{}-01-01", year + 1),
@@ -301,21 +260,11 @@ pub(super) async fn get_year_activity_impl(
         &settings,
     )?;
     if let Some(ActivityCacheValue::Year(activity)) = lookup_activity_cache(&cache_key) {
-        perf_log(
-            "get_year_activity_cache_hit",
-            format!(
-                "year={} days={} elapsed_ms={}",
-                year,
-                activity.days.len(),
-                started_at.elapsed().as_millis(),
-            ),
-        );
         return Ok(activity);
     }
 
     let include_errors = settings.proxy.include_error_requests;
-    let aggregate_started_at = std::time::Instant::now();
-    let (days_by_date, facts_count, path_label) =
+    let days_by_date =
         load_activity_day_map(year_start, year_end, include_errors, &settings).await?;
 
     let Some(mut date) = NaiveDate::from_ymd_opt(year, 1, 1) else {
@@ -354,26 +303,6 @@ pub(super) async fn get_year_activity_impl(
         metric: metric.clone(),
         days,
     };
-    let today_key = to_date_key(Local::now().timestamp(), &settings);
-    let today_requests = activity
-        .days
-        .iter()
-        .find(|day| day.date == today_key)
-        .map(|day| day.request_count)
-        .unwrap_or(0);
-    perf_log(
-        "get_year_activity",
-        format!(
-            "year={} path={} facts={} days={} today_requests={} aggregate_ms={} total_ms={}",
-            year,
-            path_label,
-            facts_count,
-            activity.days.len(),
-            today_requests,
-            aggregate_started_at.elapsed().as_millis(),
-            started_at.elapsed().as_millis(),
-        ),
-    );
     store_activity_cache(cache_key, ActivityCacheValue::Year(activity.clone()));
     Ok(activity)
 }

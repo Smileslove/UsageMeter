@@ -1,4 +1,3 @@
-use super::super::helpers::perf_log;
 use super::super::types::{StatisticsBucket, StatisticsQuery, StatisticsSummary};
 use super::aggregate::build_merged_statistics;
 use super::shared::{
@@ -217,33 +216,12 @@ pub(super) async fn try_build_statistics_summary_from_hourly_cache(
 
     let cache_key = build_hourly_summary_cache_key(&local_date, start_epoch, end_epoch, settings)?;
     if let Some(summary) = lookup_hourly_summary_cache(&cache_key) {
-        perf_log(
-            "statistics_hourly_cache_hit",
-            format!(
-                "date={} range={}..{} models={} trend_points={}",
-                local_date,
-                start_epoch,
-                end_epoch,
-                summary.models.len(),
-                summary.trend.len(),
-            ),
-        );
         return Ok(Some(summary));
     }
 
     let facts = if let Some(facts) =
         try_load_ready_historical_day(&local_date, start_epoch, end_epoch, settings)?
     {
-        perf_log(
-            "statistics_hourly_materialized_hit",
-            format!(
-                "date={} range={}..{} facts={}",
-                local_date,
-                start_epoch,
-                end_epoch,
-                facts.len(),
-            ),
-        );
         facts
     } else {
         crate::unified_usage::ensure_materialized_history_no_sync(settings, start_epoch, end_epoch)
@@ -265,17 +243,6 @@ pub(super) async fn try_build_statistics_summary_from_hourly_cache(
 
     let summary = build_merged_statistics(&facts, query);
     store_hourly_summary_cache(cache_key, &summary);
-    perf_log(
-        "statistics_hourly_cache_store",
-        format!(
-            "date={} range={}..{} models={} trend_points={}",
-            local_date,
-            start_epoch,
-            end_epoch,
-            summary.models.len(),
-            summary.trend.len(),
-        ),
-    );
     Ok(Some(summary))
 }
 

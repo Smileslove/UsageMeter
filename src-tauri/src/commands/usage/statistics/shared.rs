@@ -113,10 +113,6 @@ pub(super) fn collect_day_activity_from_facts(
     }
 }
 
-pub(super) fn to_date_key(timestamp_sec: i64, settings: &AppSettings) -> String {
-    crate::utils::business_time::business_date_for_timestamp(timestamp_sec, settings)
-}
-
 pub(super) fn month_day_count(year: i32, month: u8) -> u32 {
     for day in (28..=31).rev() {
         if NaiveDate::from_ymd_opt(year, month as u32, day).is_some() {

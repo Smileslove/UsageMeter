@@ -1,4 +1,3 @@
-use super::helpers::perf_log;
 use super::types::{OverviewBreakdown, OverviewDeferredBundle, ProxyState, UsageRefreshBundle};
 use crate::models::AppSettings;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,24 +24,13 @@ pub async fn refresh_usage_bundle(
     settings: AppSettings,
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<UsageRefreshBundle, String> {
-    let started_at = std::time::Instant::now();
     spawn_background_local_usage_sync();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
     let prepared = refresh::prepare_usage_refresh_data_no_sync(&settings, now).await?;
-    let build_started_at = std::time::Instant::now();
     let bundle = refresh::build_usage_refresh_bundle_from_prepared(&settings, &prepared);
-    perf_log(
-        "refresh_usage_bundle",
-        format!(
-            "facts={} build_ms={} total_ms={}",
-            prepared.facts.len(),
-            build_started_at.elapsed().as_millis(),
-            started_at.elapsed().as_millis(),
-        ),
-    );
     Ok(bundle)
 }
 
