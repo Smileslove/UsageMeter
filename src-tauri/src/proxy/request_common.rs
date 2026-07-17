@@ -5,7 +5,7 @@ use super::source_detector::{
 };
 use super::source_registry::{ProxySourceHandle, ProxySourceRegistry};
 use super::types::{ProxyState, RequestContext};
-use crate::commands::{load_settings, save_settings_internal};
+use crate::commands::{load_settings_blocking as load_settings, save_settings_internal};
 use crate::models::AppSettings;
 use http_body_util::BodyExt;
 use hyper::{Request, Response, StatusCode};

@@ -247,7 +247,7 @@ pub fn run() {
             // HTTP 客户端工厂必须最先初始化：所有后续后台任务（local_usage 同步、
             // WebDAV 同步、订阅查询等）都依赖 HttpClientFactory::global()。
             // 同时缓存 settings 供下方 locale 复用，避免重复 load。
-            let initial_settings = commands::load_settings().ok();
+            let initial_settings = commands::load_settings_blocking().ok();
             net::HttpClientFactory::init(
                 initial_settings
                     .as_ref()
@@ -418,7 +418,7 @@ pub fn run() {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                    let settings = match commands::load_settings() {
+                    let settings = match commands::load_settings_blocking() {
                         Ok(settings) => settings,
                         Err(e) => {
                             eprintln!("[UsageMeter] Failed to load settings for update check: {e}");

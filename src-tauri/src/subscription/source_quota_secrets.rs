@@ -222,8 +222,20 @@ pub fn persist_settings(
         .map(|source| source.id.as_str())
         .collect();
 
+    // 只有先前存在配额绑定的来源才可能持久化过密钥；其余来源跳过删除，
+    // 避免每次保存都对所有来源 spawn Keychain 子进程（macOS 上每次约 20-50ms）
+    let previously_bound: HashSet<&str> = previous_settings
+        .source_aware
+        .sources
+        .iter()
+        .filter(|source| source.quota_query.is_some())
+        .map(|source| source.id.as_str())
+        .collect();
+
     for previous_source in &previous_settings.source_aware.sources {
-        if !current_source_ids.contains(previous_source.id.as_str()) {
+        if !current_source_ids.contains(previous_source.id.as_str())
+            && previously_bound.contains(previous_source.id.as_str())
+        {
             delete_secret(&previous_source.id, SecretKind::ManualApiKey)?;
             delete_secret(&previous_source.id, SecretKind::ManualAccessToken)?;
         }
@@ -232,12 +244,11 @@ pub fn persist_settings(
     for source in &mut settings.source_aware.sources {
         if let Some(binding) = &mut source.quota_query {
             persist_binding_secrets(&source.id, binding)?;
-            source.api_key_notes.remove("__quota_api_key");
-        } else {
+        } else if previously_bound.contains(source.id.as_str()) {
             delete_secret(&source.id, SecretKind::ManualApiKey)?;
             delete_secret(&source.id, SecretKind::ManualAccessToken)?;
-            source.api_key_notes.remove("__quota_api_key");
         }
+        source.api_key_notes.remove("__quota_api_key");
     }
 
     Ok(())

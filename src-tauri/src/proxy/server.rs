@@ -15,7 +15,7 @@ use super::request_common::{
 };
 use super::source_registry::ProxySourceRegistry;
 use super::types::{ProxyConfig, ProxyState, ProxyStatus};
-use crate::commands::load_settings;
+use crate::commands::load_settings_blocking as load_settings;
 use crate::commands::{
     restore_claude_takeover_if_proxy_url_present, restore_codex_takeover_if_proxy_url_present,
     restore_gemini_takeover_if_proxy_url_present, restore_opencode_takeover_if_proxy_url_present,

@@ -5,20 +5,32 @@ use tauri_plugin_autostart::ManagerExt;
 
 /// 启用开机自启动
 #[tauri::command]
-pub fn enable_autostart(app: AppHandle) -> Result<(), String> {
-    app.autolaunch().enable().map_err(|e| format!("{:?}", e))
+pub async fn enable_autostart(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.autolaunch().enable().map_err(|e| format!("{:?}", e))
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
 }
 
 /// 禁用开机自启动
 #[tauri::command]
-pub fn disable_autostart(app: AppHandle) -> Result<(), String> {
-    app.autolaunch().disable().map_err(|e| format!("{:?}", e))
+pub async fn disable_autostart(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.autolaunch().disable().map_err(|e| format!("{:?}", e))
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
 }
 
 /// 检查开机自启动状态
 #[tauri::command]
-pub fn is_autostart_enabled(app: AppHandle) -> Result<bool, String> {
-    app.autolaunch()
-        .is_enabled()
-        .map_err(|e| format!("{:?}", e))
+pub async fn is_autostart_enabled(app: AppHandle) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.autolaunch()
+            .is_enabled()
+            .map_err(|e| format!("{:?}", e))
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
 }

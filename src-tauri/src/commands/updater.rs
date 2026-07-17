@@ -81,7 +81,7 @@ pub fn should_suppress_update(update_version: &str, skipped_version: &str) -> bo
 /// 构建带代理配置的 Updater 实例（供命令和后台检查共用）
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 pub fn build_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
-    use crate::commands::load_settings;
+    use crate::commands::load_settings_blocking as load_settings;
     use tauri_plugin_updater::UpdaterExt;
 
     let settings = load_settings().unwrap_or_default();
@@ -194,14 +194,20 @@ pub async fn download_and_install_update(
 /// 直接读写文件而不经过前端，避免覆盖用户在 UI 中未保存的其他改动。
 /// 使用 JSON patch 方式：只修改目标字段，保留其余内容原样。
 #[tauri::command]
-pub fn skip_update_version(version: String, state: State<'_, UpdaterState>) -> Result<(), String> {
-    let mut settings = crate::commands::load_settings().unwrap_or_default();
-    settings.skipped_update_version = version;
-    match crate::commands::save_settings_internal(settings) {
-        Ok(()) => {}
-        Err(crate::commands::SaveSettingsError::ReloadFailed(_)) => {}
-        Err(crate::commands::SaveSettingsError::Other(err)) => return Err(err),
-    }
+pub async fn skip_update_version(
+    version: String,
+    state: State<'_, UpdaterState>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        settings.skipped_update_version = version;
+        match crate::commands::save_settings_internal(settings) {
+            Ok(()) | Err(crate::commands::SaveSettingsError::ReloadFailed(_)) => Ok(()),
+            Err(crate::commands::SaveSettingsError::Other(err)) => Err(err),
+        }
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))??;
     *pending_update_guard(&state) = None;
 
     Ok(())

@@ -198,7 +198,7 @@ impl UsageCollector {
     ///
     /// 返回窗口开始时间的 Unix 时间戳（毫秒）
     pub fn calculate_window_cutoff_public(window: &str) -> i64 {
-        let settings = crate::commands::load_settings().unwrap_or_default();
+        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
         crate::utils::business_time::business_window_cutoff_epoch(window, &settings)
             .saturating_mul(1000)
     }
@@ -363,7 +363,7 @@ mod tests {
     fn test_window_cutoff_calculation() {
         // 测试窗口截止时间计算是否正确
         let now = Local::now();
-        let settings = crate::commands::load_settings().unwrap_or_default();
+        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
 
         // 5h 滑动窗口：应该约为 5 小时前
         let cutoff_5h = UsageCollector::calculate_window_cutoff("5h");

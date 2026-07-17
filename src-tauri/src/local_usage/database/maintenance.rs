@@ -60,7 +60,7 @@ impl LocalUsageDatabase {
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| format!("Failed to start orphan purge transaction: {}", e))?;
-        let settings = crate::commands::load_settings().unwrap_or_default();
+        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
         let today = Self::today_local_date_with_settings(&settings);
         let date_expr =
             Self::business_date_sql_expr_for_timestamp(&settings, TimestampSqlColumn::Timestamp);
