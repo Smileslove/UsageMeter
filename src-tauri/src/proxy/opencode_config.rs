@@ -1424,6 +1424,8 @@ mod tests {
     }
 
     fn with_clean_opencode_env<T>(xdg_config_home: &Path, f: impl FnOnce() -> T) -> T {
+        // 修改进程级环境变量前先持有全局锁，避免并行测试互相覆盖 XDG_CONFIG_HOME 等变量。
+        let _guard = crate::test_support::env_lock();
         let old_config = std::env::var_os("OPENCODE_CONFIG");
         let old_inline = std::env::var_os("OPENCODE_CONFIG_CONTENT");
         std::env::remove_var("OPENCODE_CONFIG");
@@ -1809,15 +1811,16 @@ mod tests {
 
         let content = fs::read_to_string(&config_path).unwrap();
         let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+        // 接管统一写入新版 /usagemeter/<tool>/source/<id> 地址（provider 由 source 句柄反查）。
         assert_eq!(
             json.pointer("/provider/anthropic/options/baseURL")
                 .and_then(|value| value.as_str()),
-            Some("http://127.0.0.1:18765/opencode/provider/anthropic/source/oc_ant")
+            Some("http://127.0.0.1:18765/usagemeter/opencode/source/oc_ant")
         );
         assert_eq!(
             json.pointer("/provider/xiaomi/options/baseURL")
                 .and_then(|value| value.as_str()),
-            Some("http://127.0.0.1:18765/opencode/provider/xiaomi/source/oc_xm")
+            Some("http://127.0.0.1:18765/usagemeter/opencode/source/oc_xm")
         );
     }
 
@@ -1906,8 +1909,10 @@ mod tests {
             let json_content = fs::read_to_string(&json_path).unwrap();
             assert!(jsonc_content.contains("// anthropic comment"));
             assert!(jsonc_content.contains("https://api.anthropic.com/v1"));
-            assert!(json_content
-                .contains("http://127.0.0.1:18765/opencode/provider/anthropic/source/oc_ant"));
+            // 接管统一写入新版 /usagemeter/<tool>/source/<id> 地址。
+            assert!(
+                json_content.contains("http://127.0.0.1:18765/usagemeter/opencode/source/oc_ant")
+            );
             assert!(!json_content.contains("// anthropic comment"));
         });
     }

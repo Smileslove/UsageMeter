@@ -75,6 +75,12 @@ impl ReasonixSourceRegistry {
         }
     }
 
+    /// 使用指定路径创建 registry（测试注入用，避免读写真实用户目录）。
+    #[cfg(test)]
+    fn new_with_path(path: PathBuf) -> Self {
+        Self { path }
+    }
+
     pub fn get(&self, id: &str) -> Option<ReasonixSourceHandle> {
         self.read_data()
             .ok()?
@@ -283,11 +289,19 @@ impl ReasonixConfigManager {
 
     /// 从已保存的 source handles 恢复 provider 原始 base_url。
     pub fn restore_from_sources(&self, source_ids: &[String]) -> Result<usize, String> {
+        self.restore_from_sources_with_registry(&ReasonixSourceRegistry::new(), source_ids)
+    }
+
+    /// 与 [`Self::restore_from_sources`] 相同，但 registry 可注入（测试无需依赖真实用户目录）。
+    fn restore_from_sources_with_registry(
+        &self,
+        registry: &ReasonixSourceRegistry,
+        source_ids: &[String],
+    ) -> Result<usize, String> {
         if source_ids.is_empty() || !self.config_path.exists() {
             return Ok(0);
         }
 
-        let registry = ReasonixSourceRegistry::new();
         let handles: Vec<ReasonixSourceHandle> = source_ids
             .iter()
             .filter_map(|source_id| registry.get(source_id))
@@ -611,9 +625,11 @@ api_key_env = "DEEPSEEK_API_KEY"
         fs::write(&config_path, taken_over).unwrap();
         let manager = ReasonixConfigManager::new_for_path(config_path, true);
 
-        // Registry 中不存在 rx_123 → restore 应该失败，不能静默返回 Ok(0)。
+        // 注入空的临时 registry（不读取真实用户目录）：
+        // 其中不存在 rx_123 → restore 应该失败，不能静默返回 Ok(0)。
+        let registry = ReasonixSourceRegistry::new_with_path(dir.path().join("registry.json"));
         let err = manager
-            .restore_from_sources(&["rx_123".to_string()])
+            .restore_from_sources_with_registry(&registry, &["rx_123".to_string()])
             .unwrap_err();
         assert!(
             err.contains("no matching source handles"),
@@ -629,21 +645,10 @@ api_key_env = "DEEPSEEK_API_KEY"
 
         let manager = ReasonixConfigManager::new_for_path(config_path.clone(), true);
         let snapshot = manager.read_live_snapshot().unwrap();
-        let handles: Vec<ReasonixSourceHandle> = snapshot
-            .providers
-            .iter()
-            .map(|provider| ReasonixSourceHandle {
-                id: compute_handle_id(&provider.provider_name, &provider.original_base_url)
-                    .unwrap(),
-                provider_name: provider.provider_name.clone(),
-                kind: provider.kind.clone(),
-                real_base_url: provider.original_base_url.clone(),
-                route_state: provider.clone(),
-                created_at_ms: 0,
-                last_seen_at_ms: 0,
-                last_used_at_ms: 0,
-            })
-            .collect();
+
+        // 注入临时 registry 并写入全部 provider 句柄（不读写真实用户目录）。
+        let registry = ReasonixSourceRegistry::new_with_path(dir.path().join("registry.json"));
+        let handles = registry.upsert_from_state(&snapshot).unwrap();
 
         manager.takeover_with_handles(18765, &handles).unwrap();
 
@@ -662,7 +667,8 @@ api_key_env = "DEEPSEEK_API_KEY"
         fs::write(&config_path, content).unwrap();
 
         let restored = manager
-            .restore_from_sources(
+            .restore_from_sources_with_registry(
+                &registry,
                 &handles
                     .iter()
                     .map(|handle| handle.id.clone())

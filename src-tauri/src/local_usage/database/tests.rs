@@ -5,14 +5,13 @@ use crate::unified_usage::{CoverageOrigin, MergedRequestFact};
 use chrono::TimeZone;
 use rusqlite::{params, Connection};
 use std::fs;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::MutexGuard;
 
+/// OpenCode 相关测试会修改 XDG_DATA_HOME 并共享全局扫描缓存，
+/// 统一持有进程级环境变量锁串行执行；锁中毒时继续复用内部值，
+/// 避免单个测试 panic 级联毒化后续测试。
 fn opencode_test_guard() -> MutexGuard<'static, ()> {
-    static OPENCODE_TEST_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-    OPENCODE_TEST_MUTEX
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap()
+    crate::test_support::env_lock()
 }
 
 fn temp_db() -> (tempfile::TempDir, LocalUsageDatabase) {
@@ -1302,7 +1301,8 @@ fn unified_days_materialization_fingerprint_tracks_rows_and_rebuilds() {
 
     // 空日期列表 → 恒定 (0, 0)，不触发 SQL。
     assert_eq!(
-        db.get_unified_days_materialization_fingerprint(&[]).unwrap(),
+        db.get_unified_days_materialization_fingerprint(&[])
+            .unwrap(),
         (0, 0)
     );
 

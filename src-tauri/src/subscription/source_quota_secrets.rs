@@ -250,11 +250,12 @@ mod tests {
         ApiSource, AppSettings, SourceAwareSettings, SourceCredentialStrategy, SourceQueryProfileId,
     };
     use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::MutexGuard;
 
-    fn home_env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    /// 修改 HOME 前持有全局环境变量锁，与其他修改环境变量的测试串行；
+    /// 锁中毒时继续复用内部值，避免 panic 级联。
+    fn home_env_lock() -> MutexGuard<'static, ()> {
+        crate::test_support::env_lock()
     }
 
     fn sample_source(binding: Option<SourceQuotaBindingConfig>) -> ApiSource {
@@ -284,7 +285,7 @@ mod tests {
 
     #[test]
     fn persist_settings_scrubs_plain_secrets_from_settings() {
-        let _guard = home_env_lock().lock().unwrap();
+        let _guard = home_env_lock();
         let tmp = tempfile::tempdir().unwrap();
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());

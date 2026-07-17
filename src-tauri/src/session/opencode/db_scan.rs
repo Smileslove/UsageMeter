@@ -173,6 +173,17 @@ fn clear_missing_db_state(state: &mut OpenCodeDbCacheState) {
     state.schema_mode = OpenCodeSchemaMode::Incompatible;
 }
 
+/// 判断指定表是否存在指定列（表不存在时返回 false）。
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> bool {
+    let sql = format!("PRAGMA table_info({})", table);
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return false;
+    };
+    stmt.query_map([], |row| row.get::<_, String>(1))
+        .map(|rows| rows.flatten().any(|name| name == column))
+        .unwrap_or(false)
+}
+
 fn query_db_message_rows(
     conn: &Connection,
     last_time_updated_ms: Option<i64>,
@@ -181,32 +192,48 @@ fn query_db_message_rows(
     // LEFT JOIN session to filter out fork-replayed messages: a forked session copies historical
     // messages with their original time_created (earlier than the fork session's time_created).
     // Any message.time_created < session.time_created is a replayed copy and must be excluded.
-    let (sql, params_vec): (&str, Vec<i64>) = if let (Some(last_time), Some(last_rowid)) =
+    //
+    // fork 过滤依赖 message.time_created 与 session.time_created 两列；
+    // REQUIRED_MESSAGE_COLUMNS 并不要求 time_created，且 message-only 模式下
+    // session 表可能缺列甚至不存在。缺少任一依赖时退化为不做 fork 过滤，
+    // 避免 SQL prepare 失败导致整个扫描静默返回空结果（丢数据）。
+    let fork_filter_supported = table_has_column(conn, "message", "time_created")
+        && table_has_column(conn, "session", "time_created");
+    let (fork_join, fork_cond) = if fork_filter_supported {
+        (
+            "\n             LEFT JOIN session s ON s.id = m.session_id",
+            "\n               AND (s.time_created IS NULL OR m.time_created >= s.time_created)",
+        )
+    } else {
+        ("", "")
+    };
+
+    let (sql, params_vec): (String, Vec<i64>) = if let (Some(last_time), Some(last_rowid)) =
         (last_time_updated_ms, last_rowid)
     {
         (
-            "SELECT m.rowid, m.id, m.session_id, COALESCE(m.time_updated, 0), m.data
-             FROM message m
-             LEFT JOIN session s ON s.id = m.session_id
-             WHERE json_extract(m.data, '$.role') = 'assistant'
-               AND (s.time_created IS NULL OR m.time_created >= s.time_created)
+            format!(
+                "SELECT m.rowid, m.id, m.session_id, COALESCE(m.time_updated, 0), m.data
+             FROM message m{fork_join}
+             WHERE json_extract(m.data, '$.role') = 'assistant'{fork_cond}
                AND (COALESCE(m.time_updated, 0) > ?1 OR (COALESCE(m.time_updated, 0) = ?1 AND m.rowid > ?2))
-             ORDER BY COALESCE(m.time_updated, 0) ASC, m.rowid ASC",
+             ORDER BY COALESCE(m.time_updated, 0) ASC, m.rowid ASC"
+            ),
             vec![last_time, last_rowid],
         )
     } else {
         (
-            "SELECT m.rowid, m.id, m.session_id, COALESCE(m.time_updated, 0), m.data
-             FROM message m
-             LEFT JOIN session s ON s.id = m.session_id
-             WHERE json_extract(m.data, '$.role') = 'assistant'
-               AND (s.time_created IS NULL OR m.time_created >= s.time_created)
-             ORDER BY COALESCE(m.time_updated, 0) ASC, m.rowid ASC",
+            format!(
+                "SELECT m.rowid, m.id, m.session_id, COALESCE(m.time_updated, 0), m.data
+             FROM message m{fork_join}
+             WHERE json_extract(m.data, '$.role') = 'assistant'{fork_cond}
+             ORDER BY COALESCE(m.time_updated, 0) ASC, m.rowid ASC"
+            ),
             Vec::new(),
         )
     };
 
-    let mut stmt = match conn.prepare(sql) {
+    let mut stmt = match conn.prepare(&sql) {
         Ok(stmt) => stmt,
         Err(_) => return Vec::new(),
     };

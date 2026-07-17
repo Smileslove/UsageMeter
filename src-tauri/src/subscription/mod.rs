@@ -22,6 +22,7 @@ pub use gemini::GeminiSubscriptionProvider;
 pub use gpt::*;
 pub use token_cache::TokenCache;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -44,6 +45,9 @@ pub struct SubscriptionState {
     /// Ephemeral per-source quota binding state (recommendations, last tests).
     source_binding_states:
         Arc<RwLock<std::collections::HashMap<String, SourceQuotaBindingRuntimeState>>>,
+    /// 缓存写入序号：cached_at 毫秒级时间戳可能相同，用单调递增序号
+    /// 确保“最近更新的条目优先”这一语义是确定性的。
+    cache_seq: AtomicU64,
 }
 
 impl Default for SubscriptionState {
@@ -57,6 +61,8 @@ impl Default for SubscriptionState {
 struct CachedSubscription {
     quota: SubscriptionQuota,
     cached_at: i64,
+    /// 写入序号（同一毫秒内多次写入时按序号判定新旧）。
+    seq: u64,
 }
 
 fn cache_key_for_provider(provider: &str) -> String {
@@ -93,6 +99,7 @@ impl SubscriptionState {
             gemini_provider: Arc::new(RwLock::new(None)),
             copilot_auth,
             source_binding_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            cache_seq: AtomicU64::new(0),
         }
     }
 
@@ -137,7 +144,8 @@ impl SubscriptionState {
             .iter()
             .filter(|(key, _)| key.starts_with(&prefix))
             .filter(|(_, cached)| now - cached.cached_at < CACHE_VALIDITY_MS)
-            .max_by_key(|(_, cached)| cached.cached_at)
+            // 时间戳相同（同一毫秒写入）时按写入序号取最新，避免 HashMap 迭代顺序带来的不确定性。
+            .max_by_key(|(_, cached)| (cached.cached_at, cached.seq))
             .map(|(_, cached)| cached.quota.clone())
     }
 
@@ -150,6 +158,7 @@ impl SubscriptionState {
             CachedSubscription {
                 quota,
                 cached_at: chrono::Utc::now().timestamp_millis(),
+                seq: self.cache_seq.fetch_add(1, Ordering::Relaxed),
             },
         );
     }

@@ -335,7 +335,31 @@ impl CodexConfigManager {
     }
 
     pub fn is_usagemeter_proxy_url_for_port(base_url: &str, proxy_port: u16) -> bool {
-        url_identity::is_usagemeter_proxy_url_for_port(base_url, proxy_port, &["codex"])
+        if url_identity::is_usagemeter_proxy_url_for_port(base_url, proxy_port, &["codex"]) {
+            return true;
+        }
+        // 兼容旧版本 Codex 接管写入的无工具前缀地址（如 http://127.0.0.1:<port>/v1）：
+        // 仅当端口与 UsageMeter 代理端口一致时才视为代理地址，
+        // 保证升级后仍能识别历史接管状态并正确还原配置。
+        Self::is_legacy_local_openai_proxy_url_for_port(base_url, proxy_port)
+    }
+
+    /// 识别旧版接管格式：本机回环地址 + 代理端口 + 裸 `/v1` 路径。
+    fn is_legacy_local_openai_proxy_url_for_port(base_url: &str, proxy_port: u16) -> bool {
+        let Ok(url) = reqwest::Url::parse(base_url) else {
+            return false;
+        };
+        if url.port() != Some(proxy_port) {
+            return false;
+        }
+        let Some(host) = url.host_str() else {
+            return false;
+        };
+        if host != "127.0.0.1" && host != "localhost" && host != "::1" && host != "[::1]" {
+            return false;
+        }
+        let path = url.path().trim_end_matches('/');
+        path.is_empty() || path == "/v1" || path.starts_with("/v1/")
     }
 
     pub fn extract_source_id_from_proxy_url(base_url: &str) -> Option<String> {

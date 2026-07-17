@@ -70,18 +70,27 @@ impl ProxyDatabase {
 
     #[allow(dead_code)]
     pub fn ensure_daily_rollup_mode_current(&self) -> Result<(), String> {
+        // 当前口径来自用户设置文件；核心重置逻辑放在可注入口径的内部方法中，
+        // 便于测试不依赖本机真实设置。
+        self.ensure_daily_rollup_mode_current_with_mode(&Self::current_day_boundary_mode())
+    }
+
+    /// 以显式给定的“当前日界口径”校验并重置 rollup（口径不一致时清空重建）。
+    pub(crate) fn ensure_daily_rollup_mode_current_with_mode(
+        &self,
+        current_mode: &str,
+    ) -> Result<(), String> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| format!("Failed to lock connection: {}", e))?;
-        let current_mode = Self::current_day_boundary_mode();
         let stored_mode = Self::stored_day_boundary_mode_conn(&conn)?;
-        if stored_mode.as_deref() != Some(current_mode.as_str()) {
+        if stored_mode.as_deref() != Some(current_mode) {
             conn.execute("DELETE FROM daily_summary", [])
                 .map_err(|e| format!("Failed to clear proxy daily summary: {}", e))?;
             conn.execute("DELETE FROM model_usage", [])
                 .map_err(|e| format!("Failed to clear proxy model usage: {}", e))?;
-            Self::set_day_boundary_mode_conn(&conn, &current_mode)?;
+            Self::set_day_boundary_mode_conn(&conn, current_mode)?;
         }
         Ok(())
     }

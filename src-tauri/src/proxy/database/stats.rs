@@ -710,7 +710,8 @@ mod tests {
             .expect("insert mismatched rollup mode");
         }
 
-        db.ensure_daily_rollup_mode_current()
+        // 显式注入“当前口径”，避免测试依赖本机 ~/.usagemeter/settings.json 的真实设置。
+        db.ensure_daily_rollup_mode_current_with_mode("standard")
             .expect("ensure current rollup mode");
 
         let conn = db.conn.lock().expect("lock conn");

@@ -1138,6 +1138,8 @@ mod tests {
     /// 内存缓存里，却永远同步不进数据库——用户重装后 QoderWork CN 依然统计不到用量。
     #[test]
     fn scan_qoder_work_cn_sessions_includes_cli_transcript_sessions() {
+        // 修改 HOME 前持有全局环境变量锁，避免污染并行运行的其他环境相关测试。
+        let _guard = crate::test_support::env_lock();
         let tmp_home = tempdir().unwrap();
         let old_home = std::env::var_os("HOME");
         std::env::set_var("HOME", tmp_home.path());

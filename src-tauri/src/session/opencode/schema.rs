@@ -63,6 +63,19 @@ fn missing_required_columns(conn: &Connection, table: &str, required: &[&str]) -
 }
 
 fn verify_json_structure(conn: &Connection) -> bool {
+    // 空库（尚无 assistant 消息）无法判断 JSON 结构，视为兼容；
+    // 只有在存在 assistant 消息但均缺少 tokens 字段时才判定为结构不匹配。
+    let assistant_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM message WHERE json_extract(data, '$.role') = 'assistant'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if assistant_count == 0 {
+        return true;
+    }
+
     let result: rusqlite::Result<Option<i64>> = conn.query_row(
         "SELECT COUNT(*) FROM message
          WHERE json_extract(data, '$.role') = 'assistant'

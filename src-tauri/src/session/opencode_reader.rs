@@ -862,6 +862,8 @@ mod tests {
 
     #[test]
     fn legacy_opencode_file_recovers_after_temporary_corruption() {
+        // 该测试会修改 XDG_DATA_HOME 并使用全局扫描缓存，须与其他环境相关测试串行。
+        let _guard = crate::test_support::env_lock();
         let tmpdir = tempfile::tempdir().unwrap();
         let data_home = tmpdir.path().join(".local").join("share");
         let message_dir = data_home

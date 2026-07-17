@@ -12,6 +12,8 @@ mod qoder_models;
 mod session;
 mod subscription;
 mod sync;
+#[cfg(test)]
+mod test_support;
 mod unified_usage;
 mod utils;
 
