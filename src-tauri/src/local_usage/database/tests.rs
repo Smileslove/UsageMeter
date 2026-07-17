@@ -5,7 +5,7 @@ use crate::unified_usage::{CoverageOrigin, MergedRequestFact};
 use chrono::TimeZone;
 use rusqlite::{params, Connection};
 use std::fs;
-use std::sync::MutexGuard;
+use std::sync::{Arc, MutexGuard};
 
 /// OpenCode 相关测试会修改 XDG_DATA_HOME 并共享全局扫描缓存，
 /// 统一持有进程级环境变量锁串行执行；锁中毒时继续复用内部值，
@@ -1276,7 +1276,7 @@ fn unified_materialization_state_persists_day_boundary_mode() {
 }
 
 #[test]
-fn unified_days_materialization_fingerprint_tracks_rows_and_rebuilds() {
+fn unified_days_materialization_stamps_track_rows_and_rebuilds() {
     let (_tmp, db) = temp_db();
     let build_state = |local_date: &str, materialized_at: i64| UnifiedDayMaterializationState {
         local_date: local_date.to_string(),
@@ -1299,12 +1299,11 @@ fn unified_days_materialization_fingerprint_tracks_rows_and_rebuilds() {
         materialized_at,
     };
 
-    // 空日期列表 → 恒定 (0, 0)，不触发 SQL。
-    assert_eq!(
-        db.get_unified_days_materialization_fingerprint(&[])
-            .unwrap(),
-        (0, 0)
-    );
+    // 空日期列表 → 恒定空结果，不触发 SQL。
+    assert!(db
+        .get_unified_days_materialization_stamps(&[])
+        .unwrap()
+        .is_empty());
 
     let day1 = "2026-06-01".to_string();
     let day2 = "2026-06-02".to_string();
@@ -1314,28 +1313,160 @@ fn unified_days_materialization_fingerprint_tracks_rows_and_rebuilds() {
         .unwrap();
 
     let both = vec![day1.clone(), day2.clone()];
+    let mut stamps = db.get_unified_days_materialization_stamps(&both).unwrap();
+    stamps.sort();
     assert_eq!(
-        db.get_unified_days_materialization_fingerprint(&both)
-            .unwrap(),
-        (2, 200)
+        stamps,
+        vec![(day1.clone(), 100), (day2.clone(), 200)]
     );
 
-    // 缺失日期不计入行数：调用方以 count != dates.len() 判定不可信。
+    // 缺失日期不返回对应行：调用方以行数 != 请求日期数判定状态行缺失。
     let with_missing = vec![day1.clone(), day2.clone(), "2026-06-03".to_string()];
     assert_eq!(
-        db.get_unified_days_materialization_fingerprint(&with_missing)
-            .unwrap(),
-        (2, 200)
+        db.get_unified_days_materialization_stamps(&with_missing)
+            .unwrap()
+            .len(),
+        2
     );
 
-    // 任一日重建（materialized_at 更新）→ 指纹变化。
+    // 任一日重建（materialized_at 更新）→ 仅该日 stamp 变化。
     db.replace_unified_day_materialization(&day1, &[], &build_state(&day1, 300))
         .unwrap();
-    assert_eq!(
-        db.get_unified_days_materialization_fingerprint(&both)
-            .unwrap(),
-        (2, 300)
-    );
+    let mut stamps = db.get_unified_days_materialization_stamps(&both).unwrap();
+    stamps.sort();
+    assert_eq!(stamps, vec![(day1, 300), (day2, 200)]);
+}
+
+#[test]
+fn cold_facts_shard_cache_only_refetches_rematerialized_day() {
+    let (_tmp, db) = temp_db();
+    let build_fact = |key: &str, timestamp_sec: i64| MergedRequestFact {
+        canonical_request_key: key.to_string(),
+        session_id: "sess-1".to_string(),
+        project_name: None,
+        project_path: None,
+        api_key_prefix: None,
+        request_base_url: None,
+        tool: "claude_code".to_string(),
+        timestamp_sec,
+        timestamp_ms: timestamp_sec * 1000,
+        model: "claude-sonnet-4".to_string(),
+        input_tokens: 10,
+        output_tokens: 20,
+        cache_create_tokens: 0,
+        cache_read_tokens: 0,
+        total_tokens: 30,
+        request_count: 1,
+        estimated_cost: 0.5,
+        coverage_origin: CoverageOrigin::LocalOnly,
+        status_code: Some(200),
+        duration_ms: None,
+        output_tokens_per_second: None,
+        ttft_ms: None,
+        source_label: None,
+    };
+    let build_state = |local_date: &str, fact_count: u64, materialized_at: i64| {
+        UnifiedDayMaterializationState {
+            local_date: local_date.to_string(),
+            day_boundary_mode: "standard".to_string(),
+            fact_count,
+            local_request_count: fact_count,
+            local_max_sync_version: 1,
+            local_max_timestamp: 0,
+            remote_request_count: 0,
+            remote_max_export_seq: 0,
+            remote_max_timestamp: 0,
+            proxy_record_count: 0,
+            proxy_all_record_count: 0,
+            proxy_max_timestamp_ms: 0,
+            proxy_max_updated_at: 0,
+            max_fact_timestamp_ms: 0,
+            pricing_fingerprint: 0,
+            is_finalized: true,
+            finalized_at: Some(materialized_at),
+            materialized_at,
+        }
+    };
+
+    let day1 = "2026-06-01".to_string();
+    let day2 = "2026-06-02".to_string();
+    let day3 = "2026-06-03".to_string();
+    db.replace_unified_day_materialization(
+        &day1,
+        &[("k1".to_string(), build_fact("k1", 1_780_300_000))],
+        &build_state(&day1, 1, 100),
+    )
+    .unwrap();
+    db.replace_unified_day_materialization(
+        &day2,
+        &[("k2".to_string(), build_fact("k2", 1_780_386_400))],
+        &build_state(&day2, 1, 200),
+    )
+    .unwrap();
+    db.replace_unified_day_materialization(
+        &day3,
+        &[("k3".to_string(), build_fact("k3", 1_780_472_800))],
+        &build_state(&day3, 1, 300),
+    )
+    .unwrap();
+
+    // 用测试独立的缓存实例，避免并发测试共享全局单例互相干扰。
+    let cache = std::sync::Mutex::new(unified_usage::ColdFactsShardCache::new());
+    let dates = vec![day1.clone(), day2.clone(), day3.clone()];
+
+    // 首次读取：全部日期缺失分片 → 一次批量读入并按日写回分片。
+    let first = unified_usage::load_cold_facts_via_shards(&cache, &db, &dates, "standard").unwrap();
+    assert_eq!(first.days_cached, 0);
+    assert_eq!(first.days_fetched, 3);
+    assert!(!first.memo_hit);
+    assert!(!first.fallback_uncached);
+    assert_eq!(first.stale_days_skipped, 0);
+    assert_eq!(first.facts.len(), 3);
+    // 拼接结果按日期升序（各日内部按 timestamp_ms 升序）。
+    assert_eq!(first.facts[0].canonical_request_key, "k1");
+    assert_eq!(first.facts[2].canonical_request_key, "k3");
+
+    let day1_shard_before = {
+        let guard = cache.lock().unwrap();
+        guard.shard_facts_for_test(&day1).expect("day1 shard")
+    };
+    let day3_shard_before = {
+        let guard = cache.lock().unwrap();
+        guard.shard_facts_for_test(&day3).expect("day3 shard")
+    };
+
+    // 相同日期集合、物化状态未变的重复读取 → memo 命中，零重读。
+    let repeat = unified_usage::load_cold_facts_via_shards(&cache, &db, &dates, "standard").unwrap();
+    assert!(repeat.memo_hit);
+    assert_eq!(repeat.days_fetched, 0);
+    assert!(Arc::ptr_eq(&first.facts, &repeat.facts));
+
+    // 单日重物化：仅 day2 的 materialized_at 变化，事实内容也更新。
+    db.replace_unified_day_materialization(
+        &day2,
+        &[
+            ("k2".to_string(), build_fact("k2", 1_780_386_400)),
+            ("k2b".to_string(), build_fact("k2b", 1_780_386_500)),
+        ],
+        &build_state(&day2, 2, 999),
+    )
+    .unwrap();
+
+    let second = unified_usage::load_cold_facts_via_shards(&cache, &db, &dates, "standard").unwrap();
+    // 只有 day2 分片被重建，其余两天直接复用缓存分片。
+    assert!(!second.memo_hit);
+    assert_eq!(second.days_cached, 2);
+    assert_eq!(second.days_fetched, 1);
+    assert_eq!(second.facts.len(), 4);
+    let guard = cache.lock().unwrap();
+    let day1_shard_after = guard.shard_facts_for_test(&day1).expect("day1 shard");
+    let day2_shard_after = guard.shard_facts_for_test(&day2).expect("day2 shard");
+    let day3_shard_after = guard.shard_facts_for_test(&day3).expect("day3 shard");
+    drop(guard);
+    // Arc 指针不变 → 未失效分片被原样复用，未发生重读重建。
+    assert!(Arc::ptr_eq(&day1_shard_before, &day1_shard_after));
+    assert!(Arc::ptr_eq(&day3_shard_before, &day3_shard_after));
+    assert_eq!(day2_shard_after.len(), 2);
 }
 
 #[test]
@@ -2331,4 +2462,282 @@ fn unified_summary_respects_request_count_weight() {
     assert_eq!(summaries[0].request_count, 7);
     assert_eq!(summaries[0].visible_request_count, 7);
     assert_eq!(summaries[0].success_request_count, 7);
+}
+
+// ============================================================
+// 跨天会话增量同步：内容未变的历史行不应产生任何写副作用
+// ============================================================
+
+/// 构造 scanner 解析出的单条请求事实
+fn make_scan_request(
+    session_id: &str,
+    message_id: &str,
+    timestamp: i64,
+    output_tokens: u64,
+) -> crate::session::LocalRequestRecord {
+    crate::session::LocalRequestRecord {
+        session_id: session_id.to_string(),
+        tool: "claude_code".to_string(),
+        timestamp,
+        message_id: message_id.to_string(),
+        input_tokens: 10,
+        output_tokens,
+        total_tokens: 10 + output_tokens,
+        model: "claude-3".to_string(),
+        ..Default::default()
+    }
+}
+
+/// 构造一个待同步的脏会话（模拟 JSONL fingerprint 变化后的重新解析结果）
+fn make_dirty_session(
+    session_id: &str,
+    fingerprint: &str,
+    requests: Vec<crate::session::LocalRequestRecord>,
+) -> DirtySessionSync {
+    let file_path = format!("/tmp/{session_id}.jsonl");
+    let meta = crate::session::SessionMeta {
+        session_id: session_id.to_string(),
+        tool: "claude_code".to_string(),
+        file_path: file_path.clone(),
+        file_size: 100,
+        message_count: requests.len() as u64,
+        source: "local".to_string(),
+        ..Default::default()
+    };
+    DirtySessionSync {
+        session_id: session_id.to_string(),
+        tool: "claude_code".to_string(),
+        file_path,
+        file_role: "session_group".to_string(),
+        file_size: 100,
+        last_modified: 0,
+        fingerprint: fingerprint.to_string(),
+        meta,
+        requests,
+        project_key: "p".to_string(),
+    }
+}
+
+/// 读取指定事实行的 (sync_version, created_at, source_file_present)
+fn get_fact_state(db: &LocalUsageDatabase, session_id: &str, message_id: &str) -> (i64, i64, i64) {
+    let conn = db.conn.lock().unwrap();
+    let dedupe_key = format!("{}:{}", session_id, message_id);
+    conn.query_row(
+        "SELECT sync_version, created_at, source_file_present
+         FROM local_request_facts
+         WHERE tool = 'claude_code' AND dedupe_key = ?1",
+        params![dedupe_key],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        },
+    )
+    .expect("read fact state")
+}
+
+/// 直接写入一行历史日物化状态，模拟该日已完成物化
+fn seed_materialization_state(db: &LocalUsageDatabase, local_date: &str) {
+    let conn = db.conn.lock().unwrap();
+    conn.execute(
+        "INSERT INTO unified_daily_materialization_state (local_date, materialized_at)
+         VALUES (?1, 0)",
+        params![local_date],
+    )
+    .expect("seed materialization state");
+}
+
+fn invalidation_version(db: &LocalUsageDatabase) -> String {
+    db.get_local_sync_state("unified_materialization_invalidation_version")
+        .expect("read invalidation version")
+        .unwrap_or_else(|| "0".to_string())
+}
+
+#[test]
+fn append_only_resync_leaves_history_facts_and_materialization_untouched() {
+    // 持有环境锁：sync 内部会读取 settings（依赖 HOME），避免与修改 HOME 的测试并发
+    let _guard = opencode_test_guard();
+    let (_tmp, db) = temp_db();
+    let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+    let now = chrono::Utc::now().timestamp();
+    // 取 3 天前，任何业务日边界模式下都严格早于 today
+    let history_ts = now - 3 * 86_400;
+    let history_date =
+        crate::utils::business_time::business_date_for_timestamp(history_ts, &settings);
+    let session = "sess-cross-day";
+
+    // 首次同步：一条历史日请求 + 一条今天请求
+    db.sync_dirty_sessions(
+        vec![make_dirty_session(
+            session,
+            "fp-1",
+            vec![
+                make_scan_request(session, "msg-old", history_ts, 100),
+                make_scan_request(session, "msg-today-1", now, 200),
+            ],
+        )],
+        vec![],
+    )
+    .expect("first sync");
+
+    let (version_before, created_before, _) = get_fact_state(&db, session, "msg-old");
+    assert_eq!(version_before, 1);
+
+    // 模拟历史日已完成物化 + 首轮 outbox 已全部上传
+    seed_materialization_state(&db, &history_date);
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute("UPDATE sync_outbox_request_events SET uploaded_at = 1", [])
+            .expect("mark outbox uploaded");
+    }
+    let invalidation_before = invalidation_version(&db);
+
+    // 模拟文件追加：同一会话多出一条今天的请求，fingerprint 变化触发全量重解析
+    db.sync_dirty_sessions(
+        vec![make_dirty_session(
+            session,
+            "fp-2",
+            vec![
+                make_scan_request(session, "msg-old", history_ts, 100),
+                make_scan_request(session, "msg-today-1", now, 200),
+                make_scan_request(session, "msg-today-2", now, 300),
+            ],
+        )],
+        vec![],
+    )
+    .expect("second sync");
+
+    // 历史行内容未变：sync_version / created_at 均不应变化，仍在场
+    let (version_after, created_after, present_after) = get_fact_state(&db, session, "msg-old");
+    assert_eq!(version_after, 1, "unchanged history fact must not bump sync_version");
+    assert_eq!(created_after, created_before);
+    assert_eq!(present_after, 1);
+
+    // 历史日物化状态不应被失效删除，失效版本不应 bump
+    assert!(db
+        .get_unified_day_materialization_state(&history_date)
+        .expect("read materialization state")
+        .is_some());
+    assert_eq!(invalidation_version(&db), invalidation_before);
+
+    // 未变更的行不应重新入队 outbox（uploaded_at 不被重置）；仅新行处于待上传状态
+    {
+        let conn = db.conn.lock().unwrap();
+        let pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sync_outbox_request_events WHERE uploaded_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count pending outbox events");
+        assert_eq!(pending, 1, "only the newly appended request should be re-queued");
+    }
+
+    // 新追加的今天行被正确插入
+    let (new_version, _, new_present) = get_fact_state(&db, session, "msg-today-2");
+    assert_eq!(new_version, 1);
+    assert_eq!(new_present, 1);
+}
+
+#[test]
+fn history_row_content_change_bumps_version_and_invalidates_history_date() {
+    let _guard = opencode_test_guard();
+    let (_tmp, db) = temp_db();
+    let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+    let now = chrono::Utc::now().timestamp();
+    let history_ts = now - 3 * 86_400;
+    let history_date =
+        crate::utils::business_time::business_date_for_timestamp(history_ts, &settings);
+    let session = "sess-history-edit";
+
+    db.sync_dirty_sessions(
+        vec![make_dirty_session(
+            session,
+            "fp-1",
+            vec![
+                make_scan_request(session, "msg-old", history_ts, 100),
+                make_scan_request(session, "msg-today", now, 200),
+            ],
+        )],
+        vec![],
+    )
+    .expect("first sync");
+    seed_materialization_state(&db, &history_date);
+    let invalidation_before = invalidation_version(&db);
+
+    // 修改历史日请求的 token 数后再同步
+    db.sync_dirty_sessions(
+        vec![make_dirty_session(
+            session,
+            "fp-2",
+            vec![
+                make_scan_request(session, "msg-old", history_ts, 999),
+                make_scan_request(session, "msg-today", now, 200),
+            ],
+        )],
+        vec![],
+    )
+    .expect("second sync");
+
+    // 内容变更的历史行必须 bump sync_version
+    let (version_after, _, present_after) = get_fact_state(&db, session, "msg-old");
+    assert_eq!(version_after, 2);
+    assert_eq!(present_after, 1);
+
+    // 历史日被判定为 touched：物化状态被失效删除、失效版本 bump
+    assert!(db
+        .get_unified_day_materialization_state(&history_date)
+        .expect("read materialization state")
+        .is_none());
+    assert_ne!(invalidation_version(&db), invalidation_before);
+}
+
+#[test]
+fn history_row_removal_soft_deletes_and_invalidates_history_date() {
+    let _guard = opencode_test_guard();
+    let (_tmp, db) = temp_db();
+    let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+    let now = chrono::Utc::now().timestamp();
+    let history_ts = now - 3 * 86_400;
+    let history_date =
+        crate::utils::business_time::business_date_for_timestamp(history_ts, &settings);
+    let session = "sess-history-remove";
+
+    db.sync_dirty_sessions(
+        vec![make_dirty_session(
+            session,
+            "fp-1",
+            vec![
+                make_scan_request(session, "msg-old", history_ts, 100),
+                make_scan_request(session, "msg-today", now, 200),
+            ],
+        )],
+        vec![],
+    )
+    .expect("first sync");
+    seed_materialization_state(&db, &history_date);
+    let invalidation_before = invalidation_version(&db);
+
+    // 文件重写后不再包含历史日那条请求 → 软删生效
+    db.sync_dirty_sessions(
+        vec![make_dirty_session(
+            session,
+            "fp-2",
+            vec![make_scan_request(session, "msg-today", now, 200)],
+        )],
+        vec![],
+    )
+    .expect("second sync");
+
+    let (version_after, _, present_after) = get_fact_state(&db, session, "msg-old");
+    assert_eq!(present_after, 0, "removed history row must be soft-deleted");
+    assert_eq!(version_after, 2, "soft delete must bump sync_version");
+
+    assert!(db
+        .get_unified_day_materialization_state(&history_date)
+        .expect("read materialization state")
+        .is_none());
+    assert_ne!(invalidation_version(&db), invalidation_before);
 }

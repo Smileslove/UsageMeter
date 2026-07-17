@@ -12,6 +12,9 @@ use super::{
 };
 
 impl LocalUsageDatabase {
+    /// 收集该会话中"仍在场"（`source_file_present != 0`）的请求事实所覆盖的历史业务日期。
+    /// 只用于会话整体消失时的软删路径：即将被软删翻转的行才会真正改变历史日数据，
+    /// 已软删过的行不应再次触发历史日失效。
     pub(super) fn collect_history_dates_for_session_tx(
         tx: &rusqlite::Transaction<'_>,
         session_id: &str,
@@ -24,7 +27,7 @@ impl LocalUsageDatabase {
             .prepare(&format!(
                 "SELECT DISTINCT {date_expr} AS business_date
                  FROM local_request_facts
-                 WHERE session_id = ?1"
+                 WHERE session_id = ?1 AND source_file_present != 0"
             ))
             .map_err(|e| format!("Failed to prepare session history day query: {}", e))?;
         let rows = stmt
@@ -284,7 +287,7 @@ impl LocalUsageDatabase {
         self.sync_dirty_sessions(dirty_sessions, removed_ids)
     }
 
-    fn sync_dirty_sessions(
+    pub(super) fn sync_dirty_sessions(
         &self,
         dirty_sessions: Vec<DirtySessionSync>,
         removed_ids: Vec<String>,
@@ -309,13 +312,16 @@ impl LocalUsageDatabase {
         let mut touched_history_dates: HashSet<String> = HashSet::new();
 
         for session_id in &removed_ids {
+            // 只统计即将被软删翻转的行（source_file_present != 0）覆盖的历史日期
             touched_history_dates.extend(Self::collect_history_dates_for_session_tx(
                 &tx, session_id, &settings, &today,
             )?);
+            // 软删同时 bump sync_version 让物化/导出侧感知；守卫避免对已软删行重复 bump
             tx.execute(
                 "UPDATE local_request_facts
-                 SET source_file_present = 0
-                 WHERE session_id = ?1",
+                 SET source_file_present = 0,
+                     sync_version = sync_version + 1
+                 WHERE session_id = ?1 AND source_file_present != 0",
                 params![session_id],
             )
             .map_err(|e| format!("Failed to soft-delete local request facts: {}", e))?;
@@ -343,38 +349,29 @@ impl LocalUsageDatabase {
                 project_key,
             } = dirty_session;
 
-            let existing_dedupe_keys: HashSet<String> = {
+            // dedupe_key → 旧 timestamp：
+            // 既用于软删差集，也用于变更行的"日期迁移"检测（旧时间戳所在历史日同样需要失效）
+            let existing_facts: HashMap<String, i64> = {
                 let mut stmt = tx
-                    .prepare("SELECT dedupe_key FROM local_request_facts WHERE session_id = ?1")
+                    .prepare(
+                        "SELECT dedupe_key, timestamp
+                         FROM local_request_facts
+                         WHERE session_id = ?1",
+                    )
                     .map_err(|e| format!("Failed to prepare existing dedupe_key query: {}", e))?;
                 let rows = stmt
-                    .query_map(params![session_id.as_str()], |row| row.get::<_, String>(0))
+                    .query_map(params![session_id.as_str()], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                    })
                     .map_err(|e| format!("Failed to query existing dedupe_keys: {}", e))?;
-                let mut keys = HashSet::new();
+                let mut facts = HashMap::new();
                 for row in rows {
-                    let key =
+                    let (key, timestamp) =
                         row.map_err(|e| format!("Failed to read existing dedupe_key row: {}", e))?;
-                    keys.insert(key);
+                    facts.insert(key, timestamp);
                 }
-                keys
+                facts
             };
-            {
-                touched_history_dates.extend(Self::collect_history_dates_for_session_tx(
-                    &tx,
-                    session_id.as_str(),
-                    &settings,
-                    &today,
-                )?);
-            }
-            for request in &requests {
-                let date = crate::utils::business_time::business_date_for_timestamp(
-                    request.timestamp,
-                    &settings,
-                );
-                if date < today {
-                    touched_history_dates.insert(date);
-                }
-            }
             tx.execute(
                 "DELETE FROM local_sessions WHERE session_id = ?1",
                 params![session_id.as_str()],
@@ -512,7 +509,10 @@ impl LocalUsageDatabase {
                     format!("{}:{}", request.tool, request.message_id)
                 };
                 seen_dedupe_keys.insert(dedupe_key.clone());
-                tx.execute(
+                // 内容守卫：仅当任一内容列与 excluded 不同才执行 UPDATE（可空列用 IS NOT 做
+                // NULL 安全比较）。JSONL 是 append-only 的，历史日的行重解析后内容必然不变，
+                // 守卫使其既不 bump sync_version、也不触发历史日物化失效与 outbox 重导出。
+                let changed_rows = tx.execute(
                     "INSERT INTO local_request_facts (
                         request_id, session_id, tool, project_key, timestamp, message_id, dedupe_key,
                         request_key, model, input_tokens, output_tokens, reasoning_tokens,
@@ -540,7 +540,25 @@ impl LocalUsageDatabase {
                         is_subagent = excluded.is_subagent,
                         sync_version = sync_version + 1,
                         source_file_path = excluded.source_file_path,
-                        source_file_present = 1",
+                        source_file_present = 1
+                    WHERE local_request_facts.session_id != excluded.session_id
+                       OR local_request_facts.project_key IS NOT excluded.project_key
+                       OR local_request_facts.timestamp != excluded.timestamp
+                       OR local_request_facts.message_id IS NOT excluded.message_id
+                       OR local_request_facts.request_key IS NOT excluded.request_key
+                       OR local_request_facts.model != excluded.model
+                       OR local_request_facts.input_tokens != excluded.input_tokens
+                       OR local_request_facts.output_tokens != excluded.output_tokens
+                       OR local_request_facts.reasoning_tokens != excluded.reasoning_tokens
+                       OR local_request_facts.cache_create_tokens != excluded.cache_create_tokens
+                       OR local_request_facts.cache_read_tokens != excluded.cache_read_tokens
+                       OR local_request_facts.total_tokens != excluded.total_tokens
+                       OR local_request_facts.request_count != excluded.request_count
+                       OR local_request_facts.explicit_estimated_cost IS NOT excluded.explicit_estimated_cost
+                       OR local_request_facts.event_index IS NOT excluded.event_index
+                       OR local_request_facts.is_subagent != excluded.is_subagent
+                       OR local_request_facts.source_file_path IS NOT excluded.source_file_path
+                       OR local_request_facts.source_file_present != 1",
                     params![
                         request_id.as_str(),
                         request.session_id.as_str(),
@@ -566,6 +584,32 @@ impl LocalUsageDatabase {
                     ],
                 )
                 .map_err(|e| format!("Failed to upsert local request fact: {}", e))?;
+
+                // 内容未变（changed_rows == 0）的行不产生任何写副作用：
+                // 不收集历史日期、不重复入队 outbox（入队会重置 uploaded_at 导致重复导出）
+                if changed_rows == 0 {
+                    continue;
+                }
+
+                let date = crate::utils::business_time::business_date_for_timestamp(
+                    request.timestamp,
+                    &settings,
+                );
+                if date < today {
+                    touched_history_dates.insert(date);
+                }
+                // 日期迁移：更新前的旧时间戳若落在另一历史日，该日同样需要重物化
+                if let Some(old_timestamp) = existing_facts.get(&dedupe_key) {
+                    if *old_timestamp != request.timestamp {
+                        let old_date = crate::utils::business_time::business_date_for_timestamp(
+                            *old_timestamp,
+                            &settings,
+                        );
+                        if old_date < today {
+                            touched_history_dates.insert(old_date);
+                        }
+                    }
+                }
 
                 let request_export = SyncExportRequest {
                     request_key: request_key.clone(),
@@ -593,18 +637,30 @@ impl LocalUsageDatabase {
                 outbox::enqueue_request_export_tx(&tx, &origin_device_id, &request_export, now)?;
             }
 
-            let stale_keys: Vec<String> = existing_dedupe_keys
-                .difference(&seen_dedupe_keys)
-                .cloned()
-                .collect();
-            for stale_key in stale_keys {
-                tx.execute(
-                    "UPDATE local_request_facts
-                     SET source_file_present = 0
-                     WHERE tool = ?1 AND dedupe_key = ?2",
-                    params![tool.as_str(), stale_key],
-                )
-                .map_err(|e| format!("Failed to soft-mark stale local request fact: {}", e))?;
+            for (stale_key, old_timestamp) in existing_facts
+                .iter()
+                .filter(|(key, _)| !seen_dedupe_keys.contains(*key))
+            {
+                // 软删同时 bump sync_version 让物化/导出侧感知；守卫避免对已软删行重复 bump
+                let changed_rows = tx
+                    .execute(
+                        "UPDATE local_request_facts
+                         SET source_file_present = 0,
+                             sync_version = sync_version + 1
+                         WHERE tool = ?1 AND dedupe_key = ?2 AND source_file_present != 0",
+                        params![tool.as_str(), stale_key.as_str()],
+                    )
+                    .map_err(|e| format!("Failed to soft-mark stale local request fact: {}", e))?;
+                // 只有真实翻转的软删才让旧时间戳所在历史日失效
+                if changed_rows > 0 {
+                    let old_date = crate::utils::business_time::business_date_for_timestamp(
+                        *old_timestamp,
+                        &settings,
+                    );
+                    if old_date < today {
+                        touched_history_dates.insert(old_date);
+                    }
+                }
             }
         }
 

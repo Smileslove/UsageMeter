@@ -57,37 +57,83 @@ struct HotMergeCacheEntry {
     facts: Arc<Vec<MergedRequestFact>>,
 }
 
-/// 冷段（历史日物化事实）缓存 key。
-///
-/// 与外层 MergeCacheKey 不同，这里刻意**不含** local/proxy 实时签名：今日新
-/// 请求落库只抖动实时签名，不触碰历史日物化状态；冷段数据是否可复用完全由
-/// "实际日期列表 + 物化状态指纹 (state_row_count, max_materialized_at)" 决定。
-/// 任何历史日被重建/新增/删除都会改变指纹，从而自然失效。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ColdFactsCacheKey {
-    /// 排序后日期列表的首日（空列表为空串）。
-    first_date: String,
-    /// 排序后日期列表的末日（空列表为空串）。
-    last_date: String,
-    /// 日期数量。
-    dates_count: usize,
-    /// 排序后逐日拼接的 hash，防止首末日相同但中间日期不同的碰撞。
-    dates_fingerprint: u64,
-    day_boundary_mode: String,
-    tool_filter: String,
-    /// unified_daily_materialization_state 中命中日期的行数。
-    state_row_count: i64,
-    /// 命中日期中最大的 materialized_at。
-    max_materialized_at: i64,
+/// 冷段（历史日物化事实）按日分片缓存的单日分片。
+#[derive(Debug, Clone)]
+struct ColdDayCacheEntry {
+    /// 该日 unified_daily_materialization_state 行的 materialized_at；
+    /// 与最新时间戳不一致即视为该日已被重物化，分片单独作废。
+    materialized_at: i64,
+    /// 该日的完整物化事实（**不带 tool 过滤**的全量数据，按 timestamp_ms
+    /// 升序）。tool/range/source/include_errors 过滤条件因查询而异，统一留在
+    /// 命中后的线性过滤——纯内存过滤远比 SQLite 重读便宜。
+    /// Arc 包裹：命中返回指针拷贝，拼接与过滤方按需克隆。
+    facts: Arc<Vec<MergedRequestFact>>,
 }
 
+/// 冷段"最近一次拼接结果" memo：概览/统计/会话页会以相同时间范围高频调用，
+/// 命中时直接复用整段平铺向量，避免对几万行事实的重复 concat。
 #[derive(Debug, Clone)]
-struct ColdFactsCacheEntry {
-    key: ColdFactsCacheKey,
-    /// 未做 retain 过滤前的完整冷段事实（range/source/include_errors 过滤条件
-    /// 因查询而异，留在命中后每次执行——纯内存线性过滤远比 SQLite 重读便宜）。
-    /// Arc 包裹：命中返回指针拷贝，过滤方从借用中 filter+cloned 只拷贝命中子集。
+struct ColdConcatMemo {
+    /// 日期集合 + 各日 materialized_at（+ 日界模式）的组合指纹。
+    fingerprint: u64,
     facts: Arc<Vec<MergedRequestFact>>,
+}
+
+/// 冷段（历史日物化事实）按日分片缓存。
+///
+/// 与外层 MergeCacheKey 不同，这里刻意**不含** local/proxy 实时签名：今日新
+/// 请求落库只抖动实时签名，不触碰历史日物化状态；每个分片是否可复用完全由
+/// 该日的 materialized_at 决定——单日重物化或换日时只重读发生变化/缺失的那
+/// 几天，其余天直接复用分片。
+///
+/// 全局维度（day_boundary_mode）作为缓存旁的"代次"字段：分片的 local_date
+/// 语义依赖日界模式，代次不匹配即整体清空重建，不进每个分片的 key。pricing
+/// 变更会触发全部历史日重物化（materialized_at 变化），分片自然逐日失效，
+/// 无需单列维度。
+#[derive(Debug)]
+pub(crate) struct ColdFactsShardCache {
+    /// 全局代次：normalize 后的日界模式（空串表示尚未初始化）。
+    day_boundary_mode: String,
+    /// local_date -> 该日分片。
+    shards: HashMap<String, ColdDayCacheEntry>,
+    /// 最近若干次拼接结果 memo（LRU，最新在前）。概览/统计页多个时间窗口
+    /// 各有独立的日期集合，单条 memo 会互相挤出，故保留一小组。
+    concat_memos: Vec<ColdConcatMemo>,
+}
+
+impl ColdFactsShardCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            day_boundary_mode: String::new(),
+            shards: HashMap::new(),
+            concat_memos: Vec::new(),
+        }
+    }
+
+    /// 测试探针：取某日分片的事实 Arc，供 Arc::ptr_eq 断言分片复用。
+    #[cfg(test)]
+    pub(crate) fn shard_facts_for_test(
+        &self,
+        local_date: &str,
+    ) -> Option<Arc<Vec<MergedRequestFact>>> {
+        self.shards.get(local_date).map(|entry| entry.facts.clone())
+    }
+}
+
+/// 单次冷段分片读取的结果与观测计数。
+pub(crate) struct ColdFactsLoad {
+    /// 按日期升序拼接后的平铺事实向量（各日内部已按 timestamp_ms 排序）。
+    pub(crate) facts: Arc<Vec<MergedRequestFact>>,
+    /// 直接复用缓存分片的天数。
+    pub(crate) days_cached: usize,
+    /// 因分片缺失/失效而重读数据库的天数。
+    pub(crate) days_fetched: usize,
+    /// 是否命中"最近一次拼接结果" memo（命中时跳过 concat）。
+    pub(crate) memo_hit: bool,
+    /// 状态行缺失导致的整段直读回退（本次结果未写入任何缓存）。
+    pub(crate) fallback_uncached: bool,
+    /// 读取期间被并发重物化、放弃写回分片的天数。
+    pub(crate) stale_days_skipped: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -132,7 +178,7 @@ struct ProjectDerivedCacheEntry {
 
 static MERGED_REQUEST_FACTS_CACHE: OnceLock<Mutex<Vec<MergeCacheEntry>>> = OnceLock::new();
 static HOT_MERGED_REQUEST_FACTS_CACHE: OnceLock<Mutex<Vec<HotMergeCacheEntry>>> = OnceLock::new();
-static COLD_MERGED_FACTS_CACHE: OnceLock<Mutex<Vec<ColdFactsCacheEntry>>> = OnceLock::new();
+static COLD_FACTS_SHARD_CACHE: OnceLock<Mutex<ColdFactsShardCache>> = OnceLock::new();
 static HISTORY_MATERIALIZATION_CACHE: OnceLock<Mutex<Vec<HistoryMaterializationCacheEntry>>> =
     OnceLock::new();
 static MERGED_SESSIONS_CACHE: OnceLock<Mutex<Vec<SessionDerivedCacheEntry>>> = OnceLock::new();
@@ -141,10 +187,13 @@ static UNIFIED_INFLIGHT_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new()
 // 概览 6 个时间窗口 + 统计页 7 个预设可能同时驻留，8 条会互相挤出，提高到 16。
 const MERGED_REQUEST_FACTS_CACHE_CAPACITY: usize = 16;
 const HOT_MERGED_REQUEST_FACTS_CACHE_CAPACITY: usize = 4;
-// 冷段缓存每条 value 是整段历史日的完整事实向量（30 天以上范围可达几十 MB），
-// 容量刻意压到 3 条以控制常驻内存；典型命中场景是同一时间范围在今日签名抖动
-// 下的反复重算 + 少量相邻范围切换，小容量已经足够。
-const COLD_MERGED_FACTS_CACHE_CAPACITY: usize = 3;
+// 冷段分片总量上限：约 100+ 个历史日、5 万余行事实常驻内存是可接受的（旧实现
+// 本来就整段缓存了一份），但要防无界增长；超出上限按日期最旧淘汰。
+const COLD_FACTS_SHARD_CAPACITY: usize = 400;
+// 冷段拼接 memo 条数：概览 6 个时间窗口 + 统计页预设各有独立日期集合，
+// 保留一小组避免互相挤出。memo 的平铺向量是独立于分片的完整拷贝（与旧实现
+// 的整段缓存同量级），条数沿用旧冷段缓存的克制取值以控制常驻内存。
+const COLD_CONCAT_MEMO_CAPACITY: usize = 3;
 const HISTORY_MATERIALIZATION_CACHE_CAPACITY: usize = 8;
 const MERGED_SESSIONS_CACHE_CAPACITY: usize = 6;
 const MERGED_PROJECTS_CACHE_CAPACITY: usize = 6;
@@ -180,8 +229,8 @@ fn history_materialization_cache() -> &'static Mutex<Vec<HistoryMaterializationC
     HISTORY_MATERIALIZATION_CACHE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-fn cold_merged_facts_cache() -> &'static Mutex<Vec<ColdFactsCacheEntry>> {
-    COLD_MERGED_FACTS_CACHE.get_or_init(|| Mutex::new(Vec::new()))
+fn cold_facts_shard_cache() -> &'static Mutex<ColdFactsShardCache> {
+    COLD_FACTS_SHARD_CACHE.get_or_init(|| Mutex::new(ColdFactsShardCache::new()))
 }
 
 fn inflight_keys() -> &'static Mutex<HashSet<String>> {
@@ -195,7 +244,10 @@ fn normalized_day_boundary_mode(settings: &AppSettings) -> String {
 pub(crate) fn clear_runtime_caches() {
     merge_cache().lock().unwrap().clear();
     hot_merge_cache().lock().unwrap().clear();
-    cold_merged_facts_cache().lock().unwrap().clear();
+    {
+        let mut guard = cold_facts_shard_cache().lock().unwrap();
+        *guard = ColdFactsShardCache::new();
+    }
     history_materialization_cache().lock().unwrap().clear();
     merged_sessions_cache().lock().unwrap().clear();
     merged_projects_cache().lock().unwrap().clear();
@@ -341,60 +393,207 @@ fn store_hot_merge_cache(key: HotMergeCacheKey, facts: Arc<Vec<MergedRequestFact
     }
 }
 
-fn build_cold_facts_cache_key(
-    local_dates: &[String],
-    tool_filter: &ToolFilter,
-    day_boundary_mode: &str,
-    state_row_count: i64,
-    max_materialized_at: i64,
-) -> ColdFactsCacheKey {
+/// 冷段拼接 memo 指纹：日期集合 + 各日 materialized_at（+ 日界模式）。
+///
+/// stamps 需按日期升序传入；任何一天被重物化、日期集合增删（换日/范围变化）
+/// 都会改变指纹，从而自然失效对应 memo。
+fn cold_concat_fingerprint(day_boundary_mode: &str, stamps: &[(String, i64)]) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
-    let mut sorted_dates: Vec<&String> = local_dates.iter().collect();
-    sorted_dates.sort();
     let mut hasher = DefaultHasher::new();
-    for date in &sorted_dates {
+    day_boundary_mode.hash(&mut hasher);
+    for (date, materialized_at) in stamps {
         date.hash(&mut hasher);
+        materialized_at.hash(&mut hasher);
     }
-    ColdFactsCacheKey {
-        first_date: sorted_dates
-            .first()
-            .map(|d| d.to_string())
-            .unwrap_or_default(),
-        last_date: sorted_dates
-            .last()
-            .map(|d| d.to_string())
-            .unwrap_or_default(),
-        dates_count: sorted_dates.len(),
-        dates_fingerprint: hasher.finish(),
-        day_boundary_mode: day_boundary_mode.to_string(),
-        tool_filter: cache_key_for_tool_filter(tool_filter),
-        state_row_count,
-        max_materialized_at,
+    hasher.finish()
+}
+
+/// MergedRequestFact 的 tool 过滤，语义与 get_unified_facts_for_dates 的 SQL
+/// tool 子句一致（空 Tool 视同不过滤、空 AnyOf 不匹配任何行）。冷段分片统一
+/// 存全量数据，tool 过滤下放到拼接后的内存线性过滤。
+fn fact_tool_matches(fact: &MergedRequestFact, tool_filter: &ToolFilter) -> bool {
+    match tool_filter {
+        ToolFilter::All => true,
+        ToolFilter::Tool(tool) if tool.trim().is_empty() => true,
+        ToolFilter::Tool(tool) => fact.tool == *tool,
+        ToolFilter::AnyOf(tools) => tools.contains(&fact.tool),
     }
 }
 
-fn lookup_cold_facts_cache(key: &ColdFactsCacheKey) -> Option<Arc<Vec<MergedRequestFact>>> {
-    let cache = cold_merged_facts_cache();
-    let mut guard = cache.lock().unwrap();
-    let idx = guard.iter().position(|entry| entry.key == *key)?;
-    let entry = guard.remove(idx);
-    let result = entry.facts.clone();
-    guard.insert(0, entry);
-    Some(result)
-}
+/// 冷段按日分片读取：逐日核对 materialized_at，未变的天直接复用分片，变化/
+/// 缺失的天一次批量重读后写回分片，最终按日期升序拼接为平铺向量。
+///
+/// cache 以参数注入而非直接取全局单例，便于测试用独立实例隔离并发干扰；
+/// 生产路径统一传 cold_facts_shard_cache()。
+pub(crate) fn load_cold_facts_via_shards(
+    cache: &Mutex<ColdFactsShardCache>,
+    db: &crate::local_usage::LocalUsageDatabase,
+    local_dates: &[String],
+    day_boundary_mode: &str,
+) -> Result<ColdFactsLoad, String> {
+    if local_dates.is_empty() {
+        return Ok(ColdFactsLoad {
+            facts: Arc::new(Vec::new()),
+            days_cached: 0,
+            days_fetched: 0,
+            memo_hit: false,
+            fallback_uncached: false,
+            stale_days_skipped: 0,
+        });
+    }
 
-fn store_cold_facts_cache(key: ColdFactsCacheKey, facts: Arc<Vec<MergedRequestFact>>) {
-    let cache = cold_merged_facts_cache();
-    let mut guard = cache.lock().unwrap();
-    if let Some(idx) = guard.iter().position(|entry| entry.key == key) {
-        guard.remove(idx);
+    // a. 取逐日物化时间戳（state 表按 local_date 主键的一次轻量点查）。
+    //    状态行数与请求日期数不一致说明某日状态异常（如并发失效清理），
+    //    此时跳过分片缓存整段直读数据库，结果不写回任何缓存。
+    let mut stamps = db.get_unified_days_materialization_stamps(local_dates)?;
+    if stamps.len() != local_dates.len() {
+        let facts = db.get_unified_facts_for_dates(local_dates, &ToolFilter::All)?;
+        return Ok(ColdFactsLoad {
+            facts: Arc::new(facts),
+            days_cached: 0,
+            days_fetched: local_dates.len(),
+            memo_hit: false,
+            fallback_uncached: true,
+            stale_days_skipped: 0,
+        });
     }
-    guard.insert(0, ColdFactsCacheEntry { key, facts });
-    if guard.len() > COLD_MERGED_FACTS_CACHE_CAPACITY {
-        guard.truncate(COLD_MERGED_FACTS_CACHE_CAPACITY);
+    stamps.sort_by(|a, b| a.0.cmp(&b.0));
+    let concat_fingerprint = cold_concat_fingerprint(day_boundary_mode, &stamps);
+    let stamp_by_date: HashMap<&str, i64> = stamps
+        .iter()
+        .map(|(date, materialized_at)| (date.as_str(), *materialized_at))
+        .collect();
+
+    // b. 逐日核对分片：代次（日界模式）不匹配先整体清空重建；分片存在且
+    //    materialized_at 一致 → 复用，否则记入 missing 待批量重读。
+    let mut cached: HashMap<String, Arc<Vec<MergedRequestFact>>> = HashMap::new();
+    let mut missing: Vec<String> = Vec::new();
+    {
+        let mut guard = cache.lock().unwrap();
+        if guard.day_boundary_mode != day_boundary_mode {
+            *guard = ColdFactsShardCache::new();
+            guard.day_boundary_mode = day_boundary_mode.to_string();
+        }
+        // memo 命中：同一日期集合、各日 materialized_at 均未变时直接复用
+        // 最近一次拼接结果，连 concat 也省掉。
+        if let Some(idx) = guard
+            .concat_memos
+            .iter()
+            .position(|memo| memo.fingerprint == concat_fingerprint)
+        {
+            let memo = guard.concat_memos.remove(idx);
+            let facts = memo.facts.clone();
+            guard.concat_memos.insert(0, memo);
+            return Ok(ColdFactsLoad {
+                facts,
+                days_cached: stamps.len(),
+                days_fetched: 0,
+                memo_hit: true,
+                fallback_uncached: false,
+                stale_days_skipped: 0,
+            });
+        }
+        for (date, materialized_at) in &stamps {
+            match guard.shards.get(date) {
+                Some(entry) if entry.materialized_at == *materialized_at => {
+                    cached.insert(date.clone(), entry.facts.clone());
+                }
+                _ => missing.push(date.clone()),
+            }
+        }
     }
+
+    // c. 一次批量读缺失日（按日分组返回）；SQLite 读取在锁外执行，避免
+    //    阻塞其他并发查询路径对分片缓存的命中。
+    let mut fetched: HashMap<String, Arc<Vec<MergedRequestFact>>> = HashMap::new();
+    let mut stale_days_skipped = 0usize;
+    if !missing.is_empty() {
+        let mut grouped = db.get_unified_facts_by_date(&missing)?;
+        // 写回前复核时间戳：若读事实期间恰有历史日被重建，本次结果与读取
+        // 前的 stamp 已不对应，跳过该日分片写入避免污染缓存（返回值仍用
+        // 本次读取结果，与旧实现语义一致）。
+        let recheck: HashMap<String, i64> = db
+            .get_unified_days_materialization_stamps(&missing)?
+            .into_iter()
+            .collect();
+        let mut guard = cache.lock().unwrap();
+        // 读取期间可能有设置变更切换代次；代次已变时放弃全部写回。
+        let generation_ok = guard.day_boundary_mode == day_boundary_mode;
+        for date in &missing {
+            let facts = Arc::new(grouped.remove(date).unwrap_or_default());
+            let expected_at = stamp_by_date.get(date.as_str()).copied();
+            let still_valid = expected_at.is_some() && recheck.get(date).copied() == expected_at;
+            if generation_ok && still_valid {
+                guard.shards.insert(
+                    date.clone(),
+                    ColdDayCacheEntry {
+                        materialized_at: expected_at.unwrap_or(0),
+                        facts: facts.clone(),
+                    },
+                );
+            } else {
+                stale_days_skipped += 1;
+            }
+            fetched.insert(date.clone(), facts);
+        }
+        // 分片总量裁剪：超出上限按日期最旧淘汰，防无界增长。
+        if guard.shards.len() > COLD_FACTS_SHARD_CAPACITY {
+            let mut shard_dates: Vec<String> = guard.shards.keys().cloned().collect();
+            shard_dates.sort();
+            let excess = guard.shards.len() - COLD_FACTS_SHARD_CAPACITY;
+            for stale_date in shard_dates.into_iter().take(excess) {
+                guard.shards.remove(&stale_date);
+            }
+        }
+    }
+
+    // d. 按日期升序把各分片 concat 成平铺向量（各日内部已按 timestamp_ms
+    //    排序；调用方随后与热段合并时还会整体重排，这里保持近有序即可）。
+    let shard_for_date =
+        |date: &String| cached.get(date).or_else(|| fetched.get(date));
+    let total: usize = stamps
+        .iter()
+        .filter_map(|(date, _)| shard_for_date(date).map(|facts| facts.len()))
+        .sum();
+    let mut concat: Vec<MergedRequestFact> = Vec::with_capacity(total);
+    for (date, _) in &stamps {
+        if let Some(facts) = shard_for_date(date) {
+            concat.extend(facts.iter().cloned());
+        }
+    }
+    let facts = Arc::new(concat);
+
+    // memo 只在全部分片数据与读取前 stamp 一致时写入；概览/统计/会话页会
+    // 以相同范围高频调用，命中时避免对几万行事实的重复 concat。
+    if stale_days_skipped == 0 {
+        let mut guard = cache.lock().unwrap();
+        if guard.day_boundary_mode == day_boundary_mode {
+            guard
+                .concat_memos
+                .retain(|memo| memo.fingerprint != concat_fingerprint);
+            guard.concat_memos.insert(
+                0,
+                ColdConcatMemo {
+                    fingerprint: concat_fingerprint,
+                    facts: facts.clone(),
+                },
+            );
+            if guard.concat_memos.len() > COLD_CONCAT_MEMO_CAPACITY {
+                guard.concat_memos.truncate(COLD_CONCAT_MEMO_CAPACITY);
+            }
+        }
+    }
+
+    Ok(ColdFactsLoad {
+        facts,
+        days_cached: cached.len(),
+        days_fetched: missing.len(),
+        memo_hit: false,
+        fallback_uncached: false,
+        stale_days_skipped,
+    })
 }
 
 fn lookup_history_materialization_cache(
@@ -2079,113 +2278,33 @@ async fn get_merged_request_facts_with_db(
         let (mut merged, filtered_cold_facts_count) =
             tauri::async_runtime::spawn_blocking(move || {
                 let cold_read_started_at = Instant::now();
-                // 冷段缓存：今日新请求只抖动 local/proxy 实时签名（外层合并缓存
-                // 因此失效），但不触碰历史日的物化状态。这里以 ensure_materialized
-                // 校验后的实际日期列表 + 物化状态指纹为 key，命中即跳过对全部
-                // 历史日事实行的 SQLite 全量重读。指纹查询是一次轻量点查，必须
-                // 与冷读同处本阻塞闭包内执行。
-                let cold_fingerprint = if cold_dates.is_empty() {
-                    None
-                } else {
-                    match cold_db.get_unified_days_materialization_fingerprint(&cold_dates) {
-                        // 状态行数必须与就绪日期数一致才可信；缺行说明某日状态
-                        // 异常（如并发失效清理），此时跳过缓存直读数据库。
-                        Ok((count, max_at)) if count == cold_dates.len() as i64 => {
-                            Some((count, max_at))
-                        }
-                        Ok((count, _)) => {
-                            perf_log(
-                                "merge_cold_cache_skip",
-                                format!(
-                                    "range={range_start}..{range_end} dates={} state_rows={count} reason=state_row_mismatch",
-                                    cold_dates.len(),
-                                ),
-                            );
-                            None
-                        }
-                        Err(err) => {
-                            perf_log(
-                                "merge_cold_cache_skip",
-                                format!(
-                                    "range={range_start}..{range_end} dates={} reason=fingerprint_error error={err}",
-                                    cold_dates.len(),
-                                ),
-                            );
-                            None
-                        }
-                    }
-                };
-                let cold_cache_key = cold_fingerprint.map(|(count, max_at)| {
-                    build_cold_facts_cache_key(
-                        &cold_dates,
-                        &cold_tool_filter,
-                        &cold_day_boundary_mode,
-                        count,
-                        max_at,
-                    )
-                });
-                let cached_cold_facts = cold_cache_key.as_ref().and_then(lookup_cold_facts_cache);
-                let cold_facts: Arc<Vec<MergedRequestFact>> = match cached_cold_facts {
-                    Some(facts) => {
-                        perf_log(
-                            "merge_cold_cache_hit",
-                            format!(
-                                "range={range_start}..{range_end} dates={} facts={} elapsed_ms={}",
-                                cold_dates.len(),
-                                facts.len(),
-                                cold_read_started_at.elapsed().as_millis(),
-                            ),
-                        );
-                        facts
-                    }
-                    None => {
-                        let facts =
-                            cold_db.get_unified_facts_for_dates(&cold_dates, &cold_tool_filter)?;
-                        perf_log(
-                            "merge_cold_read",
-                            format!(
-                                "range={range_start}..{range_end} dates={} facts={} elapsed_ms={}",
-                                cold_dates.len(),
-                                facts.len(),
-                                cold_read_started_at.elapsed().as_millis(),
-                            ),
-                        );
-                        let facts = Arc::new(facts);
-                        if let Some(key) = cold_cache_key {
-                            // 写缓存前复核指纹：若读事实期间恰有历史日被重建，
-                            // 本次结果与 key 已不对应，放弃写入避免污染缓存。
-                            match cold_db
-                                .get_unified_days_materialization_fingerprint(&cold_dates)
-                            {
-                                Ok((count, max_at))
-                                    if count == key.state_row_count
-                                        && max_at == key.max_materialized_at =>
-                                {
-                                    perf_log(
-                                        "merge_cold_cache_store",
-                                        format!(
-                                            "range={range_start}..{range_end} dates={} facts={}",
-                                            cold_dates.len(),
-                                            facts.len(),
-                                        ),
-                                    );
-                                    store_cold_facts_cache(key, facts.clone());
-                                }
-                                _ => {
-                                    perf_log(
-                                        "merge_cold_cache_skip",
-                                        format!(
-                                            "range={range_start}..{range_end} dates={} reason=fingerprint_changed_during_read",
-                                            cold_dates.len(),
-                                        ),
-                                    );
-                                }
-                            }
-                        }
-                        facts
-                    }
-                };
+                // 冷段按日分片缓存：今日新请求只抖动 local/proxy 实时签名（外层
+                // 合并缓存因此失效），但不触碰历史日的物化状态。这里逐日核对
+                // materialized_at，未变的天直接复用分片，单日重物化或换日时只
+                // 重读发生变化/缺失的那几天；分片存全量数据，tool 过滤与
+                // range/source/include_errors 一并留在命中后的线性过滤。
+                let cold_load = load_cold_facts_via_shards(
+                    cold_facts_shard_cache(),
+                    &cold_db,
+                    &cold_dates,
+                    &cold_day_boundary_mode,
+                )?;
+                let cold_facts = cold_load.facts;
                 let cold_facts_count = cold_facts.len();
+                perf_log(
+                    "merge_cold_read",
+                    format!(
+                        "range={range_start}..{range_end} dates={} cold_days_cached={} cold_days_fetched={} memo_hit={} fallback_uncached={} stale_days_skipped={} facts={} elapsed_ms={}",
+                        cold_dates.len(),
+                        cold_load.days_cached,
+                        cold_load.days_fetched,
+                        cold_load.memo_hit,
+                        cold_load.fallback_uncached,
+                        cold_load.stale_days_skipped,
+                        cold_facts_count,
+                        cold_read_started_at.elapsed().as_millis(),
+                    ),
+                );
 
                 let filter_started_at = Instant::now();
                 // 缓存数据经 Arc 共享，不能原地 retain。这里选 filter+cloned
@@ -2197,6 +2316,7 @@ async fn get_merged_request_facts_with_db(
                     .filter(|fact| {
                         fact.timestamp_sec >= range_start
                             && fact.timestamp_sec < range_end
+                            && fact_tool_matches(fact, &cold_tool_filter)
                             && crate::unified_usage::matches_source_filter(
                                 fact,
                                 &cold_source_filter,
@@ -3092,83 +3212,85 @@ mod tests {
     }
 
     #[test]
-    fn cold_facts_cache_key_ignores_date_order_but_tracks_content() {
-        let dates = vec![
-            "2026-06-01".to_string(),
-            "2026-06-02".to_string(),
-            "2026-06-03".to_string(),
+    fn cold_concat_fingerprint_tracks_dates_and_stamps() {
+        let stamps = vec![
+            ("2026-06-01".to_string(), 100i64),
+            ("2026-06-02".to_string(), 200i64),
         ];
-        let shuffled = vec![
-            "2026-06-03".to_string(),
-            "2026-06-01".to_string(),
-            "2026-06-02".to_string(),
+        let base = cold_concat_fingerprint("standard", &stamps);
+
+        // 完全相同的输入 → 指纹一致（memo 可复用）。
+        assert_eq!(base, cold_concat_fingerprint("standard", &stamps));
+
+        // 任一日重物化（materialized_at 变化）→ 指纹变化。
+        let rebuilt = vec![
+            ("2026-06-01".to_string(), 100i64),
+            ("2026-06-02".to_string(), 201i64),
         ];
-        let base = build_cold_facts_cache_key(&dates, &ToolFilter::All, "standard", 3, 1_000);
+        assert_ne!(base, cold_concat_fingerprint("standard", &rebuilt));
 
-        // 同一批日期不同顺序 → key 相同（缓存可复用）。
-        assert_eq!(
-            base,
-            build_cold_facts_cache_key(&shuffled, &ToolFilter::All, "standard", 3, 1_000)
-        );
-
-        // 首末日与数量相同但中间日期不同 → dates_fingerprint 区分。
-        let different_middle = vec![
-            "2026-06-01".to_string(),
-            "2026-06-02T".to_string(),
-            "2026-06-03".to_string(),
+        // 日期集合增删（换日/范围变化）→ 指纹变化。
+        let extended = vec![
+            ("2026-06-01".to_string(), 100i64),
+            ("2026-06-02".to_string(), 200i64),
+            ("2026-06-03".to_string(), 300i64),
         ];
-        assert_ne!(
-            base,
-            build_cold_facts_cache_key(&different_middle, &ToolFilter::All, "standard", 3, 1_000)
-        );
+        assert_ne!(base, cold_concat_fingerprint("standard", &extended));
 
-        // 任一历史日重建（max_materialized_at 变化）或状态行数变化 → key 不同。
-        assert_ne!(
-            base,
-            build_cold_facts_cache_key(&dates, &ToolFilter::All, "standard", 3, 1_001)
-        );
-        assert_ne!(
-            base,
-            build_cold_facts_cache_key(&dates, &ToolFilter::All, "standard", 2, 1_000)
-        );
-
-        // tool_filter 与 day_boundary_mode 参与 key。
-        assert_ne!(
-            base,
-            build_cold_facts_cache_key(
-                &dates,
-                &ToolFilter::Tool("claude_code".to_string()),
-                "standard",
-                3,
-                1_000
-            )
-        );
-        assert_ne!(
-            base,
-            build_cold_facts_cache_key(&dates, &ToolFilter::All, "night_owl", 3, 1_000)
-        );
+        // 日界模式（全局代次维度）参与指纹。
+        assert_ne!(base, cold_concat_fingerprint("night_owl", &stamps));
     }
 
     #[test]
-    fn cold_facts_cache_round_trips_and_respects_capacity() {
-        clear_runtime_caches();
-        let dates = vec!["2026-06-01".to_string()];
-        let key = build_cold_facts_cache_key(&dates, &ToolFilter::All, "standard", 1, 500);
-        assert!(lookup_cold_facts_cache(&key).is_none());
-        store_cold_facts_cache(key.clone(), Arc::new(Vec::new()));
-        assert!(matches!(
-            lookup_cold_facts_cache(&key),
-            Some(facts) if facts.is_empty()
-        ));
+    fn fact_tool_matches_mirrors_sql_tool_clause_semantics() {
+        let mut fact = MergedRequestFact {
+            canonical_request_key: "claude_code:msg-1".to_string(),
+            session_id: "sess-1".to_string(),
+            project_name: None,
+            project_path: None,
+            api_key_prefix: None,
+            request_base_url: None,
+            tool: "claude_code".to_string(),
+            timestamp_sec: 0,
+            timestamp_ms: 0,
+            model: "claude-sonnet-4".to_string(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_create_tokens: 0,
+            cache_read_tokens: 0,
+            total_tokens: 0,
+            request_count: 1,
+            estimated_cost: 0.0,
+            coverage_origin: CoverageOrigin::LocalOnly,
+            status_code: Some(200),
+            duration_ms: None,
+            output_tokens_per_second: None,
+            ttft_ms: None,
+            source_label: None,
+        };
 
-        // 超出容量后最旧条目被淘汰。
-        for offset in 0..COLD_MERGED_FACTS_CACHE_CAPACITY as i64 {
-            let evicting_key =
-                build_cold_facts_cache_key(&dates, &ToolFilter::All, "standard", 1, 600 + offset);
-            store_cold_facts_cache(evicting_key, Arc::new(Vec::new()));
-        }
-        assert!(lookup_cold_facts_cache(&key).is_none());
-        clear_runtime_caches();
+        assert!(fact_tool_matches(&fact, &ToolFilter::All));
+        // 空 Tool 视同不过滤（与 SQL 侧 trim 后为空不加子句一致）。
+        assert!(fact_tool_matches(&fact, &ToolFilter::Tool(" ".to_string())));
+        assert!(fact_tool_matches(
+            &fact,
+            &ToolFilter::Tool("claude_code".to_string())
+        ));
+        assert!(!fact_tool_matches(
+            &fact,
+            &ToolFilter::Tool("codex".to_string())
+        ));
+        assert!(fact_tool_matches(
+            &fact,
+            &ToolFilter::AnyOf(vec!["codex".to_string(), "claude_code".to_string()])
+        ));
+        // 空 AnyOf 不匹配任何行（与 SQL 侧空 IN 列表提前返回空一致）。
+        assert!(!fact_tool_matches(&fact, &ToolFilter::AnyOf(Vec::new())));
+        fact.tool = "codex".to_string();
+        assert!(fact_tool_matches(
+            &fact,
+            &ToolFilter::Tool("codex".to_string())
+        ));
     }
 
     #[test]

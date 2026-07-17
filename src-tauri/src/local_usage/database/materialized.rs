@@ -361,17 +361,19 @@ impl LocalUsageDatabase {
         .map_err(|e| format!("Failed to load unified materialization state: {}", e))
     }
 
-    /// 批量取给定历史日物化状态的轻量指纹：`(状态行数, MAX(materialized_at))`。
+    /// 批量取给定历史日的逐日物化时间戳：`Vec<(local_date, materialized_at)>`，
+    /// 只返回状态行存在的日期。
     ///
-    /// 任何一天被重建（materialized_at 更新）或状态行新增/删除都会改变指纹，
-    /// 供进程内冷段缓存判断"这些历史日的物化事实是否完全未变"。这是一次
+    /// 任何一天被重建（materialized_at 更新）都体现在对应行上，供进程内冷段
+    /// 按日分片缓存以"分片粒度"判断哪些历史日需要重读；调用方以返回行数是否
+    /// 等于请求日期数判定状态行缺失（此时降级为直读数据库）。这是一次
     /// SQLite 点查（state 表按 local_date 主键索引），成本远低于重读事实行。
-    pub fn get_unified_days_materialization_fingerprint(
+    pub fn get_unified_days_materialization_stamps(
         &self,
         local_dates: &[String],
-    ) -> Result<(i64, i64), String> {
+    ) -> Result<Vec<(String, i64)>, String> {
         if local_dates.is_empty() {
-            return Ok((0, 0));
+            return Ok(Vec::new());
         }
         let conn = self.conn.lock().unwrap();
         let date_placeholders = std::iter::repeat_n("?", local_dates.len())
@@ -379,22 +381,21 @@ impl LocalUsageDatabase {
             .join(", ");
         let sql = format!(
             r#"
-            SELECT COUNT(*), COALESCE(MAX(materialized_at), 0)
+            SELECT local_date, materialized_at
             FROM unified_daily_materialization_state
             WHERE local_date IN ({date_placeholders})
             "#
         );
-        conn.query_row(
-            &sql,
-            rusqlite::params_from_iter(local_dates.iter()),
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-        )
-        .map_err(|e| {
-            format!(
-                "Failed to compute unified materialization fingerprint: {}",
-                e
-            )
-        })
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare unified materialization stamps query: {}", e))?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(local_dates.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| format!("Failed to query unified materialization stamps: {}", e))?;
+        rows.map(|r| r.map_err(|e| format!("Failed to read unified materialization stamp: {}", e)))
+            .collect()
     }
 
     pub fn invalidate_unified_materialization_dates(
@@ -822,6 +823,82 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to query unified materialized facts: {}", e))?;
         rows.map(|r| r.map_err(|e| format!("Failed to read unified materialized fact: {}", e)))
             .collect()
+    }
+
+    /// 按日分组读取给定历史日的全量物化事实（不带 tool 过滤）。
+    ///
+    /// 供冷段按日分片缓存批量补读缺失日使用：SQL 结果本来就带 local_date
+    /// 列，这里直接按日分组返回，避免调用方从 MergedRequestFact（无
+    /// local_date 字段）反推归属日。每组内部保持 timestamp_ms 升序。
+    pub fn get_unified_facts_by_date(
+        &self,
+        local_dates: &[String],
+    ) -> Result<HashMap<String, Vec<MergedRequestFact>>, String> {
+        if local_dates.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let conn = self.open_readonly_connection()?;
+        let date_placeholders = std::iter::repeat_n("?", local_dates.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            r#"
+            SELECT
+                local_date,
+                request_key, session_id, project_name, project_path, api_key_prefix, request_base_url,
+                tool, timestamp_sec, timestamp_ms, model, input_tokens, output_tokens,
+                cache_create_tokens, cache_read_tokens, total_tokens, request_count, estimated_cost,
+                coverage_origin, status_code, duration_ms, output_tokens_per_second, ttft_ms,
+                source_label
+            FROM unified_daily_materialized_facts
+            WHERE local_date IN ({date_placeholders})
+            ORDER BY timestamp_ms ASC
+            "#
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare unified fact by-date query: {}", e))?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(local_dates.iter()), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    MergedRequestFact {
+                        canonical_request_key: row.get(1)?,
+                        session_id: row.get(2)?,
+                        project_name: row.get(3)?,
+                        project_path: row.get(4)?,
+                        api_key_prefix: row.get(5)?,
+                        request_base_url: row.get(6)?,
+                        tool: row.get(7)?,
+                        timestamp_sec: row.get(8)?,
+                        timestamp_ms: row.get(9)?,
+                        model: row.get(10)?,
+                        input_tokens: row.get::<_, i64>(11)?.max(0) as u64,
+                        output_tokens: row.get::<_, i64>(12)?.max(0) as u64,
+                        cache_create_tokens: row.get::<_, i64>(13)?.max(0) as u64,
+                        cache_read_tokens: row.get::<_, i64>(14)?.max(0) as u64,
+                        total_tokens: row.get::<_, i64>(15)?.max(0) as u64,
+                        request_count: row.get::<_, i64>(16)?.max(1) as u64,
+                        estimated_cost: row.get(17)?,
+                        coverage_origin: CoverageOrigin::from_storage_str(
+                            row.get::<_, String>(18)?.as_str(),
+                        ),
+                        status_code: row.get::<_, Option<i64>>(19)?.map(|v| v as u16),
+                        duration_ms: row.get::<_, Option<i64>>(20)?.map(|v| v.max(0) as u64),
+                        output_tokens_per_second: row.get(21)?,
+                        ttft_ms: row.get::<_, Option<i64>>(22)?.map(|v| v.max(0) as u64),
+                        source_label: row.get(23)?,
+                    },
+                ))
+            })
+            .map_err(|e| format!("Failed to query unified materialized facts by date: {}", e))?;
+        let mut grouped: HashMap<String, Vec<MergedRequestFact>> = HashMap::new();
+        for row in rows {
+            let (local_date, fact) = row
+                .map_err(|e| format!("Failed to read unified materialized fact by date: {}", e))?;
+            grouped.entry(local_date).or_default().push(fact);
+        }
+        Ok(grouped)
     }
 
     pub fn get_unified_daily_summaries_between(
