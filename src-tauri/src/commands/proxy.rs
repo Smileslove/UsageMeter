@@ -9,7 +9,7 @@ use crate::proxy::{
 use tauri::State;
 
 use super::usage::ProxyState;
-use super::{load_settings, save_settings_internal};
+use super::{load_settings_blocking as load_settings, save_settings_internal};
 
 pub async fn ensure_passive_proxy_monitor_started(state: &ProxyState) {
     if state.passive_monitor_handle.read().await.is_some() {

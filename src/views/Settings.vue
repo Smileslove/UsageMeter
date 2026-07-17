@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref } from 'vue'
 import ModelPricingSettings from '../components/ModelPricingSettings.vue'
 import ApiSourceList from '../components/ApiSourceList.vue'
 import CurrencySettings from '../components/CurrencySettings.vue'
@@ -20,16 +20,9 @@ import { quitApplication } from '../utils/appExit'
 const store = useMonitorStore()
 
 const subView = ref<'main' | 'model-pricing' | 'api-sources' | 'currency'>('main')
-const modelPricingKey = ref(0)
 const quitDialogOpen = ref(false)
 const quitBusy = ref(false)
 const quitFailed = ref(false)
-
-watch(subView, (newVal) => {
-  if (newVal === 'model-pricing') {
-    modelPricingKey.value++
-  }
-})
 
 const goBack = () => {
   subView.value = 'main'
@@ -76,18 +69,17 @@ const confirmQuit = async () => {
 <template>
   <div class="relative">
     <ModelPricingSettings
-      v-show="subView === 'model-pricing'"
-      :key="modelPricingKey"
+      v-if="subView === 'model-pricing'"
       @back="goBack"
     />
 
     <ApiSourceList
-      v-show="subView === 'api-sources'"
+      v-if="subView === 'api-sources'"
       @back="goBack"
     />
 
     <CurrencySettings
-      v-show="subView === 'currency'"
+      v-if="subView === 'currency'"
       @back="goBack"
     />
 

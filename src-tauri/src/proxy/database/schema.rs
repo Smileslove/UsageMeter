@@ -517,12 +517,12 @@ impl ProxyDatabase {
     }
 
     pub(super) fn record_local_date(timestamp_ms: i64) -> String {
-        let settings = crate::commands::load_settings().unwrap_or_default();
+        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
         Self::record_local_date_with_settings(timestamp_ms, &settings)
     }
 
     pub(super) fn today_local_date() -> String {
-        let settings = crate::commands::load_settings().unwrap_or_default();
+        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
         Self::today_local_date_with_settings(&settings)
     }
 
@@ -538,7 +538,7 @@ impl ProxyDatabase {
     }
 
     pub(super) fn current_day_boundary_mode() -> String {
-        let settings = crate::commands::load_settings().unwrap_or_default();
+        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
         crate::utils::business_time::normalize_day_boundary_mode(&settings.day_boundary_mode)
     }
 }

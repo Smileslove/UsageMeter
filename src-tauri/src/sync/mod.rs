@@ -255,7 +255,7 @@ pub fn spawn_background_sync_loop() {
         let mut prev_auto_sync_active = false;
         loop {
             let iteration_start = tokio::time::Instant::now();
-            let settings = match crate::commands::load_settings() {
+            let settings = match crate::commands::load_settings_blocking() {
                 Ok(app_settings) => app_settings.sync,
                 Err(err) => {
                     eprintln!("[UsageMeter] Failed to load settings for background sync: {err}");
@@ -541,7 +541,8 @@ async fn sync_now_inner(
 }
 
 pub fn get_status(settings: &SyncSettings) -> Result<SyncStatus, String> {
-    let db = ensure_local_usage_synced()?;
+    // 状态展示只读当前 DB 快照，避免在读取时触发全量本地扫描
+    let db = crate::local_usage::get_local_usage_db()?;
     let last_error = db
         .get_webdav_sync_state("last_error")?
         .filter(|value| !value.trim().is_empty());
@@ -911,7 +912,7 @@ async fn sync_shared_settings(
     _instance_id: &str,
     credentials: &WebDavCredentials,
 ) -> Result<(), String> {
-    let mut app_settings = crate::commands::load_settings()?;
+    let mut app_settings = crate::commands::load_settings_blocking()?;
     let db = ensure_local_usage_synced()?;
     let now = chrono::Utc::now().timestamp();
 

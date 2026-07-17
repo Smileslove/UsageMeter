@@ -9,7 +9,8 @@ pub struct LocalUsageMaintenanceStats {
 #[tauri::command]
 pub async fn get_local_usage_maintenance_stats() -> Result<LocalUsageMaintenanceStats, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        let db = crate::local_usage::ensure_local_usage_synced()?;
+        // 展示用统计读当前快照即可，避免每次进设置页触发全量本地扫描
+        let db = crate::local_usage::get_local_usage_db()?;
         let total = db.count_local_request_facts()?;
         let orphan = db.count_orphan_local_facts()?;
         Ok::<_, String>(LocalUsageMaintenanceStats {
@@ -27,7 +28,8 @@ pub async fn get_opencode_schema_status(
 ) -> Result<crate::session::opencode_reader::OpenCodeSchemaStatus, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let mut status = crate::session::opencode_reader::check_opencode_schema();
-        if let Ok(db) = crate::local_usage::ensure_local_usage_synced() {
+        // 读取的是上次扫描持久化的状态键，无需触发新扫描
+        if let Ok(db) = crate::local_usage::get_local_usage_db() {
             status.persisted_compatibility_mode = db
                 .get_local_sync_state("opencode_db_schema_mode")
                 .ok()

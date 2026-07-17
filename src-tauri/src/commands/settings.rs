@@ -6,9 +6,8 @@ use std::fs;
 use std::path::Path;
 use tauri::{AppHandle, Emitter};
 
-/// 加载应用设置
-#[tauri::command]
-pub fn load_settings() -> Result<AppSettings, String> {
+/// 加载应用设置（同步实现，供 Rust 内部直接调用；macOS 上可能 spawn Keychain 子进程）
+pub fn load_settings_blocking() -> Result<AppSettings, String> {
     let path = AppSettings::settings_path()?;
     if !path.exists() {
         let mut settings = AppSettings::default();
@@ -27,20 +26,30 @@ pub fn load_settings() -> Result<AppSettings, String> {
     Ok(settings)
 }
 
+/// 加载应用设置
+#[tauri::command]
+pub async fn load_settings() -> Result<AppSettings, String> {
+    tauri::async_runtime::spawn_blocking(load_settings_blocking)
+        .await
+        .map_err(|e| format!("join error: {e}"))?
+}
+
 /// 保存应用设置（Tauri 命令）。
 ///
 /// 网络代理 reload 失败时会同时 emit `network-proxy-reload-failed` 事件并返回 Err，
 /// 让前端 UI 能感知"已落盘但运行时未应用"的状态。
 #[tauri::command]
-pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
-    match save_settings_internal(settings) {
+pub async fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || match save_settings_internal(settings) {
         Ok(()) => Ok(()),
         Err(SaveSettingsError::ReloadFailed(err)) => {
             let _ = app.emit("network-proxy-reload-failed", err.clone());
             Err(err)
         }
         Err(SaveSettingsError::Other(err)) => Err(err),
-    }
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))?
 }
 
 /// 内部错误分类，让命令层能区分"保存失败"与"保存成功但热更新失败"。
@@ -70,7 +79,7 @@ impl std::fmt::Display for SaveSettingsError {
 /// 真正的保存逻辑。供非 Tauri 上下文（后台同步、代理服务器内部）复用。
 pub fn save_settings_internal(settings: AppSettings) -> Result<(), SaveSettingsError> {
     let mut settings = settings;
-    let previous_settings = load_settings().unwrap_or_default();
+    let previous_settings = load_settings_blocking().unwrap_or_default();
     normalize_settings(&mut settings).map_err(SaveSettingsError::Other)?;
     crate::subscription::source_quota_secrets::persist_settings(&mut settings, &previous_settings)
         .map_err(SaveSettingsError::Other)?;
@@ -252,7 +261,13 @@ fn reset_day_boundary_caches() -> Result<(), String> {
 
 /// 列出所有已安装的 WSL 发行版（仅 Windows 生效）。
 #[tauri::command]
-pub fn list_wsl_distros() -> Vec<String> {
+pub async fn list_wsl_distros() -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(list_wsl_distros_blocking)
+        .await
+        .unwrap_or_default()
+}
+
+fn list_wsl_distros_blocking() -> Vec<String> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

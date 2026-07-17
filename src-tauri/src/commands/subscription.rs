@@ -100,7 +100,7 @@ pub async fn get_source_quota_profiles(
 #[tauri::command]
 pub async fn get_configured_source_quotas(
 ) -> Result<crate::models::ConfiguredSourceQuotaQueryResult, String> {
-    use crate::commands::load_settings;
+    use crate::commands::load_settings_blocking as load_settings;
     use crate::subscription::source_quota::{
         fetch_auto_source_quota_for_resolved_source, fetch_source_quota,
     };
@@ -220,7 +220,7 @@ pub async fn test_source_quota_query(
     binding: crate::models::SourceQuotaBindingConfig,
     state: State<'_, SubscriptionState>,
 ) -> Result<crate::subscription::source_quota::SourceQuotaBindingTestResult, String> {
-    use crate::commands::load_settings;
+    use crate::commands::load_settings_blocking as load_settings;
     use crate::subscription::source_quota::{
         probe_source_quota_binding_state, test_source_quota_binding, SourceQuotaBindingRuntimeState,
     };
@@ -267,7 +267,7 @@ pub async fn get_source_quota_binding_states(
     source_id: Option<String>,
     state: State<'_, SubscriptionState>,
 ) -> Result<Vec<crate::subscription::source_quota::SourceQuotaBindingRuntimeState>, String> {
-    use crate::commands::load_settings;
+    use crate::commands::load_settings_blocking as load_settings;
     use crate::subscription::source_quota::{
         merged_runtime_state, probe_source_quota_binding_state,
     };
@@ -345,7 +345,7 @@ pub async fn probe_source_quota_query(
     binding: Option<crate::models::SourceQuotaBindingConfig>,
     state: State<'_, SubscriptionState>,
 ) -> Result<crate::subscription::source_quota::SourceQuotaBindingRuntimeState, String> {
-    use crate::commands::load_settings;
+    use crate::commands::load_settings_blocking as load_settings;
     use crate::subscription::source_quota::probe_source_quota_binding_state;
     use crate::subscription::source_resolver::resolve_all_relay_sources;
 

@@ -66,7 +66,7 @@ pub async fn get_window_rate_summary(
     window: String,
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<WindowRateSummary, String> {
-    let settings = crate::commands::load_settings()?;
+    let settings = crate::commands::load_settings_blocking()?;
     let cutoff_ms =
         crate::utils::business_time::business_window_cutoff_epoch(&window, &settings) * 1000;
     let include_errors = settings.proxy.include_error_requests;
