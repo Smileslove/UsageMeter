@@ -263,7 +263,7 @@ pub(super) async fn try_build_statistics_summary_from_hourly_cache(
         facts
     };
 
-    let summary = build_merged_statistics(facts, query);
+    let summary = build_merged_statistics(&facts, query);
     store_hourly_summary_cache(cache_key, &summary);
     perf_log(
         "statistics_hourly_cache_store",
@@ -304,7 +304,6 @@ mod tests {
             models: Vec::new(),
             performance: None,
             status: None,
-            insights: Vec::new(),
         }
     }
 

@@ -1,6 +1,6 @@
 use super::types::ProxyState;
 use crate::models::AppSettings;
-use crate::unified_usage::CoverageOrigin;
+use crate::unified_usage::{CoverageOrigin, MergedRequestFact};
 
 const RECENT_REQUESTS_MAX_LIMIT: i64 = 30;
 const RECENT_REQUESTS_MAX_OFFSET: i64 = 200;
@@ -52,27 +52,31 @@ pub async fn get_recent_request_records(
     let limit = query.limit.clamp(1, RECENT_REQUESTS_MAX_LIMIT);
     let offset = query.offset.clamp(0, RECENT_REQUESTS_MAX_OFFSET);
 
-    let (mut facts, _) =
+    let (facts, _) =
         crate::unified_usage::get_merged_request_facts(&settings, None, None, include_errors)
             .await?;
-    facts.sort_by_key(|fact| std::cmp::Reverse(fact.timestamp_ms));
+    // 事实向量来自共享 Arc，不能原地排序；先按引用做稳定排序（与原先对整表
+    // sort_by_key 的顺序语义一致），再只克隆分页命中的至多 limit 条记录，
+    // 避免为全量历史事实付一次深拷贝。
+    let mut ordered: Vec<&MergedRequestFact> = facts.iter().collect();
+    ordered.sort_by_key(|fact| std::cmp::Reverse(fact.timestamp_ms));
 
-    Ok(facts
+    Ok(ordered
         .into_iter()
         .skip(offset as usize)
         .take(limit as usize)
         .map(|fact| RequestRecordItem {
-            request_key: fact.canonical_request_key,
-            session_id: fact.session_id,
-            project_name: fact.project_name,
-            project_path: fact.project_path,
-            source_label: fact.source_label,
-            api_key_prefix: fact.api_key_prefix,
-            request_base_url: fact.request_base_url,
-            tool: fact.tool,
+            request_key: fact.canonical_request_key.clone(),
+            session_id: fact.session_id.clone(),
+            project_name: fact.project_name.clone(),
+            project_path: fact.project_path.clone(),
+            source_label: fact.source_label.clone(),
+            api_key_prefix: fact.api_key_prefix.clone(),
+            request_base_url: fact.request_base_url.clone(),
+            tool: fact.tool.clone(),
             timestamp_sec: fact.timestamp_sec,
             timestamp_ms: fact.timestamp_ms,
-            model: fact.model,
+            model: fact.model.clone(),
             input_tokens: fact.input_tokens,
             output_tokens: fact.output_tokens,
             cache_create_tokens: fact.cache_create_tokens,

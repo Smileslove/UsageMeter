@@ -473,7 +473,6 @@ pub fn run() {
             commands::refresh_usage_bundle,
             commands::get_overview_deferred_bundle,
             commands::get_overview_breakdown,
-            commands::get_window_rate_summary,
             commands::get_statistics_summary,
             commands::get_month_activity,
             commands::get_year_activity,

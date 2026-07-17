@@ -3,7 +3,6 @@ use super::super::types::{
     StatisticsPerformance, StatisticsQuery, StatisticsRange, StatisticsStatusBreakdown,
     StatisticsSummary, StatisticsTotals, StatisticsTrendPoint, MERGED_SOURCE,
 };
-use super::aggregate::build_insights;
 use super::shared::{
     bucket_name, collect_day_activity_from_facts, local_date_start_epoch, make_empty_trend,
     normalize_range, DayAccumulatorMap,
@@ -111,7 +110,7 @@ pub(super) async fn load_day_activity_from_summary_with_hot_overlay(
             )
             .await?;
             let mut day_map: DayAccumulatorMap = HashMap::new();
-            collect_day_activity_from_facts(facts, &mut day_map, settings);
+            collect_day_activity_from_facts(&facts, &mut day_map, settings);
             for (date, (acc, models)) in day_map {
                 let error_requests = acc.client_error_requests + acc.server_error_requests;
                 by_date.insert(
@@ -654,13 +653,6 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
         None
     };
 
-    let insights = build_insights(
-        &totals,
-        &trend,
-        &models,
-        &query.metric,
-        performance.as_ref(),
-    );
     Ok(Some(StatisticsSummary {
         generated_at_epoch: chrono::Utc::now().timestamp(),
         source: MERGED_SOURCE.to_string(),
@@ -676,7 +668,6 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
         models,
         performance,
         status,
-        insights,
     }))
 }
 

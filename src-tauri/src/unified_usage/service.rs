@@ -11,7 +11,7 @@ use crate::proxy::{
 };
 use crate::session::{wsl_distro_from_path, LocalRequestRecord, SessionMeta};
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use std::time::Instant;
 
@@ -32,7 +32,8 @@ struct MergeCacheKey {
 #[derive(Debug, Clone)]
 struct MergeCacheEntry {
     key: MergeCacheKey,
-    facts: Vec<MergedRequestFact>,
+    /// Arc 包裹：命中时只克隆指针，避免大范围下几十 MB 的整向量深拷贝。
+    facts: Arc<Vec<MergedRequestFact>>,
     coverage: MergedCoverage,
 }
 
@@ -52,7 +53,8 @@ struct HotMergeCacheKey {
 #[derive(Debug, Clone)]
 struct HotMergeCacheEntry {
     key: HotMergeCacheKey,
-    facts: Vec<MergedRequestFact>,
+    /// Arc 包裹：命中时只克隆指针，过滤方从 Arc 借用按需拷贝。
+    facts: Arc<Vec<MergedRequestFact>>,
 }
 
 /// 冷段（历史日物化事实）缓存 key。
@@ -82,9 +84,10 @@ struct ColdFactsCacheKey {
 #[derive(Debug, Clone)]
 struct ColdFactsCacheEntry {
     key: ColdFactsCacheKey,
-    /// 未做 retain 过滤前的完整冷段事实（retain 的 range/source/include_errors
-    /// 条件因查询而异，留在命中后每次执行——纯内存线性过滤远比 SQLite 重读便宜）。
-    facts: Vec<MergedRequestFact>,
+    /// 未做 retain 过滤前的完整冷段事实（range/source/include_errors 过滤条件
+    /// 因查询而异，留在命中后每次执行——纯内存线性过滤远比 SQLite 重读便宜）。
+    /// Arc 包裹：命中返回指针拷贝，过滤方从借用中 filter+cloned 只拷贝命中子集。
+    facts: Arc<Vec<MergedRequestFact>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -227,7 +230,7 @@ pub(crate) fn seed_runtime_merge_cache_for_test() {
         proxy_signature: None,
         pricings: &[],
     });
-    store_merge_cache(merge_key, &[], &MergedCoverage::default());
+    store_merge_cache(merge_key, Arc::new(Vec::new()), &MergedCoverage::default());
 }
 
 #[cfg(test)]
@@ -281,17 +284,24 @@ fn fingerprint_pricings(pricings: &[crate::models::ModelPricingConfig]) -> u64 {
     hasher.finish()
 }
 
-fn lookup_merge_cache(key: &MergeCacheKey) -> Option<(Vec<MergedRequestFact>, MergedCoverage)> {
+fn lookup_merge_cache(
+    key: &MergeCacheKey,
+) -> Option<(Arc<Vec<MergedRequestFact>>, MergedCoverage)> {
     let cache = merge_cache();
     let mut guard = cache.lock().unwrap();
     let idx = guard.iter().position(|entry| entry.key == *key)?;
     let entry = guard.remove(idx);
+    // Arc clone 只是指针拷贝，命中路径不再整向量深拷贝。
     let result = (entry.facts.clone(), entry.coverage.clone());
     guard.insert(0, entry);
     Some(result)
 }
 
-fn store_merge_cache(key: MergeCacheKey, facts: &[MergedRequestFact], coverage: &MergedCoverage) {
+fn store_merge_cache(
+    key: MergeCacheKey,
+    facts: Arc<Vec<MergedRequestFact>>,
+    coverage: &MergedCoverage,
+) {
     let cache = merge_cache();
     let mut guard = cache.lock().unwrap();
     if let Some(idx) = guard.iter().position(|entry| entry.key == key) {
@@ -301,7 +311,7 @@ fn store_merge_cache(key: MergeCacheKey, facts: &[MergedRequestFact], coverage: 
         0,
         MergeCacheEntry {
             key,
-            facts: facts.to_vec(),
+            facts,
             coverage: coverage.clone(),
         },
     );
@@ -310,7 +320,7 @@ fn store_merge_cache(key: MergeCacheKey, facts: &[MergedRequestFact], coverage: 
     }
 }
 
-fn lookup_hot_merge_cache(key: &HotMergeCacheKey) -> Option<Vec<MergedRequestFact>> {
+fn lookup_hot_merge_cache(key: &HotMergeCacheKey) -> Option<Arc<Vec<MergedRequestFact>>> {
     let cache = hot_merge_cache();
     let mut guard = cache.lock().unwrap();
     let idx = guard.iter().position(|entry| entry.key == *key)?;
@@ -320,19 +330,13 @@ fn lookup_hot_merge_cache(key: &HotMergeCacheKey) -> Option<Vec<MergedRequestFac
     Some(result)
 }
 
-fn store_hot_merge_cache(key: HotMergeCacheKey, facts: &[MergedRequestFact]) {
+fn store_hot_merge_cache(key: HotMergeCacheKey, facts: Arc<Vec<MergedRequestFact>>) {
     let cache = hot_merge_cache();
     let mut guard = cache.lock().unwrap();
     if let Some(idx) = guard.iter().position(|entry| entry.key == key) {
         guard.remove(idx);
     }
-    guard.insert(
-        0,
-        HotMergeCacheEntry {
-            key,
-            facts: facts.to_vec(),
-        },
-    );
+    guard.insert(0, HotMergeCacheEntry { key, facts });
     if guard.len() > HOT_MERGED_REQUEST_FACTS_CACHE_CAPACITY {
         guard.truncate(HOT_MERGED_REQUEST_FACTS_CACHE_CAPACITY);
     }
@@ -372,7 +376,7 @@ fn build_cold_facts_cache_key(
     }
 }
 
-fn lookup_cold_facts_cache(key: &ColdFactsCacheKey) -> Option<Vec<MergedRequestFact>> {
+fn lookup_cold_facts_cache(key: &ColdFactsCacheKey) -> Option<Arc<Vec<MergedRequestFact>>> {
     let cache = cold_merged_facts_cache();
     let mut guard = cache.lock().unwrap();
     let idx = guard.iter().position(|entry| entry.key == *key)?;
@@ -382,19 +386,13 @@ fn lookup_cold_facts_cache(key: &ColdFactsCacheKey) -> Option<Vec<MergedRequestF
     Some(result)
 }
 
-fn store_cold_facts_cache(key: ColdFactsCacheKey, facts: &[MergedRequestFact]) {
+fn store_cold_facts_cache(key: ColdFactsCacheKey, facts: Arc<Vec<MergedRequestFact>>) {
     let cache = cold_merged_facts_cache();
     let mut guard = cache.lock().unwrap();
     if let Some(idx) = guard.iter().position(|entry| entry.key == key) {
         guard.remove(idx);
     }
-    guard.insert(
-        0,
-        ColdFactsCacheEntry {
-            key,
-            facts: facts.to_vec(),
-        },
-    );
+    guard.insert(0, ColdFactsCacheEntry { key, facts });
     if guard.len() > COLD_MERGED_FACTS_CACHE_CAPACITY {
         guard.truncate(COLD_MERGED_FACTS_CACHE_CAPACITY);
     }
@@ -1174,7 +1172,7 @@ pub(crate) fn build_coverage(facts: &[MergedRequestFact]) -> MergedCoverage {
 }
 
 async fn merge_realtime_range(
-    local_db: &crate::local_usage::LocalUsageDatabase,
+    local_db: Arc<crate::local_usage::LocalUsageDatabase>,
     params: MergeRealtimeParams<'_>,
 ) -> Result<RealtimeMergeResult, String> {
     let overall_started_at = Instant::now();
@@ -1204,52 +1202,156 @@ async fn merge_realtime_range(
     };
 
     let (range_start, range_end) = normalize_range_bounds(start_epoch, end_epoch);
-    let local_query_started_at = Instant::now();
-    let mut local_sessions_all = local_db.get_all_sessions(&tool_filter)?;
-    local_sessions_all.extend(local_db.get_remote_sessions(&tool_filter)?);
-    let local_sessions: Vec<SessionMeta> = local_sessions_all
-        .into_iter()
-        .filter(|meta| session_meta_matches(meta, &tool_filter))
-        .collect();
-    let mut local_records =
-        local_db.get_request_records_in_range(range_start, range_end, &tool_filter)?;
-    let local_record_count = local_records.len();
-    let local_request_keys: HashSet<String> =
-        local_records.iter().map(request_key_for_local).collect();
-    let mut remote_records =
-        local_db.get_remote_request_records_in_range(range_start, range_end, &tool_filter)?;
-    let remote_record_count = remote_records.len();
-    remote_records.retain(|record| !local_request_keys.contains(&request_key_for_local(record)));
-    local_records.extend(remote_records);
-    local_records.retain(|record| local_tool_matches(record, &tool_filter));
-    let mut seen_local_keys = HashSet::new();
-    local_records.retain(|record| seen_local_keys.insert(request_key_for_local(record)));
-    let session_meta_by_id = build_local_meta_index(&local_sessions);
-    let message_to_session = build_message_to_session_index(&local_records);
-    let local_query_elapsed_ms = local_query_started_at.elapsed().as_millis();
 
-    let proxy_query_started_at = Instant::now();
-    let (all_proxy_records, proxy_records) = if let Some(proxy_db) = ProxyDatabase::get_global() {
-        let mut records =
-            fetch_proxy_records(proxy_db.as_ref(), &usage_filter, start_epoch, end_epoch).await?;
-        attach_proxy_session_ids(&mut records, &message_to_session);
-        let visible_records: Vec<UsageRecord> = records
-            .iter()
-            .filter(|record| include_errors || (200..300).contains(&record.status_code))
-            .cloned()
+    // 前置同步段：本地/远端会话与请求记录的 SQLite 全行读取、去重与索引构建
+    // 是合并路径上的同步重活，移入阻塞线程池，避免占住 tauri async runtime 的
+    // 工作线程；local_ms 计时随逻辑一起进入闭包，字段含义不变。
+    let (
+        local_records,
+        local_record_count,
+        remote_record_count,
+        session_meta_by_id,
+        message_to_session,
+        local_query_elapsed_ms,
+    ) = tauri::async_runtime::spawn_blocking(move || {
+        let local_query_started_at = Instant::now();
+        let mut local_sessions_all = local_db.get_all_sessions(&tool_filter)?;
+        local_sessions_all.extend(local_db.get_remote_sessions(&tool_filter)?);
+        let local_sessions: Vec<SessionMeta> = local_sessions_all
+            .into_iter()
+            .filter(|meta| session_meta_matches(meta, &tool_filter))
             .collect();
-        let all_records: Vec<UsageRecord> = if let Some(filter) = unfiltered_usage_filter.as_ref() {
-            let mut unfiltered =
-                fetch_proxy_records(proxy_db.as_ref(), filter, start_epoch, end_epoch).await?;
+        let mut local_records =
+            local_db.get_request_records_in_range(range_start, range_end, &tool_filter)?;
+        let local_record_count = local_records.len();
+        let local_request_keys: HashSet<String> =
+            local_records.iter().map(request_key_for_local).collect();
+        let mut remote_records =
+            local_db.get_remote_request_records_in_range(range_start, range_end, &tool_filter)?;
+        let remote_record_count = remote_records.len();
+        remote_records
+            .retain(|record| !local_request_keys.contains(&request_key_for_local(record)));
+        local_records.extend(remote_records);
+        local_records.retain(|record| local_tool_matches(record, &tool_filter));
+        let mut seen_local_keys = HashSet::new();
+        local_records.retain(|record| seen_local_keys.insert(request_key_for_local(record)));
+        let session_meta_by_id = build_local_meta_index(&local_sessions);
+        let message_to_session = build_message_to_session_index(&local_records);
+        Ok::<_, String>((
+            local_records,
+            local_record_count,
+            remote_record_count,
+            session_meta_by_id,
+            message_to_session,
+            local_query_started_at.elapsed().as_millis(),
+        ))
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))??;
+
+    // 异步取数段：proxy 记录的两次取数是真正的 await 点，保持在 async 上下文；
+    // 取回后的纯内存加工（session 归属回填、可见性过滤）挪入后置同步段一并
+    // 下沉阻塞线程池，proxy_ms 仍计到 proxy 记录整理就绪为止，含义不变。
+    let proxy_query_started_at = Instant::now();
+    let (raw_proxy_records, raw_unfiltered_proxy_records) = if let Some(proxy_db) =
+        ProxyDatabase::get_global()
+    {
+        let records =
+            fetch_proxy_records(proxy_db.as_ref(), &usage_filter, start_epoch, end_epoch).await?;
+        let unfiltered = if let Some(filter) = unfiltered_usage_filter.as_ref() {
+            Some(fetch_proxy_records(proxy_db.as_ref(), filter, start_epoch, end_epoch).await?)
+        } else {
+            None
+        };
+        (records, unfiltered)
+    } else {
+        (Vec::new(), None)
+    };
+
+    // 后置同步合并段：索引构建、模糊匹配、合并主循环与排序都是大向量上的纯
+    // CPU 工作（codex 回退 base_url 还含一次阻塞的 config.toml 读取），整体移
+    // 入阻塞线程池。Instant 是 Copy，跨线程后各段 elapsed 计时含义保持不变。
+    let inputs = RealtimeMergeComputeInputs {
+        local_records,
+        local_record_count,
+        remote_record_count,
+        session_meta_by_id,
+        message_to_session,
+        raw_proxy_records,
+        raw_unfiltered_proxy_records,
+        include_errors,
+        pricings: pricings.to_vec(),
+        pricing_match_mode: pricing_match_mode.to_string(),
+        phase_label: phase_label.to_string(),
+        range_start,
+        range_end,
+        local_query_elapsed_ms,
+        proxy_query_started_at,
+        overall_started_at,
+    };
+    tauri::async_runtime::spawn_blocking(move || merge_realtime_compute_sync(inputs))
+        .await
+        .map_err(|e| format!("Task error: {}", e))?
+}
+
+/// merge_realtime_range 后置同步合并段的输入（跨线程移交所需的全部所有权数据）。
+struct RealtimeMergeComputeInputs {
+    local_records: Vec<LocalRequestRecord>,
+    local_record_count: usize,
+    remote_record_count: usize,
+    session_meta_by_id: HashMap<String, SessionMeta>,
+    message_to_session: HashMap<String, String>,
+    raw_proxy_records: Vec<UsageRecord>,
+    raw_unfiltered_proxy_records: Option<Vec<UsageRecord>>,
+    include_errors: bool,
+    pricings: Vec<crate::models::ModelPricingConfig>,
+    pricing_match_mode: String,
+    phase_label: String,
+    range_start: i64,
+    range_end: i64,
+    local_query_elapsed_ms: u128,
+    proxy_query_started_at: Instant,
+    overall_started_at: Instant,
+}
+
+/// merge_realtime_range 的后置同步合并段，经 spawn_blocking 在阻塞线程池执行。
+fn merge_realtime_compute_sync(
+    inputs: RealtimeMergeComputeInputs,
+) -> Result<RealtimeMergeResult, String> {
+    let RealtimeMergeComputeInputs {
+        local_records,
+        local_record_count,
+        remote_record_count,
+        session_meta_by_id,
+        message_to_session,
+        raw_proxy_records,
+        raw_unfiltered_proxy_records,
+        include_errors,
+        pricings,
+        pricing_match_mode,
+        phase_label,
+        range_start,
+        range_end,
+        local_query_elapsed_ms,
+        proxy_query_started_at,
+        overall_started_at,
+    } = inputs;
+    let pricings: &[crate::models::ModelPricingConfig] = &pricings;
+    let pricing_match_mode: &str = &pricing_match_mode;
+    let mut attached_proxy_records = raw_proxy_records;
+    attach_proxy_session_ids(&mut attached_proxy_records, &message_to_session);
+    let proxy_records: Vec<UsageRecord> = attached_proxy_records
+        .iter()
+        .filter(|record| include_errors || (200..300).contains(&record.status_code))
+        .cloned()
+        .collect();
+    let all_proxy_records: Vec<UsageRecord> =
+        if let Some(mut unfiltered) = raw_unfiltered_proxy_records {
             attach_proxy_session_ids(&mut unfiltered, &message_to_session);
             unfiltered
         } else {
-            records
+            attached_proxy_records
         };
-        (all_records, visible_records)
-    } else {
-        (Vec::new(), Vec::new())
-    };
     let proxy_query_elapsed_ms = proxy_query_started_at.elapsed().as_millis();
 
     let index_build_started_at = Instant::now();
@@ -1514,7 +1616,7 @@ fn build_materialization_state(
 
 #[allow(clippy::too_many_arguments)]
 async fn ensure_materialized_history_for_range(
-    local_db: &crate::local_usage::LocalUsageDatabase,
+    local_db: Arc<crate::local_usage::LocalUsageDatabase>,
     settings: &AppSettings,
     range_start: i64,
     range_end: i64,
@@ -1612,7 +1714,7 @@ async fn ensure_materialized_history_for_range(
             let materialize_result = async {
                 if still_needs_rebuild {
                     let merge = merge_realtime_range(
-                        local_db,
+                        local_db.clone(),
                         MergeRealtimeParams {
                             settings: &canonical_settings,
                             start_epoch: Some(day_start),
@@ -1695,7 +1797,7 @@ fn combined_data_time_bounds(
 }
 
 async fn ensure_materialized_history_with_db(
-    local_db: &crate::local_usage::LocalUsageDatabase,
+    local_db: Arc<crate::local_usage::LocalUsageDatabase>,
     settings: &AppSettings,
     start_epoch: i64,
     end_epoch: i64,
@@ -1711,14 +1813,14 @@ async fn ensure_materialized_history_with_db(
         }
     }
     let pricing_match_mode = settings.model_pricing.match_mode.clone();
-    let effective_range = if let Some((data_start, data_end)) = combined_data_time_bounds(local_db)?
-    {
-        let effective_start = start_epoch.max(data_start);
-        let effective_end = end_epoch.min(data_end.max(start_epoch.saturating_add(1)));
-        (effective_start, effective_end)
-    } else {
-        (start_epoch, start_epoch)
-    };
+    let effective_range =
+        if let Some((data_start, data_end)) = combined_data_time_bounds(&local_db)? {
+            let effective_start = start_epoch.max(data_start);
+            let effective_end = end_epoch.min(data_end.max(start_epoch.saturating_add(1)));
+            (effective_start, effective_end)
+        } else {
+            (start_epoch, start_epoch)
+        };
     if effective_range.1 <= effective_range.0 {
         return Ok(());
     }
@@ -1761,18 +1863,18 @@ pub(crate) async fn ensure_materialized_history_no_sync(
     end_epoch: i64,
 ) -> Result<(), String> {
     let local_db = crate::local_usage::get_local_usage_db()?;
-    ensure_materialized_history_with_db(local_db.as_ref(), settings, start_epoch, end_epoch).await
+    ensure_materialized_history_with_db(local_db, settings, start_epoch, end_epoch).await
 }
 
 async fn get_hot_merge_facts(
-    local_db: &crate::local_usage::LocalUsageDatabase,
+    local_db: Arc<crate::local_usage::LocalUsageDatabase>,
     settings: &AppSettings,
     include_errors: bool,
     pricings: &[crate::models::ModelPricingConfig],
     pricing_match_mode: &str,
     local_signature: crate::local_usage::LocalMergeCacheSignature,
     proxy_signature: Option<ProxyMergeCacheSignature>,
-) -> Result<Vec<MergedRequestFact>, String> {
+) -> Result<Arc<Vec<MergedRequestFact>>, String> {
     let today = crate::local_usage::LocalUsageDatabase::today_local_date_with_settings(settings);
     let today_start =
         crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds_with_settings(
@@ -1835,32 +1937,34 @@ async fn get_hot_merge_facts(
             },
         )
         .await?;
-        store_hot_merge_cache(cache_key.clone(), &merge.facts);
+        // 缓存与调用方共享同一个 Arc，写缓存不再整向量深拷贝。
+        let facts = Arc::new(merge.facts);
+        store_hot_merge_cache(cache_key.clone(), facts.clone());
         perf_log(
             "merge_hot_cache_store",
             format!(
                 "date={} facts={} local_records={} remote_records={} proxy_records={} all_proxy_records={}",
                 today,
-                merge.facts.len(),
+                facts.len(),
                 merge.local_record_count,
                 merge.remote_record_count,
                 merge.proxy_record_count,
                 merge.proxy_all_record_count,
             ),
         );
-        Ok::<Vec<MergedRequestFact>, String>(merge.facts)
+        Ok::<Arc<Vec<MergedRequestFact>>, String>(facts)
     }
     .await;
     compute_result
 }
 
 async fn get_merged_request_facts_with_db(
-    local_db: std::sync::Arc<crate::local_usage::LocalUsageDatabase>,
+    local_db: Arc<crate::local_usage::LocalUsageDatabase>,
     settings: &AppSettings,
     start_epoch: Option<i64>,
     end_epoch: Option<i64>,
     include_errors: bool,
-) -> Result<(Vec<MergedRequestFact>, MergedCoverage), String> {
+) -> Result<(Arc<Vec<MergedRequestFact>>, MergedCoverage), String> {
     let overall_started_at = Instant::now();
     let (range_start, raw_range_end) = normalize_range_bounds(start_epoch, end_epoch);
     // 对开放式 range_end 做整分钟归一化（详见 normalize_open_ended_range_end），
@@ -1944,7 +2048,7 @@ async fn get_merged_request_facts_with_db(
             let effective_end = range_end.min(data_end.max(range_start + 1));
             if effective_end > effective_start {
                 ensure_materialized_history_for_range(
-                    &local_db,
+                    local_db.clone(),
                     settings,
                     effective_start,
                     effective_end,
@@ -1970,7 +2074,7 @@ async fn get_merged_request_facts_with_db(
             ),
         );
 
-        // 冷读是 SQLite 全行读取 + 反序列化，随后的 retain 是大向量过滤，
+        // 冷读是 SQLite 全行读取 + 反序列化，随后的范围过滤是大向量线性扫描，
         // 两者是合并路径上最重的同步阻塞段；一并移入阻塞线程池，避免占住
         // tauri async runtime 的工作线程拖慢并发命令。perf 埋点随逻辑一起
         // 进入闭包，elapsed 计时含义保持不变。
@@ -2028,7 +2132,7 @@ async fn get_merged_request_facts_with_db(
                     )
                 });
                 let cached_cold_facts = cold_cache_key.as_ref().and_then(lookup_cold_facts_cache);
-                let mut merged = match cached_cold_facts {
+                let cold_facts: Arc<Vec<MergedRequestFact>> = match cached_cold_facts {
                     Some(facts) => {
                         perf_log(
                             "merge_cold_cache_hit",
@@ -2053,6 +2157,7 @@ async fn get_merged_request_facts_with_db(
                                 cold_read_started_at.elapsed().as_millis(),
                             ),
                         );
+                        let facts = Arc::new(facts);
                         if let Some(key) = cold_cache_key {
                             // 写缓存前复核指纹：若读事实期间恰有历史日被重建，
                             // 本次结果与 key 已不对应，放弃写入避免污染缓存。
@@ -2071,7 +2176,7 @@ async fn get_merged_request_facts_with_db(
                                             facts.len(),
                                         ),
                                     );
-                                    store_cold_facts_cache(key, &facts);
+                                    store_cold_facts_cache(key, facts.clone());
                                 }
                                 _ => {
                                     perf_log(
@@ -2087,16 +2192,27 @@ async fn get_merged_request_facts_with_db(
                         facts
                     }
                 };
-                let cold_facts_count = merged.len();
+                let cold_facts_count = cold_facts.len();
 
                 let filter_started_at = Instant::now();
-                merged.retain(|fact| {
-                    fact.timestamp_sec >= range_start
-                        && fact.timestamp_sec < range_end
-                        && crate::unified_usage::matches_source_filter(fact, &cold_source_filter)
-                        && (include_errors
-                            || fact.status_code.map(|code| code < 300).unwrap_or(true))
-                });
+                // 缓存数据经 Arc 共享，不能原地 retain。这里选 filter+cloned
+                // collect 而非先整体 Vec::clone 再 retain：前者只克隆命中范围
+                // 内的事实，任何保留率下克隆元素数都 ≤ 后者（后者恒克隆全段再
+                // 丢弃落选项），无需按保留率分支。
+                let merged: Vec<MergedRequestFact> = cold_facts
+                    .iter()
+                    .filter(|fact| {
+                        fact.timestamp_sec >= range_start
+                            && fact.timestamp_sec < range_end
+                            && crate::unified_usage::matches_source_filter(
+                                fact,
+                                &cold_source_filter,
+                            )
+                            && (include_errors
+                                || fact.status_code.map(|code| code < 300).unwrap_or(true))
+                    })
+                    .cloned()
+                    .collect();
                 let filtered_cold_facts_count = merged.len();
                 perf_log(
                     "merge_cold_filter",
@@ -2125,7 +2241,7 @@ async fn get_merged_request_facts_with_db(
         let hot_facts = if range_end > hot_start {
             Some(
                 get_hot_merge_facts(
-                    &local_db,
+                    local_db.clone(),
                     settings,
                     include_errors,
                     &pricings,
@@ -2138,13 +2254,23 @@ async fn get_merged_request_facts_with_db(
         } else {
             None
         };
-        let hot_full_facts_count = hot_facts.as_ref().map(Vec::len).unwrap_or(0);
-        let mut filtered_hot_facts = hot_facts.unwrap_or_default();
-        filtered_hot_facts.retain(|fact| {
-            fact.timestamp_sec >= hot_start
-                && fact.timestamp_sec < range_end
-                && (include_errors || fact.status_code.map(|code| code < 300).unwrap_or(true))
-        });
+        let hot_full_facts_count = hot_facts.as_ref().map(|facts| facts.len()).unwrap_or(0);
+        // 热缓存同样经 Arc 共享，过滤时从借用中按需克隆命中子集。
+        let filtered_hot_facts: Vec<MergedRequestFact> = hot_facts
+            .as_deref()
+            .map(|facts| {
+                facts
+                    .iter()
+                    .filter(|fact| {
+                        fact.timestamp_sec >= hot_start
+                            && fact.timestamp_sec < range_end
+                            && (include_errors
+                                || fact.status_code.map(|code| code < 300).unwrap_or(true))
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
         let hot_facts_count = filtered_hot_facts.len();
         perf_log(
             "merge_hot_read",
@@ -2158,13 +2284,15 @@ async fn get_merged_request_facts_with_db(
         );
         merged.extend(filtered_hot_facts);
 
-        // 大向量排序、覆盖率统计与缓存写入（含整表克隆）同为 CPU 重活，
-        // 同样移入阻塞线程池；Instant 是 Copy，计时语义与原实现一致。
+        // 大向量排序与覆盖率统计同为 CPU 重活，同样移入阻塞线程池；
+        // Instant 是 Copy，计时语义与原实现一致。缓存与返回值共享同一个
+        // Arc，写缓存已不再整表克隆。
         let (merged, coverage) = tauri::async_runtime::spawn_blocking(move || {
             merged.sort_by_key(|fact| fact.timestamp_ms);
             let coverage = build_coverage(&merged);
             let query_elapsed_ms = query_started_at.elapsed().as_millis();
-            store_merge_cache(cache_key, &merged, &coverage);
+            let merged = Arc::new(merged);
+            store_merge_cache(cache_key, merged.clone(), &coverage);
             perf_log(
                 "merge_cache_store",
                 format!(
@@ -2182,18 +2310,20 @@ async fn get_merged_request_facts_with_db(
         })
         .await
         .map_err(|e| format!("Task error: {}", e))?;
-        Ok::<(Vec<MergedRequestFact>, MergedCoverage), String>((merged, coverage))
+        Ok::<(Arc<Vec<MergedRequestFact>>, MergedCoverage), String>((merged, coverage))
     }
     .await;
     compute_result
 }
 
+/// 返回 Arc 包裹的事实向量：命中缓存时只做指针拷贝，调用方将 facts 当只读
+/// 切片使用（&facts 经 Deref 即 &Vec / &[..]），确需所有权时显式 clone。
 pub async fn get_merged_request_facts(
     settings: &AppSettings,
     start_epoch: Option<i64>,
     end_epoch: Option<i64>,
     include_errors: bool,
-) -> Result<(Vec<MergedRequestFact>, MergedCoverage), String> {
+) -> Result<(Arc<Vec<MergedRequestFact>>, MergedCoverage), String> {
     // ensure_local_usage_synced 内部有 condvar 等待与全盘会话文件扫描，
     // 是最典型的同步阻塞源；经 spawn_blocking 执行避免占住 async 工作线程。
     let local_db =
@@ -2209,7 +2339,7 @@ pub async fn get_merged_request_facts_no_sync(
     start_epoch: Option<i64>,
     end_epoch: Option<i64>,
     include_errors: bool,
-) -> Result<(Vec<MergedRequestFact>, MergedCoverage), String> {
+) -> Result<(Arc<Vec<MergedRequestFact>>, MergedCoverage), String> {
     let local_db = crate::local_usage::get_local_usage_db()?;
     get_merged_request_facts_with_db(local_db, settings, start_epoch, end_epoch, include_errors)
         .await
@@ -2280,8 +2410,9 @@ pub async fn get_merged_sessions(
         .map(|meta| (meta.session_id.clone(), meta))
         .collect();
 
-    let mut by_session: HashMap<String, Vec<MergedRequestFact>> = HashMap::new();
-    for fact in facts {
+    // 事实向量来自共享 Arc（只读），会话分桶只借用引用，避免整表深拷贝。
+    let mut by_session: HashMap<String, Vec<&MergedRequestFact>> = HashMap::new();
+    for fact in facts.iter() {
         if fact.session_id.trim().is_empty() {
             continue;
         }
@@ -2542,8 +2673,10 @@ pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<Proj
     let mut fact_backed_project_session_ids: HashSet<String> = HashSet::new();
     let mut proxy_backed_requests_by_session: HashMap<String, u64> = HashMap::new();
 
-    for fact in facts {
-        let descriptor = project_descriptor_for_fact(&fact);
+    // 事实向量来自共享 Arc（只读），聚合循环仅读取字段并按需 clone 字符串，
+    // 借用遍历即可，无需事实所有权。
+    for fact in facts.iter() {
+        let descriptor = project_descriptor_for_fact(fact);
         let entry = map
             .entry(descriptor.key.clone())
             .or_insert_with(|| ProjectAggregate {
@@ -2936,8 +3069,12 @@ mod tests {
             merge_key: merge_key.clone(),
         };
 
-        store_merge_cache(merge_key.clone(), &[], &MergedCoverage::default());
-        store_hot_merge_cache(hot_key.clone(), &[]);
+        store_merge_cache(
+            merge_key.clone(),
+            Arc::new(Vec::new()),
+            &MergedCoverage::default(),
+        );
+        store_hot_merge_cache(hot_key.clone(), Arc::new(Vec::new()));
         store_history_materialization_cache(history_key.clone(), &["2026-06-11".to_string()]);
         store_sessions_cache(session_key.clone(), &[]);
         store_projects_cache(project_key.clone(), &[]);
@@ -3021,7 +3158,7 @@ mod tests {
         let dates = vec!["2026-06-01".to_string()];
         let key = build_cold_facts_cache_key(&dates, &ToolFilter::All, "standard", 1, 500);
         assert!(lookup_cold_facts_cache(&key).is_none());
-        store_cold_facts_cache(key.clone(), &[]);
+        store_cold_facts_cache(key.clone(), Arc::new(Vec::new()));
         assert!(matches!(
             lookup_cold_facts_cache(&key),
             Some(facts) if facts.is_empty()
@@ -3031,7 +3168,7 @@ mod tests {
         for offset in 0..COLD_MERGED_FACTS_CACHE_CAPACITY as i64 {
             let evicting_key =
                 build_cold_facts_cache_key(&dates, &ToolFilter::All, "standard", 1, 600 + offset);
-            store_cold_facts_cache(evicting_key, &[]);
+            store_cold_facts_cache(evicting_key, Arc::new(Vec::new()));
         }
         assert!(lookup_cold_facts_cache(&key).is_none());
         clear_runtime_caches();

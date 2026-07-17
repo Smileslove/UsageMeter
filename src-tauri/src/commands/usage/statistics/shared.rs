@@ -1,4 +1,4 @@
-use super::super::types::{StatisticsBucket, StatisticsMetric, StatisticsTrendPoint};
+use super::super::types::{StatisticsBucket, StatisticsTrendPoint};
 use crate::models::AppSettings;
 use crate::unified_usage::MergedRequestFact;
 use chrono::{Local, NaiveDate, TimeZone};
@@ -95,16 +95,10 @@ pub(super) fn trend_from_map(
     trend
 }
 
-pub(super) fn value_for_metric(point: &StatisticsTrendPoint, metric: &StatisticsMetric) -> f64 {
-    match metric {
-        StatisticsMetric::Cost => point.cost,
-        StatisticsMetric::Requests => point.request_count as f64,
-        StatisticsMetric::Tokens => point.total_tokens as f64,
-    }
-}
-
+// 只读聚合改收 &[..]：调用方直接借用共享 Arc 中的事实向量，仅模型名入桶时
+// 克隆小字符串，避免整向量深拷贝。
 pub(super) fn collect_day_activity_from_facts(
-    facts: Vec<MergedRequestFact>,
+    facts: &[MergedRequestFact],
     day_map: &mut DayAccumulatorMap,
     settings: &AppSettings,
 ) {
@@ -112,9 +106,9 @@ pub(super) fn collect_day_activity_from_facts(
         let date =
             crate::utils::business_time::business_date_for_timestamp(fact.timestamp_sec, settings);
         let entry = day_map.entry(date).or_default();
-        add_fact_to_stat_acc(&mut entry.0, &fact);
+        add_fact_to_stat_acc(&mut entry.0, fact);
         if !fact.model.is_empty() {
-            entry.1.insert(fact.model);
+            entry.1.insert(fact.model.clone());
         }
     }
 }

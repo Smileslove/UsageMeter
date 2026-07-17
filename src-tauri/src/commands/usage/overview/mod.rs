@@ -1,6 +1,6 @@
 use super::helpers::perf_log;
 use super::types::{OverviewBreakdown, OverviewDeferredBundle, ProxyState, UsageRefreshBundle};
-use crate::models::{AppSettings, WindowRateSummary};
+use crate::models::AppSettings;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod breakdown;
@@ -67,28 +67,6 @@ pub async fn get_overview_breakdown(
     Ok(breakdown::build_overview_breakdown_from_facts(
         &settings, window, now, &facts,
     ))
-}
-
-#[tauri::command]
-pub async fn get_window_rate_summary(
-    window: String,
-    _proxy_state: tauri::State<'_, ProxyState>,
-) -> Result<WindowRateSummary, String> {
-    // 同步扫描放后台，避免切换时间窗口时阻塞等待全盘扫描。
-    spawn_background_local_usage_sync();
-    let settings = crate::commands::load_settings()?;
-    let cutoff_ms =
-        crate::utils::business_time::business_window_cutoff_epoch(&window, &settings) * 1000;
-    let include_errors = settings.proxy.include_error_requests;
-    let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
-        &settings,
-        Some(cutoff_ms / 1000),
-        None,
-        include_errors,
-    )
-    .await?;
-
-    Ok(rate::build_window_rate_summary_from_facts(window, &facts))
 }
 
 #[tauri::command]

@@ -164,7 +164,7 @@ async fn load_activity_day_map(
     )
     .await?;
     let facts_count = facts.len();
-    collect_day_activity_from_facts(facts, &mut day_map, settings);
+    collect_day_activity_from_facts(&facts, &mut day_map, settings);
     let mut days_by_date = HashMap::new();
     for (date, (acc, models)) in day_map {
         let error_requests = acc.client_error_requests + acc.server_error_requests;

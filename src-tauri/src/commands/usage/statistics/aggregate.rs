@@ -1,12 +1,12 @@
 use super::super::helpers::perf_log;
 use super::super::types::{
-    StatisticsCapability, StatisticsInsight, StatisticsMetric, StatisticsModelBreakdown,
-    StatisticsPerformance, StatisticsQuery, StatisticsRange, StatisticsStatusBreakdown,
-    StatisticsSummary, StatisticsTotals, StatisticsTrendPoint, MERGED_SOURCE, MODEL_TREND_LIMIT,
+    StatisticsCapability, StatisticsModelBreakdown, StatisticsPerformance, StatisticsQuery,
+    StatisticsRange, StatisticsStatusBreakdown, StatisticsSummary, StatisticsTotals,
+    MERGED_SOURCE, MODEL_TREND_LIMIT,
 };
 use super::shared::{
     add_fact_to_stat_acc, bucket_name, bucket_start, make_empty_trend, normalize_range,
-    trend_from_map, value_for_metric, StatAccumulator,
+    trend_from_map, StatAccumulator,
 };
 use crate::models::StatusCodeCount;
 use crate::unified_usage::{normalize_model_bucket, MergedRequestFact};
@@ -43,75 +43,10 @@ fn totals_from_acc(acc: &StatAccumulator, model_count: u64, with_status: bool) -
     }
 }
 
-pub(super) fn build_insights(
-    totals: &StatisticsTotals,
-    trend: &[StatisticsTrendPoint],
-    models: &[StatisticsModelBreakdown],
-    metric: &StatisticsMetric,
-    performance: Option<&StatisticsPerformance>,
-) -> Vec<StatisticsInsight> {
-    let mut insights = Vec::new();
-
-    if let Some(peak) = trend.iter().max_by(|a, b| {
-        value_for_metric(a, metric)
-            .partial_cmp(&value_for_metric(b, metric))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    }) {
-        if value_for_metric(peak, metric) > 0.0 {
-            insights.push(StatisticsInsight {
-                kind: "peak".to_string(),
-                level: "info".to_string(),
-                value: match metric {
-                    StatisticsMetric::Cost => format!("{:.4}", peak.cost),
-                    StatisticsMetric::Requests => peak.request_count.to_string(),
-                    StatisticsMetric::Tokens => peak.total_tokens.to_string(),
-                },
-                model_name: None,
-                date: Some(peak.label.clone()),
-            });
-        }
-    }
-
-    if let Some(model) = models.first() {
-        insights.push(StatisticsInsight {
-            kind: "topModel".to_string(),
-            level: "info".to_string(),
-            value: format!("{:.1}", model.percent),
-            model_name: Some(model.model_name.clone()),
-            date: None,
-        });
-    }
-
-    if let Some(error_requests) = totals.error_requests {
-        if error_requests > 0 {
-            insights.push(StatisticsInsight {
-                kind: "errors".to_string(),
-                level: "warning".to_string(),
-                value: error_requests.to_string(),
-                model_name: None,
-                date: None,
-            });
-        }
-    }
-
-    if let Some(perf) = performance {
-        if let Some(model) = &perf.slowest_model {
-            insights.push(StatisticsInsight {
-                kind: "slowestModel".to_string(),
-                level: "info".to_string(),
-                value: format!("{:.0}", perf.avg_ttft_ms),
-                model_name: Some(model.clone()),
-                date: None,
-            });
-        }
-    }
-
-    insights.truncate(4);
-    insights
-}
-
+// 只读聚合，无需事实所有权：改收 &[..] 后，调用方可直接借用共享 Arc 中的
+// 事实向量，统计 summary 路径不再整向量深拷贝。
 pub(super) fn build_merged_statistics(
-    facts: Vec<MergedRequestFact>,
+    facts: &[MergedRequestFact],
     query: &StatisticsQuery,
 ) -> StatisticsSummary {
     let started_at = std::time::Instant::now();
@@ -120,7 +55,7 @@ pub(super) fn build_merged_statistics(
     let mut trend_map: HashMap<i64, StatAccumulator> = HashMap::new();
     let mut model_map: HashMap<String, StatAccumulator> = HashMap::new();
 
-    for fact in &facts {
+    for fact in facts {
         let model_name = normalize_model_bucket(&fact.tool, &fact.model);
         let bucket = bucket_start(fact.timestamp_sec, &query.bucket);
         add_fact_to_stat_acc(&mut total, fact);
@@ -183,7 +118,7 @@ pub(super) fn build_merged_statistics(
         .collect();
     let mut model_trend_map: HashMap<String, HashMap<i64, StatAccumulator>> = HashMap::new();
 
-    for fact in &facts {
+    for fact in facts {
         let model_name = normalize_model_bucket(&fact.tool, &fact.model);
         if !top_model_names.contains(&model_name) {
             continue;
@@ -206,7 +141,7 @@ pub(super) fn build_merged_statistics(
             .unwrap_or_else(|| make_empty_trend(start_epoch, end_epoch, &query.bucket));
     }
 
-    let capability = merged_stat_capability_from_facts(&facts);
+    let capability = merged_stat_capability_from_facts(facts);
     if !capability.has_performance {
         for point in &mut trend {
             point.avg_tokens_per_second = None;
@@ -282,13 +217,6 @@ pub(super) fn build_merged_statistics(
         models.len() as u64,
         total.success_requests + total.client_error_requests + total.server_error_requests > 0,
     );
-    let insights = build_insights(
-        &totals,
-        &trend,
-        &models,
-        &query.metric,
-        performance.as_ref(),
-    );
 
     let summary = StatisticsSummary {
         generated_at_epoch: chrono::Utc::now().timestamp(),
@@ -305,7 +233,6 @@ pub(super) fn build_merged_statistics(
         models,
         performance,
         status,
-        insights,
     };
     perf_log(
         "statistics_memory_aggregate",
@@ -326,7 +253,7 @@ pub(super) fn build_merged_statistics(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::usage::types::{StatisticsBucket, StatisticsMetric};
+    use crate::commands::usage::types::StatisticsBucket;
     use crate::unified_usage::CoverageOrigin;
 
     fn test_fact(
@@ -376,7 +303,6 @@ mod tests {
             end_epoch: 7200,
             timezone: "Asia/Shanghai".to_string(),
             bucket: StatisticsBucket::Hour,
-            metric: StatisticsMetric::Tokens,
         }
     }
 
@@ -427,7 +353,7 @@ mod tests {
             ),
         ];
 
-        let summary = build_merged_statistics(facts, &test_query());
+        let summary = build_merged_statistics(&facts, &test_query());
 
         assert_eq!(summary.totals.request_count, 3);
         assert_eq!(summary.totals.total_tokens, 265);
@@ -464,7 +390,6 @@ mod tests {
                 .and_then(|p| p.slowest_model.as_deref()),
             Some("model-b")
         );
-        assert!(!summary.insights.is_empty());
     }
 
     #[test]
@@ -500,7 +425,7 @@ mod tests {
             ),
         ];
 
-        let summary = build_merged_statistics(facts, &test_query());
+        let summary = build_merged_statistics(&facts, &test_query());
 
         assert!(!summary.capability.has_performance);
         assert!(!summary.capability.has_status_codes);

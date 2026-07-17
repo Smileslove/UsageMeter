@@ -164,7 +164,6 @@ export const useMonitorStore = defineStore('monitor', {
     overviewBreakdownError: '' as string,
     overviewBreakdownRequestSeq: 0,
     rateSummaryRequestSeq: 0,
-    directRateSummaryRequestSeq: 0,
     overviewDeferredRequestSeq: 0,
     // 订阅查询
     subscriptionQuota: null as SubscriptionQueryResult | null,
@@ -591,39 +590,6 @@ export const useMonitorStore = defineStore('monitor', {
       if (this.refreshTimer) {
         clearTimeout(this.refreshTimer)
         this.refreshTimer = null
-      }
-    },
-    // 速率统计操作
-    async fetchRateSummary(window: string) {
-      const requestSeq = ++this.directRateSummaryRequestSeq
-      this.rateSummary = null
-
-      try {
-        const summary = await invoke<WindowRateSummary>('get_window_rate_summary', { window })
-        if (requestSeq === this.directRateSummaryRequestSeq) {
-          this.rateSummary = summary
-        }
-      } catch (e) {
-        console.error('Failed to fetch rate summary:', e)
-        if (requestSeq === this.directRateSummaryRequestSeq) {
-          this.rateSummary = {
-            window,
-            overall: {
-              requestCount: 0,
-              totalOutputTokens: 0,
-              totalDurationMs: 0,
-              avgTokensPerSecond: 0
-            },
-            byModel: [],
-            ttft: {
-              requestCount: 0,
-              avgTtftMs: 0,
-              minTtftMs: 0,
-              maxTtftMs: 0
-            },
-            ttftByModel: []
-          }
-        }
       }
     },
     /**

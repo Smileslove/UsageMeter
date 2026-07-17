@@ -635,7 +635,6 @@ export interface StatisticsQuery {
   endEpoch: number
   timezone: string
   bucket: StatisticsBucket
-  metric: StatisticsMetric
 }
 
 export interface StatisticsRange {
@@ -715,14 +714,6 @@ export interface StatisticsStatusBreakdown {
   successRate: number
 }
 
-export interface StatisticsInsight {
-  kind: 'peak' | 'topModel' | 'errors' | 'slowestModel' | string
-  level: 'info' | 'warning' | string
-  value: string
-  modelName?: string | null
-  date?: string | null
-}
-
 export interface StatisticsSummary {
   generatedAtEpoch: number
   source: string
@@ -733,7 +724,6 @@ export interface StatisticsSummary {
   models: StatisticsModelBreakdown[]
   performance?: StatisticsPerformance | null
   status?: StatisticsStatusBreakdown | null
-  insights: StatisticsInsight[]
 }
 
 export interface DayActivity {

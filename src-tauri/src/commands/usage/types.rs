@@ -29,7 +29,6 @@ pub struct StatisticsQuery {
     pub end_epoch: i64,
     pub timezone: String,
     pub bucket: StatisticsBucket,
-    pub metric: StatisticsMetric,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -140,16 +139,6 @@ pub struct StatisticsStatusBreakdown {
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StatisticsInsight {
-    pub kind: String,
-    pub level: String,
-    pub value: String,
-    pub model_name: Option<String>,
-    pub date: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct StatisticsSummary {
     pub generated_at_epoch: i64,
     pub source: String,
@@ -160,7 +149,6 @@ pub struct StatisticsSummary {
     pub models: Vec<StatisticsModelBreakdown>,
     pub performance: Option<StatisticsPerformance>,
     pub status: Option<StatisticsStatusBreakdown>,
-    pub insights: Vec<StatisticsInsight>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, Default)]
@@ -273,7 +261,8 @@ pub(super) struct WindowPreparedFacts {
 
 pub(super) struct PreparedUsageRefreshData {
     pub(super) generated_at_epoch: u64,
-    pub(super) facts: Vec<MergedRequestFact>,
+    /// 直接持有合并服务返回的共享 Arc（只读切片使用），刷新链路零整向量拷贝。
+    pub(super) facts: Arc<Vec<MergedRequestFact>>,
     pub(super) windows: Vec<WindowPreparedFacts>,
 }
 

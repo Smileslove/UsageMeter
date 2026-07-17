@@ -64,7 +64,7 @@ pub async fn get_statistics_summary(
     .await?;
     let facts_count = facts.len();
     let build_started_at = std::time::Instant::now();
-    let summary = aggregate::build_merged_statistics(facts, &query);
+    let summary = aggregate::build_merged_statistics(&facts, &query);
     perf_log(
         "get_statistics_summary",
         format!(

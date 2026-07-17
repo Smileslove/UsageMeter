@@ -124,8 +124,7 @@ function fetchSummary() {
     startEpoch: range.value.start,
     endEpoch: range.value.end,
     timezone: store.settings.timezone,
-    bucket: bucket.value,
-    metric: analysisMetric.value
+    bucket: bucket.value
   })
 }
 
@@ -210,9 +209,9 @@ function setActivityView(mode: 'month' | 'year') {
 }
 
 // 切换分析指标（analysisMetric）无需重新请求后端：trend 每个点已包含全部指标字段，
-// 图表在前端按 metric 本地取值即可；后端仅 insights 随 metric 变化，而前端当前未展示 insights。
-// 下一次范围/粒度变化时会自然带上最新的 metric。
-watch([range, bucket], scheduleSummaryFetch, { deep: true })
+// 图表在前端按 metric 本地取值即可。
+// range 是每次重算都会返回新对象的 computed，bucket 返回字符串，引用比较即可触发，无需 deep。
+watch([range, bucket], scheduleSummaryFetch)
 watch([activityView, monthYear, monthNumber, monthMetric], fetchMonth)
 watch(
   () => [
