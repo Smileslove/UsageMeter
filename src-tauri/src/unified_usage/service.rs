@@ -110,14 +110,13 @@ struct HistoryMaterializationCacheEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SessionDerivedCacheKey {
     merge_key: MergeCacheKey,
-    limit: i64,
-    offset: i64,
 }
 
 #[derive(Debug, Clone)]
 struct SessionDerivedCacheEntry {
     key: SessionDerivedCacheKey,
-    sessions: Vec<SessionStats>,
+    // 完整排序后的会话列表按 merge_key 缓存，分页只在切片范围内 clone。
+    sessions: Arc<Vec<SessionStats>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -431,29 +430,23 @@ fn store_history_materialization_cache(
     }
 }
 
-fn lookup_sessions_cache(key: &SessionDerivedCacheKey) -> Option<Vec<SessionStats>> {
+fn lookup_sessions_cache(key: &SessionDerivedCacheKey) -> Option<Arc<Vec<SessionStats>>> {
     let cache = merged_sessions_cache();
     let mut guard = cache.lock().unwrap();
     let idx = guard.iter().position(|entry| entry.key == *key)?;
     let entry = guard.remove(idx);
-    let result = entry.sessions.clone();
+    let result = Arc::clone(&entry.sessions);
     guard.insert(0, entry);
     Some(result)
 }
 
-fn store_sessions_cache(key: SessionDerivedCacheKey, sessions: &[SessionStats]) {
+fn store_sessions_cache(key: SessionDerivedCacheKey, sessions: Arc<Vec<SessionStats>>) {
     let cache = merged_sessions_cache();
     let mut guard = cache.lock().unwrap();
     if let Some(idx) = guard.iter().position(|entry| entry.key == key) {
         guard.remove(idx);
     }
-    guard.insert(
-        0,
-        SessionDerivedCacheEntry {
-            key,
-            sessions: sessions.to_vec(),
-        },
-    );
+    guard.insert(0, SessionDerivedCacheEntry { key, sessions });
     if guard.len() > MERGED_SESSIONS_CACHE_CAPACITY {
         guard.truncate(MERGED_SESSIONS_CACHE_CAPACITY);
     }
@@ -2381,22 +2374,25 @@ pub async fn get_merged_sessions(
         proxy_signature,
         pricings: &pricings,
     });
-    let session_cache_key = SessionDerivedCacheKey {
-        merge_key,
-        limit,
-        offset,
-    };
+    let session_cache_key = SessionDerivedCacheKey { merge_key };
     if let Some(sessions) = lookup_sessions_cache(&session_cache_key) {
+        // 缓存保存完整排序列表，clone 只发生在分页切片范围内。
+        let page: Vec<SessionStats> = sessions
+            .iter()
+            .skip(offset.max(0) as usize)
+            .take(limit.max(0) as usize)
+            .cloned()
+            .collect();
         perf_log(
             "merged_sessions_cache_hit",
             format!(
                 "tool={} returned={} elapsed_ms={}",
                 cache_key_for_tool_filter(&tool_filter),
-                sessions.len(),
+                page.len(),
                 started_at.elapsed().as_millis(),
             ),
         );
-        return Ok(sessions);
+        return Ok(page);
     }
 
     let (facts, _) = get_merged_request_facts(settings, None, None, include_errors).await?;
@@ -2581,10 +2577,14 @@ pub async fn get_merged_sessions(
     }
 
     result.sort_by_key(|session| std::cmp::Reverse(session.last_request_time));
-    let result: Vec<SessionStats> = result
-        .into_iter()
+    // 先按 merge_key 缓存完整排序列表，再切片返回，避免翻页时重复全量聚合。
+    let full = Arc::new(result);
+    store_sessions_cache(session_cache_key, Arc::clone(&full));
+    let page: Vec<SessionStats> = full
+        .iter()
         .skip(offset.max(0) as usize)
         .take(limit.max(0) as usize)
+        .cloned()
         .collect();
     perf_log(
         "merged_sessions",
@@ -2592,12 +2592,11 @@ pub async fn get_merged_sessions(
             "tool={} facts={} returned={} elapsed_ms={}",
             cache_key_for_tool_filter(&tool_filter),
             facts_count,
-            result.len(),
+            page.len(),
             started_at.elapsed().as_millis(),
         ),
     );
-    store_sessions_cache(session_cache_key, &result);
-    Ok(result)
+    Ok(page)
 }
 
 pub async fn get_merged_session_detail(
@@ -3062,8 +3061,6 @@ mod tests {
             });
         let session_key = SessionDerivedCacheKey {
             merge_key: merge_key.clone(),
-            limit: 10,
-            offset: 0,
         };
         let project_key = ProjectDerivedCacheKey {
             merge_key: merge_key.clone(),
@@ -3076,7 +3073,7 @@ mod tests {
         );
         store_hot_merge_cache(hot_key.clone(), Arc::new(Vec::new()));
         store_history_materialization_cache(history_key.clone(), &["2026-06-11".to_string()]);
-        store_sessions_cache(session_key.clone(), &[]);
+        store_sessions_cache(session_key.clone(), Arc::new(Vec::new()));
         store_projects_cache(project_key.clone(), &[]);
 
         assert!(lookup_merge_cache(&merge_key).is_some());

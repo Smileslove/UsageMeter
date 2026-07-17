@@ -54,7 +54,7 @@ const sessionCache = new Map<string, SessionCacheEntry>()
 const requestCache = new Map<string, RequestCacheEntry>()
 const projectCache = new Map<string, ProjectStats[]>()
 const lastProxyRecordCount = ref<number | null>(null)
-const proxyRefreshDebounceMs = 1500
+const proxyRefreshDebounceMs = 10000
 const copiedProjectPath = ref<string | null>(null)
 let proxyRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let copiedProjectPathTimer: ReturnType<typeof setTimeout> | null = null
@@ -234,10 +234,15 @@ const reloadSessions = async (force = false) => {
     }
   }
 
+  // 静默刷新（force）且已加载多页时，一次性取回等长列表，避免列表被截回第一页、丢失滚动位置
+  const fetchLimit = force && store.sessions.length > pageSize
+    ? Math.max(pageSize, Math.ceil(store.sessions.length / pageSize) * pageSize)
+    : pageSize
   currentPage.value = 0
   hasMore.value = true
-  const count = await store.fetchSessionsForTool(selectedTool.value, pageSize, 0, false)
-  if (count < pageSize) {
+  const count = await store.fetchSessionsForTool(selectedTool.value, fetchLimit, 0, false)
+  currentPage.value = Math.max(0, Math.ceil(count / pageSize) - 1)
+  if (count < fetchLimit) {
     hasMore.value = false
   }
   rememberSessionCache(key)
@@ -304,10 +309,15 @@ const reloadRequestRecords = async (force = false) => {
     }
   }
 
+  // 静默刷新（force）且已加载多页时，一次性取回等长列表（保持 200 条上限），避免丢失滚动位置
+  const fetchLimit = force && store.requestRecords.length > requestPageSize
+    ? Math.min(200, Math.max(requestPageSize, Math.ceil(store.requestRecords.length / requestPageSize) * requestPageSize))
+    : requestPageSize
   requestCurrentPage.value = 0
   requestHasMore.value = true
-  const count = await store.fetchRecentRequestRecordsForTool(selectedTool.value, requestPageSize, 0, false)
-  if (count < requestPageSize) {
+  const count = await store.fetchRecentRequestRecordsForTool(selectedTool.value, fetchLimit, 0, false)
+  requestCurrentPage.value = Math.max(0, Math.ceil(count / requestPageSize) - 1)
+  if (count < fetchLimit || count >= 200) {
     requestHasMore.value = false
   }
   rememberRequestCache(key)
@@ -937,7 +947,7 @@ onUnmounted(() => {
 
     <!-- 1. 会话列表视图 -->
     <template v-if="activeTab === 'recent'">
-      <div v-if="store.sessionsLoading" class="flex justify-center py-8">
+      <div v-if="store.sessionsLoading && store.sessions.length === 0" class="flex justify-center py-8">
         <div class="animate-spin w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full"></div>
       </div>
 
@@ -1056,7 +1066,7 @@ onUnmounted(() => {
         </span>
       </div>
 
-      <div v-if="store.requestRecordsLoading" class="flex justify-center py-8">
+      <div v-if="store.requestRecordsLoading && store.requestRecords.length === 0" class="flex justify-center py-8">
         <div class="animate-spin w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full"></div>
       </div>
 
@@ -1172,7 +1182,7 @@ onUnmounted(() => {
     <!-- 3. 项目维度的聚合视图 -->
     <template v-else-if="activeTab === 'projects'">
       <!-- 加载状态 -->
-      <div v-if="store.projectStatsLoading" class="flex justify-center py-8">
+      <div v-if="store.projectStatsLoading && store.projectStats.length === 0" class="flex justify-center py-8">
         <div class="animate-spin w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full"></div>
       </div>
 
