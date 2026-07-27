@@ -276,6 +276,29 @@ pub fn run() {
                 });
             }
 
+            // P0 优化：预热会话面板查询缓存，避免用户首次打开面板时的冷启动等待
+            {
+                let prewarm_settings = initial_settings.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Some(settings) = prewarm_settings {
+                        // 预热统一合并层缓存（含历史物化 + 热日合并）
+                        let _ = crate::unified_usage::get_merged_request_facts_no_sync(
+                            &settings,
+                            None,
+                            None,
+                            settings.proxy.include_error_requests,
+                        )
+                        .await;
+
+                        // 预热会话和项目派生聚合缓存
+                        let _ = crate::unified_usage::get_merged_sessions_no_sync(&settings, 20, 0).await;
+                        let _ = crate::unified_usage::get_merged_project_stats_no_sync(&settings).await;
+
+                        eprintln!("[UsageMeter] Sessions panel cache prewarmed");
+                    }
+                });
+            }
+
             crate::sync::spawn_background_sync_loop();
 
             {

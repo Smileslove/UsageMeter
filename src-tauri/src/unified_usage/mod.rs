@@ -1,10 +1,13 @@
 mod service;
 mod types;
 
+#[cfg(test)]
+mod performance_tests;
+
 pub(crate) use service::{
     build_coverage, clear_runtime_caches, ensure_materialized_history_no_sync,
-    get_merged_project_stats, get_merged_request_facts, get_merged_request_facts_no_sync,
-    get_merged_session_detail, get_merged_sessions,
+    get_merged_project_stats_no_sync, get_merged_request_facts_no_sync, get_merged_session_detail,
+    get_merged_sessions_no_sync,
 };
 #[cfg(test)]
 pub(crate) use service::{

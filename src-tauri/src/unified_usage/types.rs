@@ -286,6 +286,157 @@ pub(crate) fn find_codex_fuzzy_matches(
     proxy_orphans_visible: &[&UsageRecord],
     proxy_orphans_all_extra: &[&UsageRecord],
 ) -> Vec<CodexFuzzyOutcome> {
+    // P0 优化：按 session_id 分桶 + 时间戳排序，将 O(N×M) 降至 O(N log M)
+    find_codex_fuzzy_matches_optimized(local_orphans, proxy_orphans_visible, proxy_orphans_all_extra)
+}
+
+/// P0 优化版本：按 session_id 分桶 + 时间戳滑动窗口
+/// 复杂度从 O(N×M) 降至 O(N log M)
+fn find_codex_fuzzy_matches_optimized(
+    local_orphans: &[&LocalRequestRecord],
+    proxy_orphans_visible: &[&UsageRecord],
+    proxy_orphans_all_extra: &[&UsageRecord],
+) -> Vec<CodexFuzzyOutcome> {
+    // 1. 按 session_id 分桶（只在同一会话内匹配）
+    let mut local_by_session: HashMap<&str, Vec<&LocalRequestRecord>> = HashMap::new();
+    for local in local_orphans {
+        let session_id = local.session_id.as_str();
+        if !session_id.trim().is_empty() {
+            local_by_session.entry(session_id).or_default().push(local);
+        }
+    }
+
+    let mut visible_by_session: HashMap<&str, Vec<(usize, &UsageRecord)>> = HashMap::new();
+    for (idx, proxy) in proxy_orphans_visible.iter().enumerate() {
+        if let Some(session_id) = proxy.session_id.as_deref() {
+            if !session_id.trim().is_empty() {
+                visible_by_session.entry(session_id).or_default().push((idx, proxy));
+            }
+        }
+    }
+
+    let mut all_by_session: HashMap<&str, Vec<(usize, &UsageRecord)>> = HashMap::new();
+    for (idx, proxy) in proxy_orphans_all_extra.iter().enumerate() {
+        if let Some(session_id) = proxy.session_id.as_deref() {
+            if !session_id.trim().is_empty() {
+                all_by_session.entry(session_id).or_default().push((idx, proxy));
+            }
+        }
+    }
+
+    // 2. 对每个会话内的记录按时间戳排序
+    for records in visible_by_session.values_mut() {
+        records.sort_by_key(|(_, p)| p.timestamp / 1000);
+    }
+    for records in all_by_session.values_mut() {
+        records.sort_by_key(|(_, p)| p.timestamp / 1000);
+    }
+    for records in local_by_session.values_mut() {
+        records.sort_by_key(|r| r.timestamp);
+    }
+
+    let mut used_visible = vec![false; proxy_orphans_visible.len()];
+    let mut used_all = vec![false; proxy_orphans_all_extra.len()];
+    let mut outcomes = Vec::new();
+
+    // 3. 对每个会话独立匹配
+    for (session_id, local_records) in &local_by_session {
+        let visible_candidates = visible_by_session.get(session_id);
+        let all_candidates = all_by_session.get(session_id);
+
+        for local in local_records {
+            // 3.1 在 visible 池中查找（使用滑动窗口而非全量遍历）
+            if let Some(candidates) = visible_candidates {
+                let best_visible = find_best_match_in_window(
+                    local,
+                    candidates,
+                    &used_visible,
+                );
+
+                if let Some((idx, proxy)) = best_visible {
+                    used_visible[idx] = true;
+                    outcomes.push(CodexFuzzyOutcome::MatchedVisible {
+                        local_key: canonical_request_key_for_local(local),
+                        proxy_key: canonical_request_key_for_proxy(proxy),
+                    });
+                    continue;
+                }
+            }
+
+            // 3.2 在 all 池中查找
+            if let Some(candidates) = all_candidates {
+                let best_all = find_best_match_in_window(
+                    local,
+                    candidates,
+                    &used_all,
+                );
+
+                if let Some((idx, _)) = best_all {
+                    used_all[idx] = true;
+                    outcomes.push(CodexFuzzyOutcome::SuppressedByFilteredProxy {
+                        local_key: canonical_request_key_for_local(local),
+                    });
+                }
+            }
+        }
+    }
+
+    outcomes
+}
+
+/// 在已排序的候选列表中使用滑动窗口查找最佳匹配
+/// 利用时间戳排序特性，只检查时间窗口内的候选（避免全量遍历）
+fn find_best_match_in_window<'a>(
+    local: &LocalRequestRecord,
+    candidates: &[(usize, &'a UsageRecord)],
+    used: &[bool],
+) -> Option<(usize, &'a UsageRecord)> {
+    let local_ts = local.timestamp;
+    let tolerance = CODEX_FUZZY_MATCH_TOLERANCE_SECS;
+
+    // 二分查找找到时间窗口的起点（local_ts - tolerance）
+    let window_start = candidates.partition_point(|(_, p)| p.timestamp / 1000 < local_ts - tolerance);
+
+    // 从窗口起点开始，只遍历时间窗口内的候选
+    let mut best_match: Option<(usize, &UsageRecord, i64)> = None;
+
+    for i in window_start..candidates.len() {
+        let (idx, proxy) = candidates[i];
+        let proxy_ts = proxy.timestamp / 1000;
+
+        // 超出时间窗口，提前终止（因为已排序）
+        if proxy_ts > local_ts + tolerance {
+            break;
+        }
+
+        // 跳过已使用的候选
+        if used[idx] {
+            continue;
+        }
+
+        // 检查是否匹配
+        if codex_fuzzy_candidate_matches(local, proxy) {
+            let distance = (proxy_ts - local_ts).abs();
+            match best_match {
+                None => best_match = Some((idx, proxy, distance)),
+                Some((_, _, prev_distance)) if distance < prev_distance => {
+                    best_match = Some((idx, proxy, distance));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    best_match.map(|(idx, proxy, _)| (idx, proxy))
+}
+
+/// 原始的 O(N×M) 实现，保留用于对比和回退
+#[allow(dead_code)]
+fn find_codex_fuzzy_matches_original(
+    local_orphans: &[&LocalRequestRecord],
+    proxy_orphans_visible: &[&UsageRecord],
+    proxy_orphans_all_extra: &[&UsageRecord],
+) -> Vec<CodexFuzzyOutcome> {
     let mut used_visible = vec![false; proxy_orphans_visible.len()];
     let mut used_all = vec![false; proxy_orphans_all_extra.len()];
     let mut outcomes = Vec::new();
