@@ -2177,22 +2177,9 @@ async fn get_merged_request_facts_with_db(
 
 /// 返回 Arc 包裹的事实向量：命中缓存时只做指针拷贝，调用方将 facts 当只读
 /// 切片使用（&facts 经 Deref 即 &Vec / &[..]），确需所有权时显式 clone。
-pub async fn get_merged_request_facts(
-    settings: &AppSettings,
-    start_epoch: Option<i64>,
-    end_epoch: Option<i64>,
-    include_errors: bool,
-) -> Result<(Arc<Vec<MergedRequestFact>>, MergedCoverage), String> {
-    // ensure_local_usage_synced 内部有 condvar 等待与全盘会话文件扫描，
-    // 是最典型的同步阻塞源；经 spawn_blocking 执行避免占住 async 工作线程。
-    let local_db =
-        tauri::async_runtime::spawn_blocking(crate::local_usage::ensure_local_usage_synced)
-            .await
-            .map_err(|e| format!("Task error: {}", e))??;
-    get_merged_request_facts_with_db(local_db, settings, start_epoch, end_epoch, include_errors)
-        .await
-}
-
+///
+/// 快照优先：不触发 ensure_local_usage_synced 全盘扫描（那会 condvar 等待
+/// 整个同步），直接以当前 SQLite 数据回答；扫描由命令层丢到后台执行。
 pub async fn get_merged_request_facts_no_sync(
     settings: &AppSettings,
     start_epoch: Option<i64>,
@@ -2204,7 +2191,19 @@ pub async fn get_merged_request_facts_no_sync(
         .await
 }
 
-pub async fn get_merged_sessions(
+/// 快照优先读取：跳过 ensure_local_usage_synced 的全盘扫描，直接以当前
+/// SQLite 数据回答。供会话面板首屏使用（后台同步完成后由事件驱动二次刷新）。
+pub async fn get_merged_sessions_no_sync(
+    settings: &AppSettings,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<SessionStats>, String> {
+    let local_db = crate::local_usage::get_local_usage_db()?;
+    get_merged_sessions_with_db(local_db, settings, limit, offset).await
+}
+
+async fn get_merged_sessions_with_db(
+    local_db: Arc<crate::local_usage::LocalUsageDatabase>,
     settings: &AppSettings,
     limit: i64,
     offset: i64,
@@ -2219,11 +2218,6 @@ pub async fn get_merged_sessions(
             pricings.extend(db_pricings);
         }
     }
-    // 同上：全盘扫描同步放阻塞线程池执行，避免拖慢并发命令。
-    let local_db =
-        tauri::async_runtime::spawn_blocking(crate::local_usage::ensure_local_usage_synced)
-            .await
-            .map_err(|e| format!("Task error: {}", e))??;
     let local_signature = local_db.get_merge_cache_signature()?;
     let proxy_signature = ProxyDatabase::get_global()
         .map(|db| db.get_merge_cache_signature())
@@ -2251,7 +2245,9 @@ pub async fn get_merged_sessions(
         return Ok(page);
     }
 
-    let (facts, _) = get_merged_request_facts(settings, None, None, include_errors).await?;
+    let (facts, _) =
+        get_merged_request_facts_with_db(local_db.clone(), settings, None, None, include_errors)
+            .await?;
     let mut local_sessions = local_db.get_all_sessions(&tool_filter)?;
     local_sessions.extend(local_db.get_remote_sessions(&tool_filter)?);
     let unresolved_reasonix_requests_by_session =
@@ -2448,13 +2444,24 @@ pub async fn get_merged_session_detail(
     settings: &AppSettings,
     session_id: &str,
 ) -> Result<Option<SessionStats>, String> {
-    let sessions = get_merged_sessions(settings, i64::MAX / 4, 0).await?;
+    // 详情从已渲染的列表点入，快照读取即可，无需触发全盘扫描。
+    let sessions = get_merged_sessions_no_sync(settings, i64::MAX / 4, 0).await?;
     Ok(sessions
         .into_iter()
         .find(|session| session.session_id == session_id))
 }
 
-pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<ProjectStats>, String> {
+pub async fn get_merged_project_stats_no_sync(
+    settings: &AppSettings,
+) -> Result<Vec<ProjectStats>, String> {
+    let local_db = crate::local_usage::get_local_usage_db()?;
+    get_merged_project_stats_with_db(local_db, settings).await
+}
+
+async fn get_merged_project_stats_with_db(
+    local_db: Arc<crate::local_usage::LocalUsageDatabase>,
+    settings: &AppSettings,
+) -> Result<Vec<ProjectStats>, String> {
     let now_sec = chrono::Utc::now().timestamp();
     let include_errors = settings.proxy.include_error_requests;
     let tool_filter = settings.client_tools.build_filter();
@@ -2465,11 +2472,6 @@ pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<Proj
             pricings.extend(db_pricings);
         }
     }
-    // 同上：全盘扫描同步放阻塞线程池执行，避免拖慢并发命令。
-    let local_db =
-        tauri::async_runtime::spawn_blocking(crate::local_usage::ensure_local_usage_synced)
-            .await
-            .map_err(|e| format!("Task error: {}", e))??;
     let local_signature = local_db.get_merge_cache_signature()?;
     let proxy_signature = ProxyDatabase::get_global()
         .map(|db| db.get_merge_cache_signature())
@@ -2499,7 +2501,9 @@ pub async fn get_merged_project_stats(settings: &AppSettings) -> Result<Vec<Proj
         .map(|meta| (meta.session_id.clone(), meta))
         .collect();
 
-    let (facts, _) = get_merged_request_facts(settings, None, None, include_errors).await?;
+    let (facts, _) =
+        get_merged_request_facts_with_db(local_db.clone(), settings, None, None, include_errors)
+            .await?;
     let unresolved_reasonix_requests_by_session =
         count_unresolved_reasonix_requests_by_session(&facts, &local_sessions);
     let mut map: HashMap<String, ProjectAggregate> = HashMap::new();

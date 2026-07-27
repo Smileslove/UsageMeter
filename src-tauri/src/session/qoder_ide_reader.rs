@@ -12,6 +12,20 @@ use std::time::{Duration, UNIX_EPOCH};
 const QODER_DB_SOURCE_KIND: &str = "qoder_ide_sqlite";
 const QODER_MODEL_FALLBACK: &str = "custom_model";
 
+/// 跨扫描轮次的整库扫描结果缓存：app_dir → (db fingerprint, 扫描结果)。
+///
+/// fingerprint 由 local.db 与其 WAL 的 (size, mtime) 派生（见 qoder_db_meta），
+/// 库文件未变时直接复用上次扫描结果，跳过重开 SQLite 与逐会话查询。
+/// scan_qoder_ide_sessions_for 同时服务 SessionSource::scan 与
+/// scanner_sync::sync_from_scanner 两条调用链，缓存放在函数级共享。
+type QoderIdeScanCache = HashMap<String, (u64, Vec<QoderIdeSessionData>)>;
+
+static QODER_IDE_SCAN_CACHE: OnceLock<Mutex<QoderIdeScanCache>> = OnceLock::new();
+
+fn qoder_ide_scan_cache() -> &'static Mutex<QoderIdeScanCache> {
+    QODER_IDE_SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 pub(super) struct QoderIdeSource {
     tool: &'static str,
     app_dir: &'static str,
@@ -130,6 +144,18 @@ pub(crate) fn scan_qoder_ide_sessions_for(
         return Vec::new();
     };
 
+    // 库文件 (size, mtime) 未变时直接复用上次扫描结果。
+    {
+        let cache = qoder_ide_scan_cache()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some((cached_fingerprint, sessions)) = cache.get(app_dir) {
+            if *cached_fingerprint == db_meta.fingerprint {
+                return sessions.clone();
+            }
+        }
+    }
+
     let conn = match open_qoder_db_read_only(&db_path) {
         Ok(conn) => conn,
         Err(err) => {
@@ -197,6 +223,11 @@ pub(crate) fn scan_qoder_ide_sessions_for(
         }
     }
     sessions.sort_by_key(|session| std::cmp::Reverse(session.meta.last_modified));
+
+    let mut cache = qoder_ide_scan_cache()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    cache.insert(app_dir.to_string(), (db_meta.fingerprint, sessions.clone()));
     sessions
 }
 

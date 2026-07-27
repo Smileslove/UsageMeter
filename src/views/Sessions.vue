@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { LayoutGrid, ChevronDown } from 'lucide-vue-next'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -786,9 +787,17 @@ watch(() => store.sessions.length, () => {
 })
 
 // 初始加载
+let unlistenLocalUsageSynced: UnlistenFn | null = null
+
 onMounted(async () => {
   document.addEventListener('click', handleFilterClickOutside)
   await reloadSessions()
+
+  // 后端后台扫描完成且有新数据落库时静默刷新（快照优先读路径的配套通知）。
+  // 活跃会话的 transcript 持续变化会让事件较频繁，复用代理刷新的防抖节奏。
+  unlistenLocalUsageSynced = await listen('local_usage_synced', () => {
+    scheduleProxyRefresh()
+  })
 
   // 监听触底加载
   setTimeout(() => {
@@ -810,6 +819,10 @@ onMounted(async () => {
 
 onUnmounted(() => {
   document.removeEventListener('click', handleFilterClickOutside)
+  if (unlistenLocalUsageSynced) {
+    unlistenLocalUsageSynced()
+    unlistenLocalUsageSynced = null
+  }
   if (observer) {
     observer.disconnect()
   }

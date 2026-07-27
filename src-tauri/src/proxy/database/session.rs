@@ -613,6 +613,25 @@ impl ProxyDatabase {
                 resolved_record.session_resolution_state = Some(resolution_state.clone());
             }
 
+            // 幂等守卫：解析结果与行内现状完全一致时跳过 UPDATE。
+            // unmatched/ambiguous 记录会在每次同步中反复进入本函数，若无条件写回，
+            // updated_at 被刷成 now 会抖动 ProxyMergeCacheSignature.max_updated_at 与
+            // 对应历史日的 day dependency snapshot，导致上层合并缓存永不命中、
+            // 相关历史日每次查询都被重物化。
+            let target_canonical_key = resolved_record
+                .canonical_request_key
+                .clone()
+                .unwrap_or_else(|| computed_canonical_request_key(&resolved_record));
+            let unchanged = record.session_resolution_state.as_deref()
+                == Some(resolution_state.as_str())
+                && record.session_id == resolved_record.session_id
+                && record.model == resolved_record.model
+                && record.canonical_request_key.as_deref() == Some(target_canonical_key.as_str())
+                && record.message_id_conflicted == resolved_record.message_id_conflicted;
+            if unchanged {
+                continue;
+            }
+
             tx.execute(
                 "UPDATE usage_records
                  SET session_id = ?1,
@@ -626,10 +645,7 @@ impl ProxyDatabase {
                 rusqlite::params![
                     &resolved_record.session_id,
                     &resolved_record.model,
-                    &resolved_record
-                        .canonical_request_key
-                        .clone()
-                        .unwrap_or_else(|| computed_canonical_request_key(&resolved_record)),
+                    &target_canonical_key,
                     &resolution_state,
                     if resolved_record.message_id_conflicted {
                         1
@@ -738,6 +754,20 @@ impl ProxyDatabase {
                 resolved_record.session_resolution_state = Some(resolution_state.clone());
             }
 
+            // 幂等守卫：与 OpenCode 路径同理，unmatched/ambiguous 记录状态未变时
+            // 跳过 UPDATE，避免 updated_at 无谓刷新抖动合并缓存签名与历史日物化。
+            let target_canonical_key = resolved_record
+                .canonical_request_key
+                .clone()
+                .unwrap_or_else(|| computed_canonical_request_key(&resolved_record));
+            let unchanged = record.session_resolution_state.as_deref()
+                == Some(resolution_state.as_str())
+                && record.session_id == resolved_record.session_id
+                && record.canonical_request_key.as_deref() == Some(target_canonical_key.as_str());
+            if unchanged {
+                continue;
+            }
+
             tx.execute(
                 "UPDATE usage_records
                  SET session_id = ?1,
@@ -748,10 +778,7 @@ impl ProxyDatabase {
                  WHERE id = ?5",
                 rusqlite::params![
                     &resolved_record.session_id,
-                    &resolved_record
-                        .canonical_request_key
-                        .clone()
-                        .unwrap_or_else(|| computed_canonical_request_key(&resolved_record)),
+                    &target_canonical_key,
                     &resolution_state,
                     now,
                     row_id

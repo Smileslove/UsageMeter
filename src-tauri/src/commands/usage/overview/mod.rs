@@ -1,3 +1,4 @@
+use super::helpers::spawn_background_local_usage_sync;
 use super::types::{OverviewBreakdown, OverviewDeferredBundle, ProxyState, UsageRefreshBundle};
 use crate::models::AppSettings;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -6,25 +7,13 @@ mod breakdown;
 mod rate;
 mod refresh;
 
-/// 把本地会话文件的全量扫描同步丢到后台执行，不阻塞当前命令响应：
-/// 查询侧走 no_sync 路径直接读现有数据，后台同步完成后下一次查询自然拿到新鲜数据。
-fn spawn_background_local_usage_sync() {
-    tauri::async_runtime::spawn(async move {
-        let _ = tauri::async_runtime::spawn_blocking(|| {
-            if let Err(err) = crate::local_usage::ensure_local_usage_synced() {
-                eprintln!("[UsageMeter] Background local usage sync failed: {err}");
-            }
-        })
-        .await;
-    });
-}
-
 #[tauri::command]
 pub async fn refresh_usage_bundle(
+    app: tauri::AppHandle,
     settings: AppSettings,
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<UsageRefreshBundle, String> {
-    spawn_background_local_usage_sync();
+    spawn_background_local_usage_sync(app);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -36,11 +25,12 @@ pub async fn refresh_usage_bundle(
 
 #[tauri::command]
 pub async fn get_overview_breakdown(
+    app: tauri::AppHandle,
     window: String,
     settings: AppSettings,
 ) -> Result<OverviewBreakdown, String> {
     // 同步扫描放后台，避免切换时间窗口时阻塞等待全盘扫描。
-    spawn_background_local_usage_sync();
+    spawn_background_local_usage_sync(app);
     let now = chrono::Utc::now().timestamp();
     let include_errors = settings.proxy.include_error_requests;
     let cutoff_ms =
@@ -59,12 +49,13 @@ pub async fn get_overview_breakdown(
 
 #[tauri::command]
 pub async fn get_overview_deferred_bundle(
+    app: tauri::AppHandle,
     window: String,
     settings: AppSettings,
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<OverviewDeferredBundle, String> {
     // 同步扫描放后台，避免切换时间窗口时阻塞等待全盘扫描。
-    spawn_background_local_usage_sync();
+    spawn_background_local_usage_sync(app);
     let now = chrono::Utc::now().timestamp();
     let include_errors = settings.proxy.include_error_requests;
     let cutoff_epoch =

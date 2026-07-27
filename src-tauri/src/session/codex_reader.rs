@@ -13,6 +13,37 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+/// rollout 身份缓存：path → identity。
+///
+/// session_meta 行在 rollout 文件创建时写入且随后不变（追加事件不影响前 20
+/// 行），身份对同一路径是稳定的；缓存后每轮扫描只需 stat，不再打开每个
+/// rollout 文件读头部（数百个文件的 open+read 是扫描热点）。
+/// 读取失败/头部尚无 session_meta（刚创建还没 flush）不缓存，下轮重试。
+static CODEX_IDENTITY_CACHE: OnceLock<Mutex<HashMap<PathBuf, CodexRolloutIdentity>>> =
+    OnceLock::new();
+
+fn codex_identity_cache() -> &'static Mutex<HashMap<PathBuf, CodexRolloutIdentity>> {
+    CODEX_IDENTITY_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn inspect_codex_rollout_identity_cached(path: &Path) -> Option<CodexRolloutIdentity> {
+    {
+        let cache = codex_identity_cache()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some(identity) = cache.get(path) {
+            return Some(identity.clone());
+        }
+    }
+    let identity = inspect_codex_rollout_identity(path)?;
+    let mut cache = codex_identity_cache()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    cache.insert(path.to_path_buf(), identity.clone());
+    Some(identity)
+}
 
 pub(super) struct CodexSource;
 
@@ -103,7 +134,7 @@ pub(super) fn collect_codex_session_files(root: &Path) -> Vec<SessionFile> {
     let mut groups: HashMap<String, SessionGroupBuilder> = HashMap::new();
 
     for path in collect_codex_rollout_files(root) {
-        let Some(identity) = inspect_codex_rollout_identity(&path) else {
+        let Some(identity) = inspect_codex_rollout_identity_cached(&path) else {
             continue;
         };
 
@@ -217,7 +248,7 @@ pub(super) fn parse_codex_session_file(session: &SessionFile) -> CodexParsedData
     let mut last_message_summary_ts: Option<i64> = None;
 
     for transcript_path in &session.transcript_paths {
-        let file_identity = inspect_codex_rollout_identity(Path::new(transcript_path));
+        let file_identity = inspect_codex_rollout_identity_cached(Path::new(transcript_path));
         let is_subagent_file = file_identity
             .as_ref()
             .map(|identity| identity.is_subagent)

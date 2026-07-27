@@ -35,6 +35,36 @@ use std::time::UNIX_EPOCH;
 const QODER_WORK_SOURCE_KIND: &str = "qoder_work_mainlog";
 const QODER_WORK_CLI_SOURCE_KIND: &str = "qoder_work_cli_jsonl";
 
+/// 跨扫描轮次的解析结果缓存：source_locator → (fingerprint, 解析结果)。
+///
+/// main.log 与 CLI transcript 的解析是本地扫描链路上最重的重复开销
+/// （每轮全量逐行 JSON 解析，几十 MB 级）。fingerprint 由
+/// (path, file_size, last_modified) 派生，文件未变时直接复用上次解析结果，
+/// 只有变化/新增文件才重新解析。
+static QODER_WORK_PARSE_CACHE: OnceLock<Mutex<HashMap<String, (u64, QoderWorkSessionData)>>> =
+    OnceLock::new();
+
+fn qoder_work_parse_cache() -> &'static Mutex<HashMap<String, (u64, QoderWorkSessionData)>> {
+    QODER_WORK_PARSE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lookup_parse_cache(source_locator: &str, fingerprint: u64) -> Option<QoderWorkSessionData> {
+    let cache = qoder_work_parse_cache()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    cache
+        .get(source_locator)
+        .filter(|(cached_fingerprint, _)| *cached_fingerprint == fingerprint)
+        .map(|(_, session)| session.clone())
+}
+
+fn store_parse_cache(source_locator: &str, fingerprint: u64, session: &QoderWorkSessionData) {
+    let mut cache = qoder_work_parse_cache()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    cache.insert(source_locator.to_string(), (fingerprint, session.clone()));
+}
+
 pub(super) struct QoderWorkSource {
     tool: &'static str,
     app_dir: &'static str,
@@ -210,6 +240,11 @@ fn parse_work_session(log_path: &Path, ts_name: &str, tool: &str) -> Option<Qode
     let session_id = format!("{}::{}", tool, ts_name);
     let source_locator = log_path.to_string_lossy().to_string();
 
+    // 文件 (size, mtime) 未变时直接复用上次解析结果，跳过整份日志的逐行解析。
+    if let Some(cached) = lookup_parse_cache(&source_locator, fingerprint) {
+        return Some(cached);
+    }
+
     let requests = parse_work_log_requests(log_path, &session_id, tool);
 
     // 汇总 token 统计
@@ -271,6 +306,7 @@ fn parse_work_session(log_path: &Path, ts_name: &str, tool: &str) -> Option<Qode
         fingerprint,
         source_locator,
     })
+    .inspect(|session| store_parse_cache(&session.source_locator, fingerprint, session))
 }
 
 fn parse_work_log_requests(
@@ -497,6 +533,13 @@ fn parse_qoder_work_cli_session_file(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
+    // 文件 (size, mtime) 未变时直接复用上次解析结果，跳过整份 transcript 的逐行解析。
+    let fingerprint = compute_work_session_fingerprint(jsonl_path, file_size, last_modified);
+    let source_locator = jsonl_path.to_string_lossy().to_string();
+    if let Some(cached) = lookup_parse_cache(&source_locator, fingerprint) {
+        return Some(cached);
+    }
+
     let Ok(file) = fs::File::open(jsonl_path) else {
         return None;
     };
@@ -504,7 +547,6 @@ fn parse_qoder_work_cli_session_file(
     // session_id 加 "::cli::" 命名空间，避免和 Electron main.log 来源的
     // "<tool>::<ts_name>" 会话 id 空间冲突。
     let session_id = format!("{}::cli::{}", tool, session_key);
-    let source_locator = jsonl_path.to_string_lossy().to_string();
 
     let reader = BufReader::new(file);
     let mut by_message_id: HashMap<String, LocalRequestRecord> = HashMap::new();
@@ -621,14 +663,13 @@ fn parse_qoder_work_cli_session_file(
         explicit_estimated_cost: None,
     };
 
-    let fingerprint = compute_work_session_fingerprint(jsonl_path, file_size, last_modified);
-
     Some(QoderWorkSessionData {
         meta,
         requests,
         fingerprint,
         source_locator,
     })
+    .inspect(|session| store_parse_cache(&session.source_locator, fingerprint, session))
 }
 
 /// 从一条 `type=="assistant"` 记录提取 `LocalRequestRecord`

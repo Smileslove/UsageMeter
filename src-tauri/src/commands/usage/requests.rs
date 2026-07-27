@@ -1,3 +1,4 @@
+use super::helpers::spawn_background_local_usage_sync;
 use super::types::ProxyState;
 use crate::models::AppSettings;
 use crate::unified_usage::{CoverageOrigin, MergedRequestFact};
@@ -42,8 +43,11 @@ pub struct RequestRecordItem {
 /// 获取最近请求记录流。
 ///
 /// 这是菜单栏窄面板使用的轻量审计视图：不暴露日期筛选，只按时间倒序分页。
+/// 快照优先：直接读当前数据，全盘扫描同步交给后台，完成且有新数据时
+/// emit local_usage_synced 由前端静默刷新。
 #[tauri::command]
 pub async fn get_recent_request_records(
+    app: tauri::AppHandle,
     query: RequestRecordsQuery,
     settings: AppSettings,
     _proxy_state: tauri::State<'_, ProxyState>,
@@ -52,8 +56,9 @@ pub async fn get_recent_request_records(
     let limit = query.limit.clamp(1, RECENT_REQUESTS_MAX_LIMIT);
     let offset = query.offset.clamp(0, RECENT_REQUESTS_MAX_OFFSET);
 
+    spawn_background_local_usage_sync(app);
     let (facts, _) =
-        crate::unified_usage::get_merged_request_facts(&settings, None, None, include_errors)
+        crate::unified_usage::get_merged_request_facts_no_sync(&settings, None, None, include_errors)
             .await?;
     // 事实向量来自共享 Arc，不能原地排序；先按引用做稳定排序（与原先对整表
     // sort_by_key 的顺序语义一致），再只克隆分页命中的至多 limit 条记录，
