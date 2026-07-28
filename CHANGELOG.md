@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.0] - 2026-07-29
+
+### Added
+
+- **cc-switch Compatibility**: Added coexistence safeguards for cc-switch proxy takeover, including automatic yielding and recovery, source attribution recovery, and safe cleanup of stale local proxy endpoints from its provider database
+- **Number Display Units**: Added a setting for international (`K/M/B`) or Chinese (`万/亿`) number units, with locale-aware labels and automatic unit promotion after rounding
+
+### Changed
+
+- **Usage and Session Responsiveness**: Reworked unified-usage materialization, cache invalidation, historical-day cache shards, session snapshot loading, and background synchronization to reduce recomputation and keep larger histories responsive
+- **Compact Session Experience**: Refined recent-request cards and removed main-thread blocking work from settings and operational commands for smoother panel navigation
+
+### Fixed
+
+- **Usage Accuracy**: Restored precise rolling-window boundaries and fixed Codex fuzzy deduplication so matching no longer depends on session IDs
+- **Local Scan and Takeover Recovery**: Fixed OpenCode fallback-schema ingestion, empty-database compatibility detection, and recognition of legacy Codex takeover endpoints
+- **Quota and Overview Stability**: Made same-millisecond subscription cache writes deterministic and eliminated summary-card flicker and layout shifts when switching time windows
+
+---
+
+### 新增
+
+- **cc-switch 兼容支持**：新增与 cc-switch 代理接管共存的保护机制，包括自动礼让与恢复、来源归因恢复，以及安全清理其供应商库中残留的本地代理地址
+- **数值显示单位**：新增国际单位（`K/M/B`）与中文单位（`万/亿`）设置，支持随语言变化的单位文案及四舍五入后的自动单位进位
+
+### 变更
+
+- **用量与会话响应速度**：重构统一统计物化、缓存失效、历史日缓存分片、会话快照读取与后台同步，减少重复计算并提升大历史数据量下的响应速度
+- **紧凑会话体验**：优化最近请求卡片，并将设置页与运维命令中的阻塞工作移出主线程，使面板切换更流畅
+
+### 修复
+
+- **用量准确性**：恢复滚动时间窗口的精确边界，并修复 Codex 模糊去重对 session ID 的错误依赖
+- **本地扫描与接管恢复**：修复 OpenCode 降级 schema 的用量写入、空数据库兼容性判断，以及旧版 Codex 接管地址的识别
+- **额度与概览稳定性**：使同毫秒订阅缓存写入结果确定，并消除切换时间窗口时汇总卡片的闪烁与布局跳动
+
+---
+
 ## [0.9.1] - 2026-07-07
 
 ### Fixed
@@ -821,6 +859,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.10.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.10.0
 [0.9.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.9.1
 [0.9.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.9.0
 [0.8.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.8.1

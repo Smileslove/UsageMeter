@@ -374,8 +374,7 @@ fn find_best_match_in_window<'a>(
     // 从窗口起点开始，只遍历时间窗口内的候选
     let mut best_match: Option<(usize, &UsageRecord, i64)> = None;
 
-    for i in window_start..candidates.len() {
-        let (idx, proxy) = candidates[i];
+    for &(idx, proxy) in candidates.iter().skip(window_start) {
         let proxy_ts = proxy.timestamp / 1000;
 
         // 超出时间窗口，提前终止（因为已排序）

@@ -30,7 +30,7 @@ UsageMeter 是一款面向 AI 编程工具重度用户的本地优先托盘应�
 | 能力 | 当前覆盖范围 |
 | --- | --- |
 | 本地历史扫描 | Claude Code、Codex CLI、OpenClaw、OpenCode、Qoder CLI / IDE / IDE CN / Work / Work CN、Reasonix、Gemini CLI、GitHub Copilot CLI、Hermes Agent |
-| 代理接管与请求采集 | Claude Code、Codex、OpenCode 全局配置路由、Reasonix 全局配置、Gemini CLI 基于环境变量的配置 |
+| 代理接管与请求采集 | Claude Code、Codex、OpenCode 全局配置路由、Reasonix 全局配置、Gemini CLI 基于环境变量的配置；为 Claude Code 与 Codex 提供 cc-switch 共存保护 |
 | 来源 / 供应商归因 | 代理流量自动识别来源，支持来源命名、合并、删除、Key 前缀备注、来源级过滤 |
 | 官方或账号额度查询 | Codex ChatGPT OAuth、Claude、Gemini CLI、GitHub Copilot |
 | 第三方中转额度查询 | 已配置中转来源的 profile 化额度 / 余额查询 |
@@ -72,6 +72,8 @@ UsageMeter 是一款面向 AI 编程工具重度用户的本地优先托盘应�
 - 配置 WebDAV 端到端加密同步、设备管理与同步密码轮换
 - 配置语言、刷新间隔、统计日边界、开机启动、自动检查更新
 - 提供面向 Windows 场景的 WSL 被动扫描设置
+- 选择国际单位（`K/M/B`）或中文单位（`万/亿`）显示数值
+- 查看 cc-switch 共存状态、夺回已礼让的接管配置，并在 cc-switch 停止后安全清理残留的本地代理地址
 
 ## 数据链路
 

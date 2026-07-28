@@ -30,7 +30,7 @@ It is designed around a compact menu bar workflow on macOS: no Dock icon, fast p
 | Capability | Current Coverage |
 | --- | --- |
 | Local history scanning | Claude Code, Codex CLI, OpenClaw, OpenCode, Qoder CLI / IDE / IDE CN / Work / Work CN, Reasonix, Gemini CLI, GitHub Copilot CLI, Hermes Agent |
-| Proxy takeover and request capture | Claude Code, Codex, OpenCode global config routes, Reasonix global config, Gemini CLI env-based config |
+| Proxy takeover and request capture | Claude Code, Codex, OpenCode global config routes, Reasonix global config, Gemini CLI env-based config; cc-switch coexistence safeguards for Claude Code and Codex |
 | Source/provider attribution | API sources detected from proxy traffic, manual source naming, source merge/delete/key-note management, source-level filtering |
 | Official or account quota queries | Codex ChatGPT OAuth, Claude, Gemini CLI, GitHub Copilot |
 | Relay/provider quota queries | Configured third-party relay sources with profile-based quota or balance querying |
@@ -72,6 +72,8 @@ It is designed around a compact menu bar workflow on macOS: no Dock icon, fast p
 - Configure encrypted WebDAV sync with device management and password rotation
 - Toggle language, refresh interval, day-boundary mode, auto-start, and auto-update checks
 - Configure WSL passive scan settings for Windows-oriented data discovery work
+- Choose international (`K/M/B`) or Chinese (`万/亿`) number display units
+- Inspect cc-switch coexistence status, reclaim a yielded takeover, and safely clean stale local proxy endpoints when cc-switch is stopped
 
 ## Data Pipeline
 
