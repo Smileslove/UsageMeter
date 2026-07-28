@@ -10,6 +10,17 @@ use super::{
     UnifiedDayLocalSnapshot, UnifiedDayMaterializationState,
 };
 
+// SQLite INTEGER 是有符号 64 位。pricing fingerprint 是 u64，因此通过补码位模式
+// 无损往返；不能把负的存储值截断为 0，否则高位为 1 的指纹会在每次进程启动后
+// 被误判为变化，进而重建全部历史物化数据。
+fn encode_pricing_fingerprint(value: u64) -> i64 {
+    value as i64
+}
+
+fn decode_pricing_fingerprint(value: i64) -> u64 {
+    value as u64
+}
+
 impl LocalUsageDatabase {
     fn build_unified_daily_summary(
         local_date: &str,
@@ -350,7 +361,7 @@ impl LocalUsageDatabase {
                     proxy_max_timestamp_ms: row.get::<_, i64>(11)?,
                     proxy_max_updated_at: row.get::<_, i64>(12)?,
                     max_fact_timestamp_ms: row.get(13)?,
-                    pricing_fingerprint: row.get::<_, i64>(14)?.max(0) as u64,
+                    pricing_fingerprint: decode_pricing_fingerprint(row.get::<_, i64>(14)?),
                     is_finalized: row.get::<_, i64>(15)? != 0,
                     finalized_at: row.get(16)?,
                     materialized_at: row.get(17)?,
@@ -359,6 +370,69 @@ impl LocalUsageDatabase {
         )
         .optional()
         .map_err(|e| format!("Failed to load unified materialization state: {}", e))
+    }
+
+    pub fn get_unified_days_materialization_states(
+        &self,
+        local_dates: &[String],
+    ) -> Result<HashMap<String, UnifiedDayMaterializationState>, String> {
+        if local_dates.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let conn = self.conn.lock().unwrap();
+        let date_placeholders = std::iter::repeat_n("?", local_dates.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            r#"
+            SELECT
+                local_date, day_boundary_mode, fact_count,
+                local_request_count, local_max_sync_version, local_max_timestamp,
+                remote_request_count, remote_max_export_seq, remote_max_timestamp,
+                proxy_record_count, proxy_all_record_count,
+                proxy_max_timestamp_ms, proxy_max_updated_at,
+                max_fact_timestamp_ms, pricing_fingerprint,
+                is_finalized, finalized_at, materialized_at
+            FROM unified_daily_materialization_state
+            WHERE local_date IN ({date_placeholders})
+            "#
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
+            format!(
+                "Failed to prepare batched materialization state query: {}",
+                e
+            )
+        })?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(local_dates.iter()), |row| {
+                Ok(UnifiedDayMaterializationState {
+                    local_date: row.get(0)?,
+                    day_boundary_mode: row.get(1)?,
+                    fact_count: row.get::<_, i64>(2)?.max(0) as u64,
+                    local_request_count: row.get::<_, i64>(3)?.max(0) as u64,
+                    local_max_sync_version: row.get(4)?,
+                    local_max_timestamp: row.get(5)?,
+                    remote_request_count: row.get::<_, i64>(6)?.max(0) as u64,
+                    remote_max_export_seq: row.get(7)?,
+                    remote_max_timestamp: row.get(8)?,
+                    proxy_record_count: row.get::<_, i64>(9)?.max(0) as u64,
+                    proxy_all_record_count: row.get::<_, i64>(10)?.max(0) as u64,
+                    proxy_max_timestamp_ms: row.get(11)?,
+                    proxy_max_updated_at: row.get(12)?,
+                    max_fact_timestamp_ms: row.get(13)?,
+                    pricing_fingerprint: decode_pricing_fingerprint(row.get::<_, i64>(14)?),
+                    is_finalized: row.get::<_, i64>(15)? != 0,
+                    finalized_at: row.get(16)?,
+                    materialized_at: row.get(17)?,
+                })
+            })
+            .map_err(|e| format!("Failed to query batched materialization states: {}", e))?;
+        let mut states = HashMap::with_capacity(local_dates.len());
+        for row in rows {
+            let state = row.map_err(|e| format!("Failed to read materialization state: {}", e))?;
+            states.insert(state.local_date.clone(), state);
+        }
+        Ok(states)
     }
 
     /// 批量取给定历史日的逐日物化时间戳：`Vec<(local_date, materialized_at)>`，
@@ -386,9 +460,12 @@ impl LocalUsageDatabase {
             WHERE local_date IN ({date_placeholders})
             "#
         );
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| format!("Failed to prepare unified materialization stamps query: {}", e))?;
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
+            format!(
+                "Failed to prepare unified materialization stamps query: {}",
+                e
+            )
+        })?;
         let rows = stmt
             .query_map(rusqlite::params_from_iter(local_dates.iter()), |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
@@ -555,7 +632,7 @@ impl LocalUsageDatabase {
                 state.proxy_max_timestamp_ms,
                 state.proxy_max_updated_at,
                 state.max_fact_timestamp_ms,
-                state.pricing_fingerprint as i64,
+                encode_pricing_fingerprint(state.pricing_fingerprint),
                 if state.is_finalized { 1 } else { 0 },
                 state.finalized_at,
                 state.materialized_at,
@@ -822,6 +899,106 @@ impl LocalUsageDatabase {
             })
             .map_err(|e| format!("Failed to query unified materialized facts: {}", e))?;
         rows.map(|r| r.map_err(|e| format!("Failed to read unified materialized fact: {}", e)))
+            .collect()
+    }
+
+    /// 利用 `(local_date, session_id)` 复合索引定向读取单会话历史事实，避免详情页
+    /// 为一个会话解码整个历史物化事实表。Source/error 过滤仍由统一服务层执行，
+    /// 与全量事实查询保持同一匹配语义。
+    pub fn get_unified_facts_for_session_dates(
+        &self,
+        local_dates: &[String],
+        session_id: &str,
+        tool_filter: &ToolFilter,
+    ) -> Result<Vec<MergedRequestFact>, String> {
+        if local_dates.is_empty() || session_id.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        if let ToolFilter::AnyOf(tools) = tool_filter {
+            if tools.is_empty() {
+                return Ok(Vec::new());
+            }
+        }
+
+        let conn = self.open_readonly_connection()?;
+        let date_placeholders = std::iter::repeat_n("?", local_dates.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (tool_clause, tool_values): (String, Vec<String>) = match tool_filter {
+            ToolFilter::All => (String::new(), vec![]),
+            ToolFilter::Tool(tool) if !tool.trim().is_empty() => {
+                ("AND tool = ?".to_string(), vec![tool.clone()])
+            }
+            ToolFilter::AnyOf(tools) => {
+                let placeholders = std::iter::repeat_n("?", tools.len())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                (format!("AND tool IN ({placeholders})"), tools.clone())
+            }
+            _ => (String::new(), vec![]),
+        };
+        let sql = format!(
+            r#"
+            SELECT
+                request_key, session_id, project_name, project_path, api_key_prefix, request_base_url,
+                tool, timestamp_sec, timestamp_ms, model, input_tokens, output_tokens,
+                cache_create_tokens, cache_read_tokens, total_tokens, request_count, estimated_cost,
+                coverage_origin, status_code, duration_ms, output_tokens_per_second, ttft_ms,
+                source_label
+            FROM unified_daily_materialized_facts
+            WHERE local_date IN ({date_placeholders})
+              AND session_id = ?
+              {tool_clause}
+            ORDER BY timestamp_ms ASC
+            "#
+        );
+        let mut query_params: Vec<Box<dyn rusqlite::types::ToSql>> = local_dates
+            .iter()
+            .map(|date| -> Box<dyn rusqlite::types::ToSql> { Box::new(date.clone()) })
+            .collect();
+        query_params.push(Box::new(session_id.to_string()));
+        for value in tool_values {
+            query_params.push(Box::new(value));
+        }
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare unified session fact query: {}", e))?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(query_params.iter()), |row| {
+                Ok(MergedRequestFact {
+                    canonical_request_key: row.get(0)?,
+                    session_id: row.get(1)?,
+                    project_name: row.get(2)?,
+                    project_path: row.get(3)?,
+                    api_key_prefix: row.get(4)?,
+                    request_base_url: row.get(5)?,
+                    tool: row.get(6)?,
+                    timestamp_sec: row.get(7)?,
+                    timestamp_ms: row.get(8)?,
+                    model: row.get(9)?,
+                    input_tokens: row.get::<_, i64>(10)?.max(0) as u64,
+                    output_tokens: row.get::<_, i64>(11)?.max(0) as u64,
+                    cache_create_tokens: row.get::<_, i64>(12)?.max(0) as u64,
+                    cache_read_tokens: row.get::<_, i64>(13)?.max(0) as u64,
+                    total_tokens: row.get::<_, i64>(14)?.max(0) as u64,
+                    request_count: row.get::<_, i64>(15)?.max(1) as u64,
+                    estimated_cost: row.get(16)?,
+                    coverage_origin: CoverageOrigin::from_storage_str(
+                        row.get::<_, String>(17)?.as_str(),
+                    ),
+                    status_code: row.get::<_, Option<i64>>(18)?.map(|value| value as u16),
+                    duration_ms: row
+                        .get::<_, Option<i64>>(19)?
+                        .map(|value| value.max(0) as u64),
+                    output_tokens_per_second: row.get(20)?,
+                    ttft_ms: row
+                        .get::<_, Option<i64>>(21)?
+                        .map(|value| value.max(0) as u64),
+                    source_label: row.get(22)?,
+                })
+            })
+            .map_err(|e| format!("Failed to query unified session facts: {}", e))?;
+        rows.map(|row| row.map_err(|e| format!("Failed to read unified session fact row: {}", e)))
             .collect()
     }
 

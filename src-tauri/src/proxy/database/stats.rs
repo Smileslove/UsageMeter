@@ -627,7 +627,10 @@ mod tests {
             )
             .expect("insert new session stats");
 
-            ProxyDatabase::migrate_schema(&conn).expect("rerun migration");
+            let normalized_history_dates =
+                ProxyDatabase::migrate_schema(&conn).expect("rerun migration");
+            assert_eq!(normalized_history_dates.len(), 1);
+            assert!(normalized_history_dates[0].starts_with("2024-"));
         }
 
         let conn = db.conn.lock().expect("lock conn");
@@ -732,5 +735,88 @@ mod tests {
         assert_eq!(summary_count, 0);
         assert_eq!(model_count, 0);
         assert_eq!(stored_mode, "standard");
+    }
+
+    #[test]
+    fn proxy_merge_cache_generation_tracks_only_source_tables_transactionally() {
+        let (_tmp, db) = temp_db();
+        let initial = db
+            .get_merge_cache_signature()
+            .expect("load initial signature")
+            .merge_cache_generation;
+        let record = UsageRecord {
+            timestamp: 1_780_000_000_000,
+            message_id: "generation-msg".to_string(),
+            storage_dedupe_key: Some("generation-storage-key".to_string()),
+            canonical_request_key: Some("generation-canonical-key".to_string()),
+            client_tool: "claude_code".to_string(),
+            ..Default::default()
+        };
+        insert_usage_record(&db, &record, "known");
+
+        let after_insert = db
+            .get_merge_cache_signature()
+            .expect("load signature after insert")
+            .merge_cache_generation;
+        assert!(after_insert > initial);
+
+        {
+            let conn = db.conn.lock().expect("lock conn");
+            conn.execute(
+                "UPDATE usage_records SET output_tokens = output_tokens + 1
+                 WHERE storage_dedupe_key = 'generation-storage-key'",
+                [],
+            )
+            .expect("update usage record");
+        }
+        let after_update = db
+            .get_merge_cache_signature()
+            .expect("load signature after update")
+            .merge_cache_generation;
+        assert!(after_update > after_insert);
+
+        {
+            let conn = db.conn.lock().expect("lock conn");
+            conn.execute(
+                "INSERT INTO daily_summary (date, request_count, finalized_at)
+                 VALUES ('2026-06-02', 1, 1)",
+                [],
+            )
+            .expect("insert derived summary");
+        }
+        let after_derived_write = db
+            .get_merge_cache_signature()
+            .expect("load signature after derived write")
+            .merge_cache_generation;
+        assert_eq!(after_derived_write, after_update);
+
+        {
+            let mut conn = db.conn.lock().expect("lock conn");
+            let tx = conn.transaction().expect("open rollback transaction");
+            tx.execute(
+                "DELETE FROM usage_records
+                 WHERE storage_dedupe_key = 'generation-storage-key'",
+                [],
+            )
+            .expect("delete usage record in rollback transaction");
+            tx.rollback().expect("rollback usage record delete");
+        }
+        let after_rollback = db
+            .get_merge_cache_signature()
+            .expect("load signature after rollback")
+            .merge_cache_generation;
+        assert_eq!(after_rollback, after_update);
+
+        let conn = db.conn.lock().expect("lock conn");
+        let trigger_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'trigger'
+                   AND name LIKE 'trg_%_merge_generation_%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count generation triggers");
+        assert_eq!(trigger_count, 6);
     }
 }

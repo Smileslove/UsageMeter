@@ -83,7 +83,7 @@ fn store_activity_cache(key: ActivityCacheKey, value: ActivityCacheValue) {
 }
 
 #[cfg(test)]
-fn clear_activity_cache() {
+pub(crate) fn clear_activity_cache() {
     activity_cache().lock().unwrap().clear();
 }
 
@@ -111,7 +111,7 @@ fn build_activity_cache_key(
         .map(|db| db.get_merge_cache_signature())
         .transpose()?;
     let mut pricings = settings.model_pricing.pricings.clone();
-    if let Ok(db) = crate::proxy::ProxyDatabase::new() {
+    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
         if let Ok(db_pricings) = db.get_all_model_pricings() {
             pricings.extend(db_pricings);
         }
@@ -182,7 +182,7 @@ async fn load_activity_day_map(
     Ok(days_by_date)
 }
 
-pub(super) async fn get_month_activity_impl(
+pub(crate) async fn get_month_activity_impl(
     year: i32,
     month: u8,
     metric: StatisticsMetric,
@@ -240,7 +240,7 @@ pub(super) async fn get_month_activity_impl(
     Ok(activity)
 }
 
-pub(super) async fn get_year_activity_impl(
+pub(crate) async fn get_year_activity_impl(
     year: i32,
     metric: StatisticsMetric,
     settings: AppSettings,
@@ -313,14 +313,7 @@ mod tests {
 
     fn sample_local_signature(version: i64) -> crate::local_usage::LocalMergeCacheSignature {
         crate::local_usage::LocalMergeCacheSignature {
-            local_request_count: 1,
-            local_max_sync_version: version,
-            local_max_timestamp: 1,
-            remote_request_count: 0,
-            remote_max_export_seq: 0,
-            remote_max_timestamp: 0,
-            local_session_max_updated_at: 0,
-            remote_session_max_imported_at: 0,
+            merge_cache_generation: version,
             unified_materialization_invalidation_version: version,
         }
     }

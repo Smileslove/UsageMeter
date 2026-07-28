@@ -125,6 +125,82 @@ impl ProxyDatabase {
         Ok(())
     }
 
+    /// 用源表触发器维护 Proxy 合并缓存 generation。
+    ///
+    /// generation 只跟踪统一查询直接依赖的 usage_records 与 session_stats；daily_summary、
+    /// model_usage 和 pricing 配置写入不触发，避免内部 rollup 让运行时缓存无意义失效。
+    pub(super) fn create_merge_cache_generation_tracking(conn: &Connection) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO daily_rollup_state (state_key, state_value, updated_at)
+             VALUES ('merge_cache_generation', '1', ?1)
+             ON CONFLICT(state_key) DO NOTHING",
+            params![now],
+        )
+        .map_err(|e| format!("Failed to initialize proxy merge cache generation: {}", e))?;
+
+        conn.execute_batch(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS trg_usage_records_merge_generation_insert
+            AFTER INSERT ON usage_records
+            BEGIN
+                UPDATE daily_rollup_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_usage_records_merge_generation_update
+            AFTER UPDATE ON usage_records
+            BEGIN
+                UPDATE daily_rollup_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_usage_records_merge_generation_delete
+            AFTER DELETE ON usage_records
+            BEGIN
+                UPDATE daily_rollup_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_session_stats_merge_generation_insert
+            AFTER INSERT ON session_stats
+            BEGIN
+                UPDATE daily_rollup_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_session_stats_merge_generation_update
+            AFTER UPDATE ON session_stats
+            BEGIN
+                UPDATE daily_rollup_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_session_stats_merge_generation_delete
+            AFTER DELETE ON session_stats
+            BEGIN
+                UPDATE daily_rollup_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+            "#,
+        )
+        .map_err(|e| {
+            format!(
+                "Failed to create proxy merge cache generation triggers: {}",
+                e
+            )
+        })?;
+        Ok(())
+    }
+
     fn check_session_stats_needs_rebuild(conn: &Connection) -> bool {
         let columns: Vec<String> = conn
             .prepare("SELECT name FROM pragma_table_info('session_stats')")
@@ -212,7 +288,7 @@ impl ProxyDatabase {
         Ok(())
     }
 
-    pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
+    pub(super) fn migrate_schema(conn: &Connection) -> Result<Vec<String>, String> {
         let migrations = [
             "ALTER TABLE usage_records ADD COLUMN storage_dedupe_key TEXT",
             "ALTER TABLE usage_records ADD COLUMN canonical_request_key TEXT",
@@ -282,16 +358,44 @@ impl ProxyDatabase {
         if !Self::usage_records_has_storage_dedupe_unique(conn) {
             Self::rebuild_usage_records_table(conn)?;
         }
-        Self::normalize_legacy_opencode_native_session_ids(conn)?;
-
-        Ok(())
+        Self::normalize_legacy_opencode_native_session_ids(conn)
     }
 
-    fn normalize_legacy_opencode_native_session_ids(conn: &Connection) -> Result<(), String> {
+    fn normalize_legacy_opencode_native_session_ids(
+        conn: &Connection,
+    ) -> Result<Vec<String>, String> {
         let now = chrono::Utc::now().timestamp_millis();
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| format!("Failed to start OpenCode session id normalization: {}", e))?;
+        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let today = Self::today_local_date_with_settings(&settings);
+        let touched_history_dates = {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT DISTINCT timestamp FROM usage_records
+                     WHERE COALESCE(client_tool, '') = 'opencode'
+                       AND (
+                           (session_id LIKE 'opencode::%'
+                            AND session_id NOT LIKE 'opencode::native::%'
+                            AND session_id NOT LIKE 'opencode::wsl:%::%')
+                           OR
+                           (canonical_request_key LIKE 'opencode:opencode::%|%'
+                            AND canonical_request_key NOT LIKE 'opencode:opencode::native::%|%'
+                            AND canonical_request_key NOT LIKE 'opencode:opencode::wsl:%::%|%')
+                       )",
+                )
+                .map_err(|e| format!("Failed to prepare OpenCode normalization dates: {e}"))?;
+            let rows = stmt
+                .query_map([], |row| row.get::<_, i64>(0))
+                .map_err(|e| format!("Failed to query OpenCode normalization dates: {e}"))?;
+            rows.filter_map(Result::ok)
+                .map(|timestamp| Self::record_local_date_with_settings(timestamp, &settings))
+                .filter(|local_date| local_date < &today)
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
 
         let updated_records = tx
             .execute(
@@ -330,7 +434,11 @@ impl ProxyDatabase {
 
         tx.commit()
             .map_err(|e| format!("Failed to commit OpenCode session id normalization: {}", e))?;
-        Ok(())
+        if updated_records > 0 || updated_keys > 0 {
+            Ok(touched_history_dates)
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     fn rebuild_opencode_session_stats_after_session_id_normalization(

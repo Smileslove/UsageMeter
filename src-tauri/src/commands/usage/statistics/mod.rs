@@ -3,11 +3,39 @@ use super::types::{
 };
 use crate::models::AppSettings;
 
-mod activity;
+pub(crate) mod activity;
 mod aggregate;
 mod daily_summary;
 mod hourly_summary;
 mod shared;
+
+pub(crate) async fn get_statistics_summary_no_sync(
+    query: &StatisticsQuery,
+    settings: &AppSettings,
+) -> Result<StatisticsSummary, String> {
+    if let Some(summary) =
+        daily_summary::try_build_statistics_summary_from_daily_summary(query, settings).await?
+    {
+        return Ok(summary);
+    }
+
+    if let Some(summary) =
+        hourly_summary::try_build_statistics_summary_from_hourly_cache(query, settings).await?
+    {
+        return Ok(summary);
+    }
+
+    let (start_epoch, end_epoch) = shared::normalize_range(query);
+    let include_errors = settings.proxy.include_error_requests;
+    let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
+        settings,
+        Some(start_epoch),
+        Some(end_epoch),
+        include_errors,
+    )
+    .await?;
+    Ok(aggregate::build_merged_statistics(&facts, query))
+}
 
 #[tauri::command]
 pub async fn get_statistics_summary(
@@ -15,29 +43,7 @@ pub async fn get_statistics_summary(
     settings: AppSettings,
     _proxy_state: tauri::State<'_, ProxyState>,
 ) -> Result<StatisticsSummary, String> {
-    if let Some(summary) =
-        daily_summary::try_build_statistics_summary_from_daily_summary(&query, &settings).await?
-    {
-        return Ok(summary);
-    }
-
-    if let Some(summary) =
-        hourly_summary::try_build_statistics_summary_from_hourly_cache(&query, &settings).await?
-    {
-        return Ok(summary);
-    }
-
-    let (start_epoch, end_epoch) = shared::normalize_range(&query);
-    let include_errors = settings.proxy.include_error_requests;
-    let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
-        &settings,
-        Some(start_epoch),
-        Some(end_epoch),
-        include_errors,
-    )
-    .await?;
-    let summary = aggregate::build_merged_statistics(&facts, &query);
-    Ok(summary)
+    get_statistics_summary_no_sync(&query, &settings).await
 }
 
 #[tauri::command]

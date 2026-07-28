@@ -67,14 +67,7 @@ pub struct RemoteSyncDevice {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LocalMergeCacheSignature {
-    pub local_request_count: u64,
-    pub local_max_sync_version: i64,
-    pub local_max_timestamp: i64,
-    pub remote_request_count: u64,
-    pub remote_max_export_seq: i64,
-    pub remote_max_timestamp: i64,
-    pub local_session_max_updated_at: i64,
-    pub remote_session_max_imported_at: i64,
+    pub merge_cache_generation: i64,
     pub unified_materialization_invalidation_version: i64,
 }
 

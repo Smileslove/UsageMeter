@@ -30,6 +30,132 @@ impl LocalUsageDatabase {
         Ok(())
     }
 
+    /// 用源表触发器维护统一合并缓存 generation。
+    ///
+    /// 触发器与事实/会话写入处于同一 SQLite 事务，自动覆盖 scanner、Remote 导入、
+    /// maintenance 和 migration 等所有写入口；物化表及同步状态写入不会触发，避免缓存抖动。
+    pub(super) fn create_merge_cache_generation_tracking(conn: &Connection) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+             VALUES ('merge_cache_generation', '1', ?1)
+             ON CONFLICT(state_key) DO NOTHING",
+            params![now],
+        )
+        .map_err(|e| format!("Failed to initialize local merge cache generation: {}", e))?;
+
+        conn.execute_batch(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS trg_local_request_facts_merge_generation_insert
+            AFTER INSERT ON local_request_facts
+            BEGIN
+                UPDATE local_sync_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_local_request_facts_merge_generation_update
+            AFTER UPDATE ON local_request_facts
+            BEGIN
+                UPDATE local_sync_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_local_request_facts_merge_generation_delete
+            AFTER DELETE ON local_request_facts
+            BEGIN
+                UPDATE local_sync_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_local_sessions_merge_generation_insert
+            AFTER INSERT ON local_sessions
+            BEGIN
+                UPDATE local_sync_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_local_sessions_merge_generation_update
+            AFTER UPDATE ON local_sessions
+            BEGIN
+                UPDATE local_sync_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_local_sessions_merge_generation_delete
+            AFTER DELETE ON local_sessions
+            BEGIN
+                UPDATE local_sync_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_remote_request_facts_merge_generation_insert
+            AFTER INSERT ON remote_request_facts
+            BEGIN
+                UPDATE local_sync_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_remote_request_facts_merge_generation_update
+            AFTER UPDATE ON remote_request_facts
+            BEGIN
+                UPDATE local_sync_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_remote_request_facts_merge_generation_delete
+            AFTER DELETE ON remote_request_facts
+            BEGIN
+                UPDATE local_sync_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS trg_remote_sessions_merge_generation_insert
+            AFTER INSERT ON remote_sessions
+            BEGIN
+                UPDATE local_sync_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_remote_sessions_merge_generation_update
+            AFTER UPDATE ON remote_sessions
+            BEGIN
+                UPDATE local_sync_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_remote_sessions_merge_generation_delete
+            AFTER DELETE ON remote_sessions
+            BEGIN
+                UPDATE local_sync_state
+                   SET state_value = CAST(CAST(state_value AS INTEGER) + 1 AS TEXT),
+                       updated_at = strftime('%s', 'now')
+                 WHERE state_key = 'merge_cache_generation';
+            END;
+            "#,
+        )
+        .map_err(|e| {
+            format!(
+                "Failed to create local merge cache generation triggers: {}",
+                e
+            )
+        })?;
+        Ok(())
+    }
+
     pub(super) fn create_unified_materialized_tables(conn: &Connection) -> Result<(), String> {
         conn.execute_batch(
             r#"

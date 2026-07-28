@@ -14,10 +14,7 @@ const LEGACY_UNMATCHED_SESSION_ID: &str = "__legacy_unmatched__";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProxyMergeCacheSignature {
-    pub usage_record_count: u64,
-    pub max_timestamp: i64,
-    pub max_updated_at: i64,
-    pub session_stats_max_updated_at: i64,
+    pub merge_cache_generation: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -139,8 +136,11 @@ impl ProxyDatabase {
         // 创建表
         Self::create_tables(&conn)?;
 
-        // 迁移旧表结构（添加新字段）
-        Self::migrate_schema(&conn)?;
+        // 迁移旧表结构（添加新字段）。若迁移规范化了历史 Proxy 记录，
+        // 在 Proxy 事务完成后使对应 Local 物化日期失效。
+        let normalized_history_dates = Self::migrate_schema(&conn)?;
+        Self::invalidate_local_materialization_after_proxy_commit(&normalized_history_dates)?;
+        Self::create_merge_cache_generation_tracking(&conn)?;
 
         // 创建模型价格表
         Self::create_model_pricing_table_static(&conn)?;
@@ -174,6 +174,31 @@ impl ProxyDatabase {
         conn.execute("DELETE FROM model_usage", [])
             .map_err(|e| format!("Failed to clear proxy model usage: {}", e))?;
         Self::set_day_boundary_mode_conn(&conn, &Self::current_day_boundary_mode())?;
+        Ok(())
+    }
+
+    /// Proxy 与 Local 使用独立 SQLite 数据库，无法将 Proxy 更新和物化状态失效
+    /// 放入同一事务。Proxy 事务提交后先精确失效受影响历史日；若精确删除失败，
+    /// 降级清空全部物化数据，避免后续读取错误信任旧状态行。
+    pub(super) fn invalidate_local_materialization_after_proxy_commit(
+        local_dates: &[String],
+    ) -> Result<(), String> {
+        if local_dates.is_empty() {
+            return Ok(());
+        }
+
+        let local_db = crate::local_usage::LocalUsageDatabase::get_global()
+            .map_err(|e| format!("Failed to open Local database for Proxy invalidation: {e}"))?;
+        if let Err(exact_error) = local_db.invalidate_unified_materialization_dates(local_dates) {
+            local_db.clear_unified_materialization().map_err(|clear_error| {
+                format!(
+                    "Failed to invalidate Local materialization after Proxy commit: exact={exact_error}; fallback_clear={clear_error}"
+                )
+            })?;
+            eprintln!(
+                "[database] Exact Proxy materialization invalidation failed; cleared all materialized history: {exact_error}"
+            );
+        }
         Ok(())
     }
 }

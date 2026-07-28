@@ -5,6 +5,7 @@ use crate::session::{
 };
 use rusqlite::params;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 use super::{
     outbox, DirtySessionSync, LocalUsageDatabase, SyncExportRequest, SyncExportSession,
@@ -95,19 +96,66 @@ impl LocalUsageDatabase {
     }
 
     pub fn sync_from_scanner(&self) -> Result<(), String> {
+        let stage_started = Instant::now();
         let persisted_opencode_states = self.load_opencode_db_scan_states()?;
+        log_sync_stage(
+            "load_opencode_state",
+            stage_started,
+            persisted_opencode_states.stores.len(),
+        );
+
+        let stage_started = Instant::now();
         crate::session::opencode_reader::hydrate_opencode_db_scan_states(
             &persisted_opencode_states,
         );
+        log_sync_stage(
+            "hydrate_opencode_state",
+            stage_started,
+            persisted_opencode_states.stores.len(),
+        );
 
-        self.sync_file_backed_sessions(scan_file_backed_session_files())?;
-        if let Some(proxy_db) = crate::proxy::ProxyDatabase::get_global() {
+        let stage_started = Instant::now();
+        let file_backed_sessions = scan_file_backed_session_files();
+        log_sync_stage(
+            "file_backed_scan",
+            stage_started,
+            file_backed_sessions.len(),
+        );
+
+        let file_backed_count = file_backed_sessions.len();
+        let stage_started = Instant::now();
+        self.sync_file_backed_sessions(file_backed_sessions)?;
+        log_sync_stage("file_backed_sync", stage_started, file_backed_count);
+
+        let stage_started = Instant::now();
+        let proxy_db = crate::proxy::ProxyDatabase::get_global();
+        log_sync_stage(
+            "proxy_db_acquire",
+            stage_started,
+            usize::from(proxy_db.is_some()),
+        );
+
+        if let Some(proxy_db) = proxy_db.as_ref() {
+            let stage_started = Instant::now();
             let reasonix_local_sessions =
                 self.get_all_sessions(&ToolFilter::Tool("reasonix".to_string()))?;
+            log_sync_stage(
+                "reasonix_local_query",
+                stage_started,
+                reasonix_local_sessions.len(),
+            );
+
+            let reasonix_count = reasonix_local_sessions.len();
+            let stage_started = Instant::now();
             let _ = proxy_db.reconcile_reasonix_records(&reasonix_local_sessions);
+            log_sync_stage("reasonix_reconcile", stage_started, reasonix_count);
         }
 
+        let stage_started = Instant::now();
         let opencode_sessions = crate::session::opencode_reader::scan_opencode_sessions();
+        log_sync_stage("opencode_scan", stage_started, opencode_sessions.len());
+
+        let stage_started = Instant::now();
         let opencode_local_records: Vec<crate::session::LocalRequestRecord> = opencode_sessions
             .iter()
             .flat_map(|session| session.requests.iter().cloned())
@@ -139,52 +187,117 @@ impl LocalUsageDatabase {
                 )
             })
             .collect();
+        log_sync_stage("opencode_map", stage_started, opencode_map.len());
+
+        let opencode_count = opencode_map.len();
+        let stage_started = Instant::now();
         self.sync_dirty_session_map(opencode_map, "opencode_session", Some("opencode"))?;
-        if let Some(proxy_db) = crate::proxy::ProxyDatabase::get_global() {
+        log_sync_stage("opencode_sync", stage_started, opencode_count);
+
+        if let Some(proxy_db) = proxy_db.as_ref() {
+            let opencode_record_count = opencode_local_records.len();
+            let stage_started = Instant::now();
             let _ = proxy_db.reconcile_opencode_records(&opencode_local_records);
+            log_sync_stage("opencode_reconcile", stage_started, opencode_record_count);
         }
 
-        let qoder_map = sessions_to_dirty_map(
-            crate::session::qoder_ide_reader::scan_qoder_ide_sessions(),
-            "qoder_ide_session",
-            |s| (s.meta, s.requests, s.fingerprint, s.source_locator),
-        );
+        let stage_started = Instant::now();
+        let qoder_sessions = crate::session::qoder_ide_reader::scan_qoder_ide_sessions();
+        log_sync_stage("qoder_ide_scan", stage_started, qoder_sessions.len());
+        let stage_started = Instant::now();
+        let qoder_map = sessions_to_dirty_map(qoder_sessions, "qoder_ide_session", |s| {
+            (s.meta, s.requests, s.fingerprint, s.source_locator)
+        });
+        let qoder_count = qoder_map.len();
         self.sync_dirty_session_map(qoder_map, "qoder_ide_session", Some("qoder_ide"))?;
+        log_sync_stage("qoder_ide_sync", stage_started, qoder_count);
 
-        let qoder_cn_map = sessions_to_dirty_map(
-            crate::session::qoder_ide_reader::scan_qoder_ide_cn_sessions(),
-            "qoder_ide_cn_session",
-            |s| (s.meta, s.requests, s.fingerprint, s.source_locator),
-        );
+        let stage_started = Instant::now();
+        let qoder_cn_sessions = crate::session::qoder_ide_reader::scan_qoder_ide_cn_sessions();
+        log_sync_stage("qoder_ide_cn_scan", stage_started, qoder_cn_sessions.len());
+        let stage_started = Instant::now();
+        let qoder_cn_map = sessions_to_dirty_map(qoder_cn_sessions, "qoder_ide_cn_session", |s| {
+            (s.meta, s.requests, s.fingerprint, s.source_locator)
+        });
+        let qoder_cn_count = qoder_cn_map.len();
         self.sync_dirty_session_map(qoder_cn_map, "qoder_ide_cn_session", Some("qoder_ide_cn"))?;
+        log_sync_stage("qoder_ide_cn_sync", stage_started, qoder_cn_count);
 
-        let qoder_work_map = sessions_to_dirty_map(
-            crate::session::qoder_work_reader::scan_qoder_work_sessions(),
-            "qoder_work_session",
-            |s| (s.meta, s.requests, s.fingerprint, s.source_locator),
+        // 两路 Qoder Work 扫描读取完全独立的 app/CLI 目录，结果也属于不同 tool
+        // 命名空间。并行执行冷解析以隐藏较短一侧的 I/O/JSON 开销；后续 SQLite
+        // 同步仍保持串行，避免扩大事务并发面。
+        let stage_started = Instant::now();
+        let (qoder_work_sessions, qoder_work_cn_sessions) = std::thread::scope(|scope| {
+            let global_scan = scope.spawn(|| {
+                let started = Instant::now();
+                let sessions = crate::session::qoder_work_reader::scan_qoder_work_sessions();
+                log_sync_stage("qoder_work_scan", started, sessions.len());
+                sessions
+            });
+            let cn_scan = scope.spawn(|| {
+                let started = Instant::now();
+                let sessions = crate::session::qoder_work_reader::scan_qoder_work_cn_sessions();
+                log_sync_stage("qoder_work_cn_scan", started, sessions.len());
+                sessions
+            });
+            let global_sessions = global_scan
+                .join()
+                .map_err(|_| "Qoder Work scanner thread panicked".to_string())?;
+            let cn_sessions = cn_scan
+                .join()
+                .map_err(|_| "Qoder Work CN scanner thread panicked".to_string())?;
+            Ok::<_, String>((global_sessions, cn_sessions))
+        })?;
+        log_sync_stage(
+            "qoder_work_parallel_scan",
+            stage_started,
+            qoder_work_sessions.len() + qoder_work_cn_sessions.len(),
         );
+
+        let stage_started = Instant::now();
+        let qoder_work_map =
+            sessions_to_dirty_map(qoder_work_sessions, "qoder_work_session", |s| {
+                (s.meta, s.requests, s.fingerprint, s.source_locator)
+            });
+        let qoder_work_count = qoder_work_map.len();
         self.sync_dirty_session_map(qoder_work_map, "qoder_work_session", Some("qoder_work"))?;
+        log_sync_stage("qoder_work_sync", stage_started, qoder_work_count);
 
-        let qoder_work_cn_map = sessions_to_dirty_map(
-            crate::session::qoder_work_reader::scan_qoder_work_cn_sessions(),
-            "qoder_work_cn_session",
-            |s| (s.meta, s.requests, s.fingerprint, s.source_locator),
-        );
+        let stage_started = Instant::now();
+        let qoder_work_cn_map =
+            sessions_to_dirty_map(qoder_work_cn_sessions, "qoder_work_cn_session", |s| {
+                (s.meta, s.requests, s.fingerprint, s.source_locator)
+            });
+        let qoder_work_cn_count = qoder_work_cn_map.len();
         self.sync_dirty_session_map(
             qoder_work_cn_map,
             "qoder_work_cn_session",
             Some("qoder_work_cn"),
         )?;
+        log_sync_stage("qoder_work_cn_sync", stage_started, qoder_work_cn_count);
 
-        let hermes_map = sessions_to_dirty_map(
-            crate::session::scan_hermes_sessions(),
-            "hermes_session",
-            |s| (s.meta, s.requests, s.fingerprint, s.source_locator),
-        );
+        let stage_started = Instant::now();
+        let hermes_sessions = crate::session::scan_hermes_sessions();
+        log_sync_stage("hermes_scan", stage_started, hermes_sessions.len());
+        let stage_started = Instant::now();
+        let hermes_map = sessions_to_dirty_map(hermes_sessions, "hermes_session", |s| {
+            (s.meta, s.requests, s.fingerprint, s.source_locator)
+        });
+        let hermes_count = hermes_map.len();
         self.sync_dirty_session_map(hermes_map, "hermes_session", Some("hermes"))?;
+        log_sync_stage("hermes_sync", stage_started, hermes_count);
 
+        let stage_started = Instant::now();
         let opencode_states = crate::session::opencode_reader::get_opencode_db_scan_states();
         let opencode_schema_status = crate::session::opencode_reader::check_opencode_schema();
+        log_sync_stage(
+            "collect_opencode_state",
+            stage_started,
+            opencode_states.stores.len(),
+        );
+
+        let state_count = opencode_states.stores.len();
+        let stage_started = Instant::now();
         let now = chrono::Utc::now().timestamp();
         let conn = self.conn.lock().unwrap();
         let tx = conn
@@ -198,6 +311,7 @@ impl LocalUsageDatabase {
         )?;
         tx.commit()
             .map_err(|e| format!("Failed to commit OpenCode DB sync state: {}", e))?;
+        log_sync_stage("persist_opencode_state", stage_started, state_count);
 
         Ok(())
     }
@@ -688,6 +802,19 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to commit local usage sync: {}", e))?;
         Ok(())
     }
+}
+
+fn log_sync_stage(stage: &str, started: Instant, result_size: usize) {
+    #[cfg(test)]
+    println!(
+        "SYNC_STAGE stage={} elapsed_ms={:.3} result_size={}",
+        stage,
+        started.elapsed().as_secs_f64() * 1000.0,
+        result_size
+    );
+
+    #[cfg(not(test))]
+    let _ = (stage, started, result_size);
 }
 
 /// 将任意带有 `(SessionMeta, Vec<LocalRequestRecord>, u64, String)` 字段的会话列表

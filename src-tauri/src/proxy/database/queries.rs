@@ -115,24 +115,17 @@ impl ProxyDatabase {
             .lock()
             .map_err(|e| format!("Failed to lock connection: {}", e))?;
         conn.query_row(
-            r#"
-            SELECT
-                (SELECT COUNT(*) FROM usage_records),
-                (SELECT COALESCE(MAX(timestamp), 0) FROM usage_records),
-                (SELECT COALESCE(MAX(updated_at), 0) FROM usage_records),
-                (SELECT COALESCE(MAX(last_updated), 0) FROM session_stats)
-            "#,
+            "SELECT COALESCE(CAST(state_value AS INTEGER), 0)
+             FROM daily_rollup_state
+             WHERE state_key = 'merge_cache_generation'",
             [],
             |row| {
                 Ok(ProxyMergeCacheSignature {
-                    usage_record_count: row.get::<_, i64>(0)?.max(0) as u64,
-                    max_timestamp: row.get::<_, i64>(1)?,
-                    max_updated_at: row.get::<_, i64>(2)?,
-                    session_stats_max_updated_at: row.get::<_, i64>(3)?,
+                    merge_cache_generation: row.get(0)?,
                 })
             },
         )
-        .map_err(|e| format!("Failed to compute proxy merge cache signature: {}", e))
+        .map_err(|e| format!("Failed to load proxy merge cache signature: {}", e))
     }
 
     pub fn get_day_dependency_snapshot(

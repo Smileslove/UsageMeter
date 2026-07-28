@@ -10,6 +10,9 @@ mod statistics;
 mod survival;
 mod types;
 
+#[cfg(all(test, feature = "performance-tests"))]
+mod performance_tests;
+
 pub use maintenance::*;
 pub use overview::*;
 pub use requests::*;

@@ -1,7 +1,7 @@
 use super::super::types::{
     StatisticsCapability, StatisticsModelBreakdown, StatisticsPerformance, StatisticsQuery,
-    StatisticsRange, StatisticsStatusBreakdown, StatisticsSummary, StatisticsTotals,
-    MERGED_SOURCE, MODEL_TREND_LIMIT,
+    StatisticsRange, StatisticsStatusBreakdown, StatisticsSummary, StatisticsTotals, MERGED_SOURCE,
+    MODEL_TREND_LIMIT,
 };
 use super::shared::{
     add_fact_to_stat_acc, bucket_name, bucket_start, make_empty_trend, normalize_range,

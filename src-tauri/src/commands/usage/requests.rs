@@ -57,9 +57,13 @@ pub async fn get_recent_request_records(
     let offset = query.offset.clamp(0, RECENT_REQUESTS_MAX_OFFSET);
 
     spawn_background_local_usage_sync(app);
-    let (facts, _) =
-        crate::unified_usage::get_merged_request_facts_no_sync(&settings, None, None, include_errors)
-            .await?;
+    let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
+        &settings,
+        None,
+        None,
+        include_errors,
+    )
+    .await?;
     // 事实向量来自共享 Arc，不能原地排序；先按引用做稳定排序（与原先对整表
     // sort_by_key 的顺序语义一致），再只克隆分页命中的至多 limit 条记录，
     // 避免为全量历史事实付一次深拷贝。

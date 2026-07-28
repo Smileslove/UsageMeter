@@ -1,7 +1,7 @@
 mod service;
 mod types;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "performance-tests"))]
 mod performance_tests;
 
 pub(crate) use service::{

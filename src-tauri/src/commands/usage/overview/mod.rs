@@ -7,6 +7,16 @@ mod breakdown;
 mod rate;
 mod refresh;
 
+pub(crate) async fn refresh_usage_bundle_no_sync(
+    settings: &AppSettings,
+    now: u64,
+) -> Result<UsageRefreshBundle, String> {
+    let prepared = refresh::prepare_usage_refresh_data_no_sync(settings, now).await?;
+    Ok(refresh::build_usage_refresh_bundle_from_prepared(
+        settings, &prepared,
+    ))
+}
+
 #[tauri::command]
 pub async fn refresh_usage_bundle(
     app: tauri::AppHandle,
@@ -18,9 +28,27 @@ pub async fn refresh_usage_bundle(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let prepared = refresh::prepare_usage_refresh_data_no_sync(&settings, now).await?;
-    let bundle = refresh::build_usage_refresh_bundle_from_prepared(&settings, &prepared);
-    Ok(bundle)
+    refresh_usage_bundle_no_sync(&settings, now).await
+}
+
+pub(crate) async fn get_overview_breakdown_no_sync(
+    window: String,
+    settings: &AppSettings,
+    now: i64,
+) -> Result<OverviewBreakdown, String> {
+    let include_errors = settings.proxy.include_error_requests;
+    let cutoff_epoch =
+        crate::utils::business_time::business_window_cutoff_epoch_at(&window, settings, now);
+    let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
+        settings,
+        Some(cutoff_epoch),
+        Some(now + 1),
+        include_errors,
+    )
+    .await?;
+    Ok(breakdown::build_overview_breakdown_from_facts(
+        settings, window, now, &facts,
+    ))
 }
 
 #[tauri::command]
@@ -31,20 +59,110 @@ pub async fn get_overview_breakdown(
 ) -> Result<OverviewBreakdown, String> {
     // 同步扫描放后台，避免切换时间窗口时阻塞等待全盘扫描。
     spawn_background_local_usage_sync(app);
-    let now = chrono::Utc::now().timestamp();
+    get_overview_breakdown_no_sync(window, &settings, chrono::Utc::now().timestamp()).await
+}
+
+#[cfg(all(test, feature = "performance-tests"))]
+pub(crate) fn report_overview_aggregation_stages_for_test(
+    window: &str,
+    settings: &AppSettings,
+    now: i64,
+    facts: &[crate::unified_usage::MergedRequestFact],
+) {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    let started = Instant::now();
+    let model_stats = refresh::build_model_token_totals_from_facts(facts);
+    println!(
+        "QUERY_STAGE name=overview_30d stage=model_totals elapsed_ms={:.3} input_size={}",
+        started.elapsed().as_secs_f64() * 1000.0,
+        facts.len()
+    );
+    black_box(refresh::build_model_distribution_from_window_stats(Some(
+        &model_stats,
+    )));
+
+    let started = Instant::now();
+    black_box(refresh::build_window_usage_from_facts(window, facts));
+    println!(
+        "QUERY_STAGE name=overview_30d stage=window_usage elapsed_ms={:.3} input_size={}",
+        started.elapsed().as_secs_f64() * 1000.0,
+        facts.len()
+    );
+
+    let started = Instant::now();
+    black_box(refresh::summarize_status_counts(facts));
+    println!(
+        "QUERY_STAGE name=overview_30d stage=status_counts elapsed_ms={:.3} input_size={}",
+        started.elapsed().as_secs_f64() * 1000.0,
+        facts.len()
+    );
+
+    let started = Instant::now();
+    black_box(rate::build_window_rate_summary_from_facts(
+        window.to_string(),
+        facts,
+    ));
+    println!(
+        "QUERY_STAGE name=overview_30d stage=rate_summary elapsed_ms={:.3} input_size={}",
+        started.elapsed().as_secs_f64() * 1000.0,
+        facts.len()
+    );
+
+    let started = Instant::now();
+    black_box(breakdown::build_overview_breakdown_from_facts(
+        settings,
+        window.to_string(),
+        now,
+        facts,
+    ));
+    println!(
+        "QUERY_STAGE name=overview_30d stage=breakdown elapsed_ms={:.3} input_size={}",
+        started.elapsed().as_secs_f64() * 1000.0,
+        facts.len()
+    );
+}
+
+pub(crate) async fn get_overview_deferred_bundle_no_sync(
+    window: String,
+    settings: &AppSettings,
+    now: i64,
+) -> Result<OverviewDeferredBundle, String> {
     let include_errors = settings.proxy.include_error_requests;
-    let cutoff_ms =
-        crate::utils::business_time::business_window_cutoff_epoch(&window, &settings) * 1000;
+    let cutoff_epoch =
+        crate::utils::business_time::business_window_cutoff_epoch_at(&window, settings, now);
     let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
-        &settings,
-        Some(cutoff_ms / 1000),
+        settings,
+        Some(cutoff_epoch),
         Some(now + 1),
         include_errors,
     )
     .await?;
-    Ok(breakdown::build_overview_breakdown_from_facts(
-        &settings, window, now, &facts,
-    ))
+    // build_window_usage_from_facts 在一次遍历里同时产出窗口总量、状态码计数
+    // 和模型汇总；复用该结果，避免对同一 facts 再做 model/status 两次全量扫描。
+    let (window_usage, model_stats) = refresh::build_window_usage_from_facts(&window, &facts);
+    let model_distribution =
+        refresh::build_model_distribution_from_window_stats(Some(&model_stats));
+    let usage_summary = refresh::build_usage_summary_from_usage(
+        &window_usage,
+        window_usage.success_requests,
+        window_usage.client_error_requests,
+        window_usage.server_error_requests,
+    );
+    let rate_summary = rate::build_window_rate_summary_from_facts(window.clone(), &facts);
+    let overview_breakdown =
+        breakdown::build_overview_breakdown_from_facts(settings, window.clone(), now, &facts);
+
+    Ok(OverviewDeferredBundle {
+        window,
+        generated_at_epoch: now,
+        window_usage,
+        usage_summary,
+        model_distribution,
+        rate_summary,
+        overview_breakdown,
+    })
 }
 
 #[tauri::command]
@@ -56,42 +174,7 @@ pub async fn get_overview_deferred_bundle(
 ) -> Result<OverviewDeferredBundle, String> {
     // 同步扫描放后台，避免切换时间窗口时阻塞等待全盘扫描。
     spawn_background_local_usage_sync(app);
-    let now = chrono::Utc::now().timestamp();
-    let include_errors = settings.proxy.include_error_requests;
-    let cutoff_epoch =
-        crate::utils::business_time::business_window_cutoff_epoch(&window, &settings);
-    let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
-        &settings,
-        Some(cutoff_epoch),
-        Some(now + 1),
-        include_errors,
-    )
-    .await?;
-    let model_stats = refresh::build_model_token_totals_from_facts(&facts);
-    let model_distribution =
-        refresh::build_model_distribution_from_window_stats(Some(&model_stats));
-    let (window_usage, _) = refresh::build_window_usage_from_facts(&window, &facts);
-    let (success_requests, client_error_requests, server_error_requests) =
-        refresh::summarize_status_counts(&facts);
-    let usage_summary = refresh::build_usage_summary_from_usage(
-        &window_usage,
-        success_requests,
-        client_error_requests,
-        server_error_requests,
-    );
-    let rate_summary = rate::build_window_rate_summary_from_facts(window.clone(), &facts);
-    let overview_breakdown =
-        breakdown::build_overview_breakdown_from_facts(&settings, window.clone(), now, &facts);
-
-    Ok(OverviewDeferredBundle {
-        window,
-        generated_at_epoch: now,
-        window_usage,
-        usage_summary,
-        model_distribution,
-        rate_summary,
-        overview_breakdown,
-    })
+    get_overview_deferred_bundle_no_sync(window, &settings, chrono::Utc::now().timestamp()).await
 }
 
 #[cfg(test)]

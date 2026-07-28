@@ -1213,6 +1213,52 @@ fn unified_materialized_facts_round_trip() {
 }
 
 #[test]
+fn unified_materialization_state_preserves_full_u64_pricing_fingerprint() {
+    let (_tmp, db) = temp_db();
+    let local_date = "2026-05-27".to_string();
+    let high_bit_fingerprint = (i64::MAX as u64) + 42;
+    let state = UnifiedDayMaterializationState {
+        local_date: local_date.clone(),
+        day_boundary_mode: "standard".to_string(),
+        fact_count: 0,
+        local_request_count: 0,
+        local_max_sync_version: 0,
+        local_max_timestamp: 0,
+        remote_request_count: 0,
+        remote_max_export_seq: 0,
+        remote_max_timestamp: 0,
+        proxy_record_count: 0,
+        proxy_all_record_count: 0,
+        proxy_max_timestamp_ms: 0,
+        proxy_max_updated_at: 0,
+        max_fact_timestamp_ms: 0,
+        pricing_fingerprint: high_bit_fingerprint,
+        is_finalized: true,
+        finalized_at: Some(123456789),
+        materialized_at: 123456790,
+    };
+
+    db.replace_unified_day_materialization(&local_date, &[], &state)
+        .expect("store materialization state with high-bit fingerprint");
+
+    let loaded = db
+        .get_unified_day_materialization_state(&local_date)
+        .expect("load high-bit materialization state")
+        .expect("high-bit materialization state exists");
+    assert_eq!(loaded.pricing_fingerprint, high_bit_fingerprint);
+
+    let batched = db
+        .get_unified_days_materialization_states(std::slice::from_ref(&local_date))
+        .expect("load batched high-bit materialization state");
+    assert_eq!(
+        batched
+            .get(&local_date)
+            .map(|value| value.pricing_fingerprint),
+        Some(high_bit_fingerprint)
+    );
+}
+
+#[test]
 fn unified_materialization_state_persists_day_boundary_mode() {
     let (_tmp, db) = temp_db();
     let local_date = "2026-05-27".to_string();
@@ -1315,10 +1361,7 @@ fn unified_days_materialization_stamps_track_rows_and_rebuilds() {
     let both = vec![day1.clone(), day2.clone()];
     let mut stamps = db.get_unified_days_materialization_stamps(&both).unwrap();
     stamps.sort();
-    assert_eq!(
-        stamps,
-        vec![(day1.clone(), 100), (day2.clone(), 200)]
-    );
+    assert_eq!(stamps, vec![(day1.clone(), 100), (day2.clone(), 200)]);
 
     // 缺失日期不返回对应行：调用方以行数 != 请求日期数判定状态行缺失。
     let with_missing = vec![day1.clone(), day2.clone(), "2026-06-03".to_string()];
@@ -1365,8 +1408,8 @@ fn cold_facts_shard_cache_only_refetches_rematerialized_day() {
         ttft_ms: None,
         source_label: None,
     };
-    let build_state = |local_date: &str, fact_count: u64, materialized_at: i64| {
-        UnifiedDayMaterializationState {
+    let build_state =
+        |local_date: &str, fact_count: u64, materialized_at: i64| UnifiedDayMaterializationState {
             local_date: local_date.to_string(),
             day_boundary_mode: "standard".to_string(),
             fact_count,
@@ -1385,8 +1428,7 @@ fn cold_facts_shard_cache_only_refetches_rematerialized_day() {
             is_finalized: true,
             finalized_at: Some(materialized_at),
             materialized_at,
-        }
-    };
+        };
 
     let day1 = "2026-06-01".to_string();
     let day2 = "2026-06-02".to_string();
@@ -1436,7 +1478,8 @@ fn cold_facts_shard_cache_only_refetches_rematerialized_day() {
     };
 
     // 相同日期集合、物化状态未变的重复读取 → memo 命中，零重读。
-    let repeat = unified_usage::load_cold_facts_via_shards(&cache, &db, &dates, "standard").unwrap();
+    let repeat =
+        unified_usage::load_cold_facts_via_shards(&cache, &db, &dates, "standard").unwrap();
     assert!(repeat.memo_hit);
     assert_eq!(repeat.days_fetched, 0);
     assert!(Arc::ptr_eq(&first.facts, &repeat.facts));
@@ -1452,7 +1495,8 @@ fn cold_facts_shard_cache_only_refetches_rematerialized_day() {
     )
     .unwrap();
 
-    let second = unified_usage::load_cold_facts_via_shards(&cache, &db, &dates, "standard").unwrap();
+    let second =
+        unified_usage::load_cold_facts_via_shards(&cache, &db, &dates, "standard").unwrap();
     // 只有 day2 分片被重建，其余两天直接复用缓存分片。
     assert!(!second.memo_hit);
     assert_eq!(second.days_cached, 2);
@@ -1883,6 +1927,113 @@ fn v19_migration_clears_stale_unified_materialization_from_per_field_match_fix()
         .get_unified_daily_model_summaries_between("2026-05-26", "2026-05-27")
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
+    let (_tmp, db) = temp_db();
+    let local_date = "2026-05-26".to_string();
+    let fact = MergedRequestFact {
+        canonical_request_key: "opencode:req-v20".to_string(),
+        session_id: "opencode::native::sess-v20".to_string(),
+        project_name: None,
+        project_path: None,
+        api_key_prefix: None,
+        request_base_url: None,
+        tool: "opencode".to_string(),
+        timestamp_sec: 1_779_811_200,
+        timestamp_ms: 1_779_811_200_123,
+        model: "gpt-5".to_string(),
+        input_tokens: 100,
+        output_tokens: 200,
+        cache_create_tokens: 0,
+        cache_read_tokens: 0,
+        total_tokens: 300,
+        request_count: 1,
+        estimated_cost: 1.0,
+        coverage_origin: CoverageOrigin::LocalOnly,
+        status_code: Some(200),
+        duration_ms: None,
+        output_tokens_per_second: None,
+        ttft_ms: None,
+        source_label: None,
+    };
+    db.replace_unified_day_materialization(
+        &local_date,
+        &[("opencode:req-v20".to_string(), fact)],
+        &UnifiedDayMaterializationState {
+            local_date: local_date.clone(),
+            day_boundary_mode: "standard".to_string(),
+            fact_count: 1,
+            local_request_count: 0,
+            local_max_sync_version: 0,
+            local_max_timestamp: 0,
+            remote_request_count: 0,
+            remote_max_export_seq: 0,
+            remote_max_timestamp: 0,
+            proxy_record_count: 1,
+            proxy_all_record_count: 1,
+            proxy_max_timestamp_ms: 1_779_811_200_123,
+            proxy_max_updated_at: 100,
+            max_fact_timestamp_ms: 1_779_811_200_123,
+            pricing_fingerprint: 99,
+            is_finalized: true,
+            finalized_at: Some(100),
+            materialized_at: 100,
+        },
+    )
+    .expect("seed pre-v20 materialization");
+    let invalidation_before = db
+        .get_merge_cache_signature()
+        .expect("read signature before v20")
+        .unified_materialization_invalidation_version;
+    unified_usage::clear_runtime_caches();
+    unified_usage::seed_runtime_merge_cache_for_test();
+    assert_eq!(unified_usage::runtime_merge_cache_len_for_test(), 1);
+
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE local_sync_state SET state_value = '19' WHERE state_key = 'schema_version'",
+            [],
+        )
+        .expect("degrade schema version to 19");
+    }
+
+    let reopened = LocalUsageDatabase::new_with_path(&_tmp.path().join("local_usage.db"))
+        .expect("reopen and run v20 migration");
+
+    assert!(reopened
+        .get_unified_day_materialization_state(&local_date)
+        .unwrap()
+        .is_none());
+    assert!(reopened
+        .get_unified_facts_for_dates(std::slice::from_ref(&local_date), &ToolFilter::All)
+        .unwrap()
+        .is_empty());
+    assert!(reopened
+        .get_unified_daily_summaries_between("2026-05-26", "2026-05-27")
+        .unwrap()
+        .is_empty());
+    assert!(reopened
+        .get_unified_daily_model_summaries_between("2026-05-26", "2026-05-27")
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        reopened
+            .get_local_sync_state("schema_version")
+            .unwrap()
+            .as_deref(),
+        Some("20")
+    );
+    assert!(
+        reopened
+            .get_merge_cache_signature()
+            .unwrap()
+            .unified_materialization_invalidation_version
+            > invalidation_before
+    );
+    assert_eq!(unified_usage::runtime_merge_cache_len_for_test(), 0);
 }
 
 #[test]
@@ -2611,7 +2762,10 @@ fn append_only_resync_leaves_history_facts_and_materialization_untouched() {
 
     // 历史行内容未变：sync_version / created_at 均不应变化，仍在场
     let (version_after, created_after, present_after) = get_fact_state(&db, session, "msg-old");
-    assert_eq!(version_after, 1, "unchanged history fact must not bump sync_version");
+    assert_eq!(
+        version_after, 1,
+        "unchanged history fact must not bump sync_version"
+    );
     assert_eq!(created_after, created_before);
     assert_eq!(present_after, 1);
 
@@ -2632,7 +2786,10 @@ fn append_only_resync_leaves_history_facts_and_materialization_untouched() {
                 |row| row.get(0),
             )
             .expect("count pending outbox events");
-        assert_eq!(pending, 1, "only the newly appended request should be re-queued");
+        assert_eq!(
+            pending, 1,
+            "only the newly appended request should be re-queued"
+        );
     }
 
     // 新追加的今天行被正确插入
@@ -2740,4 +2897,87 @@ fn history_row_removal_soft_deletes_and_invalidates_history_date() {
         .expect("read materialization state")
         .is_none());
     assert_ne!(invalidation_version(&db), invalidation_before);
+}
+
+#[test]
+fn local_merge_cache_generation_tracks_only_source_tables_transactionally() {
+    let (_tmp, db) = temp_db();
+    let initial = db
+        .get_merge_cache_signature()
+        .expect("load initial signature")
+        .merge_cache_generation;
+
+    insert_request_fact(
+        &db,
+        "sess-generation",
+        "msg-1",
+        "/tmp/generation.jsonl",
+        true,
+        100,
+    );
+    let after_insert = db
+        .get_merge_cache_signature()
+        .expect("load signature after insert")
+        .merge_cache_generation;
+    assert!(after_insert > initial);
+
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE local_request_facts SET output_tokens = output_tokens + 1
+             WHERE session_id = 'sess-generation'",
+            [],
+        )
+        .expect("update source fact");
+    }
+    let after_update = db
+        .get_merge_cache_signature()
+        .expect("load signature after update")
+        .merge_cache_generation;
+    assert!(after_update > after_insert);
+
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO unified_daily_summary (local_date, request_count)
+             VALUES ('2026-06-01', 1)",
+            [],
+        )
+        .expect("insert derived summary");
+    }
+    let after_derived_write = db
+        .get_merge_cache_signature()
+        .expect("load signature after derived write")
+        .merge_cache_generation;
+    assert_eq!(after_derived_write, after_update);
+
+    {
+        let conn = db.conn.lock().unwrap();
+        let tx = conn
+            .unchecked_transaction()
+            .expect("open rollback transaction");
+        tx.execute(
+            "DELETE FROM local_request_facts WHERE session_id = 'sess-generation'",
+            [],
+        )
+        .expect("delete source fact in rollback transaction");
+        tx.rollback().expect("rollback source delete");
+    }
+    let after_rollback = db
+        .get_merge_cache_signature()
+        .expect("load signature after rollback")
+        .merge_cache_generation;
+    assert_eq!(after_rollback, after_update);
+
+    let conn = db.conn.lock().unwrap();
+    let trigger_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'trigger'
+               AND name LIKE 'trg_%_merge_generation_%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count generation triggers");
+    assert_eq!(trigger_count, 12);
 }

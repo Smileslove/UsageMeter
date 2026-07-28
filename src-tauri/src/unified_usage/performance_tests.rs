@@ -1,6 +1,9 @@
 //! 会话面板查询性能测试
 //!
-//! 运行：cargo test --package usagemeter --lib unified_usage::performance_tests -- --nocapture --test-threads=1
+//! 运行：cargo test --package usagemeter --lib --features performance-tests unified_usage::performance_tests -- --nocapture --test-threads=1
+//!
+//! 这些测试读取当前用户的 UsageMeter 数据库，并可能触发 migration 或派生物化写入；
+//! 默认测试套件不编译本模块，必须显式启用 `performance-tests` feature。
 //!
 //! 测试目标：
 //! - 最近会话查询 (get_merged_sessions_no_sync)
@@ -79,10 +82,14 @@ mod tests {
 
         // 1. 冷启动查询最近请求（完整链路：merge + sort + page）
         let t = Instant::now();
-        let (facts, _) =
-            crate::unified_usage::get_merged_request_facts_no_sync(&settings, None, None, include_errors)
-                .await
-                .expect("get_merged_request_facts cold");
+        let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
+            &settings,
+            None,
+            None,
+            include_errors,
+        )
+        .await
+        .expect("get_merged_request_facts cold");
 
         // 排序和分页（与 requests.rs 一致）
         let mut ordered: Vec<_> = facts.iter().collect();
@@ -105,10 +112,14 @@ mod tests {
 
         // 2. 热缓存查询
         let t = Instant::now();
-        let (facts, _) =
-            crate::unified_usage::get_merged_request_facts_no_sync(&settings, None, None, include_errors)
-                .await
-                .expect("get_merged_request_facts warm");
+        let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
+            &settings,
+            None,
+            None,
+            include_errors,
+        )
+        .await
+        .expect("get_merged_request_facts warm");
 
         let mut ordered: Vec<_> = facts.iter().collect();
         ordered.sort_by_key(|fact| std::cmp::Reverse(fact.timestamp_ms));
@@ -203,10 +214,14 @@ mod tests {
         println!("1. 最近会话: {} ms", time_sessions);
 
         let t = Instant::now();
-        let (facts, _) =
-            crate::unified_usage::get_merged_request_facts_no_sync(&settings, None, None, include_errors)
-                .await
-                .expect("requests");
+        let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
+            &settings,
+            None,
+            None,
+            include_errors,
+        )
+        .await
+        .expect("requests");
         let mut ordered: Vec<_> = facts.iter().collect();
         ordered.sort_by_key(|fact| std::cmp::Reverse(fact.timestamp_ms));
         let requests_count = ordered.into_iter().skip(0).take(50).count();
@@ -248,10 +263,14 @@ mod tests {
         println!("1. 最近会话: {} ms", time_sessions_warm);
 
         let t = Instant::now();
-        let (facts, _) =
-            crate::unified_usage::get_merged_request_facts_no_sync(&settings, None, None, include_errors)
-                .await
-                .expect("requests warm");
+        let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
+            &settings,
+            None,
+            None,
+            include_errors,
+        )
+        .await
+        .expect("requests warm");
         let mut ordered: Vec<_> = facts.iter().collect();
         ordered.sort_by_key(|fact| std::cmp::Reverse(fact.timestamp_ms));
         let _ = ordered.into_iter().skip(0).take(50).count();
@@ -320,10 +339,14 @@ mod tests {
 
         // 2. 获取全量合并事实（无派生聚合）
         let t = Instant::now();
-        let (facts, _) =
-            crate::unified_usage::get_merged_request_facts_no_sync(&settings, None, None, include_errors)
-                .await
-                .expect("get_merged_request_facts_no_sync");
+        let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
+            &settings,
+            None,
+            None,
+            include_errors,
+        )
+        .await
+        .expect("get_merged_request_facts_no_sync");
         let time_merge = t.elapsed().as_millis();
         println!(
             "Step 2 - get_merged_request_facts_no_sync: {} ms ({} facts)",

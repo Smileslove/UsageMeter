@@ -239,34 +239,29 @@ impl LocalUsageDatabase {
         conn.query_row(
             r#"
             SELECT
-                (SELECT COUNT(*) FROM local_request_facts),
-                (SELECT COALESCE(MAX(sync_version), 0) FROM local_request_facts),
-                (SELECT COALESCE(MAX(timestamp), 0) FROM local_request_facts),
-                (SELECT COUNT(*) FROM remote_request_facts),
-                (SELECT COALESCE(MAX(export_seq), 0) FROM remote_request_facts),
-                (SELECT COALESCE(MAX(timestamp), 0) FROM remote_request_facts),
-                (SELECT COALESCE(MAX(updated_at), 0) FROM local_sessions),
-                (SELECT COALESCE(MAX(imported_at), 0) FROM remote_sessions),
-                (SELECT COALESCE(CAST(state_value AS INTEGER), 0)
-                   FROM local_sync_state
-                  WHERE state_key = 'unified_materialization_invalidation_version')
+                COALESCE(MAX(CASE
+                    WHEN state_key = 'merge_cache_generation'
+                    THEN CAST(state_value AS INTEGER)
+                END), 0),
+                COALESCE(MAX(CASE
+                    WHEN state_key = 'unified_materialization_invalidation_version'
+                    THEN CAST(state_value AS INTEGER)
+                END), 0)
+            FROM local_sync_state
+            WHERE state_key IN (
+                'merge_cache_generation',
+                'unified_materialization_invalidation_version'
+            )
             "#,
             [],
             |row| {
                 Ok(LocalMergeCacheSignature {
-                    local_request_count: row.get::<_, i64>(0)?.max(0) as u64,
-                    local_max_sync_version: row.get::<_, i64>(1)?,
-                    local_max_timestamp: row.get::<_, i64>(2)?,
-                    remote_request_count: row.get::<_, i64>(3)?.max(0) as u64,
-                    remote_max_export_seq: row.get::<_, i64>(4)?,
-                    remote_max_timestamp: row.get::<_, i64>(5)?,
-                    local_session_max_updated_at: row.get::<_, i64>(6)?,
-                    remote_session_max_imported_at: row.get::<_, i64>(7)?,
-                    unified_materialization_invalidation_version: row.get::<_, i64>(8)?,
+                    merge_cache_generation: row.get(0)?,
+                    unified_materialization_invalidation_version: row.get(1)?,
                 })
             },
         )
-        .map_err(|e| format!("Failed to compute local merge cache signature: {}", e))
+        .map_err(|e| format!("Failed to load local merge cache signature: {}", e))
     }
 
     pub fn get_request_time_bounds(&self) -> Result<Option<(i64, i64)>, String> {

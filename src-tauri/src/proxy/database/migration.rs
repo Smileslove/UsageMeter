@@ -6,6 +6,7 @@ impl ProxyDatabase {
         // UsageRecordRow: 从数据库查询的 usage_record 行（用于迁移）
         type UsageRecordRow = (
             i64,         // id: 记录 ID
+            i64,         // timestamp: 请求时间（毫秒）
             String,      // message_id: 消息 ID
             i64,         // duration_ms: 耗时（毫秒）
             i64,         // input_tokens: 输入 Token
@@ -78,6 +79,7 @@ impl ProxyDatabase {
                     r#"
                     SELECT
                         id,
+                        timestamp,
                         message_id,
                         duration_ms,
                         input_tokens,
@@ -107,8 +109,9 @@ impl ProxyDatabase {
                         row.get(7)?,
                         row.get(8)?,
                         row.get(9)?,
-                        row.get::<_, String>(10)?,
-                        row.get::<_, Option<f64>>(11)?,
+                        row.get(10)?,
+                        row.get::<_, String>(11)?,
+                        row.get::<_, Option<f64>>(12)?,
                     ))
                 })
                 .map_err(|e| format!("Failed to execute migration query: {}", e))?
@@ -141,11 +144,15 @@ impl ProxyDatabase {
 
         let mut matched = 0;
         let mut unmatched = 0;
-        let mut record_updates: Vec<(String, i64)> = Vec::new(); // (session_id, record_id) 会话ID, 记录ID
-        let mut unmatched_record_ids: Vec<i64> = Vec::new();
+        let mut record_updates: Vec<(String, i64, Option<String>)> = Vec::new();
+        let mut unmatched_record_ids: Vec<(i64, Option<String>)> = Vec::new();
+        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let today = Self::today_local_date_with_settings(&settings);
+        let mut touched_history_dates = std::collections::HashSet::new();
 
         for (
             record_id,
+            timestamp,
             message_id,
             duration_ms,
             input,
@@ -159,9 +166,14 @@ impl ProxyDatabase {
             ttft_ms,
         ) in records
         {
+            let historical_date = {
+                let local_date = Self::record_local_date_with_settings(timestamp, &settings);
+                (local_date < today).then_some(local_date)
+            };
+
             if let Some(session_id) = msg_to_session.get(&message_id) {
                 matched += 1;
-                record_updates.push((session_id.clone(), record_id));
+                record_updates.push((session_id.clone(), record_id, historical_date));
 
                 let entry = session_aggregates.entry(session_id.clone()).or_insert((
                     0,                                // 计数
@@ -199,7 +211,7 @@ impl ProxyDatabase {
                 }
             } else {
                 unmatched += 1;
-                unmatched_record_ids.push(record_id);
+                unmatched_record_ids.push((record_id, historical_date));
             }
         }
 
@@ -224,8 +236,15 @@ impl ProxyDatabase {
                 .prepare("UPDATE usage_records SET session_id = ?1, updated_at = ?2 WHERE id = ?3")
                 .map_err(|e| format!("Failed to prepare record migration update: {}", e))?;
 
-            for (session_id, record_id) in &record_updates {
-                let _ = update_record_stmt.execute(rusqlite::params![session_id, now, record_id]);
+            for (session_id, record_id, historical_date) in &record_updates {
+                let changed = update_record_stmt
+                    .execute(rusqlite::params![session_id, now, record_id])
+                    .map_err(|e| format!("Failed to migrate usage record {record_id}: {e}"))?;
+                if changed > 0 {
+                    if let Some(local_date) = historical_date {
+                        touched_history_dates.insert(local_date.clone());
+                    }
+                }
             }
         }
 
@@ -236,12 +255,21 @@ impl ProxyDatabase {
                 )
                 .map_err(|e| format!("Failed to prepare unmatched migration update: {}", e))?;
 
-            for record_id in &unmatched_record_ids {
-                let _ = mark_unmatched_stmt.execute(rusqlite::params![
-                    super::LEGACY_UNMATCHED_SESSION_ID,
-                    now,
-                    record_id
-                ]);
+            for (record_id, historical_date) in &unmatched_record_ids {
+                let changed = mark_unmatched_stmt
+                    .execute(rusqlite::params![
+                        super::LEGACY_UNMATCHED_SESSION_ID,
+                        now,
+                        record_id
+                    ])
+                    .map_err(|e| {
+                        format!("Failed to archive unmatched usage record {record_id}: {e}")
+                    })?;
+                if changed > 0 {
+                    if let Some(local_date) = historical_date {
+                        touched_history_dates.insert(local_date.clone());
+                    }
+                }
             }
         }
 
@@ -249,6 +277,9 @@ impl ProxyDatabase {
             tx.commit()
                 .map_err(|e| format!("Failed to commit unmatched migration transaction: {}", e))?;
             drop(conn);
+            Self::invalidate_local_materialization_after_proxy_commit(
+                &touched_history_dates.into_iter().collect::<Vec<_>>(),
+            )?;
             eprintln!(
                 "[migration] No records matched; archived {} records as legacy unmatched",
                 unmatched
@@ -379,6 +410,9 @@ impl ProxyDatabase {
         tx.commit()
             .map_err(|e| format!("Failed to commit migration transaction: {}", e))?;
         drop(conn);
+        Self::invalidate_local_materialization_after_proxy_commit(
+            &touched_history_dates.into_iter().collect::<Vec<_>>(),
+        )?;
         eprintln!(
             "[migration] Migrated {} sessions to session_stats table",
             migrated

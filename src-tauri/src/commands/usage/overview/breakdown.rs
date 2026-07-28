@@ -251,21 +251,25 @@ pub(super) fn build_overview_breakdown_from_facts(
     let mut source_map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)> = HashMap::new();
     let mut tool_map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)> = HashMap::new();
     let mut model_map: HashMap<String, (BreakdownMeta, BreakdownAccumulator)> = HashMap::new();
+    let mut has_cost = false;
+    let mut has_status = false;
+    let mut has_performance = false;
 
     for fact in facts {
         add_breakdown_fact(&mut source_map, source_meta_for_fact(settings, fact), fact);
         add_breakdown_fact(&mut tool_map, tool_meta_for_fact(settings, fact), fact);
         add_breakdown_fact(&mut model_map, model_meta_for_fact(fact), fact);
+        has_cost |= fact.estimated_cost > 0.0;
+        has_status |= fact.status_code.is_some();
+        has_performance |= fact.output_tokens_per_second.is_some() || fact.ttft_ms.is_some();
     }
 
     let capability = OverviewBreakdownCapability {
         has_source: !source_map.is_empty(),
         has_tool: !tool_map.is_empty(),
-        has_cost: facts.iter().any(|fact| fact.estimated_cost > 0.0),
-        has_status: facts.iter().any(|fact| fact.status_code.is_some()),
-        has_performance: facts
-            .iter()
-            .any(|fact| fact.output_tokens_per_second.is_some() || fact.ttft_ms.is_some()),
+        has_cost,
+        has_status,
+        has_performance,
     };
 
     OverviewBreakdown {

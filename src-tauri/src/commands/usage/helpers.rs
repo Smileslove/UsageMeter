@@ -31,8 +31,8 @@ pub(crate) fn spawn_background_local_usage_sync(app: tauri::AppHandle) {
     }
     tauri::async_runtime::spawn_blocking(move || {
         let result = (|| -> Result<bool, String> {
-            let before_local = crate::local_usage::get_local_usage_db()?
-                .get_merge_cache_signature()?;
+            let before_local =
+                crate::local_usage::get_local_usage_db()?.get_merge_cache_signature()?;
             let before_proxy = crate::proxy::ProxyDatabase::get_global()
                 .map(|db| db.get_merge_cache_signature())
                 .transpose()?;

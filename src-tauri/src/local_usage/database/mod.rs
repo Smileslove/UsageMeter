@@ -99,6 +99,7 @@ impl LocalUsageDatabase {
 
         Self::create_tables(&conn)?;
         Self::migrate_schema(&conn)?;
+        Self::create_merge_cache_generation_tracking(&conn)?;
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),

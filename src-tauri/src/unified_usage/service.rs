@@ -166,6 +166,18 @@ struct SessionDerivedCacheEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SessionDetailCacheKey {
+    merge_key: MergeCacheKey,
+    session_id: String,
+}
+
+#[derive(Debug, Clone)]
+struct SessionDetailCacheEntry {
+    key: SessionDetailCacheKey,
+    detail: Option<SessionStats>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ProjectDerivedCacheKey {
     merge_key: MergeCacheKey,
 }
@@ -182,6 +194,8 @@ static COLD_FACTS_SHARD_CACHE: OnceLock<Mutex<ColdFactsShardCache>> = OnceLock::
 static HISTORY_MATERIALIZATION_CACHE: OnceLock<Mutex<Vec<HistoryMaterializationCacheEntry>>> =
     OnceLock::new();
 static MERGED_SESSIONS_CACHE: OnceLock<Mutex<Vec<SessionDerivedCacheEntry>>> = OnceLock::new();
+static MERGED_SESSION_DETAILS_CACHE: OnceLock<Mutex<Vec<SessionDetailCacheEntry>>> =
+    OnceLock::new();
 static MERGED_PROJECTS_CACHE: OnceLock<Mutex<Vec<ProjectDerivedCacheEntry>>> = OnceLock::new();
 static UNIFIED_INFLIGHT_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 // 概览 6 个时间窗口 + 统计页 7 个预设可能同时驻留，8 条会互相挤出，提高到 16。
@@ -196,6 +210,7 @@ const COLD_FACTS_SHARD_CAPACITY: usize = 400;
 const COLD_CONCAT_MEMO_CAPACITY: usize = 3;
 const HISTORY_MATERIALIZATION_CACHE_CAPACITY: usize = 8;
 const MERGED_SESSIONS_CACHE_CAPACITY: usize = 6;
+const MERGED_SESSION_DETAILS_CACHE_CAPACITY: usize = 32;
 const MERGED_PROJECTS_CACHE_CAPACITY: usize = 6;
 const REASONIX_FULL_COVERAGE_GRACE_SECS: i64 = 30;
 
@@ -205,6 +220,10 @@ fn merge_cache() -> &'static Mutex<Vec<MergeCacheEntry>> {
 
 fn merged_sessions_cache() -> &'static Mutex<Vec<SessionDerivedCacheEntry>> {
     MERGED_SESSIONS_CACHE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn merged_session_details_cache() -> &'static Mutex<Vec<SessionDetailCacheEntry>> {
+    MERGED_SESSION_DETAILS_CACHE.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 fn merged_projects_cache() -> &'static Mutex<Vec<ProjectDerivedCacheEntry>> {
@@ -240,6 +259,7 @@ pub(crate) fn clear_runtime_caches() {
     }
     history_materialization_cache().lock().unwrap().clear();
     merged_sessions_cache().lock().unwrap().clear();
+    merged_session_details_cache().lock().unwrap().clear();
     merged_projects_cache().lock().unwrap().clear();
 }
 
@@ -250,14 +270,7 @@ pub(crate) fn seed_runtime_merge_cache_for_test() {
     let source_filter = settings.source_aware.build_filter();
     let tool_filter = settings.client_tools.build_filter();
     let local_signature = crate::local_usage::LocalMergeCacheSignature {
-        local_request_count: 1,
-        local_max_sync_version: 1,
-        local_max_timestamp: 1,
-        remote_request_count: 0,
-        remote_max_export_seq: 0,
-        remote_max_timestamp: 0,
-        local_session_max_updated_at: 0,
-        remote_session_max_imported_at: 0,
+        merge_cache_generation: 1,
         unified_materialization_invalidation_version: 1,
     };
     let merge_key = build_merge_cache_key(MergeCacheKeyParts {
@@ -541,8 +554,7 @@ pub(crate) fn load_cold_facts_via_shards(
 
     // d. 按日期升序把各分片 concat 成平铺向量（各日内部已按 timestamp_ms
     //    排序；调用方随后与热段合并时还会整体重排，这里保持近有序即可）。
-    let shard_for_date =
-        |date: &String| cached.get(date).or_else(|| fetched.get(date));
+    let shard_for_date = |date: &String| cached.get(date).or_else(|| fetched.get(date));
     let total: usize = stamps
         .iter()
         .filter_map(|(date, _)| shard_for_date(date).map(|facts| facts.len()))
@@ -638,6 +650,28 @@ fn store_sessions_cache(key: SessionDerivedCacheKey, sessions: Arc<Vec<SessionSt
     guard.insert(0, SessionDerivedCacheEntry { key, sessions });
     if guard.len() > MERGED_SESSIONS_CACHE_CAPACITY {
         guard.truncate(MERGED_SESSIONS_CACHE_CAPACITY);
+    }
+}
+
+fn lookup_session_detail_cache(key: &SessionDetailCacheKey) -> Option<Option<SessionStats>> {
+    let cache = merged_session_details_cache();
+    let mut guard = cache.lock().unwrap();
+    let idx = guard.iter().position(|entry| entry.key == *key)?;
+    let entry = guard.remove(idx);
+    let result = entry.detail.clone();
+    guard.insert(0, entry);
+    Some(result)
+}
+
+fn store_session_detail_cache(key: SessionDetailCacheKey, detail: Option<SessionStats>) {
+    let cache = merged_session_details_cache();
+    let mut guard = cache.lock().unwrap();
+    if let Some(idx) = guard.iter().position(|entry| entry.key == key) {
+        guard.remove(idx);
+    }
+    guard.insert(0, SessionDetailCacheEntry { key, detail });
+    if guard.len() > MERGED_SESSION_DETAILS_CACHE_CAPACITY {
+        guard.truncate(MERGED_SESSION_DETAILS_CACHE_CAPACITY);
     }
 }
 
@@ -751,10 +785,12 @@ fn compute_local_request_cost_cached(
 }
 
 #[derive(Default)]
-struct ProjectAggregate {
+struct ProjectAggregate<'a> {
     stats: ProjectStats,
-    sessions: HashSet<String>,
-    tool_sessions: HashMap<String, HashSet<String>>,
+    // 聚合生命周期内 facts 与 session metadata 均保持存活；借用稳定标识，避免
+    // 为同一 session/tool 的每条事实反复分配 String。
+    sessions: HashSet<&'a str>,
+    tool_sessions: HashMap<&'a str, HashSet<&'a str>>,
 }
 
 #[derive(Debug, Clone)]
@@ -956,7 +992,10 @@ fn build_metadata_only_session_stats(meta: &SessionMeta, now_sec: i64) -> Sessio
     }
 }
 
-fn merge_metadata_only_project(map: &mut HashMap<String, ProjectAggregate>, meta: &SessionMeta) {
+fn merge_metadata_only_project<'a>(
+    map: &mut HashMap<String, ProjectAggregate<'a>>,
+    meta: &'a SessionMeta,
+) {
     let descriptor = project_descriptor_for_session(meta);
     let entry = map
         .entry(descriptor.key.clone())
@@ -994,14 +1033,14 @@ fn merge_metadata_only_project(map: &mut HashMap<String, ProjectAggregate>, meta
         .last_active
         .max(meta.end_time.max(meta.last_modified));
     if !meta.session_id.trim().is_empty() {
-        entry.sessions.insert(meta.session_id.clone());
+        entry.sessions.insert(meta.session_id.as_str());
         entry
             .tool_sessions
-            .entry(meta.tool.clone())
+            .entry(meta.tool.as_str())
             .or_default()
-            .insert(meta.session_id.clone());
+            .insert(meta.session_id.as_str());
     } else {
-        entry.tool_sessions.entry(meta.tool.clone()).or_default();
+        entry.tool_sessions.entry(meta.tool.as_str()).or_default();
     }
 
     let tool_stats = entry
@@ -1238,7 +1277,7 @@ fn build_history_materialization_cache_key(
 
 fn merge_cache_inflight_key(key: &MergeCacheKey) -> String {
     format!(
-        "merge:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        "merge:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
         key.start_epoch,
         key.end_epoch,
         key.day_boundary_mode,
@@ -1247,40 +1286,28 @@ fn merge_cache_inflight_key(key: &MergeCacheKey) -> String {
         key.tool_filter,
         key.pricing_match_mode,
         key.pricing_fingerprint,
-        key.local_signature.local_request_count,
-        key.local_signature.local_max_sync_version,
-        key.local_signature.remote_request_count,
+        key.local_signature.merge_cache_generation,
         key.local_signature
             .unified_materialization_invalidation_version,
         key.proxy_signature
-            .map(|sig| format!(
-                "{}:{}:{}",
-                sig.usage_record_count, sig.max_timestamp, sig.max_updated_at
-            ))
+            .map(|sig| sig.merge_cache_generation.to_string())
             .unwrap_or_else(|| "none".to_string()),
     )
 }
 
 fn history_materialization_inflight_key(key: &HistoryMaterializationCacheKey) -> String {
     format!(
-        "history:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        "history:{}:{}:{}:{}:{}:{}:{}:{}",
         key.start_epoch,
         key.end_epoch,
         key.day_boundary_mode,
         key.pricing_match_mode,
         key.pricing_fingerprint,
-        key.local_signature.local_max_sync_version,
-        key.local_signature.remote_max_export_seq,
+        key.local_signature.merge_cache_generation,
         key.local_signature
             .unified_materialization_invalidation_version,
         key.proxy_signature
-            .map(|sig| format!(
-                "{}:{}:{}:{}",
-                sig.usage_record_count,
-                sig.max_timestamp,
-                sig.max_updated_at,
-                sig.session_stats_max_updated_at
-            ))
+            .map(|sig| sig.merge_cache_generation.to_string())
             .unwrap_or_else(|| "none".to_string()),
     )
 }
@@ -1389,8 +1416,11 @@ async fn merge_realtime_range(
                 local_db.get_request_records_in_range(range_start, range_end, &tool_filter)?;
             let local_request_keys: HashSet<String> =
                 local_records.iter().map(request_key_for_local).collect();
-            let mut remote_records = local_db
-                .get_remote_request_records_in_range(range_start, range_end, &tool_filter)?;
+            let mut remote_records = local_db.get_remote_request_records_in_range(
+                range_start,
+                range_end,
+                &tool_filter,
+            )?;
             remote_records
                 .retain(|record| !local_request_keys.contains(&request_key_for_local(record)));
             local_records.extend(remote_records);
@@ -1642,7 +1672,7 @@ fn request_key_for_fact(fact: &MergedRequestFact) -> String {
 
 fn materialization_state_matches(
     state: &crate::local_usage::UnifiedDayMaterializationState,
-    snapshot: &crate::local_usage::UnifiedDayLocalSnapshot,
+    local_snapshot: &crate::local_usage::UnifiedDayLocalSnapshot,
     proxy_snapshot: crate::proxy::ProxyDayDependencySnapshot,
     pricing_fingerprint: u64,
     settings: &AppSettings,
@@ -1651,15 +1681,94 @@ fn materialization_state_matches(
         && state.day_boundary_mode
             == crate::utils::business_time::normalize_day_boundary_mode(&settings.day_boundary_mode)
         && state.pricing_fingerprint == pricing_fingerprint
-        && state.local_request_count == snapshot.local_request_count
-        && state.local_max_sync_version == snapshot.local_max_sync_version
-        && state.local_max_timestamp == snapshot.local_max_timestamp
-        && state.remote_request_count == snapshot.remote_request_count
-        && state.remote_max_export_seq == snapshot.remote_max_export_seq
-        && state.remote_max_timestamp == snapshot.remote_max_timestamp
+        && state.local_request_count == local_snapshot.local_request_count
+        && state.local_max_sync_version == local_snapshot.local_max_sync_version
+        && state.local_max_timestamp == local_snapshot.local_max_timestamp
+        && state.remote_request_count == local_snapshot.remote_request_count
+        && state.remote_max_export_seq == local_snapshot.remote_max_export_seq
+        && state.remote_max_timestamp == local_snapshot.remote_max_timestamp
         && state.proxy_record_count == proxy_snapshot.record_count
         && state.proxy_max_timestamp_ms == proxy_snapshot.max_timestamp_ms
         && state.proxy_max_updated_at == proxy_snapshot.max_updated_at
+}
+
+#[cfg(test)]
+mod materialization_state_tests {
+    use super::*;
+
+    fn dependencies() -> (
+        crate::local_usage::UnifiedDayLocalSnapshot,
+        crate::proxy::ProxyDayDependencySnapshot,
+    ) {
+        (
+            crate::local_usage::UnifiedDayLocalSnapshot {
+                local_request_count: 2,
+                local_max_sync_version: 3,
+                local_max_timestamp: 4,
+                remote_request_count: 5,
+                remote_max_export_seq: 6,
+                remote_max_timestamp: 7,
+            },
+            crate::proxy::ProxyDayDependencySnapshot {
+                record_count: 8,
+                max_timestamp_ms: 9,
+                max_updated_at: 10,
+            },
+        )
+    }
+
+    fn state(
+        local: &crate::local_usage::UnifiedDayLocalSnapshot,
+        proxy: crate::proxy::ProxyDayDependencySnapshot,
+    ) -> crate::local_usage::UnifiedDayMaterializationState {
+        crate::local_usage::UnifiedDayMaterializationState {
+            local_date: "2026-07-01".to_string(),
+            day_boundary_mode: "standard".to_string(),
+            fact_count: 1,
+            local_request_count: local.local_request_count,
+            local_max_sync_version: local.local_max_sync_version,
+            local_max_timestamp: local.local_max_timestamp,
+            remote_request_count: local.remote_request_count,
+            remote_max_export_seq: local.remote_max_export_seq,
+            remote_max_timestamp: local.remote_max_timestamp,
+            proxy_record_count: proxy.record_count,
+            proxy_all_record_count: proxy.record_count,
+            proxy_max_timestamp_ms: proxy.max_timestamp_ms,
+            proxy_max_updated_at: proxy.max_updated_at,
+            max_fact_timestamp_ms: 9,
+            pricing_fingerprint: 11,
+            is_finalized: true,
+            finalized_at: Some(12),
+            materialized_at: 12,
+        }
+    }
+
+    #[test]
+    fn materialization_state_rejects_changed_local_dependency_snapshot() {
+        let settings = AppSettings::default();
+        let (mut local, proxy) = dependencies();
+        let stored = state(&local, proxy);
+        assert!(materialization_state_matches(
+            &stored, &local, proxy, 11, &settings
+        ));
+
+        local.local_request_count += 1;
+        assert!(!materialization_state_matches(
+            &stored, &local, proxy, 11, &settings
+        ));
+    }
+
+    #[test]
+    fn materialization_state_rejects_changed_proxy_dependency_snapshot() {
+        let settings = AppSettings::default();
+        let (local, mut proxy) = dependencies();
+        let stored = state(&local, proxy);
+        proxy.max_updated_at += 1;
+
+        assert!(!materialization_state_matches(
+            &stored, &local, proxy, 11, &settings
+        ));
+    }
 }
 
 struct MaterializationStateBuildContext<'a> {
@@ -1741,8 +1850,10 @@ async fn ensure_materialized_history_for_range(
         .filter(|date| date < &today)
         .collect();
 
-    let mut ready_dates = Vec::new();
+    let mut ready_dates = Vec::with_capacity(materializable_dates.len());
     let pricing_fingerprint = fingerprint_pricings(pricings);
+    let states = local_db.get_unified_days_materialization_states(&materializable_dates)?;
+
     for local_date in materializable_dates {
         let (day_start, day_end) =
             crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds_with_settings(
@@ -1760,17 +1871,18 @@ async fn ensure_materialized_history_for_range(
             })
             .transpose()?
             .unwrap_or_default();
-        let state = local_db.get_unified_day_materialization_state(&local_date)?;
-        let needs_rebuild = match state {
-            Some(ref state) => !materialization_state_matches(
-                state,
-                &local_snapshot,
-                proxy_snapshot,
-                pricing_fingerprint,
-                settings,
-            ),
-            None => true,
-        };
+        let needs_rebuild = states
+            .get(&local_date)
+            .map(|state| {
+                !materialization_state_matches(
+                    state,
+                    &local_snapshot,
+                    proxy_snapshot,
+                    pricing_fingerprint,
+                    settings,
+                )
+            })
+            .unwrap_or(true);
 
         if needs_rebuild {
             let inflight_key = format!("materialize:{local_date}");
@@ -1787,16 +1899,18 @@ async fn ensure_materialized_history_for_range(
                 })
                 .transpose()?
                 .unwrap_or_default();
-            let still_needs_rebuild = match latest_state {
-                Some(ref state) => !materialization_state_matches(
-                    state,
-                    &latest_local_snapshot,
-                    latest_proxy_snapshot,
-                    pricing_fingerprint,
-                    settings,
-                ),
-                None => true,
-            };
+            let still_needs_rebuild = latest_state
+                .as_ref()
+                .map(|state| {
+                    !materialization_state_matches(
+                        state,
+                        &latest_local_snapshot,
+                        latest_proxy_snapshot,
+                        pricing_fingerprint,
+                        settings,
+                    )
+                })
+                .unwrap_or(true);
             let materialize_result = async {
                 if still_needs_rebuild {
                     let facts = merge_realtime_range(
@@ -1877,7 +1991,7 @@ async fn ensure_materialized_history_with_db(
         .map(|db| db.get_merge_cache_signature())
         .transpose()?;
     let mut pricings = settings.model_pricing.pricings.clone();
-    if let Ok(db) = crate::proxy::ProxyDatabase::new() {
+    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
         if let Ok(db_pricings) = db.get_all_model_pricings() {
             pricings.extend(db_pricings);
         }
@@ -2019,7 +2133,7 @@ async fn get_merged_request_facts_with_db(
     let tool_filter = settings.client_tools.build_filter();
     let source_filter = settings.source_aware.build_filter();
     let mut pricings = settings.model_pricing.pricings.clone();
-    if let Ok(db) = crate::proxy::ProxyDatabase::new() {
+    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
         if let Ok(db_pricings) = db.get_all_model_pricings() {
             pricings.extend(db_pricings);
         }
@@ -2050,27 +2164,28 @@ async fn get_merged_request_facts_with_db(
         return Ok((facts, coverage));
     }
     let compute_result = async {
-        let history_ready_dates = if let Some((data_start, data_end)) = combined_data_time_bounds(&local_db)? {
-            let effective_start = range_start.max(data_start);
-            let effective_end = range_end.min(data_end.max(range_start + 1));
-            if effective_end > effective_start {
-                ensure_materialized_history_for_range(
-                    local_db.clone(),
-                    settings,
-                    effective_start,
-                    effective_end,
-                    &pricings,
-                    &pricing_match_mode,
-                    local_signature,
-                    proxy_signature,
-                )
-                .await?
+        let history_ready_dates =
+            if let Some((data_start, data_end)) = combined_data_time_bounds(&local_db)? {
+                let effective_start = range_start.max(data_start);
+                let effective_end = range_end.min(data_end.max(range_start + 1));
+                if effective_end > effective_start {
+                    ensure_materialized_history_for_range(
+                        local_db.clone(),
+                        settings,
+                        effective_start,
+                        effective_end,
+                        &pricings,
+                        &pricing_match_mode,
+                        local_signature,
+                        proxy_signature,
+                    )
+                    .await?
+                } else {
+                    Vec::new()
+                }
             } else {
                 Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
+            };
 
         // 冷读是 SQLite 全行读取 + 反序列化，随后的范围过滤是大向量线性扫描，
         // 两者是合并路径上最重的同步阻塞段；一并移入阻塞线程池，避免占住
@@ -2116,12 +2231,12 @@ async fn get_merged_request_facts_with_db(
         .map_err(|e| format!("Task error: {}", e))??;
 
         let today_start = {
-            let today = crate::local_usage::LocalUsageDatabase::today_local_date_with_settings(settings);
+            let today =
+                crate::local_usage::LocalUsageDatabase::today_local_date_with_settings(settings);
             crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds_with_settings(
-                &today,
-                settings,
+                &today, settings,
             )
-                .map(|(start, _)| start)?
+            .map(|(start, _)| start)?
         };
         let hot_start = range_start.max(today_start);
         let hot_facts = if range_end > hot_start {
@@ -2191,6 +2306,153 @@ pub async fn get_merged_request_facts_no_sync(
         .await
 }
 
+fn build_fact_backed_session_stats(
+    session_id: &str,
+    session_facts: &[&MergedRequestFact],
+    meta: Option<&SessionMeta>,
+    unresolved_proxy_requests: u64,
+    settings: &AppSettings,
+    now_sec: i64,
+) -> SessionStats {
+    let mut models = BTreeSet::new();
+    let mut total_input_tokens = 0_u64;
+    let mut total_output_tokens = 0_u64;
+    let mut total_cache_create_tokens = 0_u64;
+    let mut total_cache_read_tokens = 0_u64;
+    let mut estimated_cost = 0.0_f64;
+    let mut first_request_time = i64::MAX;
+    let mut last_request_time = 0_i64;
+    let mut total_duration_ms = 0_u64;
+    let mut rate_sum = 0.0_f64;
+    let mut rate_count = 0_u64;
+    let mut ttft_sum = 0.0_f64;
+    let mut ttft_count = 0_u64;
+    let mut success_requests = 0_u64;
+    let mut error_requests = 0_u64;
+    let mut proxy_backed_requests = 0_u64;
+    let mut local_only_requests = 0_u64;
+
+    for fact in session_facts {
+        if !fact.model.trim().is_empty() {
+            models.insert(fact.model.clone());
+        }
+        total_input_tokens += fact.input_tokens;
+        total_output_tokens += fact.output_tokens;
+        total_cache_create_tokens += fact.cache_create_tokens;
+        total_cache_read_tokens += fact.cache_read_tokens;
+        estimated_cost += fact.estimated_cost;
+        first_request_time = first_request_time.min(fact.timestamp_sec);
+        last_request_time = last_request_time.max(fact.timestamp_sec);
+
+        match fact.coverage_origin {
+            CoverageOrigin::LocalOnly => local_only_requests += 1,
+            CoverageOrigin::ProxyOnly
+            | CoverageOrigin::MergedProxyPreferred
+            | CoverageOrigin::MergedFuzzyMatched => {
+                proxy_backed_requests += 1;
+            }
+        }
+
+        if let Some(duration_ms) = fact.duration_ms {
+            total_duration_ms += duration_ms;
+        }
+        if let Some(rate) = fact.output_tokens_per_second {
+            if rate > 0.0 {
+                rate_sum += rate;
+                rate_count += 1;
+            }
+        }
+        if let Some(ttft_ms) = fact.ttft_ms {
+            if ttft_ms > 0 {
+                ttft_sum += ttft_ms as f64;
+                ttft_count += 1;
+            }
+        }
+        if let Some(status_code) = fact.status_code {
+            if status_code < 400 {
+                success_requests += 1;
+            } else {
+                error_requests += 1;
+            }
+        }
+    }
+    let has_partial_status_coverage =
+        has_partial_coverage(proxy_backed_requests, local_only_requests);
+    let session_tool = meta.map(|m| m.tool.clone()).unwrap_or_else(|| {
+        settings
+            .client_tools
+            .active_tool_filter
+            .clone()
+            .unwrap_or_default()
+    });
+    let usage_fully_covered = session_usage_fully_covered(
+        meta,
+        &session_tool,
+        proxy_backed_requests,
+        unresolved_proxy_requests,
+        now_sec,
+    );
+
+    SessionStats {
+        session_id: session_id.to_string(),
+        tool: session_tool,
+        total_requests: session_facts.len() as u64,
+        total_input_tokens,
+        total_output_tokens,
+        total_cache_create_tokens,
+        total_cache_read_tokens,
+        total_duration_ms,
+        avg_output_tokens_per_second: if rate_count > 0 {
+            rate_sum / rate_count as f64
+        } else {
+            0.0
+        },
+        first_request_time: if first_request_time == i64::MAX {
+            0
+        } else {
+            first_request_time
+        },
+        last_request_time,
+        models: models.into_iter().collect(),
+        avg_ttft_ms: if ttft_count > 0 {
+            ttft_sum / ttft_count as f64
+        } else {
+            0.0
+        },
+        success_requests: if has_partial_status_coverage {
+            0
+        } else {
+            success_requests
+        },
+        error_requests: if has_partial_status_coverage {
+            0
+        } else {
+            error_requests
+        },
+        estimated_cost,
+        is_cost_estimated: true,
+        usage_fully_covered,
+        covered_requests: proxy_backed_requests,
+        uncovered_requests: reasonix_uncovered_request_count(
+            local_only_requests,
+            unresolved_proxy_requests,
+        ),
+        cwd: meta.and_then(|m| m.cwd.clone()),
+        project_name: meta.and_then(|m| m.project_name.clone()),
+        project_identity: Some(
+            meta.map(|m| {
+                session_project_identity(m.project_name.as_deref(), m.cwd.as_deref()).to_string()
+            })
+            .unwrap_or_else(|| "unknown".to_string()),
+        ),
+        topic: meta.and_then(|m| m.topic.clone()),
+        last_prompt: meta.and_then(|m| m.last_prompt.clone()),
+        session_name: meta.and_then(|m| m.session_name.clone()),
+        scope: meta.and_then(|m| m.scope.clone()),
+        wsl_distro: meta.and_then(|m| wsl_distro_from_path(&m.file_path)),
+    }
+}
+
 /// 快照优先读取：跳过 ensure_local_usage_synced 的全盘扫描，直接以当前
 /// SQLite 数据回答。供会话面板首屏使用（后台同步完成后由事件驱动二次刷新）。
 pub async fn get_merged_sessions_no_sync(
@@ -2213,7 +2475,7 @@ async fn get_merged_sessions_with_db(
     let tool_filter = settings.client_tools.build_filter();
     let source_filter = settings.source_aware.build_filter();
     let mut pricings = settings.model_pricing.pricings.clone();
-    if let Ok(db) = crate::proxy::ProxyDatabase::new() {
+    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
         if let Ok(db_pricings) = db.get_all_model_pricings() {
             pricings.extend(db_pricings);
         }
@@ -2273,149 +2535,18 @@ async fn get_merged_sessions_with_db(
     let mut result = Vec::new();
     for (session_id, session_facts) in by_session {
         let meta = meta_by_id.get(&session_id);
-        let mut models = BTreeSet::new();
-        let mut total_input_tokens = 0_u64;
-        let mut total_output_tokens = 0_u64;
-        let mut total_cache_create_tokens = 0_u64;
-        let mut total_cache_read_tokens = 0_u64;
-        let mut estimated_cost = 0.0_f64;
-        let mut first_request_time = i64::MAX;
-        let mut last_request_time = 0_i64;
-        let mut total_duration_ms = 0_u64;
-        let mut rate_sum = 0.0_f64;
-        let mut rate_count = 0_u64;
-        let mut ttft_sum = 0.0_f64;
-        let mut ttft_count = 0_u64;
-        let mut success_requests = 0_u64;
-        let mut error_requests = 0_u64;
-        let mut proxy_backed_requests = 0_u64;
-        let mut local_only_requests = 0_u64;
-
-        for fact in &session_facts {
-            if !fact.model.trim().is_empty() {
-                models.insert(fact.model.clone());
-            }
-            total_input_tokens += fact.input_tokens;
-            total_output_tokens += fact.output_tokens;
-            total_cache_create_tokens += fact.cache_create_tokens;
-            total_cache_read_tokens += fact.cache_read_tokens;
-            estimated_cost += fact.estimated_cost;
-            first_request_time = first_request_time.min(fact.timestamp_sec);
-            last_request_time = last_request_time.max(fact.timestamp_sec);
-
-            match fact.coverage_origin {
-                CoverageOrigin::LocalOnly => local_only_requests += 1,
-                CoverageOrigin::ProxyOnly
-                | CoverageOrigin::MergedProxyPreferred
-                | CoverageOrigin::MergedFuzzyMatched => {
-                    proxy_backed_requests += 1;
-                }
-            }
-
-            if let Some(duration_ms) = fact.duration_ms {
-                total_duration_ms += duration_ms;
-            }
-            if let Some(rate) = fact.output_tokens_per_second {
-                if rate > 0.0 {
-                    rate_sum += rate;
-                    rate_count += 1;
-                }
-            }
-            if let Some(ttft_ms) = fact.ttft_ms {
-                if ttft_ms > 0 {
-                    ttft_sum += ttft_ms as f64;
-                    ttft_count += 1;
-                }
-            }
-            if let Some(status_code) = fact.status_code {
-                if status_code < 400 {
-                    success_requests += 1;
-                } else {
-                    error_requests += 1;
-                }
-            }
-        }
-        let has_partial_status_coverage =
-            has_partial_coverage(proxy_backed_requests, local_only_requests);
-
-        let session_tool = meta.map(|m| m.tool.clone()).unwrap_or_else(|| {
-            settings
-                .client_tools
-                .active_tool_filter
-                .clone()
-                .unwrap_or_default()
-        });
         let unresolved_proxy_requests = unresolved_reasonix_requests_by_session
             .get(&session_id)
             .copied()
             .unwrap_or(0);
-        let usage_fully_covered = session_usage_fully_covered(
+        result.push(build_fact_backed_session_stats(
+            &session_id,
+            &session_facts,
             meta,
-            &session_tool,
-            proxy_backed_requests,
             unresolved_proxy_requests,
+            settings,
             now_sec,
-        );
-
-        result.push(SessionStats {
-            session_id: session_id.clone(),
-            tool: session_tool,
-            total_requests: session_facts.len() as u64,
-            total_input_tokens,
-            total_output_tokens,
-            total_cache_create_tokens,
-            total_cache_read_tokens,
-            total_duration_ms,
-            avg_output_tokens_per_second: if rate_count > 0 {
-                rate_sum / rate_count as f64
-            } else {
-                0.0
-            },
-            first_request_time: if first_request_time == i64::MAX {
-                0
-            } else {
-                first_request_time
-            },
-            last_request_time,
-            models: models.into_iter().collect(),
-            avg_ttft_ms: if ttft_count > 0 {
-                ttft_sum / ttft_count as f64
-            } else {
-                0.0
-            },
-            success_requests: if has_partial_status_coverage {
-                0
-            } else {
-                success_requests
-            },
-            error_requests: if has_partial_status_coverage {
-                0
-            } else {
-                error_requests
-            },
-            estimated_cost,
-            is_cost_estimated: true,
-            usage_fully_covered,
-            covered_requests: proxy_backed_requests,
-            uncovered_requests: reasonix_uncovered_request_count(
-                local_only_requests,
-                unresolved_proxy_requests,
-            ),
-            cwd: meta.and_then(|m| m.cwd.clone()),
-            project_name: meta.and_then(|m| m.project_name.clone()),
-            project_identity: Some(
-                meta.map(|m| {
-                    session_project_identity(m.project_name.as_deref(), m.cwd.as_deref())
-                        .to_string()
-                })
-                .unwrap_or_else(|| "unknown".to_string()),
-            ),
-            topic: meta.and_then(|m| m.topic.clone()),
-            last_prompt: meta.and_then(|m| m.last_prompt.clone()),
-            session_name: meta.and_then(|m| m.session_name.clone()),
-            scope: meta.and_then(|m| m.scope.clone()),
-            wsl_distro: meta.and_then(|m| wsl_distro_from_path(&m.file_path)),
-        });
+        ));
     }
 
     if metadata_only_sessions_allowed(&source_filter) {
@@ -2440,15 +2571,208 @@ async fn get_merged_sessions_with_db(
     Ok(page)
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn get_targeted_session_facts_with_db(
+    local_db: Arc<crate::local_usage::LocalUsageDatabase>,
+    settings: &AppSettings,
+    session_id: &str,
+    include_errors: bool,
+    source_filter: &crate::models::SourceFilter,
+    tool_filter: &ToolFilter,
+    pricings: &[crate::models::ModelPricingConfig],
+    local_signature: crate::local_usage::LocalMergeCacheSignature,
+    proxy_signature: Option<ProxyMergeCacheSignature>,
+) -> Result<Vec<MergedRequestFact>, String> {
+    let pricing_match_mode = settings.model_pricing.match_mode.clone();
+    let today = crate::local_usage::LocalUsageDatabase::today_local_date_with_settings(settings);
+    let today_start =
+        crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds_with_settings(
+            &today, settings,
+        )
+        .map(|(start, _)| start)?;
+    let history_dates = if let Some((data_start, data_end)) = combined_data_time_bounds(&local_db)?
+    {
+        let history_end = data_end.min(today_start);
+        if history_end > data_start {
+            ensure_materialized_history_for_range(
+                local_db.clone(),
+                settings,
+                data_start,
+                history_end,
+                pricings,
+                &pricing_match_mode,
+                local_signature,
+                proxy_signature,
+            )
+            .await?
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    let cold_db = local_db.clone();
+    let cold_session_id = session_id.to_string();
+    let cold_tool_filter = tool_filter.clone();
+    let cold_source_filter = source_filter.clone();
+    let mut facts = tauri::async_runtime::spawn_blocking(move || {
+        let facts = cold_db.get_unified_facts_for_session_dates(
+            &history_dates,
+            &cold_session_id,
+            &cold_tool_filter,
+        )?;
+        Ok::<Vec<MergedRequestFact>, String>(
+            facts
+                .into_iter()
+                .filter(|fact| {
+                    crate::unified_usage::matches_source_filter(fact, &cold_source_filter)
+                        && (include_errors
+                            || fact.status_code.map(|code| code < 300).unwrap_or(true))
+                })
+                .collect(),
+        )
+    })
+    .await
+    .map_err(|error| format!("Task error: {error}"))??;
+
+    let hot_facts = get_hot_merge_facts(
+        local_db,
+        settings,
+        include_errors,
+        pricings,
+        &pricing_match_mode,
+        local_signature,
+        proxy_signature,
+    )
+    .await?;
+    facts.extend(
+        hot_facts
+            .iter()
+            .filter(|fact| fact.session_id == session_id)
+            .cloned(),
+    );
+    Ok(facts)
+}
+
 pub async fn get_merged_session_detail(
     settings: &AppSettings,
     session_id: &str,
 ) -> Result<Option<SessionStats>, String> {
-    // 详情从已渲染的列表点入，快照读取即可，无需触发全盘扫描。
-    let sessions = get_merged_sessions_no_sync(settings, i64::MAX / 4, 0).await?;
-    Ok(sessions
-        .into_iter()
-        .find(|session| session.session_id == session_id))
+    if session_id.trim().is_empty() {
+        return Ok(None);
+    }
+
+    // 详情通常从会话列表点入：先按与列表完全相同的签名查派生缓存，命中时只克隆
+    // 一个 SessionStats。未命中时仍复用统一事实合并（保留 Local/Remote/Proxy 去重、
+    // Codex fuzzy 和 Source/Tool Filter 语义），但只聚合目标会话，不再构建并排序全量列表。
+    let local_db = crate::local_usage::get_local_usage_db()?;
+    let now_sec = chrono::Utc::now().timestamp();
+    let include_errors = settings.proxy.include_error_requests;
+    let tool_filter = settings.client_tools.build_filter();
+    let source_filter = settings.source_aware.build_filter();
+    let mut pricings = settings.model_pricing.pricings.clone();
+    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
+        if let Ok(db_pricings) = db.get_all_model_pricings() {
+            pricings.extend(db_pricings);
+        }
+    }
+    let local_signature = local_db.get_merge_cache_signature()?;
+    let proxy_signature = ProxyDatabase::get_global()
+        .map(|db| db.get_merge_cache_signature())
+        .transpose()?;
+    let merge_key = build_merge_cache_key(MergeCacheKeyParts {
+        settings,
+        range_start: 0,
+        range_end: i64::MAX,
+        include_errors,
+        source_filter: &source_filter,
+        tool_filter: &tool_filter,
+        local_signature,
+        proxy_signature,
+        pricings: &pricings,
+    });
+    let session_cache_key = SessionDerivedCacheKey {
+        merge_key: merge_key.clone(),
+    };
+    if let Some(sessions) = lookup_sessions_cache(&session_cache_key) {
+        return Ok(sessions
+            .iter()
+            .find(|session| session.session_id == session_id)
+            .cloned());
+    }
+    let detail_cache_key = SessionDetailCacheKey {
+        merge_key,
+        session_id: session_id.to_string(),
+    };
+    if let Some(detail) = lookup_session_detail_cache(&detail_cache_key) {
+        return Ok(detail);
+    }
+
+    let mut local_sessions = local_db.get_all_sessions(&tool_filter)?;
+    local_sessions.extend(local_db.get_remote_sessions(&tool_filter)?);
+    let meta_by_id: HashMap<String, SessionMeta> = local_sessions
+        .iter()
+        .cloned()
+        .map(|meta| (meta.session_id.clone(), meta))
+        .collect();
+    let meta = meta_by_id.get(session_id);
+    let facts = if meta.map(|value| value.tool == "reasonix").unwrap_or(false) {
+        // Reasonix 覆盖率需要观察 session_id 为空的未归属 Proxy 事实；该特殊语义
+        // 不能靠 session_id 定向 SQL 表达，因此保留全量统一事实路径。
+        get_merged_request_facts_with_db(local_db.clone(), settings, None, None, include_errors)
+            .await?
+            .0
+            .as_ref()
+            .clone()
+    } else {
+        get_targeted_session_facts_with_db(
+            local_db.clone(),
+            settings,
+            session_id,
+            include_errors,
+            &source_filter,
+            &tool_filter,
+            &pricings,
+            local_signature,
+            proxy_signature,
+        )
+        .await?
+    };
+    let session_facts: Vec<&MergedRequestFact> = facts
+        .iter()
+        .filter(|fact| fact.session_id == session_id)
+        .collect();
+
+    if session_facts.is_empty() {
+        let detail = if metadata_only_sessions_allowed(&source_filter) {
+            meta.map(|value| build_metadata_only_session_stats(value, now_sec))
+        } else {
+            None
+        };
+        store_session_detail_cache(detail_cache_key, detail.clone());
+        return Ok(detail);
+    }
+
+    let unresolved_proxy_requests = meta
+        .filter(|value| value.tool == "reasonix")
+        .map(|value| {
+            count_unresolved_reasonix_requests_by_session(&facts, std::slice::from_ref(value))
+                .get(session_id)
+                .copied()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+    let detail = Some(build_fact_backed_session_stats(
+        session_id,
+        &session_facts,
+        meta,
+        unresolved_proxy_requests,
+        settings,
+        now_sec,
+    ));
+    store_session_detail_cache(detail_cache_key, detail.clone());
+    Ok(detail)
 }
 
 pub async fn get_merged_project_stats_no_sync(
@@ -2467,7 +2791,7 @@ async fn get_merged_project_stats_with_db(
     let tool_filter = settings.client_tools.build_filter();
     let source_filter = settings.source_aware.build_filter();
     let mut pricings = settings.model_pricing.pricings.clone();
-    if let Ok(db) = crate::proxy::ProxyDatabase::new() {
+    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
         if let Ok(db_pricings) = db.get_all_model_pricings() {
             pricings.extend(db_pricings);
         }
@@ -2506,9 +2830,9 @@ async fn get_merged_project_stats_with_db(
             .await?;
     let unresolved_reasonix_requests_by_session =
         count_unresolved_reasonix_requests_by_session(&facts, &local_sessions);
-    let mut map: HashMap<String, ProjectAggregate> = HashMap::new();
-    let mut fact_backed_project_session_ids: HashSet<String> = HashSet::new();
-    let mut proxy_backed_requests_by_session: HashMap<String, u64> = HashMap::new();
+    let mut map: HashMap<String, ProjectAggregate<'_>> = HashMap::new();
+    let mut fact_backed_project_session_ids: HashSet<&str> = HashSet::new();
+    let mut proxy_backed_requests_by_session: HashMap<&str, u64> = HashMap::new();
 
     // 事实向量来自共享 Arc（只读），聚合循环仅读取字段并按需 clone 字符串，
     // 借用遍历即可，无需事实所有权。
@@ -2546,13 +2870,14 @@ async fn get_merged_project_stats_with_db(
         entry.stats.request_count += request_count;
         entry.stats.last_active = entry.stats.last_active.max(fact.timestamp_sec);
         if !fact.session_id.trim().is_empty() {
-            fact_backed_project_session_ids.insert(fact.session_id.clone());
-            entry.sessions.insert(fact.session_id.clone());
+            let session_id = fact.session_id.as_str();
+            fact_backed_project_session_ids.insert(session_id);
+            entry.sessions.insert(session_id);
             entry
                 .tool_sessions
-                .entry(fact.tool.clone())
+                .entry(fact.tool.as_str())
                 .or_default()
-                .insert(fact.session_id.clone());
+                .insert(session_id);
             if fact.tool == "reasonix"
                 && matches!(
                     fact.coverage_origin,
@@ -2560,11 +2885,11 @@ async fn get_merged_project_stats_with_db(
                 )
             {
                 *proxy_backed_requests_by_session
-                    .entry(fact.session_id.clone())
+                    .entry(session_id)
                     .or_default() += request_count;
             }
         } else {
-            entry.tool_sessions.entry(fact.tool.clone()).or_default();
+            entry.tool_sessions.entry(fact.tool.as_str()).or_default();
         }
 
         let tool_stats = entry
@@ -2597,7 +2922,7 @@ async fn get_merged_project_stats_with_db(
 
     if metadata_only_sessions_allowed(&source_filter) {
         for meta in &local_sessions {
-            if fact_backed_project_session_ids.contains(&meta.session_id) {
+            if fact_backed_project_session_ids.contains(meta.session_id.as_str()) {
                 continue;
             }
             merge_metadata_only_project(&mut map, meta);
@@ -2608,7 +2933,7 @@ async fn get_merged_project_stats_with_db(
         .into_values()
         .map(|mut aggregate| {
             aggregate.stats.session_count = aggregate.sessions.len() as u64;
-            let mut session_ids: Vec<&String> = aggregate.sessions.iter().collect();
+            let mut session_ids: Vec<&str> = aggregate.sessions.iter().copied().collect();
             session_ids.sort();
             aggregate.stats.wsl_distros = session_ids
                 .into_iter()
@@ -2624,13 +2949,14 @@ async fn get_merged_project_stats_with_db(
                         && tool.request_count > 0
                         && aggregate
                             .tool_sessions
-                            .get(&tool.tool)
+                            .get(tool.tool.as_str())
                             .map(|sessions| sessions.is_empty())
                             .unwrap_or(true)
                 });
-            let reasonix_session_ids: Vec<&String> = aggregate
+            let reasonix_session_ids: Vec<&str> = aggregate
                 .sessions
                 .iter()
+                .copied()
                 .filter(|session_id| {
                     local_sessions_by_id
                         .get(*session_id)
@@ -2642,18 +2968,18 @@ async fn get_merged_project_stats_with_db(
                 !reasonix_session_ids.is_empty() || has_unresolved_reasonix_tool_rows;
             aggregate.stats.usage_fully_covered = if has_reasonix_sessions {
                 !has_unresolved_reasonix_tool_rows
-                    && reasonix_session_ids.iter().all(|session_id| {
+                    && reasonix_session_ids.iter().copied().all(|session_id| {
                         local_sessions_by_id
-                            .get(*session_id)
+                            .get(session_id)
                             .map(|meta| {
                                 !session_has_reasonix_coverage_gap(
                                     meta,
                                     proxy_backed_requests_by_session
-                                        .get(*session_id)
+                                        .get(session_id)
                                         .copied()
                                         .unwrap_or(0),
                                     unresolved_reasonix_requests_by_session
-                                        .get(*session_id)
+                                        .get(session_id)
                                         .copied()
                                         .unwrap_or(0),
                                     now_sec,
@@ -2667,6 +2993,7 @@ async fn get_merged_project_stats_with_db(
             aggregate.stats.uncovered_requests = aggregate
                 .sessions
                 .iter()
+                .copied()
                 .filter(|session_id| {
                     local_sessions_by_id
                         .get(*session_id)
@@ -2683,10 +3010,10 @@ async fn get_merged_project_stats_with_db(
             for tool_stats in &mut aggregate.stats.tool_breakdown {
                 tool_stats.session_count = aggregate
                     .tool_sessions
-                    .get(&tool_stats.tool)
+                    .get(tool_stats.tool.as_str())
                     .map(|sessions| sessions.len() as u64)
                     .unwrap_or(0);
-                let sessions_for_tool = aggregate.tool_sessions.get(&tool_stats.tool);
+                let sessions_for_tool = aggregate.tool_sessions.get(tool_stats.tool.as_str());
                 tool_stats.usage_fully_covered = if tool_stats.tool == "reasonix"
                     && tool_stats.request_count > 0
                     && sessions_for_tool
@@ -2697,7 +3024,7 @@ async fn get_merged_project_stats_with_db(
                 } else {
                     sessions_for_tool
                         .map(|sessions| {
-                            sessions.iter().all(|session_id| {
+                            sessions.iter().copied().all(|session_id| {
                                 local_sessions_by_id
                                     .get(session_id)
                                     .map(|meta| {
@@ -2723,6 +3050,7 @@ async fn get_merged_project_stats_with_db(
                     .map(|sessions| {
                         sessions
                             .iter()
+                            .copied()
                             .filter(|session_id| {
                                 local_sessions_by_id
                                     .get(*session_id)
@@ -2757,14 +3085,7 @@ mod tests {
 
     fn sample_local_signature() -> crate::local_usage::LocalMergeCacheSignature {
         crate::local_usage::LocalMergeCacheSignature {
-            local_request_count: 1,
-            local_max_sync_version: 1,
-            local_max_timestamp: 1,
-            remote_request_count: 0,
-            remote_max_export_seq: 0,
-            remote_max_timestamp: 0,
-            local_session_max_updated_at: 0,
-            remote_session_max_imported_at: 0,
+            merge_cache_generation: 1,
             unified_materialization_invalidation_version: 1,
         }
     }

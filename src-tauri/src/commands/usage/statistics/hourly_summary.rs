@@ -82,7 +82,7 @@ fn build_hourly_summary_cache_key(
         .map(|db| db.get_merge_cache_signature())
         .transpose()?;
     let mut pricings = settings.model_pricing.pricings.clone();
-    if let Ok(db) = crate::proxy::ProxyDatabase::new() {
+    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
         if let Ok(db_pricings) = db.get_all_model_pricings() {
             pricings.extend(db_pricings);
         }
@@ -154,7 +154,7 @@ fn try_load_ready_historical_day(
         return Ok(None);
     };
     let mut pricings = settings.model_pricing.pricings.clone();
-    if let Ok(db) = crate::proxy::ProxyDatabase::new() {
+    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
         if let Ok(db_pricings) = db.get_all_model_pricings() {
             pricings.extend(db_pricings);
         }
@@ -278,14 +278,7 @@ mod tests {
         invalidation_version: i64,
     ) -> crate::local_usage::LocalMergeCacheSignature {
         crate::local_usage::LocalMergeCacheSignature {
-            local_request_count: 1,
-            local_max_sync_version: invalidation_version,
-            local_max_timestamp: 1,
-            remote_request_count: 0,
-            remote_max_export_seq: 0,
-            remote_max_timestamp: 0,
-            local_session_max_updated_at: 0,
-            remote_session_max_imported_at: 0,
+            merge_cache_generation: invalidation_version,
             unified_materialization_invalidation_version: invalidation_version,
         }
     }

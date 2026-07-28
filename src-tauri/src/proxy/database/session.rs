@@ -575,10 +575,13 @@ impl ProxyDatabase {
             return Ok(0);
         }
 
+        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let today = Self::today_local_date_with_settings(&settings);
         let tx = conn
             .transaction()
             .map_err(|e| format!("Failed to start OpenCode reconciliation transaction: {}", e))?;
         let mut updated = 0usize;
+        let mut touched_history_dates = std::collections::HashSet::new();
         let mut local_matcher = OpenCodeLocalMatcher::new(&local_candidates);
 
         for (row_id, record) in unresolved_records {
@@ -657,6 +660,10 @@ impl ProxyDatabase {
                 ],
             )
             .map_err(|e| format!("Failed to update OpenCode proxy reconciliation row: {}", e))?;
+            let local_date = Self::record_local_date_with_settings(record.timestamp, &settings);
+            if local_date < today {
+                touched_history_dates.insert(local_date);
+            }
 
             // 仅统计成功解析的记录（unmatched/ambiguous 不计入）
             if resolution_state == "known" {
@@ -673,6 +680,10 @@ impl ProxyDatabase {
         // conn（MutexGuard）在函数末尾的作用域结束时自动 drop，无需手动释放。
         tx.commit()
             .map_err(|e| format!("Failed to commit OpenCode reconciliation: {}", e))?;
+        drop(conn);
+        Self::invalidate_local_materialization_after_proxy_commit(
+            &touched_history_dates.into_iter().collect::<Vec<_>>(),
+        )?;
 
         Ok(updated)
     }
@@ -726,10 +737,13 @@ impl ProxyDatabase {
             return Ok(0);
         }
 
+        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let today = Self::today_local_date_with_settings(&settings);
         let tx = conn
             .transaction()
             .map_err(|e| format!("Failed to start Reasonix reconciliation transaction: {}", e))?;
         let mut updated = 0usize;
+        let mut touched_history_dates = std::collections::HashSet::new();
         let matcher = ReasonixSessionMatcher::new(&reasonix_sessions);
 
         for (row_id, record) in unresolved_records {
@@ -785,6 +799,10 @@ impl ProxyDatabase {
                 ],
             )
             .map_err(|e| format!("Failed to update Reasonix proxy reconciliation row: {}", e))?;
+            let local_date = Self::record_local_date_with_settings(record.timestamp, &settings);
+            if local_date < today {
+                touched_history_dates.insert(local_date);
+            }
 
             if resolution_state == "known" {
                 updated += 1;
@@ -796,6 +814,10 @@ impl ProxyDatabase {
 
         tx.commit()
             .map_err(|e| format!("Failed to commit Reasonix reconciliation: {}", e))?;
+        drop(conn);
+        Self::invalidate_local_materialization_after_proxy_commit(
+            &touched_history_dates.into_iter().collect::<Vec<_>>(),
+        )?;
 
         Ok(updated)
     }
