@@ -17,6 +17,16 @@ pub struct SyncExportSession {
     pub total_cache_create_tokens: u64,
     pub total_cache_read_tokens: u64,
     pub total_tokens: u64,
+    #[serde(default)]
+    pub total_reasoning_tokens: u64,
+    #[serde(default)]
+    pub total_elapsed_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_cost: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_cost_currency: Option<String>,
+    #[serde(default)]
+    pub usage_sources: std::collections::BTreeMap<String, crate::session::SessionUsageSourceMeta>,
     pub model_list: Vec<String>,
 }
 
@@ -47,6 +57,37 @@ pub struct SyncExportRequest {
 pub struct SyncExportData {
     pub sessions: Vec<SyncExportSession>,
     pub requests: Vec<SyncExportRequest>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_sync_session_payload_defaults_reasonix_v2_fields() {
+        let payload = serde_json::json!({
+            "sessionId": "reasonix::legacy",
+            "tool": "reasonix",
+            "projectKey": null,
+            "projectName": null,
+            "startTime": 100,
+            "endTime": 200,
+            "requestCount": 1,
+            "totalInputTokens": 10,
+            "totalOutputTokens": 5,
+            "totalCacheCreateTokens": 0,
+            "totalCacheReadTokens": 2,
+            "totalTokens": 17,
+            "modelList": ["deepseek-reasoner"]
+        });
+
+        let session: SyncExportSession = serde_json::from_value(payload).unwrap();
+        assert_eq!(session.total_reasoning_tokens, 0);
+        assert_eq!(session.total_elapsed_ms, 0);
+        assert_eq!(session.explicit_cost, None);
+        assert_eq!(session.explicit_cost_currency, None);
+        assert!(session.usage_sources.is_empty());
+    }
 }
 
 #[derive(Debug, Clone)]

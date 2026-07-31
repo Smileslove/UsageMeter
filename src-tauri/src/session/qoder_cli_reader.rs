@@ -168,6 +168,7 @@ fn parse_qoder_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRequ
         message_ids: Vec::new(),
         explicit_estimated_cost: None,
         scope: None,
+        ..Default::default()
     };
 
     let file_handle = match fs::File::open(&session.file_path) {

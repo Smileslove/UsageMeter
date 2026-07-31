@@ -125,10 +125,13 @@ impl LocalUsageDatabase {
             "SELECT session_id, tool, cwd, project_name, topic, last_prompt, session_name,
                         scope, primary_file_path, file_size, last_modified, total_input_tokens,
                         total_output_tokens, total_cache_create_tokens, total_cache_read_tokens,
-                        request_count, start_time, end_time, source_kind, model_list_json
+                        request_count, start_time, end_time, source_kind, model_list_json,
+                        total_reasoning_tokens, total_elapsed_ms, explicit_cost,
+                        explicit_cost_currency, usage_sources_json
                  FROM local_sessions";
         let mapper = |row: &rusqlite::Row<'_>| {
             let model_list_json: String = row.get(19)?;
+            let usage_sources_json: String = row.get(24)?;
             Ok(SessionMeta {
                 session_id: row.get(0)?,
                 tool: row.get(1)?,
@@ -159,7 +162,17 @@ impl LocalUsageDatabase {
                 end_time: row.get(17)?,
                 source: row.get(18)?,
                 message_ids: Vec::new(),
-                explicit_estimated_cost: None,
+                explicit_estimated_cost: match row.get::<_, Option<String>>(23)? {
+                    Some(currency) if currency.eq_ignore_ascii_case("USD") => row.get(22)?,
+                    _ => None,
+                },
+                total_reasoning_tokens: LocalUsageDatabase::saturating_i64_to_u64(
+                    row.get::<_, i64>(20)?,
+                ),
+                total_elapsed_ms: LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(21)?),
+                explicit_cost: row.get(22)?,
+                explicit_cost_currency: row.get(23)?,
+                usage_sources: serde_json::from_str(&usage_sources_json).unwrap_or_default(),
             })
         };
         let mut result = Vec::new();
@@ -275,6 +288,36 @@ impl LocalUsageDatabase {
                 SELECT timestamp AS ts FROM local_request_facts
                 UNION ALL
                 SELECT timestamp AS ts FROM remote_request_facts
+                UNION ALL
+                SELECT COALESCE(NULLIF(end_time, 0), NULLIF(last_modified, 0)) AS ts
+                FROM local_sessions
+                WHERE tool = 'reasonix'
+                  AND request_count > 0
+                  AND COALESCE(NULLIF(end_time, 0), NULLIF(last_modified, 0)) IS NOT NULL
+                  AND (
+                      total_input_tokens > 0
+                      OR total_output_tokens > 0
+                      OR total_cache_create_tokens > 0
+                      OR total_cache_read_tokens > 0
+                      OR total_elapsed_ms > 0
+                      OR explicit_cost IS NOT NULL
+                      OR usage_sources_json != '{}'
+                  )
+                UNION ALL
+                SELECT NULLIF(end_time, 0) AS ts
+                FROM remote_sessions
+                WHERE tool = 'reasonix'
+                  AND request_count > 0
+                  AND end_time > 0
+                  AND (
+                      total_input_tokens > 0
+                      OR total_output_tokens > 0
+                      OR total_cache_create_tokens > 0
+                      OR total_cache_read_tokens > 0
+                      OR total_elapsed_ms > 0
+                      OR explicit_cost IS NOT NULL
+                      OR usage_sources_json != '{}'
+                  )
             )
             "#,
             [],

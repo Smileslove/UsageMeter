@@ -8,6 +8,7 @@
 //! - 去重后的 assistant request 统计
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// 从 transcript 文件路径解析来源 WSL 发行版名。
 ///
@@ -31,6 +32,30 @@ fn strip_ascii_case_insensitive_prefix<'a>(value: &'a str, prefix: &str) -> Opti
         .get(..prefix.len())
         .filter(|candidate| candidate.eq_ignore_ascii_case(prefix))
         .and_then(|_| value.get(prefix.len()..))
+}
+
+/// Reasonix telemetry v2 按内部调用来源累计的用量。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUsageSourceMeta {
+    #[serde(default)]
+    pub prompt_tokens: u64,
+    #[serde(default)]
+    pub completion_tokens: u64,
+    #[serde(default)]
+    pub total_tokens: u64,
+    #[serde(default)]
+    pub reasoning_tokens: u64,
+    #[serde(default)]
+    pub cache_hit_tokens: u64,
+    #[serde(default)]
+    pub cache_miss_tokens: u64,
+    #[serde(default)]
+    pub request_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_cost: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_currency: Option<String>,
 }
 
 /// 从 JSONL 文件提取的会话元数据
@@ -92,9 +117,25 @@ pub struct SessionMeta {
     /// 该会话中所有消息的 ID 列表（用于关联代理数据库记录）
     #[serde(default, skip_serializing)]
     pub message_ids: Vec<String>,
-    /// 本地 telemetry 文件中读取的精确费用（USD），优先于从 token 数量估算的费用
+    /// 本地来源明确提供的精确 USD 费用，优先于按模型价格估算的费用。
+    /// 非 USD 原币种费用必须保存在 explicit_cost/session_currency 中，不能直接写入此字段。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explicit_estimated_cost: Option<f64>,
+    /// 会话累计推理 Token；它是 total_output_tokens 的细分项，不参与总 Token 相加。
+    #[serde(default)]
+    pub total_reasoning_tokens: u64,
+    /// 会话累计耗时（Reasonix telemetry elapsedMs）。
+    #[serde(default)]
+    pub total_elapsed_ms: u64,
+    /// 本地 telemetry 提供的原币种费用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_cost: Option<f64>,
+    /// explicit_cost 对应的 ISO 4217 币种代码。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_cost_currency: Option<String>,
+    /// Reasonix telemetry v2 的内部来源累计，仅用于诊断与后续精细聚合。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub usage_sources: BTreeMap<String, SessionUsageSourceMeta>,
 }
 
 /// 本地 transcript 中抽取出的单条请求事实

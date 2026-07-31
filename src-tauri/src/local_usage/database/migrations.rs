@@ -20,7 +20,7 @@ impl LocalUsageDatabase {
 
     pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 20 {
+        if schema_version >= 21 {
             return Ok(());
         }
         let mut cleared_runtime_caches = false;
@@ -644,6 +644,50 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to update v20 schema version: {}", e))?;
             tx.commit()
                 .map_err(|e| format!("Failed to commit v20 schema migration: {}", e))?;
+        }
+
+        if schema_version < 21 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v21 schema migration: {}", e))?;
+
+            for table in ["local_sessions", "remote_sessions"] {
+                Self::add_column_if_missing(
+                    &tx,
+                    table,
+                    "total_reasoning_tokens",
+                    "INTEGER NOT NULL DEFAULT 0",
+                )?;
+                Self::add_column_if_missing(
+                    &tx,
+                    table,
+                    "total_elapsed_ms",
+                    "INTEGER NOT NULL DEFAULT 0",
+                )?;
+                Self::add_column_if_missing(&tx, table, "explicit_cost", "REAL")?;
+                Self::add_column_if_missing(&tx, table, "explicit_cost_currency", "TEXT")?;
+                Self::add_column_if_missing(
+                    &tx,
+                    table,
+                    "usage_sources_json",
+                    "TEXT NOT NULL DEFAULT '{}'",
+                )?;
+            }
+            // Reasonix v2 会话累计值会参与新的残差聚合，旧物化结果必须重算；
+            // 仅清理派生缓存，不删除会话、请求或代理原始事实。
+            Self::clear_unified_materialization_tx(&tx, chrono::Utc::now().timestamp())?;
+            cleared_runtime_caches = true;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '21', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v21 schema version: {}", e))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v21 schema migration: {}", e))?;
         }
 
         if cleared_runtime_caches {

@@ -293,6 +293,7 @@ fn build_single_session_data(
             message_ids,
             scope: None,
             explicit_estimated_cost: None,
+            ..Default::default()
         },
         requests,
         fingerprint,

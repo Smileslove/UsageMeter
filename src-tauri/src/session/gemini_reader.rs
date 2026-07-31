@@ -170,6 +170,7 @@ pub(super) fn parse_gemini_session_file(
         message_ids: Vec::new(),
         explicit_estimated_cost: None,
         scope: None,
+        ..Default::default()
     };
 
     let mut first_user_message: Option<String> = None;

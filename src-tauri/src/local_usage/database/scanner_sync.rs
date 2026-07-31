@@ -3,7 +3,7 @@ use crate::session::{
     parse_session_file_for_storage, scan_file_backed_session_files, LocalRequestRecord,
     SessionFile, SessionMeta,
 };
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -12,10 +12,48 @@ use super::{
     TimestampSqlColumn,
 };
 
+fn reasonix_meta_timestamp(meta: &SessionMeta) -> i64 {
+    if meta.end_time > 0 {
+        meta.end_time
+    } else {
+        meta.last_modified
+    }
+}
+
+fn is_reasonix_telemetry_meta(meta: &SessionMeta) -> bool {
+    meta.tool == "reasonix"
+        && meta.message_count > 0
+        && (meta.total_input_tokens > 0
+            || meta.total_output_tokens > 0
+            || meta.total_cache_create_tokens > 0
+            || meta.total_cache_read_tokens > 0
+            || meta.total_elapsed_ms > 0
+            || meta.explicit_cost.is_some()
+            || !meta.usage_sources.is_empty())
+}
+
 impl LocalUsageDatabase {
     /// 收集该会话中"仍在场"（`source_file_present != 0`）的请求事实所覆盖的历史业务日期。
     /// 只用于会话整体消失时的软删路径：即将被软删翻转的行才会真正改变历史日数据，
     /// 已软删过的行不应再次触发历史日失效。
+    pub(super) fn reasonix_session_timestamp_tx(
+        tx: &rusqlite::Transaction<'_>,
+        session_id: &str,
+    ) -> Result<Option<i64>, String> {
+        tx.query_row(
+            "SELECT COALESCE(NULLIF(end_time, 0), NULLIF(last_modified, 0))
+             FROM local_sessions
+             WHERE session_id = ?1
+               AND tool = 'reasonix'
+               AND COALESCE(NULLIF(end_time, 0), NULLIF(last_modified, 0)) IS NOT NULL
+             LIMIT 1",
+            params![session_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to query Reasonix session timestamp: {}", e))
+    }
+
     pub(super) fn collect_history_dates_for_session_tx(
         tx: &rusqlite::Transaction<'_>,
         session_id: &str,
@@ -426,6 +464,15 @@ impl LocalUsageDatabase {
         let mut touched_history_dates: HashSet<String> = HashSet::new();
 
         for session_id in &removed_ids {
+            if let Some(telemetry_ts) = Self::reasonix_session_timestamp_tx(&tx, session_id)? {
+                let date = crate::utils::business_time::business_date_for_timestamp(
+                    telemetry_ts,
+                    &settings,
+                );
+                if date < today {
+                    touched_history_dates.insert(date);
+                }
+            }
             // 只统计即将被软删翻转的行（source_file_present != 0）覆盖的历史日期
             touched_history_dates.extend(Self::collect_history_dates_for_session_tx(
                 &tx, session_id, &settings, &today,
@@ -447,6 +494,14 @@ impl LocalUsageDatabase {
                 params![session_id, now],
             )
             .map_err(|e| format!("Failed to mark local source file removed: {}", e))?;
+            // Reasonix 本地 transcript 没有逐请求事实；会话文件进入回收站或被删除后，
+            // 若保留 local_sessions 行会继续凭旧 telemetry 生成 residual。只移除
+            // Reasonix 摘要，其他工具仍保留 session 元数据服务历史逐请求事实。
+            tx.execute(
+                "DELETE FROM local_sessions WHERE session_id = ?1 AND tool = 'reasonix'",
+                params![session_id],
+            )
+            .map_err(|e| format!("Failed to remove missing Reasonix session row: {}", e))?;
         }
 
         for dirty_session in dirty_sessions {
@@ -465,6 +520,30 @@ impl LocalUsageDatabase {
 
             // dedupe_key → 旧 timestamp：
             // 既用于软删差集，也用于变更行的"日期迁移"检测（旧时间戳所在历史日同样需要失效）
+            if let Some(old_telemetry_ts) =
+                Self::reasonix_session_timestamp_tx(&tx, session_id.as_str())?
+            {
+                let old_date = crate::utils::business_time::business_date_for_timestamp(
+                    old_telemetry_ts,
+                    &settings,
+                );
+                if old_date < today {
+                    touched_history_dates.insert(old_date);
+                }
+            }
+            if is_reasonix_telemetry_meta(&meta) {
+                let new_telemetry_ts = reasonix_meta_timestamp(&meta);
+                if new_telemetry_ts > 0 {
+                    let new_date = crate::utils::business_time::business_date_for_timestamp(
+                        new_telemetry_ts,
+                        &settings,
+                    );
+                    if new_date < today {
+                        touched_history_dates.insert(new_date);
+                    }
+                }
+            }
+
             let existing_facts: HashMap<String, i64> = {
                 let mut stmt = tx
                     .prepare(
@@ -528,6 +607,8 @@ impl LocalUsageDatabase {
 
             let model_list_json = serde_json::to_string(&meta.models)
                 .map_err(|e| format!("Failed to serialize model list: {}", e))?;
+            let usage_sources_json = serde_json::to_string(&meta.usage_sources)
+                .map_err(|e| format!("Failed to serialize session usage sources: {}", e))?;
             let total_tokens = meta.total_input_tokens
                 + meta.total_output_tokens
                 + meta.total_cache_create_tokens
@@ -539,9 +620,10 @@ impl LocalUsageDatabase {
                     session_name, scope, primary_file_path, file_size, last_modified, start_time, end_time,
                     request_count, total_input_tokens, total_output_tokens,
                     total_cache_create_tokens, total_cache_read_tokens, total_tokens,
-                    model_list_json, source_kind, sync_version, updated_at
+                    total_reasoning_tokens, total_elapsed_ms, explicit_cost, explicit_cost_currency,
+                    usage_sources_json, model_list_json, source_kind, sync_version, updated_at
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                          ?16, ?17, ?18, ?19, ?20, ?21, ?22, 1, ?23)",
+                          ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, 1, ?28)",
                 params![
                     meta.session_id.as_str(),
                     meta.tool.as_str(),
@@ -563,6 +645,11 @@ impl LocalUsageDatabase {
                     meta.total_cache_create_tokens as i64,
                     meta.total_cache_read_tokens as i64,
                     total_tokens as i64,
+                    meta.total_reasoning_tokens as i64,
+                    meta.total_elapsed_ms as i64,
+                    meta.explicit_cost,
+                    meta.explicit_cost_currency.as_deref(),
+                    usage_sources_json.as_str(),
                     model_list_json.as_str(),
                     meta.source.as_str(),
                     now
@@ -583,6 +670,11 @@ impl LocalUsageDatabase {
                 total_cache_create_tokens: meta.total_cache_create_tokens,
                 total_cache_read_tokens: meta.total_cache_read_tokens,
                 total_tokens,
+                total_reasoning_tokens: meta.total_reasoning_tokens,
+                total_elapsed_ms: meta.total_elapsed_ms,
+                explicit_cost: meta.explicit_cost,
+                explicit_cost_currency: meta.explicit_cost_currency.clone(),
+                usage_sources: meta.usage_sources.clone(),
                 model_list: meta.models.clone(),
             };
             outbox::enqueue_session_export_tx(&tx, &origin_device_id, &session_export, now)?;

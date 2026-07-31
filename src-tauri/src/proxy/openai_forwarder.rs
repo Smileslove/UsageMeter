@@ -722,10 +722,21 @@ fn parse_openai_usage(value: &Value) -> Option<OpenAiUsage> {
     let token_details = usage
         .get("prompt_tokens_details")
         .or_else(|| usage.get("input_tokens_details"));
-    let cached_tokens = token_details
-        .and_then(|details| details.get("cached_tokens"))
+    // DeepSeek 等 OpenAI-compatible 服务把缓存细分放在 usage 顶层；
+    // 标准 OpenAI/Responses 则通常放在 prompt/input token details 中。
+    // 顶层字段更直接，存在时优先使用。
+    let cached_tokens = usage
+        .get("prompt_cache_hit_tokens")
         .and_then(|v| v.as_u64())
+        .or_else(|| {
+            token_details
+                .and_then(|details| details.get("cached_tokens"))
+                .and_then(|v| v.as_u64())
+        })
         .unwrap_or(0);
+    let cache_miss_tokens = usage
+        .get("prompt_cache_miss_tokens")
+        .and_then(|v| v.as_u64());
     let cache_create_tokens = token_details
         .and_then(|details| details.get("cache_creation"))
         .and_then(|cc| cc.get("cache_creation_input_tokens"))
@@ -746,7 +757,15 @@ fn parse_openai_usage(value: &Value) -> Option<OpenAiUsage> {
         .or_else(|| usage.get("output_tokens"))
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let input = raw_input.saturating_sub(cached_tokens);
+    let input = cache_miss_tokens.unwrap_or_else(|| raw_input.saturating_sub(cached_tokens));
+    if input == 0
+        && output == 0
+        && cached_tokens == 0
+        && cache_create_tokens == 0
+        && reasoning_tokens == 0
+    {
+        return None;
+    }
     Some(OpenAiUsage {
         message_id: value
             .get("id")
@@ -787,6 +806,46 @@ mod tests {
         assert_eq!(usage.cache_read_tokens, 20);
         assert_eq!(usage.cache_create_tokens, 0);
         assert_eq!(usage.output_tokens, 50);
+    }
+
+    #[test]
+    fn parses_deepseek_top_level_cache_usage() {
+        let value = serde_json::json!({
+            "id": "chatcmpl_deepseek",
+            "model": "deepseek-reasoner",
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 120,
+                "prompt_cache_hit_tokens": 700,
+                "prompt_cache_miss_tokens": 300,
+                "prompt_tokens_details": { "cached_tokens": 650 },
+                "output_tokens_details": { "reasoning_tokens": 80 }
+            }
+        });
+        let usage = parse_openai_usage(&value).unwrap();
+        assert_eq!(usage.input_tokens, 300);
+        assert_eq!(usage.cache_read_tokens, 700);
+        assert_eq!(usage.output_tokens, 120);
+        assert_eq!(usage.reasoning_tokens, 80);
+    }
+
+    #[test]
+    fn empty_or_zero_openai_usage_is_not_accounted_as_valid_usage() {
+        for usage in [
+            serde_json::json!({}),
+            serde_json::json!({
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            }),
+        ] {
+            let value = serde_json::json!({
+                "id": "chatcmpl_empty",
+                "model": "deepseek-reasoner",
+                "usage": usage
+            });
+            assert!(parse_openai_usage(&value).is_none());
+        }
     }
 
     #[test]

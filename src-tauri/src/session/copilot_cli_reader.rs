@@ -176,6 +176,7 @@ fn parse_copilot_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRe
         message_ids: Vec::new(),
         explicit_estimated_cost: None,
         scope: None,
+        ..Default::default()
     };
 
     let file = match fs::File::open(&session.file_path) {

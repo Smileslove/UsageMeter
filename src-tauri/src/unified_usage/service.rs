@@ -957,7 +957,14 @@ fn session_has_reasonix_coverage_gap(
         )
 }
 
-fn build_metadata_only_session_stats(meta: &SessionMeta, now_sec: i64) -> SessionStats {
+fn build_metadata_only_session_stats(
+    meta: &SessionMeta,
+    currency_settings: &crate::models::CurrencySettings,
+    now_sec: i64,
+) -> SessionStats {
+    let explicit_cost_usd = reasonix_explicit_cost_usd(meta, currency_settings)
+        .or(meta.explicit_estimated_cost)
+        .filter(|cost| cost.is_finite() && *cost >= 0.0);
     SessionStats {
         session_id: meta.session_id.clone(),
         tool: meta.tool.clone(),
@@ -966,7 +973,7 @@ fn build_metadata_only_session_stats(meta: &SessionMeta, now_sec: i64) -> Sessio
         total_output_tokens: meta.total_output_tokens,
         total_cache_create_tokens: meta.total_cache_create_tokens,
         total_cache_read_tokens: meta.total_cache_read_tokens,
-        total_duration_ms: 0,
+        total_duration_ms: meta.total_elapsed_ms,
         avg_output_tokens_per_second: 0.0,
         first_request_time: meta.start_time,
         last_request_time: meta.end_time.max(meta.last_modified),
@@ -974,8 +981,8 @@ fn build_metadata_only_session_stats(meta: &SessionMeta, now_sec: i64) -> Sessio
         avg_ttft_ms: 0.0,
         success_requests: 0,
         error_requests: 0,
-        estimated_cost: meta.explicit_estimated_cost.unwrap_or(0.0),
-        is_cost_estimated: meta.explicit_estimated_cost.is_none(),
+        estimated_cost: explicit_cost_usd.unwrap_or(0.0),
+        is_cost_estimated: explicit_cost_usd.is_none(),
         usage_fully_covered: session_usage_fully_covered(Some(meta), &meta.tool, 0, 0, now_sec),
         covered_requests: 0,
         uncovered_requests: meta.message_count,
@@ -1174,6 +1181,348 @@ fn normalize_range_bounds(start_epoch: Option<i64>, end_epoch: Option<i64>) -> (
     let start = start_epoch.unwrap_or(0);
     let end = end_epoch.unwrap_or(i64::MAX);
     (start.max(0), end.max(start.max(0)))
+}
+
+fn reasonix_telemetry_timestamp(meta: &SessionMeta) -> i64 {
+    if meta.end_time > 0 {
+        meta.end_time
+    } else {
+        meta.last_modified
+    }
+}
+
+fn has_reasonix_telemetry_usage(meta: &SessionMeta) -> bool {
+    meta.tool == "reasonix"
+        && meta.message_count > 0
+        && (meta.total_input_tokens > 0
+            || meta.total_output_tokens > 0
+            || meta.total_cache_create_tokens > 0
+            || meta.total_cache_read_tokens > 0
+            || meta.total_elapsed_ms > 0
+            || meta.explicit_cost.is_some()
+            || !meta.usage_sources.is_empty())
+}
+
+fn reasonix_residual_allowed_for_source_filter(
+    source_filter: &crate::models::SourceFilter,
+) -> bool {
+    matches!(
+        source_filter,
+        crate::models::SourceFilter::All | crate::models::SourceFilter::Unknown { .. }
+    )
+}
+
+fn reasonix_coverage_query_bounds<'a>(
+    sessions: impl Iterator<Item = &'a SessionMeta>,
+    source_filter: &crate::models::SourceFilter,
+    range_start: i64,
+    range_end: i64,
+) -> Option<(i64, i64)> {
+    if !reasonix_residual_allowed_for_source_filter(source_filter) {
+        return None;
+    }
+
+    let mut min_start = i64::MAX;
+    let mut max_end = 0_i64;
+    let mut found = false;
+    for meta in sessions.filter(|meta| has_reasonix_telemetry_usage(meta)) {
+        let telemetry_ts = reasonix_telemetry_timestamp(meta);
+        if telemetry_ts < range_start || telemetry_ts >= range_end {
+            continue;
+        }
+        let session_start = if meta.start_time > 0 {
+            meta.start_time
+        } else {
+            telemetry_ts.saturating_sub(15)
+        };
+        min_start = min_start.min(session_start.saturating_sub(15).max(0));
+        // fetch_proxy_records 使用半开区间，额外加 16 秒同时覆盖 15 秒归属宽限。
+        max_end = max_end.max(telemetry_ts.saturating_add(16));
+        found = true;
+    }
+
+    found.then_some((min_start, max_end))
+}
+
+#[derive(Debug, Clone, Default)]
+struct ReasonixProxyCoverage {
+    request_count: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_create_tokens: u64,
+    cache_read_tokens: u64,
+    estimated_cost_usd: f64,
+    duration_ms: u64,
+}
+
+fn reasonix_proxy_timestamp_sec(record: &UsageRecord) -> i64 {
+    if record.request_end_time > 0 {
+        record.request_end_time / 1000
+    } else {
+        record.timestamp / 1000
+    }
+}
+
+fn reasonix_session_matches_proxy_record(
+    meta: &SessionMeta,
+    record: &UsageRecord,
+    require_model_match: bool,
+) -> bool {
+    if meta.tool != "reasonix" || record.client_tool != "reasonix" {
+        return false;
+    }
+    if require_model_match {
+        let proxy_model_key = crate::models::normalize_model_id(&record.model);
+        if !meta.models.is_empty()
+            && !meta
+                .models
+                .iter()
+                .any(|model| crate::models::normalize_model_id(model) == proxy_model_key)
+        {
+            return false;
+        }
+    }
+
+    let start = if meta.start_time > 0 {
+        meta.start_time
+    } else {
+        meta.last_modified.saturating_sub(15)
+    };
+    let end = reasonix_telemetry_timestamp(meta);
+    let effective_end = if end > 0 {
+        end
+    } else {
+        start.saturating_add(15)
+    };
+    let timestamp = reasonix_proxy_timestamp_sec(record);
+    timestamp >= start.saturating_sub(15) && timestamp <= effective_end.saturating_add(15)
+}
+
+fn add_reasonix_proxy_coverage(coverage: &mut ReasonixProxyCoverage, record: &UsageRecord) {
+    coverage.request_count = coverage.request_count.saturating_add(1);
+    coverage.input_tokens = coverage.input_tokens.saturating_add(record.input_tokens);
+    coverage.output_tokens = coverage.output_tokens.saturating_add(record.output_tokens);
+    coverage.cache_create_tokens = coverage
+        .cache_create_tokens
+        .saturating_add(record.cache_create_tokens);
+    coverage.cache_read_tokens = coverage
+        .cache_read_tokens
+        .saturating_add(record.cache_read_tokens);
+    if record.estimated_cost.is_finite() && record.estimated_cost > 0.0 {
+        coverage.estimated_cost_usd += record.estimated_cost;
+    }
+    coverage.duration_ms = coverage.duration_ms.saturating_add(record.duration_ms);
+}
+
+fn build_reasonix_proxy_coverage_by_session(
+    records: &[UsageRecord],
+    sessions: &HashMap<String, SessionMeta>,
+) -> (HashMap<String, ReasonixProxyCoverage>, HashSet<String>) {
+    let target_sessions: Vec<&SessionMeta> = sessions
+        .values()
+        .filter(|meta| has_reasonix_telemetry_usage(meta))
+        .collect();
+    let mut coverage_by_session: HashMap<String, ReasonixProxyCoverage> = HashMap::new();
+    let mut blocked_sessions = HashSet::new();
+    let mut seen_keys = HashSet::new();
+
+    for record in records.iter().filter(|record| {
+        record.client_tool == "reasonix"
+            // Reasonix 只在 provider 返回有效 Usage 时增加 telemetry.requestCount。
+            // coverage 因而必须独立于查询的 include_errors，只接受成功且确有 Token
+            // 事实的代理记录；错误、599 和历史全零记录都不能消耗 telemetry 覆盖量。
+            && (200..300).contains(&record.status_code)
+            && (record.input_tokens > 0
+                || record.output_tokens > 0
+                || record.cache_create_tokens > 0
+                || record.cache_read_tokens > 0
+                || record.reasoning_tokens > 0
+                || record.total_tokens > 0)
+    }) {
+        if !seen_keys.insert(canonical_request_key_for_proxy(record)) {
+            continue;
+        }
+
+        if record.message_id_conflicted {
+            if let Some(session_id) = record.session_id.as_deref() {
+                if sessions.contains_key(session_id) {
+                    blocked_sessions.insert(session_id.to_string());
+                }
+            }
+            continue;
+        }
+
+        if let Some(session_id) = record
+            .session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if sessions.contains_key(session_id) {
+                add_reasonix_proxy_coverage(
+                    coverage_by_session
+                        .entry(session_id.to_string())
+                        .or_default(),
+                    record,
+                );
+            }
+            continue;
+        }
+
+        let strict_candidates: Vec<&SessionMeta> = target_sessions
+            .iter()
+            .copied()
+            .filter(|meta| reasonix_session_matches_proxy_record(meta, record, true))
+            .collect();
+        match strict_candidates.as_slice() {
+            [meta] => add_reasonix_proxy_coverage(
+                coverage_by_session
+                    .entry(meta.session_id.clone())
+                    .or_default(),
+                record,
+            ),
+            [] => {
+                // 模型不匹配仍可能是新模型名尚未写入会话元数据。只按时间找出可能
+                // 受影响的会话并阻止补齐，宁可少算也不把同一请求重复计入。
+                for meta in target_sessions
+                    .iter()
+                    .copied()
+                    .filter(|meta| reasonix_session_matches_proxy_record(meta, record, false))
+                {
+                    blocked_sessions.insert(meta.session_id.clone());
+                }
+            }
+            candidates => {
+                for meta in candidates {
+                    blocked_sessions.insert(meta.session_id.clone());
+                }
+            }
+        }
+    }
+
+    (coverage_by_session, blocked_sessions)
+}
+
+/// Reasonix telemetry 的 `sessionCurrency` 是显示符号而非 ISO 码（`¥`/`$`/`€`/`£`
+/// 或大写三字母码加尾随空格），归一化为 ISO 4217 码以匹配汇率表键。
+/// 注意：Reasonix 对 CNY/JPY 及未知币种兜底均写 `¥`，DeepSeek 场景默认按 CNY 处理。
+/// 与 `session/reasonix_reader.rs` 的 `normalize_currency` 保持逐字对齐。
+fn normalize_reasonix_currency_code(value: &str) -> String {
+    let upper = value.trim().to_ascii_uppercase();
+    match upper.as_str() {
+        "CNY" | "RMB" | "CNH" | "¥" | "￥" => "CNY".to_string(),
+        "USD" | "$" | "US$" => "USD".to_string(),
+        "EUR" | "€" => "EUR".to_string(),
+        "GBP" | "£" => "GBP".to_string(),
+        _ => upper,
+    }
+}
+
+fn reasonix_explicit_cost_usd(
+    meta: &SessionMeta,
+    currency_settings: &crate::models::CurrencySettings,
+) -> Option<f64> {
+    // explicit_cost 只有与明确币种配对时才可换算。Reasonix 的历史
+    // sessionCostUsd 只是兼容别名，不保证实际为 USD，不能因币种缺失而默认成 USD。
+    if let (Some(cost), Some(currency)) =
+        (meta.explicit_cost, meta.explicit_cost_currency.as_deref())
+    {
+        if !cost.is_finite() || cost < 0.0 {
+            return None;
+        }
+        let currency = normalize_reasonix_currency_code(currency);
+        if currency == "USD" {
+            return Some(cost);
+        }
+        let rate = currency_settings.exchange_rates.get(&currency).copied()?;
+        return (rate.is_finite() && rate > 0.0).then_some(cost / rate);
+    }
+
+    // 旧 reader 的 explicit_estimated_cost 字段语义始终是已确认的 USD。
+    meta.explicit_estimated_cost
+        .filter(|cost| cost.is_finite() && *cost >= 0.0)
+}
+
+fn build_reasonix_telemetry_residual(
+    meta: &SessionMeta,
+    covered: Option<&ReasonixProxyCoverage>,
+    is_blocked: bool,
+    source_filter: &crate::models::SourceFilter,
+    currency_settings: &crate::models::CurrencySettings,
+    range_start: i64,
+    range_end: i64,
+) -> Option<MergedRequestFact> {
+    if !has_reasonix_telemetry_usage(meta)
+        || is_blocked
+        || !reasonix_residual_allowed_for_source_filter(source_filter)
+    {
+        return None;
+    }
+    let timestamp_sec = reasonix_telemetry_timestamp(meta);
+    if timestamp_sec < range_start || timestamp_sec >= range_end {
+        return None;
+    }
+
+    let covered = covered.cloned().unwrap_or_default();
+    let request_count = meta.message_count.saturating_sub(covered.request_count);
+    // 请求数已被完整生命周期代理事实覆盖时，不因 provider 字段口径差异再次补
+    // Token；否则同一个请求会以“字段残差”形式被重复记成第二条请求。
+    if request_count == 0 {
+        return None;
+    }
+
+    let input_tokens = meta.total_input_tokens.saturating_sub(covered.input_tokens);
+    let output_tokens = meta
+        .total_output_tokens
+        .saturating_sub(covered.output_tokens);
+    let cache_create_tokens = meta
+        .total_cache_create_tokens
+        .saturating_sub(covered.cache_create_tokens);
+    let cache_read_tokens = meta
+        .total_cache_read_tokens
+        .saturating_sub(covered.cache_read_tokens);
+    let total_tokens = input_tokens
+        .saturating_add(output_tokens)
+        .saturating_add(cache_create_tokens)
+        .saturating_add(cache_read_tokens);
+    let estimated_cost = reasonix_explicit_cost_usd(meta, currency_settings)
+        .map(|total| (total - covered.estimated_cost_usd).max(0.0))
+        .unwrap_or(0.0);
+    let duration_ms = meta.total_elapsed_ms.saturating_sub(covered.duration_ms);
+    let model = if meta.models.len() == 1 {
+        meta.models[0].clone()
+    } else {
+        "reasonix-telemetry".to_string()
+    };
+
+    Some(MergedRequestFact {
+        canonical_request_key: format!(
+            "reasonix:telemetry-residual:{}:{}",
+            meta.session_id, timestamp_sec
+        ),
+        session_id: meta.session_id.clone(),
+        project_name: meta.project_name.clone(),
+        project_path: meta.cwd.clone(),
+        api_key_prefix: None,
+        request_base_url: None,
+        tool: meta.tool.clone(),
+        timestamp_sec,
+        timestamp_ms: timestamp_sec.saturating_mul(1000),
+        model,
+        input_tokens,
+        output_tokens,
+        cache_create_tokens,
+        cache_read_tokens,
+        total_tokens,
+        request_count,
+        estimated_cost,
+        coverage_origin: CoverageOrigin::LocalOnly,
+        status_code: Some(200),
+        duration_ms: (duration_ms > 0).then_some(duration_ms),
+        output_tokens_per_second: None,
+        ttft_ms: None,
+        source_label: None,
+    })
 }
 
 /// 归一化"查询到此刻"的开放式 range_end，用于稳定合并缓存 key。
@@ -1437,20 +1786,44 @@ async fn merge_realtime_range(
     // 异步取数段：proxy 记录的两次取数是真正的 await 点，保持在 async 上下文；
     // 取回后的纯内存加工（session 归属回填、可见性过滤）挪入后置同步段一并
     // 下沉阻塞线程池。
-    let (raw_proxy_records, raw_unfiltered_proxy_records) = if let Some(proxy_db) =
-        ProxyDatabase::get_global()
-    {
-        let records =
-            fetch_proxy_records(proxy_db.as_ref(), &usage_filter, start_epoch, end_epoch).await?;
-        let unfiltered = if let Some(filter) = unfiltered_usage_filter.as_ref() {
-            Some(fetch_proxy_records(proxy_db.as_ref(), filter, start_epoch, end_epoch).await?)
+    let reasonix_coverage_bounds = reasonix_coverage_query_bounds(
+        session_meta_by_id.values(),
+        &usage_filter.source,
+        range_start,
+        range_end,
+    );
+    let (raw_proxy_records, raw_unfiltered_proxy_records, raw_reasonix_coverage_proxy_records) =
+        if let Some(proxy_db) = ProxyDatabase::get_global() {
+            let records =
+                fetch_proxy_records(proxy_db.as_ref(), &usage_filter, start_epoch, end_epoch)
+                    .await?;
+            let unfiltered = if let Some(filter) = unfiltered_usage_filter.as_ref() {
+                Some(fetch_proxy_records(proxy_db.as_ref(), filter, start_epoch, end_epoch).await?)
+            } else {
+                None
+            };
+            // telemetry 是会话累计值。为了在会话结束窗口生成正确残差，覆盖基线必须
+            // 包含这些会话的完整生命周期，而不只是当前查询窗口内的代理事实。查询
+            // 边界由本窗口内结束的 Reasonix 会话推导，避免每次合并无界扫描代理全表。
+            let coverage = if let Some((coverage_start, coverage_end)) = reasonix_coverage_bounds {
+                let reasonix_filter = UsageQueryFilter {
+                    source: crate::models::SourceFilter::All,
+                    tool: ToolFilter::Tool("reasonix".to_string()),
+                };
+                fetch_proxy_records(
+                    proxy_db.as_ref(),
+                    &reasonix_filter,
+                    Some(coverage_start),
+                    Some(coverage_end),
+                )
+                .await?
+            } else {
+                Vec::new()
+            };
+            (records, unfiltered, coverage)
         } else {
-            None
+            (Vec::new(), None, Vec::new())
         };
-        (records, unfiltered)
-    } else {
-        (Vec::new(), None)
-    };
 
     // 后置同步合并段：索引构建、模糊匹配、合并主循环与排序都是大向量上的纯
     // CPU 工作（codex 回退 base_url 还含一次阻塞的 config.toml 读取），整体移
@@ -1461,6 +1834,11 @@ async fn merge_realtime_range(
         message_to_session,
         raw_proxy_records,
         raw_unfiltered_proxy_records,
+        raw_reasonix_coverage_proxy_records,
+        source_filter: usage_filter.source,
+        currency_settings: settings.currency.clone(),
+        range_start,
+        range_end,
         include_errors,
         pricings: pricings.to_vec(),
         pricing_match_mode: pricing_match_mode.to_string(),
@@ -1477,6 +1855,11 @@ struct RealtimeMergeComputeInputs {
     message_to_session: HashMap<String, String>,
     raw_proxy_records: Vec<UsageRecord>,
     raw_unfiltered_proxy_records: Option<Vec<UsageRecord>>,
+    raw_reasonix_coverage_proxy_records: Vec<UsageRecord>,
+    source_filter: crate::models::SourceFilter,
+    currency_settings: crate::models::CurrencySettings,
+    range_start: i64,
+    range_end: i64,
     include_errors: bool,
     pricings: Vec<crate::models::ModelPricingConfig>,
     pricing_match_mode: String,
@@ -1492,6 +1875,11 @@ fn merge_realtime_compute_sync(
         message_to_session,
         raw_proxy_records,
         raw_unfiltered_proxy_records,
+        raw_reasonix_coverage_proxy_records,
+        source_filter,
+        currency_settings,
+        range_start,
+        range_end,
         include_errors,
         pricings,
         pricing_match_mode,
@@ -1648,6 +2036,25 @@ fn merge_realtime_compute_sync(
             (None, None) => {}
         }
     }
+
+    let mut reasonix_coverage_records = raw_reasonix_coverage_proxy_records;
+    attach_proxy_session_ids(&mut reasonix_coverage_records, &message_to_session);
+    let (reasonix_coverage_by_session, blocked_reasonix_sessions) =
+        build_reasonix_proxy_coverage_by_session(&reasonix_coverage_records, &session_meta_by_id);
+    for meta in session_meta_by_id.values() {
+        if let Some(residual) = build_reasonix_telemetry_residual(
+            meta,
+            reasonix_coverage_by_session.get(&meta.session_id),
+            blocked_reasonix_sessions.contains(&meta.session_id),
+            &source_filter,
+            &currency_settings,
+            range_start,
+            range_end,
+        ) {
+            merged.push(residual);
+        }
+    }
+
     merged.sort_by_key(|fact| fact.timestamp_ms);
     Ok(merged)
 }
@@ -2000,7 +2407,10 @@ async fn ensure_materialized_history_with_db(
     let effective_range =
         if let Some((data_start, data_end)) = combined_data_time_bounds(&local_db)? {
             let effective_start = start_epoch.max(data_start);
-            let effective_end = end_epoch.min(data_end.max(start_epoch.saturating_add(1)));
+            // 数据库 time bounds 返回的是已存在事实的最大时间戳，而下游查询使用
+            // 半开区间 [start, end)。end 必须向后扩一秒，否则最后一条事实会被排除；
+            // 当唯一数据是 telemetry-only session 时还会错误形成空区间。
+            let effective_end = end_epoch.min(data_end.saturating_add(1));
             (effective_start, effective_end)
         } else {
             (start_epoch, start_epoch)
@@ -2331,8 +2741,11 @@ fn build_fact_backed_session_stats(
     let mut error_requests = 0_u64;
     let mut proxy_backed_requests = 0_u64;
     let mut local_only_requests = 0_u64;
+    let mut total_requests = 0_u64;
 
     for fact in session_facts {
+        let request_count = fact.request_count.max(1);
+        total_requests = total_requests.saturating_add(request_count);
         if !fact.model.trim().is_empty() {
             models.insert(fact.model.clone());
         }
@@ -2345,11 +2758,13 @@ fn build_fact_backed_session_stats(
         last_request_time = last_request_time.max(fact.timestamp_sec);
 
         match fact.coverage_origin {
-            CoverageOrigin::LocalOnly => local_only_requests += 1,
+            CoverageOrigin::LocalOnly => {
+                local_only_requests = local_only_requests.saturating_add(request_count)
+            }
             CoverageOrigin::ProxyOnly
             | CoverageOrigin::MergedProxyPreferred
             | CoverageOrigin::MergedFuzzyMatched => {
-                proxy_backed_requests += 1;
+                proxy_backed_requests = proxy_backed_requests.saturating_add(request_count);
             }
         }
 
@@ -2396,7 +2811,7 @@ fn build_fact_backed_session_stats(
     SessionStats {
         session_id: session_id.to_string(),
         tool: session_tool,
-        total_requests: session_facts.len() as u64,
+        total_requests,
         total_input_tokens,
         total_output_tokens,
         total_cache_create_tokens,
@@ -2554,7 +2969,11 @@ async fn get_merged_sessions_with_db(
             if fact_backed_session_ids.contains(&meta.session_id) {
                 continue;
             }
-            result.push(build_metadata_only_session_stats(meta, now_sec));
+            result.push(build_metadata_only_session_stats(
+                meta,
+                &settings.currency,
+                now_sec,
+            ));
         }
     }
 
@@ -2746,7 +3165,7 @@ pub async fn get_merged_session_detail(
 
     if session_facts.is_empty() {
         let detail = if metadata_only_sessions_allowed(&source_filter) {
-            meta.map(|value| build_metadata_only_session_stats(value, now_sec))
+            meta.map(|value| build_metadata_only_session_stats(value, &settings.currency, now_sec))
         } else {
             None
         };
@@ -3357,5 +3776,325 @@ mod tests {
                 proxy_signature: None,
             });
         assert!(lookup_history_materialization_cache(&changed_key).is_none());
+    }
+
+    fn reasonix_meta(session_id: &str, start_time: i64, end_time: i64) -> SessionMeta {
+        SessionMeta {
+            session_id: session_id.to_string(),
+            tool: "reasonix".to_string(),
+            cwd: Some("/tmp/reasonix-project".to_string()),
+            project_name: Some("reasonix-project".to_string()),
+            file_path: format!("/tmp/{session_id}.jsonl"),
+            last_modified: end_time,
+            total_input_tokens: 600,
+            total_output_tokens: 300,
+            total_cache_create_tokens: 100,
+            total_cache_read_tokens: 500,
+            models: vec!["deepseek-v4-pro".to_string()],
+            message_count: 3,
+            start_time,
+            end_time,
+            total_elapsed_ms: 4_000,
+            explicit_cost: Some(7.2),
+            explicit_cost_currency: Some("CNY".to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn reasonix_proxy(
+        message_id: &str,
+        timestamp_sec: i64,
+        session_id: Option<&str>,
+    ) -> UsageRecord {
+        UsageRecord {
+            timestamp: timestamp_sec * 1000,
+            request_end_time: timestamp_sec * 1000,
+            request_start_time: timestamp_sec * 1000 - 100,
+            message_id: message_id.to_string(),
+            canonical_request_key: Some(format!("reasonix:{message_id}")),
+            input_tokens: 200,
+            output_tokens: 100,
+            cache_create_tokens: 50,
+            cache_read_tokens: 100,
+            total_tokens: 450,
+            model: "deepseek-v4-pro".to_string(),
+            session_id: session_id.map(str::to_string),
+            session_resolution_state: session_id.map(|_| "known".to_string()),
+            duration_ms: 1_000,
+            estimated_cost: 0.25,
+            cost_locked: true,
+            client_tool: "reasonix".to_string(),
+            status_code: 200,
+            ..Default::default()
+        }
+    }
+
+    fn cny_currency_settings() -> crate::models::CurrencySettings {
+        let mut settings = crate::models::CurrencySettings::default();
+        settings.exchange_rates.insert("CNY".to_string(), 7.2);
+        settings
+    }
+
+    #[test]
+    fn reasonix_telemetry_only_builds_weighted_residual() {
+        let meta = reasonix_meta("reasonix::sess-1", 100, 200);
+        let fact = build_reasonix_telemetry_residual(
+            &meta,
+            None,
+            false,
+            &crate::models::SourceFilter::All,
+            &cny_currency_settings(),
+            150,
+            250,
+        )
+        .expect("telemetry residual");
+
+        assert_eq!(fact.session_id, meta.session_id);
+        assert_eq!(fact.timestamp_sec, 200);
+        assert_eq!(fact.request_count, 3);
+        assert_eq!(fact.input_tokens, 600);
+        assert_eq!(fact.output_tokens, 300);
+        assert_eq!(fact.cache_create_tokens, 100);
+        assert_eq!(fact.cache_read_tokens, 500);
+        assert_eq!(fact.total_tokens, 1_500);
+        assert_eq!(fact.duration_ms, Some(4_000));
+        assert!((fact.estimated_cost - 1.0).abs() < 1e-9);
+        assert_eq!(fact.coverage_origin, CoverageOrigin::LocalOnly);
+    }
+
+    #[test]
+    fn reasonix_partial_proxy_coverage_builds_only_non_negative_residual() {
+        let meta = reasonix_meta("reasonix::sess-1", 100, 200);
+        let covered = ReasonixProxyCoverage {
+            request_count: 1,
+            input_tokens: 700,
+            output_tokens: 100,
+            cache_create_tokens: 50,
+            cache_read_tokens: 100,
+            estimated_cost_usd: 0.25,
+            duration_ms: 1_000,
+        };
+        let fact = build_reasonix_telemetry_residual(
+            &meta,
+            Some(&covered),
+            false,
+            &crate::models::SourceFilter::All,
+            &cny_currency_settings(),
+            0,
+            300,
+        )
+        .expect("partial residual");
+
+        assert_eq!(fact.request_count, 2);
+        assert_eq!(fact.input_tokens, 0);
+        assert_eq!(fact.output_tokens, 200);
+        assert_eq!(fact.cache_create_tokens, 50);
+        assert_eq!(fact.cache_read_tokens, 400);
+        assert_eq!(fact.total_tokens, 650);
+        assert_eq!(fact.duration_ms, Some(3_000));
+        assert!((fact.estimated_cost - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn reasonix_full_request_coverage_does_not_emit_field_residual() {
+        let meta = reasonix_meta("reasonix::sess-1", 100, 200);
+        let covered = ReasonixProxyCoverage {
+            request_count: 3,
+            input_tokens: 100,
+            ..Default::default()
+        };
+        assert!(build_reasonix_telemetry_residual(
+            &meta,
+            Some(&covered),
+            false,
+            &crate::models::SourceFilter::All,
+            &cny_currency_settings(),
+            0,
+            300,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn reasonix_residual_respects_blocked_range_and_source_filters() {
+        let meta = reasonix_meta("reasonix::sess-1", 100, 200);
+        let currency = cny_currency_settings();
+        let unknown = crate::models::SourceFilter::Unknown {
+            known_pairs: Vec::new(),
+        };
+        assert!(
+            build_reasonix_telemetry_residual(&meta, None, false, &unknown, &currency, 0, 300,)
+                .is_some()
+        );
+        assert!(build_reasonix_telemetry_residual(
+            &meta,
+            None,
+            true,
+            &crate::models::SourceFilter::All,
+            &currency,
+            0,
+            300,
+        )
+        .is_none());
+        assert!(build_reasonix_telemetry_residual(
+            &meta,
+            None,
+            false,
+            &crate::models::SourceFilter::All,
+            &currency,
+            0,
+            200,
+        )
+        .is_none());
+        assert!(build_reasonix_telemetry_residual(
+            &meta,
+            None,
+            false,
+            &crate::models::SourceFilter::Source {
+                api_key_prefixes: vec!["sk-test".to_string()],
+                base_url: None,
+            },
+            &currency,
+            0,
+            300,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn reasonix_unknown_or_missing_currency_does_not_leak_into_usd_cost() {
+        for currency in [Some("XYZ"), None] {
+            let mut meta = reasonix_meta("reasonix::sess-1", 100, 200);
+            meta.explicit_cost_currency = currency.map(str::to_string);
+            let fact = build_reasonix_telemetry_residual(
+                &meta,
+                None,
+                false,
+                &crate::models::SourceFilter::All,
+                &crate::models::CurrencySettings::default(),
+                0,
+                300,
+            )
+            .expect("token residual remains valid");
+            assert_eq!(fact.estimated_cost, 0.0);
+        }
+    }
+
+    #[test]
+    fn reasonix_persisted_currency_symbols_are_normalized_during_conversion() {
+        let mut settings = crate::models::CurrencySettings::default();
+        settings.exchange_rates.insert("CNY".to_string(), 7.2);
+        settings.exchange_rates.insert("EUR".to_string(), 0.9);
+        settings.exchange_rates.insert("GBP".to_string(), 0.8);
+
+        for (currency, cost, expected_usd) in [
+            ("¥", 7.2, 1.0),
+            ("￥", 7.2, 1.0),
+            ("RMB", 7.2, 1.0),
+            ("$", 7.2, 7.2),
+            ("€", 0.9, 1.0),
+            ("EUR", 0.9, 1.0),
+            ("£", 0.8, 1.0),
+            ("GBP", 0.8, 1.0),
+        ] {
+            let mut meta = reasonix_meta("reasonix::sess-1", 100, 200);
+            meta.explicit_cost = Some(cost);
+            meta.explicit_cost_currency = Some(currency.to_string());
+            let converted = reasonix_explicit_cost_usd(&meta, &settings).expect("known currency");
+            assert!(
+                (converted - expected_usd).abs() < 1e-9,
+                "currency {currency} converted to {converted}, expected {expected_usd}"
+            );
+        }
+    }
+
+    #[test]
+    fn reasonix_proxy_coverage_uses_unique_candidate_and_blocks_ambiguous_candidates() {
+        let first = reasonix_meta("reasonix::sess-1", 100, 160);
+        let second = reasonix_meta("reasonix::sess-2", 140, 200);
+        let sessions = HashMap::from([
+            (first.session_id.clone(), first),
+            (second.session_id.clone(), second),
+        ]);
+        let unique = reasonix_proxy("unique", 110, None);
+        let ambiguous = reasonix_proxy("ambiguous", 150, None);
+        let (coverage, blocked) =
+            build_reasonix_proxy_coverage_by_session(&[unique, ambiguous], &sessions);
+
+        assert_eq!(coverage["reasonix::sess-1"].request_count, 1);
+        assert!(blocked.contains("reasonix::sess-1"));
+        assert!(blocked.contains("reasonix::sess-2"));
+    }
+
+    #[test]
+    fn reasonix_proxy_coverage_ignores_errors_and_zero_token_records() {
+        let meta = reasonix_meta("reasonix::sess-1", 100, 200);
+        let sessions = HashMap::from([(meta.session_id.clone(), meta)]);
+        let valid = reasonix_proxy("valid", 120, Some("reasonix::sess-1"));
+        let mut error = reasonix_proxy("error", 130, Some("reasonix::sess-1"));
+        error.status_code = 500;
+        let mut zero = reasonix_proxy("zero", 140, Some("reasonix::sess-1"));
+        zero.input_tokens = 0;
+        zero.output_tokens = 0;
+        zero.cache_create_tokens = 0;
+        zero.cache_read_tokens = 0;
+        zero.reasoning_tokens = 0;
+        zero.total_tokens = 0;
+
+        let (coverage, blocked) =
+            build_reasonix_proxy_coverage_by_session(&[valid, error, zero], &sessions);
+        assert_eq!(coverage["reasonix::sess-1"].request_count, 1);
+        assert!(blocked.is_empty());
+    }
+
+    #[test]
+    fn reasonix_coverage_query_is_bounded_to_sessions_ending_in_range() {
+        let in_range = reasonix_meta("reasonix::sess-1", 100, 200);
+        let out_of_range = reasonix_meta("reasonix::sess-2", 1_000, 1_100);
+        let sessions = vec![in_range, out_of_range];
+        assert_eq!(
+            reasonix_coverage_query_bounds(
+                sessions.iter(),
+                &crate::models::SourceFilter::All,
+                150,
+                250,
+            ),
+            Some((85, 216))
+        );
+        assert!(reasonix_coverage_query_bounds(
+            sessions.iter(),
+            &crate::models::SourceFilter::Source {
+                api_key_prefixes: Vec::new(),
+                base_url: None,
+            },
+            0,
+            2_000,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn session_stats_honor_weighted_reasonix_residual_request_count() {
+        let meta = reasonix_meta("reasonix::sess-1", 100, 200);
+        let fact = build_reasonix_telemetry_residual(
+            &meta,
+            None,
+            false,
+            &crate::models::SourceFilter::All,
+            &cny_currency_settings(),
+            0,
+            300,
+        )
+        .unwrap();
+        let stats = build_fact_backed_session_stats(
+            &meta.session_id,
+            &[&fact],
+            Some(&meta),
+            0,
+            &AppSettings::default(),
+            1_000,
+        );
+        assert_eq!(stats.total_requests, 3);
+        assert_eq!(stats.uncovered_requests, 3);
     }
 }

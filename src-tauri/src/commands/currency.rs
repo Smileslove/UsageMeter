@@ -142,6 +142,11 @@ mod tests {
     use super::*;
 
     fn with_cache_state<T>(entry: Option<ExchangeRateCache>, f: impl FnOnce() -> T) -> T {
+        static TEST_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
+        let _test_guard = TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let lock = exchange_rate_cache();
         let previous = {
             let mut guard = lock.write().unwrap();

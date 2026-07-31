@@ -428,6 +428,7 @@ fn parse_qoder_session(
             .collect(),
         scope: None,
         explicit_estimated_cost: None,
+        ..Default::default()
     };
 
     let fingerprint = compute_qoder_session_fingerprint(

@@ -298,6 +298,7 @@ fn parse_work_session(log_path: &Path, ts_name: &str, tool: &str) -> Option<Qode
         message_ids: requests.iter().map(|r| r.message_id.clone()).collect(),
         scope: None,
         explicit_estimated_cost: None,
+        ..Default::default()
     };
 
     Some(QoderWorkSessionData {
@@ -661,6 +662,7 @@ fn parse_qoder_work_cli_session_file(
         message_ids: requests.iter().map(|r| r.message_id.clone()).collect(),
         scope: None,
         explicit_estimated_cost: None,
+        ..Default::default()
     };
 
     Some(QoderWorkSessionData {

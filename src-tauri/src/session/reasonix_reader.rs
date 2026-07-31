@@ -11,11 +11,11 @@
 //! - macOS/Linux: `~/.reasonix/`
 //! - Windows: `%AppData%\reasonix\`
 
-use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
+use super::meta::{LocalRequestRecord, SessionFile, SessionMeta, SessionUsageSourceMeta};
 use super::shared::{extract_project_name, truncate_string};
 use super::source::{ParsedSessionData, SessionSource, SourceSnapshot, SourceUpdateMode};
 use serde::Deserialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
@@ -87,14 +87,37 @@ struct ReasonixBranchMeta {
     model: Option<String>,
 }
 
-/// Reasonix v1 Go 新格式 `.jsonl.telemetry.json` 中的用量块。
+/// Reasonix telemetry v2 中的会话级及来源级用量块。
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct ReasonixTelemetryUsage {
-    cache_miss_tokens: u64,
-    cache_hit_tokens: u64,
+    prompt_tokens: u64,
     completion_tokens: u64,
+    total_tokens: u64,
+    reasoning_tokens: u64,
+    cache_hit_tokens: u64,
+    cache_miss_tokens: u64,
     request_count: u64,
+    elapsed_ms: u64,
+    session_cost: Option<f64>,
+    session_currency: Option<String>,
+    /// v2 保留的兼容别名；Reasonix 明确说明它不保证是 USD。
+    session_cost_usd: Option<f64>,
+    sources: BTreeMap<String, ReasonixTelemetrySourceUsage>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct ReasonixTelemetrySourceUsage {
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    total_tokens: u64,
+    reasoning_tokens: u64,
+    cache_hit_tokens: u64,
+    cache_miss_tokens: u64,
+    request_count: u64,
+    session_cost: Option<f64>,
+    session_currency: Option<String>,
     session_cost_usd: Option<f64>,
 }
 
@@ -102,6 +125,105 @@ struct ReasonixTelemetryUsage {
 #[serde(default)]
 struct ReasonixTelemetry {
     usage: ReasonixTelemetryUsage,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct NormalizedReasonixUsage {
+    input_tokens: u64,
+    output_tokens: u64,
+    reasoning_tokens: u64,
+    cache_read_tokens: u64,
+    request_count: u64,
+    elapsed_ms: u64,
+    explicit_cost: Option<f64>,
+    explicit_cost_currency: Option<String>,
+    explicit_usd_cost: Option<f64>,
+}
+
+/// Reasonix telemetry 的 `sessionCurrency` 写入的是显示符号（`Pricing.Symbol()`），
+/// 而非 ISO 码：`¥`/`$`/`€`/`£`、复合符号（`A$`）或大写三字母码加尾随空格（`KRW `）。
+/// 这里统一归一化为 ISO 4217 码以便与汇率表（以 ISO 码为键）对齐。
+/// 注意：Reasonix 对 CNY/JPY 及未知币种兜底均写 `¥`，符号层面无法区分；
+/// DeepSeek 场景默认按 CNY 处理。
+/// 与 `unified_usage/service.rs` 的 `normalize_reasonix_currency_code` 保持逐字对齐。
+fn normalize_currency(value: Option<&str>) -> Option<String> {
+    let value = value.map(str::trim).filter(|value| !value.is_empty())?;
+    let upper = value.to_ascii_uppercase();
+    Some(
+        match upper.as_str() {
+            "CNY" | "RMB" | "CNH" | "¥" | "￥" => "CNY",
+            "USD" | "$" | "US$" => "USD",
+            "EUR" | "€" => "EUR",
+            "GBP" | "£" => "GBP",
+            _ => upper.as_str(),
+        }
+        .to_string(),
+    )
+}
+
+fn positive_finite_cost(primary: Option<f64>, legacy_alias: Option<f64>) -> Option<f64> {
+    let valid = |value: f64| value.is_finite() && value >= 0.0;
+    match primary.filter(|value| valid(*value)) {
+        Some(value) if value > 0.0 => Some(value),
+        Some(zero) => legacy_alias
+            .filter(|value| valid(*value) && *value > 0.0)
+            .or(Some(zero)),
+        None => legacy_alias.filter(|value| valid(*value)),
+    }
+}
+
+fn normalize_reasonix_usage(usage: &ReasonixTelemetryUsage) -> NormalizedReasonixUsage {
+    // Reasonix promptTokens 是完整 prompt；cacheHitTokens 是其中的缓存读取细分项。
+    // 若旧 telemetry 没有 promptTokens，则用 totalTokens-completionTokens 恢复完整 prompt，
+    // 最后才回退到旧版 cacheMiss+cacheHit 口径。
+    let inferred_prompt = usage.total_tokens.saturating_sub(usage.completion_tokens);
+    let prompt_tokens = if usage.prompt_tokens > 0 {
+        usage.prompt_tokens
+    } else if inferred_prompt > 0 {
+        inferred_prompt
+    } else {
+        usage
+            .cache_miss_tokens
+            .saturating_add(usage.cache_hit_tokens)
+    };
+    let cache_read_tokens = usage.cache_hit_tokens.min(prompt_tokens);
+    let input_tokens = prompt_tokens.saturating_sub(cache_read_tokens);
+    let explicit_cost = positive_finite_cost(usage.session_cost, usage.session_cost_usd);
+    let explicit_cost_currency = normalize_currency(usage.session_currency.as_deref());
+    let explicit_usd_cost = match explicit_cost_currency.as_deref() {
+        Some("USD") => explicit_cost,
+        _ => None,
+    };
+
+    NormalizedReasonixUsage {
+        input_tokens,
+        output_tokens: usage.completion_tokens,
+        reasoning_tokens: usage.reasoning_tokens.min(usage.completion_tokens),
+        cache_read_tokens,
+        request_count: usage.request_count,
+        elapsed_ms: usage.elapsed_ms,
+        explicit_cost,
+        explicit_cost_currency,
+        explicit_usd_cost,
+    }
+}
+
+fn normalize_reasonix_source_usage(usage: &ReasonixTelemetrySourceUsage) -> SessionUsageSourceMeta {
+    SessionUsageSourceMeta {
+        prompt_tokens: usage.prompt_tokens,
+        completion_tokens: usage.completion_tokens,
+        total_tokens: if usage.total_tokens > 0 {
+            usage.total_tokens
+        } else {
+            usage.prompt_tokens.saturating_add(usage.completion_tokens)
+        },
+        reasoning_tokens: usage.reasoning_tokens.min(usage.completion_tokens),
+        cache_hit_tokens: usage.cache_hit_tokens,
+        cache_miss_tokens: usage.cache_miss_tokens,
+        request_count: usage.request_count,
+        session_cost: positive_finite_cost(usage.session_cost, usage.session_cost_usd),
+        session_currency: normalize_currency(usage.session_currency.as_deref()),
+    }
 }
 
 /// Reasonix 旧 desktop 格式（`desktop-*`）的 `<stem>.meta.json`。
@@ -334,13 +456,30 @@ pub(super) fn parse_reasonix_session_file(session: &SessionFile) -> ReasonixPars
     if let Ok(content) = fs::read_to_string(&telemetry_path) {
         if let Ok(t) = serde_json::from_str::<ReasonixTelemetry>(&content) {
             let u = &t.usage;
-            if u.cache_miss_tokens > 0 || u.completion_tokens > 0 || u.cache_hit_tokens > 0 {
-                meta.total_input_tokens = u.cache_miss_tokens;
-                meta.total_cache_read_tokens = u.cache_hit_tokens;
-                meta.total_output_tokens = u.completion_tokens;
-                meta.explicit_estimated_cost = u.session_cost_usd;
-                if u.request_count > 0 {
-                    meta.message_count = u.request_count;
+            let normalized = normalize_reasonix_usage(u);
+            let has_usage = u.prompt_tokens > 0
+                || u.total_tokens > 0
+                || normalized.input_tokens > 0
+                || normalized.output_tokens > 0
+                || normalized.cache_read_tokens > 0
+                || normalized.request_count > 0
+                || normalized.explicit_cost.is_some();
+            if has_usage {
+                meta.total_input_tokens = normalized.input_tokens;
+                meta.total_cache_read_tokens = normalized.cache_read_tokens;
+                meta.total_output_tokens = normalized.output_tokens;
+                meta.total_reasoning_tokens = normalized.reasoning_tokens;
+                meta.total_elapsed_ms = normalized.elapsed_ms;
+                meta.explicit_cost = normalized.explicit_cost;
+                meta.explicit_cost_currency = normalized.explicit_cost_currency;
+                meta.explicit_estimated_cost = normalized.explicit_usd_cost;
+                meta.usage_sources = u
+                    .sources
+                    .iter()
+                    .map(|(name, source)| (name.clone(), normalize_reasonix_source_usage(source)))
+                    .collect();
+                if normalized.request_count > 0 {
+                    meta.message_count = normalized.request_count;
                 }
                 token_data_loaded = true;
             }
@@ -365,6 +504,8 @@ pub(super) fn parse_reasonix_session_file(session: &SessionFile) -> ReasonixPars
                     meta.total_cache_read_tokens = lm.cache_hit_tokens;
                     meta.total_output_tokens = lm.total_completion_tokens;
                     meta.explicit_estimated_cost = lm.total_cost_usd;
+                    meta.explicit_cost = lm.total_cost_usd;
+                    meta.explicit_cost_currency = lm.total_cost_usd.map(|_| "USD".to_string());
                 }
                 // desktop 格式的 global session，workspace_root 是假路径，
                 // 从 .meta.json 的 workspace 字段获取真实路径。
@@ -714,6 +855,152 @@ mod tests {
         assert_eq!(data.requests.len(), 0);
         assert_eq!(data.meta.total_input_tokens, 0);
         assert_eq!(data.meta.total_output_tokens, 0);
+    }
+
+    #[test]
+    fn parse_reasonix_session_reads_full_v2_telemetry() {
+        let temp = tempdir().unwrap();
+        let stem = "20260729-120000.000000000-deepseek-reasoner";
+        let jsonl_path = temp.path().join(format!("{stem}.jsonl"));
+        {
+            let mut file = fs::File::create(&jsonl_path).unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({"role":"user","content":"Analyze this"})
+            )
+            .unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({"role":"assistant","content":"Done"})
+            )
+            .unwrap();
+        }
+        fs::write(
+            temp.path().join(format!("{stem}.jsonl.telemetry.json")),
+            serde_json::json!({
+                "version": 2,
+                "usage": {
+                    "promptTokens": 1200,
+                    "completionTokens": 300,
+                    "totalTokens": 1500,
+                    "reasoningTokens": 180,
+                    "cacheHitTokens": 800,
+                    "cacheMissTokens": 400,
+                    "requestCount": 3,
+                    "elapsedMs": 4200,
+                    "sessionCost": 0.125,
+                    "sessionCurrency": "usd",
+                    "sessionCostUsd": 0.125,
+                    "sources": {
+                        "executor": {
+                            "promptTokens": 1000,
+                            "completionTokens": 250,
+                            "totalTokens": 1250,
+                            "reasoningTokens": 150,
+                            "cacheHitTokens": 700,
+                            "cacheMissTokens": 300,
+                            "requestCount": 2,
+                            "sessionCost": 0.1,
+                            "sessionCurrency": "USD"
+                        },
+                        "planner": {
+                            "promptTokens": 200,
+                            "completionTokens": 50,
+                            "totalTokens": 250,
+                            "reasoningTokens": 30,
+                            "cacheHitTokens": 100,
+                            "cacheMissTokens": 100,
+                            "requestCount": 1,
+                            "sessionCost": 0.025,
+                            "sessionCurrency": "USD"
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let session = make_session(&jsonl_path.to_string_lossy(), stem);
+        let data = parse_reasonix_session_file(&session);
+
+        assert_eq!(data.meta.total_input_tokens, 400);
+        assert_eq!(data.meta.total_cache_read_tokens, 800);
+        assert_eq!(data.meta.total_output_tokens, 300);
+        assert_eq!(data.meta.total_reasoning_tokens, 180);
+        assert_eq!(data.meta.total_elapsed_ms, 4200);
+        assert_eq!(data.meta.message_count, 3);
+        assert_eq!(data.meta.explicit_cost, Some(0.125));
+        assert_eq!(data.meta.explicit_cost_currency.as_deref(), Some("USD"));
+        assert_eq!(data.meta.explicit_estimated_cost, Some(0.125));
+        assert_eq!(data.meta.usage_sources.len(), 2);
+        assert_eq!(data.meta.usage_sources["executor"].request_count, 2);
+        assert_eq!(data.meta.usage_sources["planner"].reasoning_tokens, 30);
+    }
+
+    #[test]
+    fn prompt_tokens_preserve_uncached_input_when_cache_breakdown_is_zero() {
+        let usage = ReasonixTelemetryUsage {
+            prompt_tokens: 900,
+            completion_tokens: 100,
+            total_tokens: 1000,
+            ..Default::default()
+        };
+
+        let normalized = normalize_reasonix_usage(&usage);
+        assert_eq!(normalized.input_tokens, 900);
+        assert_eq!(normalized.cache_read_tokens, 0);
+        assert_eq!(normalized.output_tokens, 100);
+    }
+
+    #[test]
+    fn reasonix_currency_symbols_and_aliases_are_normalized() {
+        for value in ["CNY", "cny", "RMB", "CNH", "¥", "￥"] {
+            assert_eq!(normalize_currency(Some(value)).as_deref(), Some("CNY"));
+        }
+        for value in ["USD", "usd", "$", "US$"] {
+            assert_eq!(normalize_currency(Some(value)).as_deref(), Some("USD"));
+        }
+        for value in ["EUR", "eur", "€"] {
+            assert_eq!(normalize_currency(Some(value)).as_deref(), Some("EUR"));
+        }
+        for value in ["GBP", "gbp", "£"] {
+            assert_eq!(normalize_currency(Some(value)).as_deref(), Some("GBP"));
+        }
+        // Reasonix 对未知三字母码写成大写加尾随空格（如 "KRW "），trim 后透传。
+        assert_eq!(normalize_currency(Some("KRW ")).as_deref(), Some("KRW"));
+        assert_eq!(normalize_currency(Some("  ")), None);
+    }
+
+    #[test]
+    fn non_usd_telemetry_cost_is_not_exposed_as_usd() {
+        let usage = ReasonixTelemetryUsage {
+            session_cost: Some(1.5),
+            session_currency: Some("cny".to_string()),
+            session_cost_usd: Some(1.5),
+            ..Default::default()
+        };
+
+        let normalized = normalize_reasonix_usage(&usage);
+        assert_eq!(normalized.explicit_cost, Some(1.5));
+        assert_eq!(normalized.explicit_cost_currency.as_deref(), Some("CNY"));
+        assert_eq!(normalized.explicit_usd_cost, None);
+    }
+
+    #[test]
+    fn legacy_alias_backfills_zero_session_cost_without_claiming_usd() {
+        let usage = ReasonixTelemetryUsage {
+            session_cost: Some(0.0),
+            session_currency: Some("CNY".to_string()),
+            session_cost_usd: Some(2.25),
+            ..Default::default()
+        };
+
+        let normalized = normalize_reasonix_usage(&usage);
+        assert_eq!(normalized.explicit_cost, Some(2.25));
+        assert_eq!(normalized.explicit_usd_cost, None);
     }
 
     #[test]

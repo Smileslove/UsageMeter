@@ -18,8 +18,10 @@ use tokio::sync::Mutex;
 // SSE 使用量收集器
 // ============================================================================
 
-/// 使用量完成回调类型
-type UsageCallback = Arc<dyn Fn(UsageData) + Send + Sync + 'static>;
+const USAGE_MISSING_STATUS_CODE: u16 = 599;
+
+/// 使用量完成回调类型。None 表示流正常结束，但未收到可解析的 Usage。
+type UsageCallback = Arc<dyn Fn(Option<UsageData>) + Send + Sync + 'static>;
 
 /// 从 SSE 事件收集的使用量数据
 #[derive(Debug, Clone, Default)]
@@ -66,7 +68,10 @@ struct SseUsageCollectorInner {
 
 impl SseUsageCollector {
     /// 创建带有完成回调的新使用量收集器
-    pub fn new(start_time: Instant, callback: impl Fn(UsageData) + Send + Sync + 'static) -> Self {
+    pub fn new(
+        start_time: Instant,
+        callback: impl Fn(Option<UsageData>) + Send + Sync + 'static,
+    ) -> Self {
         let on_complete: UsageCallback = Arc::new(callback);
         Self {
             inner: Arc::new(SseUsageCollectorInner {
@@ -113,11 +118,13 @@ impl SseUsageCollector {
             })
         };
 
-        // 从收集的事件中解析使用量
-        if let Some(mut usage) = parse_usage_from_events(&events) {
+        // 从收集的事件中解析使用量。流正常结束但缺少 Usage 时仍触发回调，
+        // 由持久化层记录 599 accounting error，避免静默漏统。
+        let usage = parse_usage_from_events(&events).map(|mut usage| {
             usage.ttft_ms = ttft_ms;
-            (self.inner.on_complete)(usage);
-        }
+            usage
+        });
+        (self.inner.on_complete)(usage);
     }
 }
 
@@ -301,24 +308,43 @@ pub fn create_database_collector(
         // 计算请求结束时间和耗时
         let request_end_time = chrono::Utc::now().timestamp_millis();
         // 使用 StreamContext 中传递的真实开始时间
-        let duration_ms = request_end_time - request_start_time;
+        let duration_ms = request_end_time.saturating_sub(request_start_time) as u64;
+        let usage = usage.unwrap_or_default();
+        let has_usage = !usage.message_id.is_empty()
+            || !usage.model.is_empty()
+            || usage.input_tokens > 0
+            || usage.output_tokens > 0
+            || usage.cache_create_tokens > 0
+            || usage.cache_read_tokens > 0;
 
-        // 计算总 Token：input + cache_read + output（不包含缓存创建）
         let total_tokens = usage.input_tokens
             + usage.cache_create_tokens
             + usage.cache_read_tokens
             + usage.output_tokens;
 
-        // 计算输出 Token 生成速率（tokens/s）
-        let output_tokens_per_second = if duration_ms > 0 {
+        let output_tokens_per_second = if duration_ms > 0 && has_usage {
             Some((usage.output_tokens as f64) / (duration_ms as f64 / 1000.0))
         } else {
             None
         };
 
+        let effective_status_code = if !has_usage && (200..300).contains(&status_code) {
+            USAGE_MISSING_STATUS_CODE
+        } else {
+            status_code
+        };
+        let message_id = if usage.message_id.is_empty() {
+            format!(
+                "anthropic_usage_missing_{}_{}",
+                request_end_time, effective_status_code
+            )
+        } else {
+            usage.message_id.clone()
+        };
+
         let record = UsageRecord {
             timestamp: request_end_time,
-            message_id: usage.message_id.clone(),
+            message_id,
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
             cache_create_tokens: usage.cache_create_tokens,
@@ -329,10 +355,10 @@ pub fn create_database_collector(
             session_id: usage.session_id.clone(),
             request_start_time,
             request_end_time,
-            duration_ms: duration_ms as u64,
+            duration_ms,
             output_tokens_per_second,
             ttft_ms: usage.ttft_ms,
-            status_code,
+            status_code: effective_status_code,
             estimated_cost: 0.0,
             pricing_snapshot_id: None,
             cost_locked: false,
@@ -505,5 +531,54 @@ mod tests {
     fn test_parse_usage_empty_events() {
         let events: Vec<Value> = vec![];
         assert!(parse_usage_from_events(&events).is_none());
+    }
+
+    #[tokio::test]
+    async fn finish_reports_missing_usage_once() {
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = results.clone();
+        let collector = SseUsageCollector::new(Instant::now(), move |usage| {
+            captured.lock().unwrap().push(usage);
+        });
+
+        collector.finish().await;
+        collector.finish().await;
+
+        let results = results.lock().unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_none());
+    }
+
+    #[tokio::test]
+    async fn finish_reports_parsed_usage() {
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = results.clone();
+        let collector = SseUsageCollector::new(Instant::now(), move |usage| {
+            captured.lock().unwrap().push(usage);
+        });
+        collector
+            .push(serde_json::json!({
+                "type": "message_start",
+                "message": {
+                    "id": "msg_usage",
+                    "model": "claude-sonnet-4",
+                    "usage": { "input_tokens": 12 }
+                }
+            }))
+            .await;
+        collector
+            .push(serde_json::json!({
+                "type": "message_delta",
+                "usage": { "output_tokens": 8 }
+            }))
+            .await;
+
+        collector.finish().await;
+
+        let results = results.lock().unwrap();
+        let usage = results[0].as_ref().expect("parsed usage");
+        assert_eq!(usage.message_id, "msg_usage");
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 8);
     }
 }

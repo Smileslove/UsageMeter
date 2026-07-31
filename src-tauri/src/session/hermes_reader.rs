@@ -301,6 +301,7 @@ fn build_hermes_session(
             .collect(),
         explicit_estimated_cost: None,
         scope: None,
+        ..Default::default()
     };
 
     let fingerprint = compute_hermes_session_fingerprint(
