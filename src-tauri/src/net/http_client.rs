@@ -194,7 +194,7 @@ fn build_bundle(config: &NetworkProxyConfig) -> Result<ClientBundle, String> {
     Ok(ClientBundle {
         short: build_one(config, TIMEOUT_SHORT_SECS, None)?,
         standard: build_one(config, TIMEOUT_STANDARD_SECS, None)?,
-        long: build_one(config, TIMEOUT_LONG_SECS, None)?,
+        long: build_long(config)?,
         webdav: build_one(
             config,
             TIMEOUT_WEBDAV_TOTAL_SECS,
@@ -202,6 +202,19 @@ fn build_bundle(config: &NetworkProxyConfig) -> Result<ClientBundle, String> {
         )?,
         config: config.clone(),
     })
+}
+
+/// 长连接转发专用 client。上游 API 的重定向不应被自动跟随，避免
+/// 将客户端携带的认证头发送给配置之外的主机。
+fn build_long(config: &NetworkProxyConfig) -> Result<Client, String> {
+    let builder = Client::builder()
+        .timeout(Duration::from_secs(TIMEOUT_LONG_SECS))
+        .user_agent(APP_USER_AGENT)
+        .redirect(reqwest::redirect::Policy::none());
+    let builder = apply_proxy(builder, config)?;
+    builder
+        .build()
+        .map_err(|e| format!("ERR_HTTP_CLIENT_BUILD: {}", e))
 }
 
 fn build_one(
@@ -228,7 +241,9 @@ fn build_streaming_one(
     connect_timeout_secs: u64,
     read_idle_timeout_secs: u64,
 ) -> Result<Client, String> {
-    let mut builder = Client::builder().user_agent(APP_USER_AGENT);
+    let mut builder = Client::builder()
+        .user_agent(APP_USER_AGENT)
+        .redirect(reqwest::redirect::Policy::none());
 
     if connect_timeout_secs > 0 {
         builder = builder.connect_timeout(Duration::from_secs(connect_timeout_secs));

@@ -102,11 +102,33 @@ pub async fn start_proxy(
     state: State<'_, ProxyState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    start_proxy_inner(port, &state, app).await
+}
+
+/// Start the loopback gateway listener on application startup.
+///
+/// The listener is a base service and is deliberately independent from any
+/// client-tool takeover. Tool settings only control whether that tool's local
+/// configuration is rewritten to use the already-running listener.
+pub async fn ensure_gateway_listener_started(
+    state: &ProxyState,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let port = load_settings().unwrap_or_default().proxy.port;
+    start_proxy_inner(port, state, app).await
+}
+
+async fn start_proxy_inner(
+    port: u16,
+    state: &ProxyState,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
     let mut server_guard = state.server.write().await;
 
-    // 检查是否已在运行
+    // The gateway may be requested both by backend startup and frontend
+    // hydration. Treat the second request as a successful no-op.
     if server_guard.is_some() {
-        return Err("Proxy is already running".to_string());
+        return Ok(());
     }
 
     let settings = load_settings().unwrap_or_default();
@@ -254,12 +276,6 @@ async fn set_claude_takeover(
 
     let settings = load_settings().unwrap_or_default();
     let port = settings.proxy.port;
-    let should_keep_server = settings
-        .client_tools
-        .profiles
-        .iter()
-        .any(|profile| profile.enabled);
-
     {
         let mut server_guard = state.server.write().await;
         if let Some(server) = server_guard.take() {
@@ -267,9 +283,9 @@ async fn set_claude_takeover(
         }
     }
 
-    if should_keep_server {
-        start_proxy(port, state, app_handle).await?;
-    }
+    // Recreate only to apply Claude's explicit takeover state. The loopback
+    // gateway remains running even when this is the last disabled tool.
+    start_proxy(port, state, app_handle).await?;
 
     Ok(())
 }
@@ -398,14 +414,6 @@ async fn set_codex_takeover(
         // 仅当当前 Codex 配置仍指向 UsageMeter 时才恢复快照，避免覆盖用户手动改回的真实配置。
         restore_codex_takeover_if_active(port)?;
         mark_client_tool_enabled("codex", false)?;
-
-        let settings = load_settings().unwrap_or_default();
-        if !is_client_tool_enabled(&settings, "claude_code") {
-            let mut server_guard = state.server.write().await;
-            if let Some(server) = server_guard.take() {
-                server.stop().await?;
-            }
-        }
     }
 
     Ok(())
@@ -525,19 +533,6 @@ async fn set_opencode_takeover(
     } else {
         restore_opencode_takeover_if_active(port)?;
         mark_client_tool_enabled("opencode", false)?;
-
-        let settings = load_settings().unwrap_or_default();
-        let any_tool_enabled = settings
-            .client_tools
-            .profiles
-            .iter()
-            .any(|profile| profile.enabled);
-        if !any_tool_enabled {
-            let mut server_guard = state.server.write().await;
-            if let Some(server) = server_guard.take() {
-                server.stop().await?;
-            }
-        }
     }
 
     Ok(())
@@ -636,19 +631,6 @@ async fn set_reasonix_takeover(
     } else {
         restore_reasonix_takeover_if_active(port)?;
         mark_client_tool_enabled("reasonix", false)?;
-
-        let settings = load_settings().unwrap_or_default();
-        let any_tool_enabled = settings
-            .client_tools
-            .profiles
-            .iter()
-            .any(|profile| profile.enabled);
-        if !any_tool_enabled {
-            let mut server_guard = state.server.write().await;
-            if let Some(server) = server_guard.take() {
-                server.stop().await?;
-            }
-        }
     }
 
     Ok(())
@@ -740,19 +722,6 @@ async fn set_gemini_takeover(
     } else {
         restore_gemini_takeover_if_active(port)?;
         mark_client_tool_enabled("gemini", false)?;
-
-        let settings = load_settings().unwrap_or_default();
-        let any_tool_enabled = settings
-            .client_tools
-            .profiles
-            .iter()
-            .any(|profile| profile.enabled);
-        if !any_tool_enabled {
-            let mut server_guard = state.server.write().await;
-            if let Some(server) = server_guard.take() {
-                server.stop().await?;
-            }
-        }
     }
 
     Ok(())

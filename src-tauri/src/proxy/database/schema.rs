@@ -45,6 +45,11 @@ impl ProxyDatabase {
                 client_tool TEXT NOT NULL DEFAULT 'claude_code',
                 proxy_profile_id TEXT,
                 client_detection_method TEXT NOT NULL DEFAULT 'legacy_path',
+                ingress_kind TEXT NOT NULL DEFAULT 'tool_takeover',
+                gateway_profile_id TEXT,
+                gateway_caller_label TEXT,
+                usage_source TEXT NOT NULL DEFAULT 'unknown',
+                gateway_request_id TEXT,
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
                 updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
             );
@@ -310,6 +315,11 @@ impl ProxyDatabase {
             "ALTER TABLE usage_records ADD COLUMN client_tool TEXT NOT NULL DEFAULT 'claude_code'",
             "ALTER TABLE usage_records ADD COLUMN proxy_profile_id TEXT",
             "ALTER TABLE usage_records ADD COLUMN client_detection_method TEXT NOT NULL DEFAULT 'legacy_path'",
+            "ALTER TABLE usage_records ADD COLUMN ingress_kind TEXT NOT NULL DEFAULT 'tool_takeover'",
+            "ALTER TABLE usage_records ADD COLUMN gateway_profile_id TEXT",
+            "ALTER TABLE usage_records ADD COLUMN gateway_caller_label TEXT",
+            "ALTER TABLE usage_records ADD COLUMN usage_source TEXT NOT NULL DEFAULT 'unknown'",
+            "ALTER TABLE usage_records ADD COLUMN gateway_request_id TEXT",
             "ALTER TABLE daily_summary ADD COLUMN cost REAL NOT NULL DEFAULT 0",
             "ALTER TABLE daily_summary ADD COLUMN success_total_tokens INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE daily_summary ADD COLUMN success_input_tokens INTEGER NOT NULL DEFAULT 0",
@@ -342,6 +352,10 @@ impl ProxyDatabase {
         );
         let _ = conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_usage_tool_time ON usage_records(client_tool, timestamp)",
+            [],
+        );
+        let _ = conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gateway_profile_time ON usage_records(gateway_profile_id, timestamp)",
             [],
         );
         let _ = conn.execute(
@@ -527,6 +541,11 @@ impl ProxyDatabase {
                 client_tool TEXT NOT NULL DEFAULT 'claude_code',
                 proxy_profile_id TEXT,
                 client_detection_method TEXT NOT NULL DEFAULT 'legacy_path',
+                ingress_kind TEXT NOT NULL DEFAULT 'tool_takeover',
+                gateway_profile_id TEXT,
+                gateway_caller_label TEXT,
+                usage_source TEXT NOT NULL DEFAULT 'unknown',
+                gateway_request_id TEXT,
                 created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
                 updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
             );
@@ -537,7 +556,8 @@ impl ProxyDatabase {
                 request_start_time, request_end_time, duration_ms, output_tokens_per_second,
                 ttft_ms, status_code, migration_attempted_at, estimated_cost, pricing_snapshot_id,
                 cost_locked, api_key_prefix, request_base_url, client_tool, proxy_profile_id,
-                client_detection_method, created_at, updated_at
+                client_detection_method, ingress_kind, gateway_profile_id, gateway_caller_label,
+                usage_source, gateway_request_id, created_at, updated_at
             )
             SELECT
                 id,
@@ -587,6 +607,11 @@ impl ProxyDatabase {
                 COALESCE(client_tool, 'claude_code'),
                 proxy_profile_id,
                 COALESCE(client_detection_method, 'legacy_path'),
+                COALESCE(ingress_kind, 'tool_takeover'),
+                gateway_profile_id,
+                gateway_caller_label,
+                COALESCE(usage_source, 'unknown'),
+                gateway_request_id,
                 created_at,
                 updated_at
             FROM usage_records;
@@ -601,6 +626,7 @@ impl ProxyDatabase {
             CREATE INDEX IF NOT EXISTS idx_source_lookup ON usage_records(api_key_prefix, request_base_url);
             CREATE INDEX IF NOT EXISTS idx_usage_tool_source ON usage_records(client_tool, api_key_prefix, request_base_url);
             CREATE INDEX IF NOT EXISTS idx_usage_tool_time ON usage_records(client_tool, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_gateway_profile_time ON usage_records(gateway_profile_id, timestamp);
             COMMIT;
             "#,
         )

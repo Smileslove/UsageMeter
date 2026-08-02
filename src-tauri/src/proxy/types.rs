@@ -165,6 +165,21 @@ pub struct UsageRecord {
     /// 工具识别方式，如 path_prefix / legacy_path
     #[serde(default = "default_client_detection_method")]
     pub client_detection_method: String,
+    /// 请求进入 UsageMeter 的方式：tool_takeover 或 gateway。
+    #[serde(default = "default_ingress_kind")]
+    pub ingress_kind: String,
+    /// Gateway profile ID，仅 gateway 请求有值。
+    #[serde(default)]
+    pub gateway_profile_id: Option<String>,
+    /// 客户端通过 X-UsageMeter-Client 提供的归属标签。
+    #[serde(default)]
+    pub gateway_caller_label: Option<String>,
+    /// usage 的可信来源：provider / estimated / unknown。
+    #[serde(default = "default_usage_source")]
+    pub usage_source: String,
+    /// 本地生成的 gateway 请求 ID，用于去重和关联。
+    #[serde(default)]
+    pub gateway_request_id: Option<String>,
 }
 
 impl Default for UsageRecord {
@@ -199,6 +214,11 @@ impl Default for UsageRecord {
             client_tool: default_client_tool(),
             proxy_profile_id: None,
             client_detection_method: default_client_detection_method(),
+            ingress_kind: default_ingress_kind(),
+            gateway_profile_id: None,
+            gateway_caller_label: None,
+            usage_source: default_usage_source(),
+            gateway_request_id: None,
         }
     }
 }
@@ -209,6 +229,14 @@ fn default_client_tool() -> String {
 
 fn default_client_detection_method() -> String {
     crate::models::DEFAULT_CLIENT_DETECTION_METHOD.to_string()
+}
+
+pub(crate) fn default_ingress_kind() -> String {
+    "tool_takeover".to_string()
+}
+
+pub(crate) fn default_usage_source() -> String {
+    "unknown".to_string()
 }
 
 /// 时间窗口统计
@@ -523,6 +551,16 @@ pub struct RequestContext {
     pub client_detection_method: String,
     /// 当前请求的实际转发目标地址。None 时使用代理启动时的兼容默认目标。
     pub target_base_url: Option<String>,
+    /// 请求进入 UsageMeter 的方式。
+    pub ingress_kind: String,
+    /// Gateway profile ID，仅 gateway 请求有值。
+    pub gateway_profile_id: Option<String>,
+    /// Gateway 调用方标签。
+    pub gateway_caller_label: Option<String>,
+    /// usage 的可信来源。
+    pub usage_source: String,
+    /// Gateway 本地请求 ID。
+    pub gateway_request_id: Option<String>,
 }
 
 impl Default for RequestContext {
@@ -543,7 +581,23 @@ impl Default for RequestContext {
             proxy_profile_id: None,
             client_detection_method: default_client_detection_method(),
             target_base_url: None,
+            ingress_kind: default_ingress_kind(),
+            gateway_profile_id: None,
+            gateway_caller_label: None,
+            usage_source: default_usage_source(),
+            gateway_request_id: None,
         }
+    }
+}
+
+impl RequestContext {
+    /// Copy non-secret request provenance onto a usage record.
+    pub fn apply_provenance(&self, record: &mut UsageRecord) {
+        record.ingress_kind = self.ingress_kind.clone();
+        record.gateway_profile_id = self.gateway_profile_id.clone();
+        record.gateway_caller_label = self.gateway_caller_label.clone();
+        record.usage_source = self.usage_source.clone();
+        record.gateway_request_id = self.gateway_request_id.clone();
     }
 }
 
@@ -595,6 +649,33 @@ impl ClaudeSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gateway_provenance_defaults_and_context_mapping_are_compatible() {
+        let mut record = UsageRecord::default();
+        assert_eq!(record.ingress_kind, "tool_takeover");
+        assert_eq!(record.usage_source, "unknown");
+        assert!(record.gateway_profile_id.is_none());
+
+        let context = RequestContext {
+            ingress_kind: "gateway".to_string(),
+            gateway_profile_id: Some("gateway-deepseek".to_string()),
+            gateway_caller_label: Some("Cursor".to_string()),
+            usage_source: "provider".to_string(),
+            gateway_request_id: Some("gw-request-1".to_string()),
+            ..Default::default()
+        };
+        context.apply_provenance(&mut record);
+
+        assert_eq!(record.ingress_kind, "gateway");
+        assert_eq!(
+            record.gateway_profile_id.as_deref(),
+            Some("gateway-deepseek")
+        );
+        assert_eq!(record.gateway_caller_label.as_deref(), Some("Cursor"));
+        assert_eq!(record.usage_source, "provider");
+        assert_eq!(record.gateway_request_id.as_deref(), Some("gw-request-1"));
+    }
 
     #[test]
     fn test_claude_settings_preserves_unknown_fields() {

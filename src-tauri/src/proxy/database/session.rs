@@ -212,6 +212,15 @@ pub(super) fn usage_record_from_row(row: &Row<'_>) -> rusqlite::Result<UsageReco
         client_detection_method: row
             .get::<_, Option<String>>(21)?
             .unwrap_or_else(|| crate::models::DEFAULT_CLIENT_DETECTION_METHOD.to_string()),
+        ingress_kind: row
+            .get::<_, Option<String>>(26)?
+            .unwrap_or_else(|| "tool_takeover".to_string()),
+        gateway_profile_id: row.get(27)?,
+        gateway_caller_label: row.get(28)?,
+        usage_source: row
+            .get::<_, Option<String>>(29)?
+            .unwrap_or_else(|| "unknown".to_string()),
+        gateway_request_id: row.get(30)?,
     })
 }
 
@@ -235,6 +244,18 @@ pub(super) fn computed_canonical_request_key(record: &UsageRecord) -> String {
         let trimmed = key.trim();
         if !trimmed.is_empty() {
             return trimmed.to_string();
+        }
+    }
+    if record.ingress_kind == "gateway" {
+        if let Some(request_id) = record.gateway_request_id.as_ref() {
+            let request_id = request_id.trim();
+            if !request_id.is_empty() {
+                return format!(
+                    "gateway:{}:{}",
+                    record.gateway_profile_id.as_deref().unwrap_or_default(),
+                    request_id
+                );
+            }
         }
     }
     if record.message_id.trim().is_empty() {
@@ -554,7 +575,8 @@ impl ProxyDatabase {
                            ttft_ms, status_code, estimated_cost, pricing_snapshot_id, cost_locked,
                            api_key_prefix, request_base_url, client_tool, proxy_profile_id,
                            client_detection_method, storage_dedupe_key, canonical_request_key,
-                           session_resolution_state, message_id_conflicted, id
+                           session_resolution_state, message_id_conflicted, ingress_kind,
+                           gateway_profile_id, gateway_caller_label, usage_source, gateway_request_id, id
                     FROM usage_records
                     WHERE client_tool = 'opencode'
                       AND (session_resolution_state IS NULL OR session_resolution_state != 'known')
@@ -564,7 +586,7 @@ impl ProxyDatabase {
                 .map_err(|e| format!("Failed to prepare unresolved OpenCode query: {}", e))?;
             let rows = stmt
                 .query_map([], |row| {
-                    Ok((row.get::<_, i64>(26)?, usage_record_from_row(row)?))
+                    Ok((row.get::<_, i64>(31)?, usage_record_from_row(row)?))
                 })
                 .map_err(|e| format!("Failed to query unresolved OpenCode records: {}", e))?;
             rows.collect::<Result<Vec<_>, _>>()
@@ -716,7 +738,8 @@ impl ProxyDatabase {
                            ttft_ms, status_code, estimated_cost, pricing_snapshot_id, cost_locked,
                            api_key_prefix, request_base_url, client_tool, proxy_profile_id,
                            client_detection_method, storage_dedupe_key, canonical_request_key,
-                           session_resolution_state, message_id_conflicted, id
+                           session_resolution_state, message_id_conflicted, ingress_kind,
+                           gateway_profile_id, gateway_caller_label, usage_source, gateway_request_id, id
                     FROM usage_records
                     WHERE client_tool = 'reasonix'
                       AND (session_resolution_state IS NULL OR session_resolution_state != 'known')
@@ -726,7 +749,7 @@ impl ProxyDatabase {
                 .map_err(|e| format!("Failed to prepare unresolved Reasonix query: {}", e))?;
             let rows = stmt
                 .query_map([], |row| {
-                    Ok((row.get::<_, i64>(26)?, usage_record_from_row(row)?))
+                    Ok((row.get::<_, i64>(31)?, usage_record_from_row(row)?))
                 })
                 .map_err(|e| format!("Failed to query unresolved Reasonix records: {}", e))?;
             rows.collect::<Result<Vec<_>, _>>()

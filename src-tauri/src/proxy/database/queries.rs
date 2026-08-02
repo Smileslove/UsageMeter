@@ -22,7 +22,8 @@ impl ProxyDatabase {
                        ttft_ms, status_code, estimated_cost, pricing_snapshot_id, cost_locked,
                        api_key_prefix, request_base_url, client_tool, proxy_profile_id,
                        client_detection_method, storage_dedupe_key, canonical_request_key,
-                       session_resolution_state, message_id_conflicted
+                       session_resolution_state, message_id_conflicted, ingress_kind,
+                       gateway_profile_id, gateway_caller_label, usage_source, gateway_request_id
                 FROM usage_records
                 WHERE timestamp >= ?1
                 ORDER BY timestamp DESC
@@ -67,7 +68,8 @@ impl ProxyDatabase {
                    ttft_ms, status_code, estimated_cost, pricing_snapshot_id, cost_locked,
                    api_key_prefix, request_base_url, client_tool, proxy_profile_id,
                    client_detection_method, storage_dedupe_key, canonical_request_key,
-                   session_resolution_state, message_id_conflicted
+                   session_resolution_state, message_id_conflicted, ingress_kind,
+                   gateway_profile_id, gateway_caller_label, usage_source, gateway_request_id
             FROM usage_records
             WHERE timestamp >= ?1 AND timestamp < ?2
               {status_filter}

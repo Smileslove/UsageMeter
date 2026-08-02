@@ -9,6 +9,7 @@ import Overview from './views/Overview.vue'
 import Statistics from './views/Statistics.vue'
 import Sessions from './views/Sessions.vue'
 import Settings from './views/Settings.vue'
+import Gateway from './views/Gateway.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
 import SourceSelector from './components/SourceSelector.vue'
 import ToolSelector from './components/ToolSelector.vue'
@@ -27,6 +28,7 @@ const navItems = [
   { id: 'overview', key: 'common.dashboard' },
   { id: 'statistics', key: 'common.statistics' },
   { id: 'sessions', key: 'sessions.title' },
+  { id: 'gateway', key: 'common.gateway' },
   { id: 'settings', key: 'common.settings' }
 ]
 
@@ -321,6 +323,7 @@ onUnmounted(() => {
       <Overview v-if="currentView === 'overview'" />
       <Statistics v-else-if="currentView === 'statistics'" />
       <Sessions v-else-if="currentView === 'sessions'" />
+      <Gateway v-else-if="currentView === 'gateway'" />
       <Settings v-else-if="currentView === 'settings'" />
     </div>
     <div class="app-shell__fade-top pointer-events-none absolute inset-x-0 top-[78px] z-10 h-2"></div>

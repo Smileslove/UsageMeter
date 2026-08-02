@@ -156,7 +156,7 @@ impl RequestForwarder {
             let request_end_time = chrono::Utc::now().timestamp_millis();
             let duration_ms = request_end_time - context.start_time_ms;
 
-            let record = UsageRecord {
+            let mut record = UsageRecord {
                 timestamp: request_end_time,
                 // 使用时间戳+状态码+随机数确保错误记录唯一性
                 // 避免 message_id 为空时 UNIQUE 约束导致多条错误记录互相覆盖
@@ -186,13 +186,15 @@ impl RequestForwarder {
                 estimated_cost: 0.0,
                 pricing_snapshot_id: None,
                 cost_locked: false,
-                api_key_prefix: context.api_key_prefix,
-                request_base_url: context.request_base_url,
-                client_tool: context.client_tool,
-                proxy_profile_id: context.proxy_profile_id,
-                client_detection_method: context.client_detection_method,
+                api_key_prefix: context.api_key_prefix.clone(),
+                request_base_url: context.request_base_url.clone(),
+                client_tool: context.client_tool.clone(),
+                proxy_profile_id: context.proxy_profile_id.clone(),
+                client_detection_method: context.client_detection_method.clone(),
                 ..Default::default()
             };
+            context.apply_provenance(&mut record);
+            record.usage_source = super::types::default_usage_source();
             self.usage_collector.record(record).await;
 
             return Ok(ForwardResult::NonStreaming {
@@ -240,6 +242,11 @@ impl RequestForwarder {
             client_tool: context.client_tool,
             proxy_profile_id: context.proxy_profile_id,
             client_detection_method: context.client_detection_method,
+            ingress_kind: context.ingress_kind,
+            gateway_profile_id: context.gateway_profile_id,
+            gateway_caller_label: context.gateway_caller_label,
+            usage_source: context.usage_source,
+            gateway_request_id: context.gateway_request_id,
         };
 
         // 创建使用量收集器，用于记录到数据库
@@ -324,7 +331,7 @@ impl RequestForwarder {
                 } else {
                     None
                 };
-                let record = UsageRecord {
+                let mut record = UsageRecord {
                     timestamp: request_end_time,
                     message_id: usage.message_id,
                     input_tokens: usage.input_tokens,
@@ -334,7 +341,7 @@ impl RequestForwarder {
                     reasoning_tokens: 0,
                     total_tokens: usage.total_tokens,
                     model: usage.model,
-                    session_id: context.session_id,
+                    session_id: context.session_id.clone(),
                     request_start_time,
                     request_end_time,
                     duration_ms,
@@ -344,17 +351,18 @@ impl RequestForwarder {
                     estimated_cost: 0.0,
                     pricing_snapshot_id: None,
                     cost_locked: false,
-                    api_key_prefix: context.api_key_prefix,
-                    request_base_url: context.request_base_url,
-                    client_tool: context.client_tool,
-                    proxy_profile_id: context.proxy_profile_id,
-                    client_detection_method: context.client_detection_method,
+                    api_key_prefix: context.api_key_prefix.clone(),
+                    request_base_url: context.request_base_url.clone(),
+                    client_tool: context.client_tool.clone(),
+                    proxy_profile_id: context.proxy_profile_id.clone(),
+                    client_detection_method: context.client_detection_method.clone(),
                     ..Default::default()
                 };
+                context.apply_provenance(&mut record);
                 self.usage_collector.record(record).await;
             }
             None => {
-                let record = UsageRecord {
+                let mut record = UsageRecord {
                     timestamp: request_end_time,
                     message_id: format!(
                         "claude_usage_missing_{}_{}",
@@ -366,8 +374,8 @@ impl RequestForwarder {
                     cache_read_tokens: 0,
                     reasoning_tokens: 0,
                     total_tokens: 0,
-                    model: context.model.unwrap_or_default(),
-                    session_id: context.session_id,
+                    model: context.model.clone().unwrap_or_default(),
+                    session_id: context.session_id.clone(),
                     request_start_time,
                     request_end_time,
                     duration_ms,
@@ -381,13 +389,15 @@ impl RequestForwarder {
                     estimated_cost: 0.0,
                     pricing_snapshot_id: None,
                     cost_locked: false,
-                    api_key_prefix: context.api_key_prefix,
-                    request_base_url: context.request_base_url,
-                    client_tool: context.client_tool,
-                    proxy_profile_id: context.proxy_profile_id,
-                    client_detection_method: context.client_detection_method,
+                    api_key_prefix: context.api_key_prefix.clone(),
+                    request_base_url: context.request_base_url.clone(),
+                    client_tool: context.client_tool.clone(),
+                    proxy_profile_id: context.proxy_profile_id.clone(),
+                    client_detection_method: context.client_detection_method.clone(),
                     ..Default::default()
                 };
+                context.apply_provenance(&mut record);
+                record.usage_source = super::types::default_usage_source();
                 self.usage_collector.record(record).await;
             }
         }

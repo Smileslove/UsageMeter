@@ -303,6 +303,11 @@ pub fn create_database_collector(
     let client_tool = context.client_tool.clone();
     let proxy_profile_id = context.proxy_profile_id.clone();
     let client_detection_method = context.client_detection_method.clone();
+    let ingress_kind = context.ingress_kind.clone();
+    let gateway_profile_id = context.gateway_profile_id.clone();
+    let gateway_caller_label = context.gateway_caller_label.clone();
+    let usage_source = context.usage_source.clone();
+    let gateway_request_id = context.gateway_request_id.clone();
 
     SseUsageCollector::new(start_time, move |usage| {
         // 计算请求结束时间和耗时
@@ -342,7 +347,7 @@ pub fn create_database_collector(
             usage.message_id.clone()
         };
 
-        let record = UsageRecord {
+        let mut record = UsageRecord {
             timestamp: request_end_time,
             message_id,
             input_tokens: usage.input_tokens,
@@ -369,6 +374,14 @@ pub fn create_database_collector(
             client_detection_method: client_detection_method.clone(),
             ..Default::default()
         };
+        record.ingress_kind = ingress_kind.clone();
+        record.gateway_profile_id = gateway_profile_id.clone();
+        record.gateway_caller_label = gateway_caller_label.clone();
+        record.usage_source = usage_source.clone();
+        record.gateway_request_id = gateway_request_id.clone();
+        if !has_usage {
+            record.usage_source = crate::proxy::types::default_usage_source();
+        }
 
         let collector = usage_collector.clone();
         tokio::spawn(async move {
@@ -402,6 +415,16 @@ pub struct StreamContext {
     pub proxy_profile_id: Option<String>,
     /// 工具识别方式
     pub client_detection_method: String,
+    /// 请求进入 UsageMeter 的方式。
+    pub ingress_kind: String,
+    /// Gateway profile ID。
+    pub gateway_profile_id: Option<String>,
+    /// Gateway 调用方标签。
+    pub gateway_caller_label: Option<String>,
+    /// usage 的可信来源。
+    pub usage_source: String,
+    /// Gateway 本地请求 ID。
+    pub gateway_request_id: Option<String>,
 }
 
 impl Default for StreamContext {
@@ -417,6 +440,11 @@ impl Default for StreamContext {
             client_tool: crate::models::DEFAULT_CLIENT_TOOL.to_string(),
             proxy_profile_id: None,
             client_detection_method: crate::models::DEFAULT_CLIENT_DETECTION_METHOD.to_string(),
+            ingress_kind: crate::proxy::types::default_ingress_kind(),
+            gateway_profile_id: None,
+            gateway_caller_label: None,
+            usage_source: crate::proxy::types::default_usage_source(),
+            gateway_request_id: None,
         }
     }
 }

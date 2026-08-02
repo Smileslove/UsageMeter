@@ -4,6 +4,7 @@
 
 mod commands;
 mod copilot;
+mod gateway;
 mod local_usage;
 mod models;
 mod net;
@@ -328,6 +329,31 @@ pub fn run() {
                 }
             }
 
+            // The local API gateway is an always-on loopback service. Starting
+            // it here keeps manually configured gateway profiles reachable
+            // without enabling takeover for Claude, Codex, or other tools.
+            {
+                let proxy_state = commands::ProxyState {
+                    server: app.state::<commands::ProxyState>().server.clone(),
+                    passive_monitor_handle: app
+                        .state::<commands::ProxyState>()
+                        .passive_monitor_handle
+                        .clone(),
+                    passive_monitor_shutdown: app
+                        .state::<commands::ProxyState>()
+                        .passive_monitor_shutdown
+                        .clone(),
+                };
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) =
+                        commands::ensure_gateway_listener_started(&proxy_state, app_handle).await
+                    {
+                        eprintln!("[UsageMeter] Failed to start local API gateway: {error}");
+                    }
+                });
+            }
+
             // 启动时尝试清洗 cc-switch 供应商库中残留的 UsageMeter 代理地址
             // （cc-switch 运行中会自动推迟到其退出后的监控 tick）
             commands::spawn_ccswitch_auto_clean(Some(app.handle().clone()), "startup");
@@ -492,6 +518,12 @@ pub fn run() {
             commands::load_settings,
             commands::save_settings,
             commands::list_wsl_distros,
+            // 本地 API 网关（仅 profile 配置；不持久化 API Key）
+            commands::list_gateway_profiles,
+            commands::create_gateway_profile,
+            commands::update_gateway_profile,
+            commands::delete_gateway_profile,
+            commands::get_gateway_status,
             // 用量命令
             commands::refresh_usage_bundle,
             commands::get_overview_deferred_bundle,

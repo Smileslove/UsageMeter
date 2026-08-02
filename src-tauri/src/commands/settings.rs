@@ -367,7 +367,7 @@ mod tests {
             .profiles
             .iter()
             .any(|profile| profile.tool == "claude_code"));
-        assert!(settings.proxy.enabled);
+        assert!(!settings.proxy.enabled);
         assert_eq!(
             settings.sync.provider,
             crate::models::default_sync_provider()

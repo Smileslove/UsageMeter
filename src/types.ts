@@ -31,6 +31,32 @@ export interface ProxyConfig {
   streamingIdleTimeoutSeconds: number
 }
 
+export type GatewayProtocol =
+  | 'open_ai_chat_completions'
+  | 'open_ai_responses'
+  | 'anthropic_messages'
+  | 'gemini_generate_content'
+
+export interface GatewayProfile {
+  id: string
+  name: string
+  protocol: GatewayProtocol
+  baseUrl: string
+  enabled: boolean
+  clientLabel: string
+}
+
+export interface GatewaySettings {
+  profiles: GatewayProfile[]
+}
+
+export interface GatewayStatus {
+  proxyRunning: boolean
+  routingActive: boolean
+  enabledProfileCount: number
+  listenerAddress?: string | null
+}
+
 export type NetworkProxyScheme = 'http' | 'https' | 'socks5'
 
 // 全局出站网络代理（与 ProxyConfig 即"本地接管"完全不同）
@@ -109,6 +135,7 @@ export interface AppSettings {
   dayBoundaryMode: 'standard' | 'night_owl'
   numberFormat: NumberFormatMode  // 数值单位显示：国际单位 K/M 或中文单位 万/亿
   proxy: ProxyConfig         // 代理配置
+  gateway: GatewaySettings   // 通用 API 网关配置
   theme: ThemeSettings       // 主题设置：外观模式 + 色板
   modelPricing: ModelPricingSettings  // 模型价格设置
   autoStart: boolean         // 开机自动启动

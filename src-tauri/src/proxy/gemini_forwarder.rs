@@ -77,6 +77,7 @@ impl GeminiForwarder {
     ) -> Result<Self, String> {
         let builder = Client::builder()
             .timeout(Duration::from_secs(request_timeout_secs))
+            .redirect(reqwest::redirect::Policy::none())
             .http1_only()
             .http1_title_case_headers()
             .pool_max_idle_per_host(0)
@@ -89,6 +90,7 @@ impl GeminiForwarder {
             .map_err(|e| format!("Failed to create Gemini HTTP client: {}", e))?;
         let streaming_builder = Client::builder()
             .connect_timeout(Duration::from_secs(request_timeout_secs))
+            .redirect(reqwest::redirect::Policy::none())
             .http1_only()
             .http1_title_case_headers()
             .pool_max_idle_per_host(0)
@@ -230,7 +232,7 @@ impl GeminiForwarder {
     async fn record_error(&self, context: &RequestContext, status_code: u16) {
         let now = chrono::Utc::now().timestamp_millis();
         let duration_ms = now.saturating_sub(context.start_time_ms) as u64;
-        let record = UsageRecord {
+        let mut record = UsageRecord {
             timestamp: now,
             message_id: format!("gemini_error_{}_{}", now, status_code),
             model: context.model.clone().unwrap_or_default(),
@@ -246,6 +248,8 @@ impl GeminiForwarder {
             client_detection_method: context.client_detection_method.clone(),
             ..Default::default()
         };
+        context.apply_provenance(&mut record);
+        record.usage_source = super::types::default_usage_source();
         self.usage_collector.record(record).await;
     }
 
@@ -341,7 +345,7 @@ async fn record_usage_optional(
                 usage.message_id.clone()
             };
             let total_tokens = usage.input_tokens + usage.cache_read_tokens + usage.output_tokens;
-            let record = UsageRecord {
+            let mut record = UsageRecord {
                 timestamp: now,
                 message_id,
                 input_tokens: usage.input_tokens,
@@ -369,10 +373,11 @@ async fn record_usage_optional(
                 client_detection_method: context.client_detection_method.clone(),
                 ..Default::default()
             };
+            context.apply_provenance(&mut record);
             collector.record(record).await;
         }
         None => {
-            let record = UsageRecord {
+            let mut record = UsageRecord {
                 timestamp: now,
                 message_id: format!("gemini_usage_missing_{}_{}", now, status_code),
                 model: context.model.clone().unwrap_or_default(),
@@ -393,6 +398,8 @@ async fn record_usage_optional(
                 client_detection_method: context.client_detection_method.clone(),
                 ..Default::default()
             };
+            context.apply_provenance(&mut record);
+            record.usage_source = super::types::default_usage_source();
             collector.record(record).await;
         }
     }

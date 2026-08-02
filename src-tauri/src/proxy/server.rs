@@ -12,6 +12,7 @@ use super::opencode_config::{OpenCodeConfigManager, OpenCodeSourceRegistry};
 use super::reasonix_config::{ReasonixConfigManager, ReasonixSourceRegistry};
 use super::request_common::{
     get_settings_snapshot, refresh_settings_snapshot_if_needed, settings_file_mtime,
+    store_settings_snapshot,
 };
 use super::source_registry::ProxySourceRegistry;
 use super::types::{ProxyConfig, ProxyState, ProxyStatus};
@@ -21,6 +22,7 @@ use crate::commands::{
     restore_gemini_takeover_if_proxy_url_present, restore_opencode_takeover_if_proxy_url_present,
     restore_reasonix_takeover_if_proxy_url_present,
 };
+use crate::models::AppSettings;
 use crate::net::HttpClientFactory;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -30,12 +32,21 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot, RwLock};
 
 const CONFIG_MONITOR_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const TAKEOVER_CONFLICT_WINDOW_MS: i64 = 30_000;
 const TAKEOVER_CONFLICT_RECLAIM_THRESHOLD: usize = 3;
+
+async fn accept_optional_ipv6(
+    listener: &Option<TcpListener>,
+) -> std::io::Result<(TcpStream, SocketAddr)> {
+    match listener {
+        Some(listener) => listener.accept().await,
+        None => std::future::pending().await,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExternalConfigSyncMode {
@@ -956,6 +967,16 @@ impl ProxyServer {
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|e| format!("Failed to bind to {}: {}", addr, e))?;
+        let addr_v6: SocketAddr = format!("[::1]:{}", self.config.port)
+            .parse()
+            .map_err(|e| format!("Invalid IPv6 address: {}", e))?;
+        let listener_v6 = match TcpListener::bind(addr_v6).await {
+            Ok(listener) => Some(listener),
+            Err(error) => {
+                eprintln!("IPv6 loopback listener unavailable at {addr_v6}: {error}");
+                None
+            }
+        };
 
         // 记录启动时间
         *self.state.start_time.write().await = Some(
@@ -1025,6 +1046,15 @@ impl ProxyServer {
                             Ok(conn) => Some(conn),
                             Err(e) => {
                                 eprintln!("Accept error: {}", e);
+                                None
+                            }
+                        }
+                    }
+                    result = accept_optional_ipv6(&listener_v6) => {
+                        match result {
+                            Ok(conn) => Some(conn),
+                            Err(e) => {
+                                eprintln!("IPv6 accept error: {}", e);
                                 None
                             }
                         }
@@ -1426,6 +1456,14 @@ impl ProxyServer {
     pub async fn set_app_handle(&self, handle: tauri::AppHandle) {
         *self.state.app_handle.write().await = Some(handle);
     }
+
+    /// Immediately replace the in-memory settings used by request routing.
+    ///
+    /// Gateway profile changes are made through Tauri commands and must take
+    /// effect before the file-monitor polling interval runs again.
+    pub async fn update_settings_snapshot(&self, settings: AppSettings) {
+        store_settings_snapshot(&self.state, settings, settings_file_mtime()).await;
+    }
 }
 
 impl Default for ProxyServer {
@@ -1436,11 +1474,16 @@ impl Default for ProxyServer {
 
 #[cfg(test)]
 mod tests {
-    use crate::models::AppSettings;
+    use crate::models::{AppSettings, GatewayProfile, GatewayProtocol};
     use crate::proxy::request_common::{
-        detect_client_route, resolve_route_source, resolve_target_base_url,
+        detect_client_route, get_settings_snapshot, resolve_route_source, resolve_target_base_url,
         strip_source_handle_path,
     };
+    use crate::proxy::{
+        ProxyConfig, ProxyDatabase, ProxyServer, ProxyState, ProxyStatus, UsageCollector,
+    };
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
 
     #[test]
     fn test_resolve_route_source_rejects_missing_explicit_source() {
@@ -1597,5 +1640,63 @@ mod tests {
     fn resolve_target_base_url_refuses_to_guess() {
         let err = resolve_target_base_url(None, None, "Codex").unwrap_err();
         assert!(err.contains("refusing to guess an upstream target"));
+    }
+
+    #[tokio::test]
+    async fn runtime_settings_snapshot_updates_without_waiting_for_file_monitor() {
+        let temp = tempfile::tempdir().expect("temporary proxy database directory");
+        let database = Arc::new(
+            ProxyDatabase::new_with_path(&temp.path().join("proxy_data.db"))
+                .expect("temporary proxy database"),
+        );
+        let proxy_config = ProxyConfig::default();
+        let state = Arc::new(ProxyState {
+            usage_collector: Arc::new(UsageCollector::with_database(database)),
+            client: reqwest::Client::new(),
+            config: Arc::new(RwLock::new(proxy_config.clone())),
+            status: Arc::new(RwLock::new(ProxyStatus::default())),
+            start_time: Arc::new(RwLock::new(None)),
+            app_handle: Arc::new(RwLock::new(None)),
+            active_source_id: Arc::new(RwLock::new(None)),
+            openai_forwarder: Arc::new(RwLock::new(None)),
+            gemini_forwarder: Arc::new(RwLock::new(None)),
+            settings_snapshot: Arc::new(RwLock::new(AppSettings::default())),
+            settings_file_mtime: Arc::new(RwLock::new(None)),
+            takeover_conflicts: Arc::new(RwLock::new(Default::default())),
+            passive_recovery_enabled: Arc::new(RwLock::new(false)),
+        });
+        let server = ProxyServer {
+            config: proxy_config,
+            takeover_claude: false,
+            state,
+            shutdown_tx: Arc::new(RwLock::new(None)),
+            server_handle: Arc::new(RwLock::new(None)),
+        };
+        let mut settings = AppSettings::default();
+        settings.gateway.profiles.push(GatewayProfile {
+            id: "gateway-immediate".to_string(),
+            name: "Immediate profile".to_string(),
+            protocol: GatewayProtocol::OpenAiResponses,
+            base_url: "https://api.example.com".to_string(),
+            enabled: true,
+            client_label: String::new(),
+        });
+
+        server.update_settings_snapshot(settings).await;
+
+        let snapshot = get_settings_snapshot(&server.state).await;
+        assert_eq!(snapshot.gateway.profiles.len(), 1);
+        assert_eq!(snapshot.gateway.profiles[0].id, "gateway-immediate");
+
+        // Replacing the snapshot also makes an edited/deleted profile take
+        // effect immediately instead of leaving the old route live.
+        server
+            .update_settings_snapshot(AppSettings::default())
+            .await;
+        assert!(get_settings_snapshot(&server.state)
+            .await
+            .gateway
+            .profiles
+            .is_empty());
     }
 }

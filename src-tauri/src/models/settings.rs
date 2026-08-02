@@ -22,6 +22,43 @@ pub struct ProxyConfig {
     pub streaming_idle_timeout_seconds: u64,
 }
 
+/// A non-secret upstream route exposed by the local API gateway.
+///
+/// Credentials deliberately do not belong here: callers keep sending their own
+/// authorization headers and the gateway only observes and forwards them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayProfile {
+    pub id: String,
+    pub name: String,
+    pub protocol: GatewayProtocol,
+    pub base_url: String,
+    #[serde(default = "default_gateway_profile_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub client_label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayProtocol {
+    OpenAiChatCompletions,
+    OpenAiResponses,
+    AnthropicMessages,
+    GeminiGenerateContent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewaySettings {
+    #[serde(default)]
+    pub profiles: Vec<GatewayProfile>,
+}
+
+pub fn default_gateway_profile_enabled() -> bool {
+    true
+}
+
 pub fn default_proxy_port() -> u16 {
     18765
 }
@@ -291,7 +328,9 @@ pub fn default_client_tool_profiles() -> Vec<ClientToolProfile> {
             display_name: Some("Claude Code".to_string()),
             path_prefix: "claude-code".to_string(),
             target_base_url: None,
-            enabled: true,
+            // Tool takeover rewrites the tool's local configuration, so it
+            // must always require an explicit user action.
+            enabled: false,
             auto_detected: false,
             first_seen_ms: now,
             last_seen_ms: now,
@@ -783,6 +822,8 @@ pub struct AppSettings {
     pub number_format: String,
     #[serde(default)]
     pub proxy: ProxyConfig,
+    #[serde(default)]
+    pub gateway: GatewaySettings,
     #[serde(
         default = "default_theme",
         deserialize_with = "deserialize_theme_settings"
@@ -1010,6 +1051,7 @@ impl Default for AppSettings {
             day_boundary_mode: default_day_boundary_mode(),
             number_format: default_number_format(),
             proxy: ProxyConfig::default_config(),
+            gateway: GatewaySettings::default(),
             theme: default_theme(),
             model_pricing: ModelPricingSettings::default(),
             auto_start: false,
@@ -1035,6 +1077,20 @@ impl AppSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_client_tools_require_explicit_takeover_confirmation() {
+        let managed_tools = ["claude_code", "codex", "opencode", "reasonix", "gemini"];
+        let profiles = default_client_tool_profiles();
+
+        for tool in managed_tools {
+            let profile = profiles
+                .iter()
+                .find(|profile| profile.tool == tool)
+                .expect("managed tool profile");
+            assert!(!profile.enabled, "{tool} takeover must default to disabled");
+        }
+    }
 
     #[test]
     fn source_quota_binding_deserializes_legacy_generic_balance_shape() {

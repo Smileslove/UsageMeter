@@ -39,6 +39,18 @@ impl ProxyDatabase {
                 return trimmed.to_string();
             }
         }
+        if record.ingress_kind == "gateway" {
+            if let Some(request_id) = record.gateway_request_id.as_ref() {
+                let request_id = request_id.trim();
+                if !request_id.is_empty() {
+                    return format!(
+                        "gateway:{}:{}",
+                        record.gateway_profile_id.as_deref().unwrap_or_default(),
+                        request_id
+                    );
+                }
+            }
+        }
         if record.client_tool == "opencode" && !record.message_id.trim().is_empty() {
             let stable_time = if record.request_start_time > 0 {
                 record.request_start_time
@@ -81,8 +93,9 @@ impl ProxyDatabase {
              cache_read_tokens, model, session_id, session_resolution_state, message_id_conflicted, request_start_time,
              request_end_time, duration_ms, output_tokens_per_second, ttft_ms, status_code,
              migration_attempted_at, estimated_cost, pricing_snapshot_id, cost_locked, api_key_prefix, request_base_url,
-             client_tool, proxy_profile_id, client_detection_method, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, ?19, ?20, 1, ?21, ?22, ?23, ?24, ?25, ?26)
+             client_tool, proxy_profile_id, client_detection_method, ingress_kind, gateway_profile_id,
+             gateway_caller_label, usage_source, gateway_request_id, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, ?19, ?20, 1, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)
             "#,
             rusqlite::params![
                 record.timestamp,
@@ -110,6 +123,11 @@ impl ProxyDatabase {
                 &record.client_tool,
                 &record.proxy_profile_id,
                 &record.client_detection_method,
+                &record.ingress_kind,
+                &record.gateway_profile_id,
+                &record.gateway_caller_label,
+                &record.usage_source,
+                &record.gateway_request_id,
                 now,
             ],
         )
@@ -305,5 +323,66 @@ impl ProxyDatabase {
             }
         }
         Ok(records.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gateway_storage_dedupe_key_uses_profile_and_local_request_id() {
+        let record = UsageRecord {
+            ingress_kind: "gateway".to_string(),
+            gateway_profile_id: Some("gateway-deepseek".to_string()),
+            gateway_request_id: Some("gw-request-1".to_string()),
+            message_id: "same-upstream-message".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            ProxyDatabase::computed_storage_dedupe_key(&record),
+            "gateway:gateway-deepseek:gw-request-1"
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_provenance_round_trips_through_proxy_database() {
+        let temp = tempfile::tempdir().expect("temp database directory");
+        let database = ProxyDatabase::new_with_path(&temp.path().join("proxy_data.db"))
+            .expect("open proxy database");
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let record = UsageRecord {
+            timestamp,
+            message_id: "gateway-message".to_string(),
+            model: "deepseek-v4-flash".to_string(),
+            ingress_kind: "gateway".to_string(),
+            gateway_profile_id: Some("gateway-deepseek".to_string()),
+            gateway_caller_label: Some("Cursor".to_string()),
+            usage_source: "provider".to_string(),
+            gateway_request_id: Some("gw-request-roundtrip".to_string()),
+            ..Default::default()
+        };
+
+        database
+            .insert_record(&record)
+            .await
+            .expect("insert record");
+        let records = database
+            .get_records_since(timestamp.saturating_sub(1))
+            .await
+            .expect("query record");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].ingress_kind, "gateway");
+        assert_eq!(
+            records[0].gateway_profile_id.as_deref(),
+            Some("gateway-deepseek")
+        );
+        assert_eq!(records[0].gateway_caller_label.as_deref(), Some("Cursor"));
+        assert_eq!(records[0].usage_source, "provider");
+        assert_eq!(
+            records[0].gateway_request_id.as_deref(),
+            Some("gw-request-roundtrip")
+        );
     }
 }

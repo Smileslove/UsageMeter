@@ -26,8 +26,6 @@ watch(() => store.settings.proxy.includeErrorRequests, (value) => {
   localIncludeErrorRequests.value = value ?? true
 })
 
-const proxyEnabled = computed(() => store.isProxyRunning)
-
 const proxyStatusInfo = computed(() => {
   if (!store.proxyStatus) {
     return null
@@ -89,11 +87,6 @@ const toolAlerts = computed(() => {
 const handleIncludeErrorRequestsChange = async () => {
   store.settings.proxy.includeErrorRequests = localIncludeErrorRequests.value
   await store.saveSettings()
-}
-
-const toggleProxy = async () => {
-  await store.toggleProxy()
-  await loadTakeoverStatuses()
 }
 
 const loadTakeoverStatuses = async () => {
@@ -284,17 +277,18 @@ function toggleExpandedTool(tool: string): void {
 <template>
   <div class="space-y-2">
     <div class="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm divide-y divide-gray-50 dark:border-neutral-800 dark:bg-[#1C1C1E] dark:divide-neutral-800/50">
-      <div class="flex items-center justify-between py-2 px-4 text-[13px]">
+      <div class="flex items-center justify-between gap-3 py-2 px-4 text-[13px]">
         <div class="flex flex-col">
-          <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.interceptRequests') }}</span>
-          <span v-if="proxyEnabled && proxyStatusInfo" class="text-[10px] text-gray-400">
-            {{ t(store.settings.locale, 'settings.proxyRunning') }} · {{ t(store.settings.locale, 'settings.port') }} {{ proxyStatusInfo.port }} · {{ proxyStatusInfo.uptime }}
+          <span class="text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.proxyRuntime') }}</span>
+          <span v-if="proxyStatusInfo" class="text-[10px] text-gray-400">
+            {{ t(store.settings.locale, 'settings.proxyAutoRuntimeInfo', { port: proxyStatusInfo.port, uptime: proxyStatusInfo.uptime }) }}
           </span>
+          <span v-else class="text-[10px] text-gray-400">{{ t(store.settings.locale, 'settings.proxyRuntimeStarting') }}</span>
         </div>
-        <SettingsSwitch :checked="proxyEnabled" @toggle="toggleProxy" />
+        <span class="shrink-0 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[9px] font-semibold text-emerald-600 dark:text-emerald-300">{{ t(store.settings.locale, 'settings.proxyAutoStart') }}</span>
       </div>
 
-      <div v-if="proxyEnabled && proxyStatusInfo" class="bg-gray-50 p-3 px-4 dark:bg-neutral-800/50">
+      <div v-if="proxyStatusInfo" class="bg-gray-50 p-3 px-4 dark:bg-neutral-800/50">
         <div class="grid grid-cols-2 gap-2 text-[11px]">
           <div class="flex items-center gap-1.5">
             <span :class="['h-2 w-2 rounded-full', proxyStatusInfo.configTakenOver ? 'bg-green-500' : 'bg-amber-500']"></span>

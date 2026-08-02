@@ -1,5 +1,5 @@
 use super::forwarder::RequestForwarder;
-use super::handlers::{claude, codex, gemini, opencode, reasonix};
+use super::handlers::{claude, codex, gateway, gemini, opencode, reasonix};
 use super::request_common::{
     append_query, detect_client_route, full, get_settings_snapshot, HandlerResult,
 };
@@ -23,6 +23,20 @@ pub(crate) async fn handle_request(
     {
         let mut status = state.status.write().await;
         status.total_requests += 1;
+    }
+
+    // Gateway routes are explicit and must never fall through to the legacy
+    // tool-prefix detector. This keeps profile/protocol errors deterministic.
+    if gateway::is_gateway_path(&raw_path) {
+        return gateway::handle_gateway_request(
+            method,
+            &raw_path,
+            raw_query.as_deref(),
+            req,
+            forwarder,
+            &state,
+        )
+        .await;
     }
 
     if path == "/health" && method == Method::GET {

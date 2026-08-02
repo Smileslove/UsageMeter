@@ -107,6 +107,9 @@ const defaultSettings: AppSettings = {
     requestTimeoutSeconds: 120,
     streamingIdleTimeoutSeconds: 0
   },
+  gateway: {
+    profiles: []
+  },
   theme: defaultTheme,
   modelPricing: defaultModelPricing,
   autoStart: false,
@@ -210,16 +213,12 @@ export const useMonitorStore = defineStore('monitor', {
       await this.loadSettings()
       await this.refreshUsage()
 
-      // 如果代理模式已启用，自动启动代理服务器
-      if (this.settings.proxy.enabled) {
-        try {
-          await this.startProxyOnly(this.settings.proxy.port)
-        } catch (e) {
-          console.error('Failed to auto-start proxy:', e)
-          // 启动失败时，持久化状态避免下次启动时循环重试
-          this.settings.proxy.enabled = false
-          await this.saveSettings()
-        }
+      // 网关监听是基础服务，与 Claude/Codex 等工具的接管开关无关。
+      // 后端会先行启动；前端重复调用是幂等兜底，覆盖热重载等时序。
+      try {
+        await this.startProxyOnly(this.settings.proxy.port)
+      } catch (e) {
+        console.error('Failed to start local gateway listener:', e)
       }
 
       // 检查是否有 ChatGPT OAuth 配置，如果有则查询订阅
@@ -500,46 +499,6 @@ export const useMonitorStore = defineStore('monitor', {
         this.proxyLoading = false
       }
     },
-    async startProxy(port?: number) {
-      this.proxyLoading = true
-      let proxyStarted = false
-      try {
-        this.error = ''
-        const proxyPort = port ?? this.settings.proxy.port ?? 18765
-        await invoke('start_proxy', { port: proxyPort })
-        proxyStarted = true
-        this.settings.proxy.enabled = true
-        this.settings.proxy.port = proxyPort
-        await this.saveSettings()
-        await this.getProxyStatus()
-      } catch (e) {
-        if (proxyStarted) {
-          try {
-            await this.loadSettings()
-            await this.getProxyStatus()
-          } catch {
-            // Keep the original start error as the user-facing failure.
-          }
-        }
-        this.error = errorMessage(e)
-      } finally {
-        this.proxyLoading = false
-      }
-    },
-    async stopProxy() {
-      this.proxyLoading = true
-      try {
-        this.error = ''
-        await invoke('stop_proxy')
-        this.settings.proxy.enabled = false
-        await this.saveSettings()
-        await this.getProxyStatus()
-      } catch (e) {
-        this.error = String(e)
-      } finally {
-        this.proxyLoading = false
-      }
-    },
     async getProxyStatus() {
       try {
         this.proxyStatus = await invoke<ProxyStatus>('get_proxy_status')
@@ -561,13 +520,6 @@ export const useMonitorStore = defineStore('monitor', {
         }
       }
     },
-    async toggleProxy() {
-      if (this.isProxyRunning) {
-        await this.stopProxy()
-      } else {
-        await this.startProxy()
-      }
-    },
     startAutoRefresh() {
       this.stopAutoRefresh()
       const interval = Math.max(5, this.settings.refreshIntervalSeconds) * 1000
@@ -577,7 +529,7 @@ export const useMonitorStore = defineStore('monitor', {
         this.refreshTimer = setTimeout(async () => {
           if (generation !== this.autoRefreshGeneration) return
           await this.refreshUsage()
-          if (this.settings.proxy.enabled) {
+          if (this.isProxyRunning) {
             await this.getProxyStatus()
           }
           scheduleNext()

@@ -7,8 +7,6 @@ import GeneralSettingsPanel from '../components/settings/GeneralSettingsPanel.vu
 import DataNavigationPanel from '../components/settings/DataNavigationPanel.vue'
 import LocalCachePanel from '../components/settings/LocalCachePanel.vue'
 import LocalCacheManagementPanel from '../components/settings/LocalCacheManagementPanel.vue'
-import ProxyControlPanel from '../components/settings/ProxyControlPanel.vue'
-import CcSwitchCompatPanel from '../components/settings/CcSwitchCompatPanel.vue'
 import NetworkProxyPanel from '../components/settings/NetworkProxyPanel.vue'
 import SyncSettingsPanel from '../components/settings/SyncSettingsPanel.vue'
 import WslScanPanel from '../components/settings/WslScanPanel.vue'
@@ -96,8 +94,6 @@ const confirmQuit = async () => {
           {{ t(store.settings.locale, 'settings.dataPipelineSection') }}
         </h3>
         <div class="space-y-2">
-          <ProxyControlPanel />
-          <CcSwitchCompatPanel />
           <div class="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm dark:border-neutral-800 dark:bg-[#1C1C1E]">
             <LocalCachePanel />
           </div>
