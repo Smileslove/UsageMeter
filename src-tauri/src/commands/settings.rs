@@ -4,7 +4,10 @@ use crate::models::{AppSettings, CurrencySettings};
 use crate::net::HttpClientFactory;
 use std::fs;
 use std::path::Path;
+use std::sync::{LazyLock, Mutex};
 use tauri::{AppHandle, Emitter};
+
+static SETTINGS_WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 /// 加载应用设置（同步实现，供 Rust 内部直接调用；macOS 上可能 spawn Keychain 子进程）
 pub fn load_settings_blocking() -> Result<AppSettings, String> {
@@ -77,11 +80,47 @@ impl std::fmt::Display for SaveSettingsError {
 }
 
 /// 真正的保存逻辑。供非 Tauri 上下文（后台同步、代理服务器内部）复用。
-pub fn save_settings_internal(settings: AppSettings) -> Result<(), SaveSettingsError> {
-    let mut settings = settings;
+///
+/// 所有设置写入都通过同一把进程内锁串行化，避免多个全量设置快照同时写盘时
+/// 互相破坏临时文件。需要基于最新设置做局部修改时，应优先使用
+/// `update_settings_internal`，让“读取—修改—保存”整个过程处于同一临界区。
+pub fn save_settings_internal(mut settings: AppSettings) -> Result<(), SaveSettingsError> {
+    let _guard = SETTINGS_WRITE_LOCK
+        .lock()
+        .map_err(|_| SaveSettingsError::Other("ERR_SETTINGS_WRITE_LOCK_POISONED".to_string()))?;
     let previous_settings = load_settings_blocking().unwrap_or_default();
+    // Gateway credentials and routing metadata are owned by the dedicated
+    // gateway mutation commands. Generic full-settings writers commonly hold
+    // an older UI/background snapshot, so allowing them to replace this
+    // namespace would reintroduce lost updates even though disk writes are
+    // serialized.
+    settings.gateway = previous_settings.gateway.clone();
+    save_settings_locked(settings, &previous_settings)
+}
+
+/// 基于磁盘上的最新设置执行原子局部更新。
+///
+/// 修改闭包返回的业务结果会与最终落盘设置一起返回，调用方可据此刷新运行时快照。
+pub fn update_settings_internal<T, F>(mutate: F) -> Result<(T, AppSettings), SaveSettingsError>
+where
+    F: FnOnce(&mut AppSettings) -> Result<T, String>,
+{
+    let _guard = SETTINGS_WRITE_LOCK
+        .lock()
+        .map_err(|_| SaveSettingsError::Other("ERR_SETTINGS_WRITE_LOCK_POISONED".to_string()))?;
+    let previous_settings = load_settings_blocking().map_err(SaveSettingsError::Other)?;
+    let mut settings = previous_settings.clone();
+    let result = mutate(&mut settings).map_err(SaveSettingsError::Other)?;
+    save_settings_locked(settings.clone(), &previous_settings)?;
+    Ok((result, settings))
+}
+
+fn save_settings_locked(
+    mut settings: AppSettings,
+    previous_settings: &AppSettings,
+) -> Result<(), SaveSettingsError> {
     normalize_settings(&mut settings).map_err(SaveSettingsError::Other)?;
-    crate::subscription::source_quota_secrets::persist_settings(&mut settings, &previous_settings)
+    crate::subscription::source_quota_secrets::persist_settings(&mut settings, previous_settings)
         .map_err(SaveSettingsError::Other)?;
     let path = AppSettings::settings_path().map_err(SaveSettingsError::Other)?;
     if let Some(parent) = path.parent() {

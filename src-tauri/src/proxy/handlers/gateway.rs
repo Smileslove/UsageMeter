@@ -4,18 +4,18 @@
 //! the client keeps its upstream credentials and this handler only selects the
 //! configured upstream and forwards the request using the matching adapter.
 
-use super::super::forwarder::RequestForwarder;
+use super::super::forwarder::{ForwardResult, RequestForwarder};
+use super::super::gemini_forwarder::GeminiForwardResult;
+use super::super::openai_forwarder::OpenAiForwardResult;
 use super::super::request_common::{
-    append_query, get_gemini_forwarder, get_openai_forwarder, json_error_response, HandlerResult,
-};
-use super::super::response_bridge::{
-    forward_claude_with_usage, forward_codex_passthrough, forward_codex_with_usage,
-    forward_gemini_with_usage,
+    append_query, full, get_gemini_forwarder, get_openai_forwarder, json_error_response, BoxBody,
+    HandlerResult,
 };
 use super::super::types::{ProxyState, RequestContext};
 use crate::gateway::{
-    is_expected_upstream_secret_ref, load_upstream_secret, report_upstream_result,
+    is_expected_upstream_secret_ref, load_upstream_secret, report_upstream_outcome,
     select_upstream_key, select_upstream_key_excluding, validate_profile, verify_local_key,
+    UpstreamOutcome,
 };
 use crate::models::{
     AppSettings, GatewayAuthMode, GatewayDispatchStrategy, GatewayProfile, GatewayProtocol,
@@ -336,6 +336,109 @@ fn strip_query_key(raw_query: Option<&str>) -> Option<String> {
     (!items.is_empty()).then(|| items.join("&"))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GatewayTransportFailure {
+    Connect,
+    Timeout,
+    Other,
+}
+
+impl GatewayTransportFailure {
+    fn classify(error: &str) -> Self {
+        let error = error.to_ascii_lowercase();
+        if error.contains("timed out") || error.contains("timeout") {
+            Self::Timeout
+        } else if error.contains("failed to send")
+            || error.contains("connect")
+            || error.contains("connection")
+            || error.contains("dns")
+            || error.contains("tls")
+        {
+            Self::Connect
+        } else {
+            Self::Other
+        }
+    }
+
+    fn retryable(self) -> bool {
+        matches!(self, Self::Connect | Self::Timeout)
+    }
+}
+
+enum GatewayAttemptResult {
+    Response {
+        status_code: u16,
+        headers: Vec<(String, String)>,
+        body: BoxBody,
+        retryable_before_response: bool,
+    },
+    TransportError(String),
+}
+
+impl GatewayAttemptResult {
+    fn status_code(&self) -> Option<u16> {
+        match self {
+            Self::Response { status_code, .. } => Some(*status_code),
+            Self::TransportError(_) => None,
+        }
+    }
+
+    fn outcome(&self) -> UpstreamOutcome {
+        match self.status_code() {
+            Some(200..=399) => UpstreamOutcome::Success,
+            Some(401) => UpstreamOutcome::InvalidCredentials,
+            Some(402) => UpstreamOutcome::PaymentRequired,
+            Some(403) => UpstreamOutcome::PermissionDenied,
+            Some(429) => UpstreamOutcome::RateLimited,
+            Some(400..=499) => UpstreamOutcome::ClientError,
+            Some(500..=599) => UpstreamOutcome::ServerError,
+            _ => UpstreamOutcome::TransportError,
+        }
+    }
+
+    fn should_failover(&self) -> bool {
+        match self {
+            Self::TransportError(error) => GatewayTransportFailure::classify(error).retryable(),
+            Self::Response {
+                status_code,
+                retryable_before_response,
+                ..
+            } => should_failover_status(*status_code, *retryable_before_response),
+        }
+    }
+
+    fn into_response(self) -> hyper::Response<BoxBody> {
+        match self {
+            Self::Response {
+                status_code,
+                headers,
+                body,
+                ..
+            } => build_gateway_response(status_code, headers, body),
+            Self::TransportError(error) => {
+                json_error_response(StatusCode::BAD_GATEWAY, "gateway_upstream_error", &error)
+            }
+        }
+    }
+}
+
+fn should_failover_status(status_code: u16, retryable_before_response: bool) -> bool {
+    retryable_before_response && matches!(status_code, 401 | 402 | 429 | 500 | 502 | 503 | 504)
+}
+
+fn build_gateway_response(
+    status_code: u16,
+    headers: Vec<(String, String)>,
+    body: BoxBody,
+) -> hyper::Response<BoxBody> {
+    let mut builder = hyper::Response::builder()
+        .status(StatusCode::from_u16(status_code).unwrap_or(StatusCode::BAD_GATEWAY));
+    for (name, value) in headers {
+        builder = builder.header(name, value);
+    }
+    builder.body(body).unwrap()
+}
+
 #[derive(Debug)]
 enum GatewayBodyError<E> {
     TooLarge,
@@ -372,7 +475,8 @@ where
     Ok(bytes.freeze())
 }
 
-async fn forward_gateway(
+#[allow(clippy::too_many_arguments)]
+async fn forward_gateway_attempt(
     mode: GatewayForwardMode,
     forwarder: &Arc<RequestForwarder>,
     state: &Arc<ProxyState>,
@@ -381,73 +485,182 @@ async fn forward_gateway(
     headers: hyper::HeaderMap,
     body: bytes::Bytes,
     context: RequestContext,
-) -> HandlerResult {
+) -> GatewayAttemptResult {
     match mode {
         GatewayForwardMode::OpenAiUsage => {
             let forwarder = match get_openai_forwarder(state).await {
                 Ok(forwarder) => forwarder,
-                Err(response) => return Ok(*response),
+                Err(response) => {
+                    return GatewayAttemptResult::Response {
+                        status_code: response.status().as_u16(),
+                        headers: Vec::new(),
+                        body: response.into_body(),
+                        retryable_before_response: true,
+                    }
+                }
             };
-            forward_codex_with_usage(
-                &forwarder,
-                method,
-                forward_path,
-                headers,
-                body,
-                context,
-                state,
-            )
-            .await
+            match forwarder
+                .forward_with_headers(method, forward_path, headers, body, context)
+                .await
+            {
+                Ok(OpenAiForwardResult::Streaming {
+                    status_code,
+                    headers,
+                    body,
+                }) => GatewayAttemptResult::Response {
+                    status_code,
+                    headers,
+                    body,
+                    retryable_before_response: false,
+                },
+                Ok(
+                    OpenAiForwardResult::NonStreaming {
+                        status_code,
+                        headers,
+                        content,
+                    }
+                    | OpenAiForwardResult::UpstreamError {
+                        status_code,
+                        headers,
+                        content,
+                    },
+                ) => GatewayAttemptResult::Response {
+                    status_code,
+                    headers,
+                    body: full(content),
+                    retryable_before_response: true,
+                },
+                Err(error) => GatewayAttemptResult::TransportError(error),
+            }
         }
         GatewayForwardMode::OpenAiPassthrough => {
             let forwarder = match get_openai_forwarder(state).await {
                 Ok(forwarder) => forwarder,
-                Err(response) => return Ok(*response),
+                Err(response) => {
+                    return GatewayAttemptResult::Response {
+                        status_code: response.status().as_u16(),
+                        headers: Vec::new(),
+                        body: response.into_body(),
+                        retryable_before_response: true,
+                    }
+                }
             };
-            forward_codex_passthrough(
-                &forwarder,
-                method,
-                forward_path,
+            match forwarder
+                .forward_passthrough(method, forward_path, headers, body, context)
+                .await
+            {
+                Ok(OpenAiForwardResult::Streaming {
+                    status_code,
+                    headers,
+                    body,
+                }) => GatewayAttemptResult::Response {
+                    status_code,
+                    headers,
+                    body,
+                    retryable_before_response: false,
+                },
+                Ok(
+                    OpenAiForwardResult::NonStreaming {
+                        status_code,
+                        headers,
+                        content,
+                    }
+                    | OpenAiForwardResult::UpstreamError {
+                        status_code,
+                        headers,
+                        content,
+                    },
+                ) => GatewayAttemptResult::Response {
+                    status_code,
+                    headers,
+                    body: full(content),
+                    retryable_before_response: true,
+                },
+                Err(error) => GatewayAttemptResult::TransportError(error),
+            }
+        }
+        GatewayForwardMode::AnthropicUsage => match forwarder
+            .forward_with_usage(method, forward_path, body, context, headers)
+            .await
+        {
+            Ok(ForwardResult::Streaming {
+                status_code,
                 headers,
                 body,
-                context,
-                state,
-            )
-            .await
-        }
-        GatewayForwardMode::AnthropicUsage => {
-            forward_claude_with_usage(
-                forwarder,
-                method,
-                forward_path,
+            }) => GatewayAttemptResult::Response {
+                status_code,
                 headers,
                 body,
-                context,
-                state,
-            )
-            .await
-        }
+                retryable_before_response: false,
+            },
+            Ok(ForwardResult::NonStreaming {
+                status_code,
+                headers,
+                content,
+            }) => GatewayAttemptResult::Response {
+                status_code,
+                headers,
+                body: full(content),
+                retryable_before_response: true,
+            },
+            Err(error) => GatewayAttemptResult::TransportError(error),
+        },
         GatewayForwardMode::GeminiUsage => {
             let forwarder = match get_gemini_forwarder(state).await {
                 Ok(forwarder) => forwarder,
-                Err(response) => return Ok(*response),
+                Err(response) => {
+                    return GatewayAttemptResult::Response {
+                        status_code: response.status().as_u16(),
+                        headers: Vec::new(),
+                        body: response.into_body(),
+                        retryable_before_response: true,
+                    }
+                }
             };
-            forward_gemini_with_usage(
-                &forwarder,
-                method,
-                forward_path,
-                headers,
-                body,
-                context,
-                state,
-            )
-            .await
+            match forwarder
+                .forward_with_usage(method, forward_path, headers, body, context)
+                .await
+            {
+                Ok(GeminiForwardResult::Streaming {
+                    status_code,
+                    headers,
+                    body,
+                }) => GatewayAttemptResult::Response {
+                    status_code,
+                    headers,
+                    body,
+                    retryable_before_response: false,
+                },
+                Ok(
+                    GeminiForwardResult::NonStreaming {
+                        status_code,
+                        headers,
+                        content,
+                    }
+                    | GeminiForwardResult::UpstreamError {
+                        status_code,
+                        headers,
+                        content,
+                    },
+                ) => GatewayAttemptResult::Response {
+                    status_code,
+                    headers,
+                    body: full(content),
+                    retryable_before_response: true,
+                },
+                Err(error) => GatewayAttemptResult::TransportError(error),
+            }
         }
     }
 }
 
-fn should_failover(status: Option<u16>) -> bool {
-    matches!(status, Some(401 | 402 | 403 | 429))
+async fn record_final_proxy_status(state: &Arc<ProxyState>, status_code: u16) {
+    let mut status = state.status.write().await;
+    if status_code < 400 {
+        status.success_requests += 1;
+    } else {
+        status.failed_requests += 1;
+    }
 }
 
 pub(crate) async fn handle_gateway_request(
@@ -549,7 +762,7 @@ pub(crate) async fn handle_gateway_request(
         append_query(&route.path, raw_query)
     };
 
-    let mut result = forward_gateway(
+    let mut result = forward_gateway_attempt(
         route.mode,
         &forwarder,
         state,
@@ -565,16 +778,12 @@ pub(crate) async fn handle_gateway_request(
         .into_iter()
         .collect::<Vec<_>>();
     loop {
-        let status = result
-            .as_ref()
-            .ok()
-            .map(|response| response.status().as_u16());
         if let Some(key_id) = selected_upstream_key_id.as_deref() {
-            report_upstream_result(&route.profile.id, key_id, status);
+            report_upstream_outcome(&route.profile.id, key_id, result.outcome());
         }
         if route.profile.auth_mode != GatewayAuthMode::ManagedKeys
             || route.profile.dispatch_strategy != GatewayDispatchStrategy::PriorityFailover
-            || !should_failover(status)
+            || !result.should_failover()
         {
             break;
         }
@@ -595,7 +804,7 @@ pub(crate) async fn handle_gateway_request(
         }
         selected_upstream_key_id = Some(upstream_key.id.clone());
         attempted_key_ids.push(upstream_key.id.clone());
-        result = forward_gateway(
+        result = forward_gateway_attempt(
             route.mode,
             &forwarder,
             state,
@@ -607,7 +816,10 @@ pub(crate) async fn handle_gateway_request(
         )
         .await;
     }
-    result
+
+    let response = result.into_response();
+    record_final_proxy_status(state, response.status().as_u16()).await;
+    Ok(response)
 }
 
 #[cfg(test)]
@@ -758,6 +970,36 @@ mod tests {
         headers.insert(CLIENT_LABEL_HEADER, value);
         remove_client_label_header(&mut headers);
         assert!(headers.get(CLIENT_LABEL_HEADER).is_none());
+    }
+
+    #[test]
+    fn transport_retry_policy_rejects_ambiguous_body_read_failures() {
+        assert_eq!(
+            GatewayTransportFailure::classify("Failed to send Codex request: connection refused"),
+            GatewayTransportFailure::Connect
+        );
+        assert_eq!(
+            GatewayTransportFailure::classify("Failed to send request: operation timed out"),
+            GatewayTransportFailure::Timeout
+        );
+        assert_eq!(
+            GatewayTransportFailure::classify("Failed to read response body: reset by peer"),
+            GatewayTransportFailure::Other
+        );
+        assert!(GatewayTransportFailure::Connect.retryable());
+        assert!(GatewayTransportFailure::Timeout.retryable());
+        assert!(!GatewayTransportFailure::Other.retryable());
+    }
+
+    #[test]
+    fn failover_status_policy_is_bounded_and_excludes_permission_denied() {
+        for status in [401, 402, 429, 500, 502, 503, 504] {
+            assert!(should_failover_status(status, true), "{status}");
+        }
+        for status in [200, 400, 403, 404, 422, 501] {
+            assert!(!should_failover_status(status, true), "{status}");
+        }
+        assert!(!should_failover_status(503, false));
     }
 
     #[tokio::test]

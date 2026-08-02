@@ -19,15 +19,31 @@ use std::time::{Duration, Instant};
 
 static NEXT_PROFILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const KEYRING_SERVICE: &str = "com.usagemeter.gateway";
-const CIRCUIT_FAILURE_THRESHOLD: u32 = 5;
-const CIRCUIT_BASE_COOLDOWN: Duration = Duration::from_secs(60);
-const CIRCUIT_MAX_COOLDOWN: Duration = Duration::from_secs(600);
+const CIRCUIT_FAILURE_THRESHOLD: u32 = 3;
+const CIRCUIT_AUTH_FAILURE_THRESHOLD: u32 = 2;
+const CIRCUIT_BASE_COOLDOWN: Duration = Duration::from_secs(30);
+const CIRCUIT_MAX_COOLDOWN: Duration = Duration::from_secs(300);
+const CIRCUIT_RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Default)]
 struct KeyHealth {
     consecutive_failures: u32,
+    consecutive_auth_failures: u32,
     trip_count: u32,
     cooling_until: Option<Instant>,
+    half_open_probe_in_flight: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpstreamOutcome {
+    Success,
+    InvalidCredentials,
+    PaymentRequired,
+    PermissionDenied,
+    RateLimited,
+    ClientError,
+    ServerError,
+    TransportError,
 }
 
 static KEY_HEALTH: LazyLock<Mutex<HashMap<String, KeyHealth>>> =
@@ -415,29 +431,69 @@ pub fn is_expected_local_secret_ref(profile_id: &str, key: &GatewayLocalKey) -> 
 
 /// Updates only in-memory health state. It contains no credential material and
 /// deliberately resets after an application restart.
-pub fn report_upstream_result(profile_id: &str, key_id: &str, status_code: Option<u16>) {
+///
+/// Request-specific authorization failures (403) and ordinary client errors do
+/// not poison a credential. Invalid credentials require two consecutive 401s;
+/// transport/server failures require three consecutive failures. Rate limiting
+/// uses a short fixed cooldown so a busy key can rejoin rotation promptly.
+pub fn report_upstream_outcome(profile_id: &str, key_id: &str, outcome: UpstreamOutcome) {
     let mut health = match KEY_HEALTH.lock() {
         Ok(health) => health,
         Err(_) => return,
     };
     let key = format!("{profile_id}:{key_id}");
     let entry = health.entry(key).or_default();
-    match status_code {
-        Some(200..=299) => *entry = KeyHealth::default(),
-        Some(400 | 404 | 422) => {}
-        Some(401 | 402 | 403) => {
-            entry.consecutive_failures = CIRCUIT_FAILURE_THRESHOLD;
-            entry.trip_count = entry.trip_count.saturating_add(1);
-            entry.cooling_until = Some(Instant::now() + CIRCUIT_MAX_COOLDOWN);
+    entry.half_open_probe_in_flight = false;
+    match outcome {
+        UpstreamOutcome::Success => *entry = KeyHealth::default(),
+        UpstreamOutcome::InvalidCredentials => {
+            entry.consecutive_auth_failures = entry.consecutive_auth_failures.saturating_add(1);
+            entry.consecutive_failures = 0;
+            if entry.consecutive_auth_failures >= CIRCUIT_AUTH_FAILURE_THRESHOLD {
+                open_circuit(entry);
+            }
         }
-        Some(429) => open_circuit(entry),
-        Some(500..=599) | None => {
+        UpstreamOutcome::PaymentRequired => {
+            // Payment/quota state is credential scoped, but may be fixed quickly.
+            entry.consecutive_auth_failures = 0;
+            entry.consecutive_failures = 0;
+            open_circuit(entry);
+        }
+        UpstreamOutcome::RateLimited => {
+            entry.consecutive_auth_failures = 0;
+            entry.consecutive_failures = 0;
+            entry.half_open_probe_in_flight = false;
+            entry.cooling_until = Some(Instant::now() + CIRCUIT_RATE_LIMIT_COOLDOWN);
+        }
+        UpstreamOutcome::ServerError | UpstreamOutcome::TransportError => {
+            entry.consecutive_auth_failures = 0;
             entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
             if entry.consecutive_failures >= CIRCUIT_FAILURE_THRESHOLD {
                 open_circuit(entry);
             }
         }
-        _ => {}
+        UpstreamOutcome::PermissionDenied | UpstreamOutcome::ClientError => {
+            // 403 commonly means model/organization/request permission rather than
+            // an invalid API key. Do not remove the key from future routing.
+            entry.consecutive_auth_failures = 0;
+            entry.consecutive_failures = 0;
+        }
+    }
+}
+
+pub fn clear_upstream_runtime_state(profile_id: &str, key_id: &str) {
+    if let Ok(mut health) = KEY_HEALTH.lock() {
+        health.remove(&format!("{profile_id}:{key_id}"));
+    }
+}
+
+pub fn clear_profile_runtime_state(profile_id: &str) {
+    if let Ok(mut health) = KEY_HEALTH.lock() {
+        let prefix = format!("{profile_id}:");
+        health.retain(|key, _| !key.starts_with(&prefix));
+    }
+    if let Ok(mut cursors) = ROUND_ROBIN_CURSORS.lock() {
+        cursors.remove(profile_id);
     }
 }
 
@@ -453,10 +509,16 @@ fn upstream_key_is_available(profile_id: &str, key_id: &str) -> bool {
     match entry.cooling_until {
         Some(until) if Instant::now() < until => false,
         Some(_) => {
+            // Half-open state: reserve exactly one probe after cooldown. Other
+            // concurrent requests keep using alternate keys until its outcome
+            // is reported.
             entry.cooling_until = None;
             entry.consecutive_failures = 0;
+            entry.consecutive_auth_failures = 0;
+            entry.half_open_probe_in_flight = true;
             true
         }
+        None if entry.half_open_probe_in_flight => false,
         None => true,
     }
 }
@@ -464,6 +526,8 @@ fn upstream_key_is_available(profile_id: &str, key_id: &str) -> bool {
 fn open_circuit(entry: &mut KeyHealth) {
     entry.trip_count = entry.trip_count.saturating_add(1);
     entry.consecutive_failures = 0;
+    entry.consecutive_auth_failures = 0;
+    entry.half_open_probe_in_flight = false;
     let multiplier = 1u32
         .checked_shl(entry.trip_count.saturating_sub(1).min(4))
         .unwrap_or(16);
@@ -491,10 +555,10 @@ pub fn store_upstream_secret(secret_ref: &str, secret: &str) -> Result<(), Strin
             ])
             .status()
             .map_err(|_| "ERR_GATEWAY_CREDENTIAL_STORE_UNAVAILABLE".to_string())?;
-        return status
+        status
             .success()
             .then_some(())
-            .ok_or_else(|| "ERR_GATEWAY_CREDENTIAL_STORE_UNAVAILABLE".to_string());
+            .ok_or_else(|| "ERR_GATEWAY_CREDENTIAL_STORE_UNAVAILABLE".to_string())
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -520,9 +584,9 @@ pub fn load_upstream_secret(secret_ref: &str) -> Result<String, String> {
         if !output.status.success() {
             return Err("ERR_GATEWAY_UPSTREAM_KEY_UNAVAILABLE".to_string());
         }
-        return String::from_utf8(output.stdout)
+        String::from_utf8(output.stdout)
             .map(|secret| secret.trim_end_matches('\n').to_string())
-            .map_err(|_| "ERR_GATEWAY_UPSTREAM_KEY_UNAVAILABLE".to_string());
+            .map_err(|_| "ERR_GATEWAY_UPSTREAM_KEY_UNAVAILABLE".to_string())
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -702,6 +766,55 @@ mod tests {
         assert!(generated.key.starts_with("umg_local-"));
         assert!(verify_local_key(&generated.key, &metadata));
         assert!(!verify_local_key("umg_wrong_value", &metadata));
+    }
+
+    fn health_test_profile(profile_id: &str, key_id: &str) -> GatewayProfile {
+        let mut profile = create_profile(input("https://api.deepseek.com")).unwrap();
+        profile.id = profile_id.to_string();
+        profile.upstream_keys = vec![GatewayUpstreamKey {
+            id: key_id.to_string(),
+            remark: String::new(),
+            enabled: true,
+            weight: 1,
+            priority: 0,
+            secret_ref: upstream_secret_ref(profile_id, key_id),
+        }];
+        profile
+    }
+
+    #[test]
+    fn permission_denied_does_not_poison_key_health() {
+        let profile = health_test_profile("gateway-health-403", "key-403");
+        report_upstream_outcome(
+            &profile.id,
+            &profile.upstream_keys[0].id,
+            UpstreamOutcome::PermissionDenied,
+        );
+        assert!(select_upstream_key(&profile).is_some());
+        clear_profile_runtime_state(&profile.id);
+    }
+
+    #[test]
+    fn invalid_credentials_require_two_consecutive_failures() {
+        let profile = health_test_profile("gateway-health-401", "key-401");
+        let key_id = &profile.upstream_keys[0].id;
+        report_upstream_outcome(&profile.id, key_id, UpstreamOutcome::InvalidCredentials);
+        assert!(select_upstream_key(&profile).is_some());
+        report_upstream_outcome(&profile.id, key_id, UpstreamOutcome::InvalidCredentials);
+        assert!(select_upstream_key(&profile).is_none());
+        clear_profile_runtime_state(&profile.id);
+    }
+
+    #[test]
+    fn server_errors_require_three_consecutive_failures() {
+        let profile = health_test_profile("gateway-health-500", "key-500");
+        let key_id = &profile.upstream_keys[0].id;
+        report_upstream_outcome(&profile.id, key_id, UpstreamOutcome::ServerError);
+        report_upstream_outcome(&profile.id, key_id, UpstreamOutcome::ServerError);
+        assert!(select_upstream_key(&profile).is_some());
+        report_upstream_outcome(&profile.id, key_id, UpstreamOutcome::ServerError);
+        assert!(select_upstream_key(&profile).is_none());
+        clear_profile_runtime_state(&profile.id);
     }
 
     #[test]

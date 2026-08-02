@@ -8,35 +8,33 @@ use crate::models::AppSettings;
 use tauri::State;
 
 use super::usage::ProxyState;
-use super::{load_settings_blocking, save_settings_internal};
+use super::{load_settings_blocking, update_settings_internal};
 
 #[tauri::command]
 pub async fn list_gateway_profiles() -> Result<Vec<GatewayProfileView>, String> {
-    let mut settings = load_settings_blocking()?;
-    let mut changed = false;
-    for profile in &mut settings.gateway.profiles {
-        if profile.local_keys.is_empty() {
-            let (metadata, generated) = gateway::create_local_key(
-                &profile.id,
-                GatewayLocalKeyInput {
-                    remark: String::new(),
-                },
-            )?;
-            gateway::store_upstream_secret(&metadata.secret_ref, &generated.key)?;
-            profile.local_keys.push(metadata);
-            profile.auth_mode = crate::models::GatewayAuthMode::ManagedKeys;
-            changed = true;
+    let (profiles, _) = update_settings_internal(|settings| {
+        for profile in &mut settings.gateway.profiles {
+            if profile.local_keys.is_empty() {
+                let (metadata, generated) = gateway::create_local_key(
+                    &profile.id,
+                    GatewayLocalKeyInput {
+                        remark: String::new(),
+                    },
+                )?;
+                gateway::store_upstream_secret(&metadata.secret_ref, &generated.key)?;
+                profile.local_keys.push(metadata);
+                profile.auth_mode = crate::models::GatewayAuthMode::ManagedKeys;
+            }
         }
-    }
-    if changed {
-        save_settings_internal(settings.clone()).map_err(String::from)?;
-    }
-    Ok(settings
-        .gateway
-        .profiles
-        .iter()
-        .map(GatewayProfileView::from)
-        .collect())
+        Ok(settings
+            .gateway
+            .profiles
+            .iter()
+            .map(GatewayProfileView::from)
+            .collect())
+    })
+    .map_err(String::from)?;
+    Ok(profiles)
 }
 
 async fn refresh_running_proxy_settings(state: &ProxyState, settings: &AppSettings) {
@@ -59,13 +57,32 @@ pub async fn create_gateway_profile(
         },
     )?;
     gateway::store_upstream_secret(&local_metadata.secret_ref, &local_generated.key)?;
+    let local_secret_ref = local_metadata.secret_ref.clone();
     profile.local_keys.push(local_metadata);
     profile.auth_mode = crate::models::GatewayAuthMode::ManagedKeys;
-    let mut settings = load_settings_blocking()?;
-    settings.gateway.profiles.push(profile.clone());
-    save_settings_internal(settings.clone()).map_err(String::from)?;
+
+    let profile_to_insert = profile.clone();
+    let update = update_settings_internal(move |settings| {
+        if settings
+            .gateway
+            .profiles
+            .iter()
+            .any(|candidate| candidate.id == profile_to_insert.id)
+        {
+            return Err("ERR_GATEWAY_PROFILE_ALREADY_EXISTS".to_string());
+        }
+        settings.gateway.profiles.push(profile_to_insert.clone());
+        Ok(GatewayProfileView::from(&profile_to_insert))
+    });
+    let (view, settings) = match update {
+        Ok(result) => result,
+        Err(error) => {
+            gateway::delete_upstream_secret(&local_secret_ref);
+            return Err(error.into());
+        }
+    };
     refresh_running_proxy_settings(&state, &settings).await;
-    Ok(GatewayProfileView::from(&profile))
+    Ok(view)
 }
 
 #[tauri::command]
@@ -74,22 +91,24 @@ pub async fn update_gateway_profile(
     input: GatewayProfileInput,
     state: State<'_, ProxyState>,
 ) -> Result<GatewayProfileView, String> {
-    let mut profile = gateway::update_profile(&id, input)?;
-    let mut settings = load_settings_blocking()?;
-    let existing = settings
-        .gateway
-        .profiles
-        .iter_mut()
-        .find(|candidate| candidate.id == id)
-        .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
-    // Updating a route must never discard its managed credentials.
-    profile.auth_mode = existing.auth_mode.clone();
-    profile.upstream_keys = existing.upstream_keys.clone();
-    profile.local_keys = existing.local_keys.clone();
-    *existing = profile.clone();
-    save_settings_internal(settings.clone()).map_err(String::from)?;
+    let mut updated_profile = gateway::update_profile(&id, input)?;
+    let (view, settings) = update_settings_internal(move |settings| {
+        let existing = settings
+            .gateway
+            .profiles
+            .iter_mut()
+            .find(|candidate| candidate.id == id)
+            .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
+        // Updating a route must never discard its managed credentials.
+        updated_profile.auth_mode = existing.auth_mode.clone();
+        updated_profile.upstream_keys = existing.upstream_keys.clone();
+        updated_profile.local_keys = existing.local_keys.clone();
+        *existing = updated_profile.clone();
+        Ok(GatewayProfileView::from(&updated_profile))
+    })
+    .map_err(String::from)?;
     refresh_running_proxy_settings(&state, &settings).await;
-    Ok(GatewayProfileView::from(&profile))
+    Ok(view)
 }
 
 #[tauri::command]
@@ -97,31 +116,28 @@ pub async fn delete_gateway_profile(
     id: String,
     state: State<'_, ProxyState>,
 ) -> Result<(), String> {
-    let mut settings = load_settings_blocking()?;
-    let original_len = settings.gateway.profiles.len();
-    let removed = settings
-        .gateway
-        .profiles
-        .iter()
-        .find(|profile| profile.id == id)
-        .cloned();
-    settings.gateway.profiles.retain(|profile| profile.id != id);
-    if settings.gateway.profiles.len() == original_len {
-        return Err("ERR_GATEWAY_PROFILE_NOT_FOUND".to_string());
-    }
-    save_settings_internal(settings.clone()).map_err(String::from)?;
-    if let Some(profile) = removed {
-        for key in profile.upstream_keys {
-            if gateway::is_expected_upstream_secret_ref(&profile.id, &key) {
-                gateway::delete_upstream_secret(&key.secret_ref);
-            }
-        }
-        for key in profile.local_keys {
-            if gateway::is_expected_local_secret_ref(&profile.id, &key) {
-                gateway::delete_upstream_secret(&key.secret_ref);
-            }
+    let (removed, settings) = update_settings_internal(move |settings| {
+        let index = settings
+            .gateway
+            .profiles
+            .iter()
+            .position(|profile| profile.id == id)
+            .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
+        Ok(settings.gateway.profiles.remove(index))
+    })
+    .map_err(String::from)?;
+
+    for key in removed.upstream_keys {
+        if gateway::is_expected_upstream_secret_ref(&removed.id, &key) {
+            gateway::delete_upstream_secret(&key.secret_ref);
         }
     }
+    for key in removed.local_keys {
+        if gateway::is_expected_local_secret_ref(&removed.id, &key) {
+            gateway::delete_upstream_secret(&key.secret_ref);
+        }
+    }
+    gateway::clear_profile_runtime_state(&removed.id);
     refresh_running_proxy_settings(&state, &settings).await;
     Ok(())
 }
@@ -132,26 +148,29 @@ pub async fn create_gateway_upstream_key(
     input: GatewayUpstreamKeyInput,
     state: State<'_, ProxyState>,
 ) -> Result<GatewayProfileView, String> {
-    let mut settings = load_settings_blocking()?;
-    let profile = settings
-        .gateway
-        .profiles
-        .iter_mut()
-        .find(|item| item.id == profile_id)
-        .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
     let (key, secret) = gateway::create_upstream_key(&profile_id, input)?;
     gateway::store_upstream_secret(&key.secret_ref, &secret)?;
-    profile.upstream_keys.push(key);
-    profile.auth_mode = crate::models::GatewayAuthMode::ManagedKeys;
-    let result = profile.clone();
-    if let Err(error) = save_settings_internal(settings.clone()) {
-        if let Some(key) = result.upstream_keys.last() {
-            gateway::delete_upstream_secret(&key.secret_ref);
+    let secret_ref = key.secret_ref.clone();
+    let update = update_settings_internal(move |settings| {
+        let profile = settings
+            .gateway
+            .profiles
+            .iter_mut()
+            .find(|item| item.id == profile_id)
+            .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
+        profile.upstream_keys.push(key);
+        profile.auth_mode = crate::models::GatewayAuthMode::ManagedKeys;
+        Ok(GatewayProfileView::from(&*profile))
+    });
+    let (view, settings) = match update {
+        Ok(result) => result,
+        Err(error) => {
+            gateway::delete_upstream_secret(&secret_ref);
+            return Err(error.into());
         }
-        return Err(error.into());
-    }
+    };
     refresh_running_proxy_settings(&state, &settings).await;
-    Ok(GatewayProfileView::from(&result))
+    Ok(view)
 }
 
 #[tauri::command]
@@ -160,26 +179,29 @@ pub async fn delete_gateway_upstream_key(
     key_id: String,
     state: State<'_, ProxyState>,
 ) -> Result<GatewayProfileView, String> {
-    let mut settings = load_settings_blocking()?;
-    let profile = settings
-        .gateway
-        .profiles
-        .iter_mut()
-        .find(|item| item.id == profile_id)
-        .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
-    let index = profile
-        .upstream_keys
-        .iter()
-        .position(|key| key.id == key_id)
-        .ok_or_else(|| "ERR_GATEWAY_UPSTREAM_KEY_NOT_FOUND".to_string())?;
-    let removed = profile.upstream_keys.remove(index);
-    let result = profile.clone();
-    save_settings_internal(settings.clone()).map_err(String::from)?;
+    let profile_id_for_update = profile_id.clone();
+    let ((removed, view), settings) = update_settings_internal(move |settings| {
+        let profile = settings
+            .gateway
+            .profiles
+            .iter_mut()
+            .find(|item| item.id == profile_id_for_update)
+            .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
+        let index = profile
+            .upstream_keys
+            .iter()
+            .position(|key| key.id == key_id)
+            .ok_or_else(|| "ERR_GATEWAY_UPSTREAM_KEY_NOT_FOUND".to_string())?;
+        let removed = profile.upstream_keys.remove(index);
+        Ok((removed, GatewayProfileView::from(&*profile)))
+    })
+    .map_err(String::from)?;
     if gateway::is_expected_upstream_secret_ref(&profile_id, &removed) {
         gateway::delete_upstream_secret(&removed.secret_ref);
     }
+    gateway::clear_upstream_runtime_state(&profile_id, &removed.id);
     refresh_running_proxy_settings(&state, &settings).await;
-    Ok(GatewayProfileView::from(&result))
+    Ok(view)
 }
 
 #[tauri::command]
@@ -189,23 +211,24 @@ pub async fn set_gateway_upstream_key_enabled(
     enabled: bool,
     state: State<'_, ProxyState>,
 ) -> Result<GatewayProfileView, String> {
-    let mut settings = load_settings_blocking()?;
-    let profile = settings
-        .gateway
-        .profiles
-        .iter_mut()
-        .find(|item| item.id == profile_id)
-        .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
-    let key = profile
-        .upstream_keys
-        .iter_mut()
-        .find(|key| key.id == key_id)
-        .ok_or_else(|| "ERR_GATEWAY_UPSTREAM_KEY_NOT_FOUND".to_string())?;
-    key.enabled = enabled;
-    let result = profile.clone();
-    save_settings_internal(settings.clone()).map_err(String::from)?;
+    let (view, settings) = update_settings_internal(move |settings| {
+        let profile = settings
+            .gateway
+            .profiles
+            .iter_mut()
+            .find(|item| item.id == profile_id)
+            .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
+        let key = profile
+            .upstream_keys
+            .iter_mut()
+            .find(|key| key.id == key_id)
+            .ok_or_else(|| "ERR_GATEWAY_UPSTREAM_KEY_NOT_FOUND".to_string())?;
+        key.enabled = enabled;
+        Ok(GatewayProfileView::from(&*profile))
+    })
+    .map_err(String::from)?;
     refresh_running_proxy_settings(&state, &settings).await;
-    Ok(GatewayProfileView::from(&result))
+    Ok(view)
 }
 
 #[tauri::command]
@@ -218,25 +241,26 @@ pub async fn update_gateway_upstream_key(
     if input.weight == 0 {
         return Err("ERR_GATEWAY_UPSTREAM_KEY_WEIGHT_INVALID".to_string());
     }
-    let mut settings = load_settings_blocking()?;
-    let profile = settings
-        .gateway
-        .profiles
-        .iter_mut()
-        .find(|item| item.id == profile_id)
-        .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
-    let key = profile
-        .upstream_keys
-        .iter_mut()
-        .find(|key| key.id == key_id)
-        .ok_or_else(|| "ERR_GATEWAY_UPSTREAM_KEY_NOT_FOUND".to_string())?;
-    key.enabled = input.enabled;
-    key.weight = input.weight;
-    key.priority = input.priority;
-    let result = profile.clone();
-    save_settings_internal(settings.clone()).map_err(String::from)?;
+    let (view, settings) = update_settings_internal(move |settings| {
+        let profile = settings
+            .gateway
+            .profiles
+            .iter_mut()
+            .find(|item| item.id == profile_id)
+            .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
+        let key = profile
+            .upstream_keys
+            .iter_mut()
+            .find(|key| key.id == key_id)
+            .ok_or_else(|| "ERR_GATEWAY_UPSTREAM_KEY_NOT_FOUND".to_string())?;
+        key.enabled = input.enabled;
+        key.weight = input.weight;
+        key.priority = input.priority;
+        Ok(GatewayProfileView::from(&*profile))
+    })
+    .map_err(String::from)?;
     refresh_running_proxy_settings(&state, &settings).await;
-    Ok(GatewayProfileView::from(&result))
+    Ok(view)
 }
 
 #[tauri::command]
@@ -245,28 +269,32 @@ pub async fn create_gateway_local_key(
     input: GatewayLocalKeyInput,
     state: State<'_, ProxyState>,
 ) -> Result<GeneratedGatewayLocalKey, String> {
-    let mut settings = load_settings_blocking()?;
-    let profile = settings
-        .gateway
-        .profiles
-        .iter_mut()
-        .find(|item| item.id == profile_id)
-        .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
-    // A gateway profile represents one upstream and therefore has exactly one
-    // client credential. Revoke the existing key before creating another one.
-    if !profile.local_keys.is_empty() {
-        return Err("ERR_GATEWAY_LOCAL_KEY_ALREADY_EXISTS".to_string());
-    }
     let (metadata, generated) = gateway::create_local_key(&profile_id, input)?;
     gateway::store_upstream_secret(&metadata.secret_ref, &generated.key)?;
     let secret_ref = metadata.secret_ref.clone();
-    profile.local_keys.push(metadata);
-    profile.auth_mode = crate::models::GatewayAuthMode::ManagedKeys;
-    let _ = profile;
-    if let Err(error) = save_settings_internal(settings.clone()) {
-        gateway::delete_upstream_secret(&secret_ref);
-        return Err(error.into());
-    }
+    let update = update_settings_internal(move |settings| {
+        let profile = settings
+            .gateway
+            .profiles
+            .iter_mut()
+            .find(|item| item.id == profile_id)
+            .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
+        // A gateway profile represents one upstream and therefore has exactly one
+        // client credential. Revoke the existing key before creating another one.
+        if !profile.local_keys.is_empty() {
+            return Err("ERR_GATEWAY_LOCAL_KEY_ALREADY_EXISTS".to_string());
+        }
+        profile.local_keys.push(metadata);
+        profile.auth_mode = crate::models::GatewayAuthMode::ManagedKeys;
+        Ok(())
+    });
+    let (_, settings) = match update {
+        Ok(result) => result,
+        Err(error) => {
+            gateway::delete_upstream_secret(&secret_ref);
+            return Err(error.into());
+        }
+    };
     refresh_running_proxy_settings(&state, &settings).await;
     Ok(generated)
 }
@@ -277,26 +305,28 @@ pub async fn revoke_gateway_local_key(
     key_id: String,
     state: State<'_, ProxyState>,
 ) -> Result<GatewayProfileView, String> {
-    let mut settings = load_settings_blocking()?;
-    let profile = settings
-        .gateway
-        .profiles
-        .iter_mut()
-        .find(|item| item.id == profile_id)
-        .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
-    let index = profile
-        .local_keys
-        .iter()
-        .position(|key| key.id == key_id)
-        .ok_or_else(|| "ERR_GATEWAY_LOCAL_KEY_NOT_FOUND".to_string())?;
-    let removed = profile.local_keys.remove(index);
-    let result = profile.clone();
-    save_settings_internal(settings.clone()).map_err(String::from)?;
+    let profile_id_for_update = profile_id.clone();
+    let ((removed, view), settings) = update_settings_internal(move |settings| {
+        let profile = settings
+            .gateway
+            .profiles
+            .iter_mut()
+            .find(|item| item.id == profile_id_for_update)
+            .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
+        let index = profile
+            .local_keys
+            .iter()
+            .position(|key| key.id == key_id)
+            .ok_or_else(|| "ERR_GATEWAY_LOCAL_KEY_NOT_FOUND".to_string())?;
+        let removed = profile.local_keys.remove(index);
+        Ok((removed, GatewayProfileView::from(&*profile)))
+    })
+    .map_err(String::from)?;
     if gateway::is_expected_local_secret_ref(&profile_id, &removed) {
         gateway::delete_upstream_secret(&removed.secret_ref);
     }
     refresh_running_proxy_settings(&state, &settings).await;
-    Ok(GatewayProfileView::from(&result))
+    Ok(view)
 }
 
 #[tauri::command]
