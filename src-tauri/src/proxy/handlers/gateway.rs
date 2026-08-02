@@ -13,12 +13,17 @@ use super::super::response_bridge::{
     forward_gemini_with_usage,
 };
 use super::super::types::{ProxyState, RequestContext};
-use crate::gateway::validate_profile;
-use crate::models::{AppSettings, GatewayProfile, GatewayProtocol};
+use crate::gateway::{
+    is_expected_upstream_secret_ref, load_upstream_secret, report_upstream_result,
+    select_upstream_key, select_upstream_key_excluding, validate_profile, verify_local_key,
+};
+use crate::models::{
+    AppSettings, GatewayAuthMode, GatewayDispatchStrategy, GatewayProfile, GatewayProtocol,
+};
 use bytes::BytesMut;
 use http_body_util::BodyExt;
 use hyper::{
-    header::{HeaderName, HeaderValue, CONTENT_LENGTH},
+    header::{HeaderName, HeaderValue, AUTHORIZATION, CONTENT_LENGTH},
     Method, Request, StatusCode,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -52,6 +57,8 @@ enum GatewayRouteError {
     ProfileDisabled,
     ProtocolMismatch,
     MethodNotAllowed,
+    LocalKeyUnauthorized,
+    UpstreamKeyUnavailable,
 }
 
 impl GatewayRouteError {
@@ -86,6 +93,16 @@ impl GatewayRouteError {
                 StatusCode::METHOD_NOT_ALLOWED,
                 "gateway_method_not_allowed",
                 "HTTP method is not supported for this native endpoint",
+            ),
+            Self::LocalKeyUnauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "gateway_local_key_unauthorized",
+                "A valid local gateway API key is required",
+            ),
+            Self::UpstreamKeyUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "gateway_no_upstream_key_available",
+                "No usable upstream API key is configured",
             ),
         };
         json_error_response(status, error_type, message)
@@ -245,6 +262,80 @@ fn remove_client_label_header(headers: &mut hyper::HeaderMap) {
     headers.remove(HeaderName::from_static(CLIENT_LABEL_HEADER));
 }
 
+fn bearer_token(value: Option<&HeaderValue>) -> Option<&str> {
+    value?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn query_key(raw_query: Option<&str>) -> Option<&str> {
+    raw_query?
+        .split('&')
+        .find_map(|part| part.strip_prefix("key="))
+        .filter(|value| !value.is_empty())
+}
+
+fn incoming_local_key<'a>(
+    profile: &GatewayProfile,
+    headers: &'a hyper::HeaderMap,
+    raw_query: Option<&'a str>,
+) -> Option<&'a str> {
+    match profile.protocol {
+        GatewayProtocol::OpenAiChatCompletions | GatewayProtocol::OpenAiResponses => {
+            bearer_token(headers.get(AUTHORIZATION))
+        }
+        GatewayProtocol::AnthropicMessages => headers
+            .get("x-api-key")
+            .and_then(|value| value.to_str().ok()),
+        GatewayProtocol::GeminiGenerateContent => headers
+            .get("x-goog-api-key")
+            .and_then(|value| value.to_str().ok())
+            .or_else(|| query_key(raw_query)),
+    }
+}
+
+fn strip_gateway_auth_headers(headers: &mut hyper::HeaderMap) {
+    headers.remove(AUTHORIZATION);
+    headers.remove("x-api-key");
+    headers.remove("anthropic-api-key");
+    headers.remove("x-goog-api-key");
+}
+
+fn inject_upstream_auth(
+    profile: &GatewayProfile,
+    headers: &mut hyper::HeaderMap,
+    secret: &str,
+) -> Result<(), GatewayRouteError> {
+    strip_gateway_auth_headers(headers);
+    let value = match profile.protocol {
+        GatewayProtocol::OpenAiChatCompletions | GatewayProtocol::OpenAiResponses => {
+            HeaderValue::from_str(&format!("Bearer {secret}"))
+        }
+        GatewayProtocol::AnthropicMessages | GatewayProtocol::GeminiGenerateContent => {
+            HeaderValue::from_str(secret)
+        }
+    }
+    .map_err(|_| GatewayRouteError::UpstreamKeyUnavailable)?;
+    let name = match profile.protocol {
+        GatewayProtocol::OpenAiChatCompletions | GatewayProtocol::OpenAiResponses => AUTHORIZATION,
+        GatewayProtocol::AnthropicMessages => HeaderName::from_static("x-api-key"),
+        GatewayProtocol::GeminiGenerateContent => HeaderName::from_static("x-goog-api-key"),
+    };
+    headers.insert(name, value);
+    Ok(())
+}
+
+fn strip_query_key(raw_query: Option<&str>) -> Option<String> {
+    let items: Vec<&str> = raw_query?
+        .split('&')
+        .filter(|item| !item.starts_with("key="))
+        .collect();
+    (!items.is_empty()).then(|| items.join("&"))
+}
+
 #[derive(Debug)]
 enum GatewayBodyError<E> {
     TooLarge,
@@ -281,6 +372,84 @@ where
     Ok(bytes.freeze())
 }
 
+async fn forward_gateway(
+    mode: GatewayForwardMode,
+    forwarder: &Arc<RequestForwarder>,
+    state: &Arc<ProxyState>,
+    method: Method,
+    forward_path: &str,
+    headers: hyper::HeaderMap,
+    body: bytes::Bytes,
+    context: RequestContext,
+) -> HandlerResult {
+    match mode {
+        GatewayForwardMode::OpenAiUsage => {
+            let forwarder = match get_openai_forwarder(state).await {
+                Ok(forwarder) => forwarder,
+                Err(response) => return Ok(*response),
+            };
+            forward_codex_with_usage(
+                &forwarder,
+                method,
+                forward_path,
+                headers,
+                body,
+                context,
+                state,
+            )
+            .await
+        }
+        GatewayForwardMode::OpenAiPassthrough => {
+            let forwarder = match get_openai_forwarder(state).await {
+                Ok(forwarder) => forwarder,
+                Err(response) => return Ok(*response),
+            };
+            forward_codex_passthrough(
+                &forwarder,
+                method,
+                forward_path,
+                headers,
+                body,
+                context,
+                state,
+            )
+            .await
+        }
+        GatewayForwardMode::AnthropicUsage => {
+            forward_claude_with_usage(
+                forwarder,
+                method,
+                forward_path,
+                headers,
+                body,
+                context,
+                state,
+            )
+            .await
+        }
+        GatewayForwardMode::GeminiUsage => {
+            let forwarder = match get_gemini_forwarder(state).await {
+                Ok(forwarder) => forwarder,
+                Err(response) => return Ok(*response),
+            };
+            forward_gemini_with_usage(
+                &forwarder,
+                method,
+                forward_path,
+                headers,
+                body,
+                context,
+                state,
+            )
+            .await
+        }
+    }
+}
+
+fn should_failover(status: Option<u16>) -> bool {
+    matches!(status, Some(401 | 402 | 403 | 429))
+}
+
 pub(crate) async fn handle_gateway_request(
     method: Method,
     raw_path: &str,
@@ -304,7 +473,42 @@ pub(crate) async fn handle_gateway_request(
         }),
         Err(error) => return Ok(error.response()),
     };
-    let mut headers = req.headers().clone();
+    let request_headers = req.headers().clone();
+    let mut headers = request_headers.clone();
+    let mut selected_upstream_key_id = None;
+    let managed_key_remark = if route.profile.auth_mode == GatewayAuthMode::ManagedKeys {
+        let local_key = incoming_local_key(&route.profile, &headers, raw_query)
+            .and_then(|value| {
+                route
+                    .profile
+                    .local_keys
+                    .iter()
+                    .find(|key| verify_local_key(value, key))
+            })
+            .ok_or(GatewayRouteError::LocalKeyUnauthorized);
+        let local_key = match local_key {
+            Ok(key) => key,
+            Err(error) => return Ok(error.response()),
+        };
+        let upstream_key = match select_upstream_key(&route.profile) {
+            Some(key) => key,
+            None => return Ok(GatewayRouteError::UpstreamKeyUnavailable.response()),
+        };
+        if !is_expected_upstream_secret_ref(&route.profile.id, upstream_key) {
+            return Ok(GatewayRouteError::UpstreamKeyUnavailable.response());
+        }
+        let secret = match load_upstream_secret(&upstream_key.secret_ref) {
+            Ok(secret) => secret,
+            Err(_) => return Ok(GatewayRouteError::UpstreamKeyUnavailable.response()),
+        };
+        if let Err(error) = inject_upstream_auth(&route.profile, &mut headers, &secret) {
+            return Ok(error.response());
+        }
+        selected_upstream_key_id = Some(upstream_key.id.clone());
+        (!local_key.remark.is_empty()).then(|| local_key.remark.clone())
+    } else {
+        None
+    };
     let body = match collect_gateway_body(&headers, req.into_body()).await {
         Ok(body) => body,
         Err(GatewayBodyError::TooLarge) => {
@@ -330,7 +534,7 @@ pub(crate) async fn handle_gateway_request(
         target_base_url: Some(route.profile.base_url.clone()),
         ingress_kind: "gateway".to_string(),
         gateway_profile_id: Some(route.profile.id.clone()),
-        gateway_caller_label: caller_label,
+        gateway_caller_label: managed_key_remark.or(caller_label),
         usage_source: "provider".to_string(),
         gateway_request_id: Some(format!(
             "gw-{:x}-{:x}",
@@ -339,70 +543,71 @@ pub(crate) async fn handle_gateway_request(
         )),
         ..Default::default()
     };
-    let forward_path = append_query(&route.path, raw_query);
+    let forward_path = if route.profile.auth_mode == GatewayAuthMode::ManagedKeys {
+        append_query(&route.path, strip_query_key(raw_query).as_deref())
+    } else {
+        append_query(&route.path, raw_query)
+    };
 
-    match route.mode {
-        GatewayForwardMode::OpenAiUsage => {
-            let forwarder = match get_openai_forwarder(state).await {
-                Ok(forwarder) => forwarder,
-                Err(response) => return Ok(*response),
-            };
-            forward_codex_with_usage(
-                &forwarder,
-                method,
-                &forward_path,
-                headers,
-                body,
-                context,
-                state,
-            )
-            .await
+    let mut result = forward_gateway(
+        route.mode,
+        &forwarder,
+        state,
+        method.clone(),
+        &forward_path,
+        headers,
+        body.clone(),
+        context.clone(),
+    )
+    .await;
+    let mut attempted_key_ids = selected_upstream_key_id
+        .clone()
+        .into_iter()
+        .collect::<Vec<_>>();
+    loop {
+        let status = result
+            .as_ref()
+            .ok()
+            .map(|response| response.status().as_u16());
+        if let Some(key_id) = selected_upstream_key_id.as_deref() {
+            report_upstream_result(&route.profile.id, key_id, status);
         }
-        GatewayForwardMode::OpenAiPassthrough => {
-            let forwarder = match get_openai_forwarder(state).await {
-                Ok(forwarder) => forwarder,
-                Err(response) => return Ok(*response),
-            };
-            forward_codex_passthrough(
-                &forwarder,
-                method,
-                &forward_path,
-                headers,
-                body,
-                context,
-                state,
-            )
-            .await
+        if route.profile.auth_mode != GatewayAuthMode::ManagedKeys
+            || route.profile.dispatch_strategy != GatewayDispatchStrategy::PriorityFailover
+            || !should_failover(status)
+        {
+            break;
         }
-        GatewayForwardMode::AnthropicUsage => {
-            forward_claude_with_usage(
-                &forwarder,
-                method,
-                &forward_path,
-                headers,
-                body,
-                context,
-                state,
-            )
-            .await
+        let Some(upstream_key) = select_upstream_key_excluding(&route.profile, &attempted_key_ids)
+        else {
+            break;
+        };
+        if !is_expected_upstream_secret_ref(&route.profile.id, upstream_key) {
+            break;
         }
-        GatewayForwardMode::GeminiUsage => {
-            let forwarder = match get_gemini_forwarder(state).await {
-                Ok(forwarder) => forwarder,
-                Err(response) => return Ok(*response),
-            };
-            forward_gemini_with_usage(
-                &forwarder,
-                method,
-                &forward_path,
-                headers,
-                body,
-                context,
-                state,
-            )
-            .await
+        let Ok(secret) = load_upstream_secret(&upstream_key.secret_ref) else {
+            break;
+        };
+        let mut retry_headers = request_headers.clone();
+        remove_client_label_header(&mut retry_headers);
+        if inject_upstream_auth(&route.profile, &mut retry_headers, &secret).is_err() {
+            break;
         }
+        selected_upstream_key_id = Some(upstream_key.id.clone());
+        attempted_key_ids.push(upstream_key.id.clone());
+        result = forward_gateway(
+            route.mode,
+            &forwarder,
+            state,
+            method.clone(),
+            &forward_path,
+            retry_headers,
+            body.clone(),
+            context.clone(),
+        )
+        .await;
     }
+    result
 }
 
 #[cfg(test)]
@@ -422,6 +627,10 @@ mod tests {
             base_url: "https://example.test".to_string(),
             enabled: true,
             client_label: String::new(),
+            auth_mode: crate::models::GatewayAuthMode::ClientPassthrough,
+            dispatch_strategy: crate::models::GatewayDispatchStrategy::RoundRobin,
+            upstream_keys: Vec::new(),
+            local_keys: Vec::new(),
         }
     }
 

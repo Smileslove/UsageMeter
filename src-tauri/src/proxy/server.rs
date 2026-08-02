@@ -1680,6 +1680,10 @@ mod tests {
             base_url: "https://api.example.com".to_string(),
             enabled: true,
             client_label: String::new(),
+            auth_mode: crate::models::GatewayAuthMode::ClientPassthrough,
+            dispatch_strategy: crate::models::GatewayDispatchStrategy::RoundRobin,
+            upstream_keys: Vec::new(),
+            local_keys: Vec::new(),
         });
 
         server.update_settings_snapshot(settings).await;

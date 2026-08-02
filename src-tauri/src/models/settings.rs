@@ -22,10 +22,8 @@ pub struct ProxyConfig {
     pub streaming_idle_timeout_seconds: u64,
 }
 
-/// A non-secret upstream route exposed by the local API gateway.
-///
-/// Credentials deliberately do not belong here: callers keep sending their own
-/// authorization headers and the gateway only observes and forwards them.
+/// A local API gateway route. Credential metadata lives with the profile while
+/// raw credentials are kept in the operating system credential store.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayProfile {
@@ -37,6 +35,76 @@ pub struct GatewayProfile {
     pub enabled: bool,
     #[serde(default)]
     pub client_label: String,
+    #[serde(default)]
+    pub auth_mode: GatewayAuthMode,
+    #[serde(default)]
+    pub dispatch_strategy: GatewayDispatchStrategy,
+    #[serde(default)]
+    pub upstream_keys: Vec<GatewayUpstreamKey>,
+    #[serde(default)]
+    pub local_keys: Vec<GatewayLocalKey>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayAuthMode {
+    /// Compatibility mode for profiles created before managed gateway keys.
+    #[default]
+    ClientPassthrough,
+    ManagedKeys,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayDispatchStrategy {
+    #[default]
+    RoundRobin,
+    Random,
+    Weighted,
+    PriorityFailover,
+}
+
+/// Non-secret metadata for an upstream credential. `secret_ref` resolves only
+/// through the operating system credential store.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayUpstreamKey {
+    pub id: String,
+    pub remark: String,
+    #[serde(default = "default_gateway_profile_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_gateway_key_weight")]
+    pub weight: u16,
+    #[serde(default)]
+    pub priority: u16,
+    #[serde(default)]
+    pub secret_ref: String,
+}
+
+/// A generated local credential has a salted verifier in settings and its raw
+/// value in the operating system credential store for explicit user reveal.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayLocalKey {
+    pub id: String,
+    pub remark: String,
+    #[serde(default = "default_gateway_profile_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub secret_hash: String,
+    #[serde(default)]
+    pub secret_salt: String,
+    /// Reference to the local credential in the OS credential store. The raw
+    /// local key itself is never written to settings.
+    #[serde(default)]
+    pub secret_ref: String,
+    pub created_at_ms: i64,
+    #[serde(default)]
+    pub last_used_at_ms: Option<i64>,
+}
+
+pub fn default_gateway_key_weight() -> u16 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1077,6 +1145,24 @@ impl AppSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_gateway_profile_deserializes_without_managed_key_fields() {
+        let profile: GatewayProfile = serde_json::from_str(
+            r#"{
+            "id":"gateway-old","name":"DeepSeek","protocol":"open_ai_chat_completions",
+            "baseUrl":"https://api.deepseek.com","enabled":true,"clientLabel":""
+        }"#,
+        )
+        .expect("legacy profile should load");
+        assert_eq!(profile.auth_mode, GatewayAuthMode::ClientPassthrough);
+        assert_eq!(
+            profile.dispatch_strategy,
+            GatewayDispatchStrategy::RoundRobin
+        );
+        assert!(profile.upstream_keys.is_empty());
+        assert!(profile.local_keys.is_empty());
+    }
 
     #[test]
     fn default_client_tools_require_explicit_takeover_confirmation() {

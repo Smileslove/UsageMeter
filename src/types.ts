@@ -37,6 +37,24 @@ export type GatewayProtocol =
   | 'anthropic_messages'
   | 'gemini_generate_content'
 
+export type GatewayDispatchStrategy = 'round_robin' | 'random' | 'weighted' | 'priority_failover'
+
+export interface GatewayUpstreamKey {
+  id: string
+  remark: string
+  enabled: boolean
+  weight: number
+  priority: number
+}
+
+export interface GatewayLocalKey {
+  id: string
+  remark: string
+  enabled: boolean
+  createdAtMs: number
+  lastUsedAtMs?: number | null
+}
+
 export interface GatewayProfile {
   id: string
   name: string
@@ -44,6 +62,10 @@ export interface GatewayProfile {
   baseUrl: string
   enabled: boolean
   clientLabel: string
+  authMode: 'client_passthrough' | 'managed_keys'
+  dispatchStrategy: GatewayDispatchStrategy
+  upstreamKeys: GatewayUpstreamKey[]
+  localKeys: GatewayLocalKey[]
 }
 
 export interface GatewaySettings {

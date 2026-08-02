@@ -56,6 +56,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Cryptography
 sha2 = "0.10"
 base64 = "0.22"
+rand = "0.8"
 ring = "0.17"
 thiserror = "1"
 

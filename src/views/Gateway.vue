@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { Check, Copy, Link2, Pencil, Plus, RadioTower, Save, Trash2, X } from 'lucide-vue-next'
+import { Check, Copy, Eye, KeyRound, Link2, Pencil, Plus, RadioTower, Save, Trash2, X } from 'lucide-vue-next'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
-import type { GatewayProfile, GatewayProtocol, GatewayStatus } from '../types'
+import type { GatewayDispatchStrategy, GatewayProfile, GatewayProtocol, GatewayStatus, GatewayUpstreamKey } from '../types'
 import ProxyControlPanel from '../components/settings/ProxyControlPanel.vue'
 import CcSwitchCompatPanel from '../components/settings/CcSwitchCompatPanel.vue'
 
@@ -17,6 +17,12 @@ const saving = ref(false)
 const loading = ref(false)
 const feedback = ref<'copied' | 'saved' | 'error' | null>(null)
 const errorCode = ref('')
+const upstreamRemark = ref('')
+const upstreamSecret = ref('')
+const localRemark = ref('')
+const generatedLocalKey = ref('')
+const keyPanel = ref<'upstream' | 'local' | null>(null)
+const revealedLocalKeys = ref<Record<string, string>>({})
 
 const protocolOptions: Array<{ value: GatewayProtocol; labelKey: string; basePath: string }> = [
   { value: 'open_ai_chat_completions', labelKey: 'gateway.protocolOpenAiChat', basePath: '/v1' },
@@ -31,8 +37,18 @@ const draft = ref({
   protocol: 'open_ai_chat_completions' as GatewayProtocol,
   baseUrl: '',
   enabled: true,
-  clientLabel: ''
+  clientLabel: '',
+  dispatchStrategy: 'round_robin' as GatewayDispatchStrategy,
+  upstreamKeys: [] as GatewayProfile['upstreamKeys'],
+  localKeys: [] as GatewayProfile['localKeys']
 })
+
+const strategyOptions: Array<{ value: GatewayDispatchStrategy; labelKey: string }> = [
+  { value: 'round_robin', labelKey: 'gateway.strategyRoundRobin' },
+  { value: 'random', labelKey: 'gateway.strategyRandom' },
+  { value: 'weighted', labelKey: 'gateway.strategyWeighted' },
+  { value: 'priority_failover', labelKey: 'gateway.strategyFailover' }
+]
 
 const locale = computed(() => store.settings.locale)
 const selectedProfile = computed(() => profiles.value.find(profile => profile.id === selectedId.value) ?? null)
@@ -59,7 +75,13 @@ const feedbackMessage = computed(() => {
 })
 
 function resetDraft() {
-  draft.value = { id: undefined, name: '', protocol: 'open_ai_chat_completions', baseUrl: '', enabled: true, clientLabel: '' }
+  draft.value = { id: undefined, name: '', protocol: 'open_ai_chat_completions', baseUrl: '', enabled: true, clientLabel: '', dispatchStrategy: 'round_robin', upstreamKeys: [], localKeys: [] }
+  upstreamRemark.value = ''
+  upstreamSecret.value = ''
+  localRemark.value = ''
+  generatedLocalKey.value = ''
+  revealedLocalKeys.value = {}
+  keyPanel.value = null
 }
 
 function selectProfile(profile: GatewayProfile) {
@@ -68,6 +90,7 @@ function selectProfile(profile: GatewayProfile) {
   draft.value = { ...profile }
   feedback.value = null
   errorCode.value = ''
+  keyPanel.value = null
 }
 
 function startNewProfile() {
@@ -84,6 +107,7 @@ function cancelEditing() {
   resetDraft()
   feedback.value = null
   errorCode.value = ''
+  keyPanel.value = null
 }
 
 async function load() {
@@ -160,7 +184,8 @@ async function saveProfile() {
     protocol: draft.value.protocol,
     baseUrl: draft.value.baseUrl.trim().replace(/\/$/, ''),
     enabled: draft.value.enabled,
-    clientLabel: draft.value.clientLabel.trim()
+    clientLabel: draft.value.clientLabel.trim(),
+    dispatchStrategy: draft.value.dispatchStrategy
   }
   try {
     const saved = draft.value.id
@@ -181,6 +206,103 @@ async function saveProfile() {
   } finally {
     saving.value = false
   }
+}
+
+function applyProfile(profile: GatewayProfile) {
+  profiles.value = profiles.value.map(item => item.id === profile.id ? profile : item)
+  if (draft.value.id === profile.id) draft.value = { ...profile }
+}
+
+async function addUpstreamKey() {
+  if (!draft.value.id || !upstreamSecret.value.trim()) return
+  saving.value = true
+  try {
+    const profile = await invoke<GatewayProfile>('create_gateway_upstream_key', {
+      profileId: draft.value.id,
+      input: { remark: upstreamRemark.value.trim(), secret: upstreamSecret.value.trim(), enabled: true, weight: 1, priority: 0 }
+    })
+    applyProfile(profile)
+    upstreamRemark.value = ''
+    upstreamSecret.value = ''
+    feedback.value = 'saved'
+  } catch (error) {
+    errorCode.value = String(error)
+    feedback.value = 'error'
+  } finally { saving.value = false }
+}
+
+async function deleteUpstreamKey(keyId: string) {
+  if (!draft.value.id) return
+  try {
+    applyProfile(await invoke<GatewayProfile>('delete_gateway_upstream_key', { profileId: draft.value.id, keyId }))
+  } catch (error) { errorCode.value = String(error); feedback.value = 'error' }
+}
+
+async function updateUpstreamKey(key: GatewayUpstreamKey) {
+  if (!draft.value.id || !Number.isInteger(key.weight) || key.weight < 1 || key.weight > 65535 || !Number.isInteger(key.priority) || key.priority < 0 || key.priority > 65535) {
+    errorCode.value = 'gateway.operationError'
+    feedback.value = 'error'
+    return
+  }
+  saving.value = true
+  try {
+    applyProfile(await invoke<GatewayProfile>('update_gateway_upstream_key', {
+      profileId: draft.value.id,
+      keyId: key.id,
+      input: { enabled: key.enabled, weight: key.weight, priority: key.priority }
+    }))
+    feedback.value = 'saved'
+  } catch (error) {
+    errorCode.value = String(error)
+    feedback.value = 'error'
+  } finally { saving.value = false }
+}
+
+async function addLocalKey() {
+  if (!draft.value.id) return
+  saving.value = true
+  try {
+    const created = await invoke<{ id: string; remark: string; key: string }>('create_gateway_local_key', {
+      profileId: draft.value.id, input: { remark: localRemark.value.trim() }
+    })
+    generatedLocalKey.value = created.key
+    revealedLocalKeys.value[created.id] = created.key
+    localRemark.value = ''
+    await load()
+    const refreshed = profiles.value.find(profile => profile.id === draft.value.id)
+    if (refreshed) draft.value = { ...refreshed }
+    feedback.value = 'saved'
+  } catch (error) {
+    errorCode.value = String(error)
+    feedback.value = 'error'
+  } finally { saving.value = false }
+}
+
+async function revokeLocalKey(keyId: string) {
+  if (!draft.value.id) return
+  try {
+    applyProfile(await invoke<GatewayProfile>('revoke_gateway_local_key', { profileId: draft.value.id, keyId }))
+  } catch (error) { errorCode.value = String(error); feedback.value = 'error' }
+}
+
+async function copyLocalKey() {
+  try { await navigator.clipboard.writeText(generatedLocalKey.value); feedback.value = 'copied' }
+  catch { errorCode.value = 'gateway.operationError'; feedback.value = 'error' }
+}
+
+async function revealLocalKey(keyId: string) {
+  if (!draft.value.id) return
+  try {
+    revealedLocalKeys.value[keyId] = await invoke<string>('reveal_gateway_local_key', { profileId: draft.value.id, keyId })
+  } catch (error) { errorCode.value = String(error); feedback.value = 'error' }
+}
+
+async function copyStoredLocalKey(keyId: string) {
+  await revealLocalKey(keyId)
+  const key = revealedLocalKeys.value[keyId]
+  if (!key) return
+  try { await navigator.clipboard.writeText(key); feedback.value = 'copied' }
+  catch { errorCode.value = 'gateway.operationError'; feedback.value = 'error' }
 }
 
 async function toggleProfile(profile: GatewayProfile) {
@@ -339,7 +461,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
           </header>
 
           <div class="space-y-2.5 p-4">
-            <section class="theme-surface-muted overflow-hidden rounded-xl border">
+            <section v-if="!keyPanel" class="theme-surface-muted overflow-hidden rounded-xl border">
               <label class="flex h-11 items-center gap-3 px-3">
                 <span class="w-[66px] shrink-0 text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.name') }}</span>
                 <input v-model="draft.name" class="min-w-0 flex-1 bg-transparent text-right text-[12px] font-semibold text-[var(--theme-text-primary)] outline-none placeholder:font-normal placeholder:text-[var(--theme-text-quaternary)]" :placeholder="t(locale, 'gateway.namePlaceholder')" />
@@ -355,8 +477,10 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
                 <input v-model="draft.baseUrl" class="min-w-0 flex-1 bg-transparent text-right font-mono text-[10.5px] text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]" :placeholder="t(locale, 'gateway.baseUrlPlaceholder')" inputmode="url" />
               </label>
               <label class="flex h-11 items-center gap-3 border-t border-[var(--theme-border-default)] px-3">
-                <span class="w-[66px] shrink-0 text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.clientLabel') }}</span>
-                <input v-model="draft.clientLabel" class="min-w-0 flex-1 bg-transparent text-right text-[11.5px] text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]" :placeholder="t(locale, 'gateway.clientLabelPlaceholder')" />
+                <span class="w-[66px] shrink-0 text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.strategy') }}</span>
+                <select v-model="draft.dispatchStrategy" class="min-w-0 flex-1 appearance-none bg-transparent py-0.5 text-right text-[11.5px] font-semibold text-[var(--theme-text-primary)] outline-none">
+                  <option v-for="option in strategyOptions" :key="option.value" :value="option.value">{{ t(locale, option.labelKey) }}</option>
+                </select>
               </label>
               <label class="flex h-11 cursor-pointer items-center justify-between border-t border-[var(--theme-border-default)] px-3">
                 <span class="text-[10.5px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.enabled') }}</span>
@@ -365,16 +489,30 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
               </label>
             </section>
 
-            <p class="px-1 text-[9px] leading-snug text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.clientLabelHint') }}</p>
-
-            <div v-if="draft.id" class="theme-surface-muted rounded-xl border p-3">
-              <div class="flex items-center justify-between gap-2">
-                <span class="text-[9.5px] font-semibold text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.address') }}</span>
-                <button type="button" class="theme-icon-button rounded-lg p-1.5" :title="t(locale, 'gateway.copyAddress')" :aria-label="t(locale, 'gateway.copyAddress')" @click="copyAddress()"><Copy class="h-3.5 w-3.5" /></button>
+            <template v-if="!keyPanel">
+              <p class="px-1 text-[9px] leading-snug text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.managedKeyHint') }}</p>
+              <div v-if="draft.id" class="theme-surface-muted rounded-xl border px-3 py-2.5">
+                <div class="flex items-center justify-between gap-2"><span class="text-[9.5px] font-semibold text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.address') }}</span><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.copyAddress')" :aria-label="t(locale, 'gateway.copyAddress')" @click="copyAddress()"><Copy class="h-3.5 w-3.5" /></button></div>
+                <p class="mt-1 break-all font-mono text-[9px] leading-snug text-[var(--theme-text-primary)]">{{ selectedAddress }}</p>
               </div>
-              <p class="mt-1.5 break-all font-mono text-[9.5px] leading-snug text-[var(--theme-text-primary)]">{{ selectedAddress }}</p>
-              <p class="mt-1.5 text-[9px] leading-snug text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.addressHint') }}</p>
-            </div>
+              <div v-if="draft.id" class="theme-surface-muted overflow-hidden rounded-xl border">
+                <button type="button" class="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-[var(--theme-bg-hover)]" @click="keyPanel = 'upstream'"><span class="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-500/10 text-amber-600"><KeyRound class="h-3.5 w-3.5" /></span><span class="min-w-0 flex-1"><span class="block text-[10.5px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'gateway.upstreamKeys') }}</span><span class="block text-[9px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.upstreamKeyHint') }}</span></span><span class="text-[11px] font-semibold text-[var(--theme-text-secondary)]">{{ draft.upstreamKeys.length }}</span></button>
+                <button type="button" class="flex w-full items-center gap-3 border-t border-[var(--theme-border-default)] px-3 py-2.5 text-left hover:bg-[var(--theme-bg-hover)]" @click="keyPanel = 'local'"><span class="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600"><KeyRound class="h-3.5 w-3.5" /></span><span class="min-w-0 flex-1"><span class="block text-[10.5px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'gateway.localKeys') }}</span><span class="block text-[9px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.localKeyHint') }}</span></span><span class="text-[11px] font-semibold text-[var(--theme-text-secondary)]">{{ draft.localKeys.length }}</span></button>
+              </div>
+            </template>
+
+            <template v-else>
+              <button type="button" class="inline-flex items-center gap-1 text-[10px] font-semibold text-[var(--theme-text-secondary)]" @click="keyPanel = null"><span class="text-[15px] leading-none">‹</span>{{ draft.name }}</button>
+              <section class="theme-surface-muted overflow-hidden rounded-xl border">
+                <div class="border-b border-[var(--theme-border-default)] px-3 py-2.5"><h3 class="text-[11px] font-semibold text-[var(--theme-text-primary)]">{{ keyPanel === 'upstream' ? t(locale, 'gateway.upstreamKeys') : t(locale, 'gateway.localKeys') }}</h3><p class="mt-0.5 text-[9px] text-[var(--theme-text-tertiary)]">{{ keyPanel === 'upstream' ? t(locale, 'gateway.upstreamKeyHint') : t(locale, 'gateway.localKeyHint') }}</p></div>
+                <div class="p-2">
+                  <div v-if="keyPanel === 'upstream'" class="flex gap-1.5"><input v-model="upstreamRemark" class="min-w-0 w-20 flex-1 rounded-lg border border-[var(--theme-border-default)] bg-transparent px-2 py-2 text-[10px] text-[var(--theme-text-primary)] outline-none" :placeholder="t(locale, 'gateway.keyRemark')" /><input v-model="upstreamSecret" type="password" class="min-w-0 flex-[1.6] rounded-lg border border-[var(--theme-border-default)] bg-transparent px-2 py-2 font-mono text-[10px] text-[var(--theme-text-primary)] outline-none" :placeholder="t(locale, 'gateway.upstreamKeyPlaceholder')" autocomplete="off" /><button type="button" class="theme-icon-button rounded-lg p-1.5" :title="t(locale, 'gateway.addKey')" :aria-label="t(locale, 'gateway.addKey')" :disabled="saving || !upstreamSecret.trim()" @click="addUpstreamKey"><Plus class="h-3.5 w-3.5" /></button></div>
+                  <div v-else class="flex gap-1.5"><input v-model="localRemark" class="min-w-0 flex-1 rounded-lg border border-[var(--theme-border-default)] bg-transparent px-2 py-2 text-[10px] text-[var(--theme-text-primary)] outline-none" :placeholder="t(locale, 'gateway.keyRemark')" /><button type="button" class="theme-icon-button rounded-lg p-1.5" :title="t(locale, 'gateway.createLocalKey')" :aria-label="t(locale, 'gateway.createLocalKey')" :disabled="saving" @click="addLocalKey"><Plus class="h-3.5 w-3.5" /></button></div>
+                  <div v-if="keyPanel === 'local' && generatedLocalKey" class="mt-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2"><div class="flex items-center justify-between gap-2"><span class="text-[9px] font-semibold text-emerald-700 dark:text-emerald-300">{{ t(locale, 'gateway.localKeyCreated') }}</span><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.copyLocalKey')" :aria-label="t(locale, 'gateway.copyLocalKey')" @click="copyLocalKey"><Copy class="h-3 w-3" /></button></div><p class="mt-1 break-all font-mono text-[9px] text-[var(--theme-text-primary)]">{{ generatedLocalKey }}</p></div>
+                  <div v-for="key in keyPanel === 'upstream' ? draft.upstreamKeys : draft.localKeys" :key="key.id" class="mt-1.5 rounded-lg border border-[var(--theme-border-default)] px-2 py-1.5 text-[10px]"><div class="flex h-6 items-center gap-2"><span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="key.enabled ? 'bg-emerald-500' : 'bg-gray-400'"></span><span class="min-w-0 flex-1 truncate text-[var(--theme-text-secondary)]">{{ key.remark || t(locale, 'gateway.unnamedKey') }}</span><template v-if="keyPanel === 'local'"><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.showLocalKey')" :aria-label="t(locale, 'gateway.showLocalKey')" @click="revealLocalKey(key.id)"><Eye class="h-3 w-3" /></button><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.copyLocalKey')" :aria-label="t(locale, 'gateway.copyLocalKey')" @click="copyStoredLocalKey(key.id)"><Copy class="h-3 w-3" /></button></template><button type="button" class="theme-icon-button rounded-lg p-1" :title="keyPanel === 'upstream' ? t(locale, 'gateway.deleteKey') : t(locale, 'gateway.revokeKey')" @click="keyPanel === 'upstream' ? deleteUpstreamKey(key.id) : revokeLocalKey(key.id)"><Trash2 class="h-3 w-3 text-red-500" /></button></div><div v-if="keyPanel === 'upstream'" class="mt-1 flex items-center gap-2 border-t border-[var(--theme-border-default)] pt-1"><label class="flex items-center gap-1 text-[9px] text-[var(--theme-text-tertiary)]"><input v-model="key.enabled" type="checkbox" class="h-3 w-3 accent-[var(--theme-accent-primary)]" :aria-label="t(locale, 'gateway.enabled')" @change="updateUpstreamKey(key as GatewayUpstreamKey)" />{{ t(locale, 'gateway.enabled') }}</label><label class="ml-auto flex items-center gap-1 text-[9px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.weight') }}<input v-model.number="(key as GatewayUpstreamKey).weight" type="number" min="1" max="65535" class="w-10 rounded border border-[var(--theme-border-default)] bg-transparent px-1 py-0.5 text-right text-[9px] text-[var(--theme-text-primary)] outline-none" @change="updateUpstreamKey(key as GatewayUpstreamKey)" /></label><label class="flex items-center gap-1 text-[9px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.priority') }}<input v-model.number="(key as GatewayUpstreamKey).priority" type="number" min="0" max="65535" class="w-10 rounded border border-[var(--theme-border-default)] bg-transparent px-1 py-0.5 text-right text-[9px] text-[var(--theme-text-primary)] outline-none" @change="updateUpstreamKey(key as GatewayUpstreamKey)" /></label></div><p v-if="keyPanel === 'local' && revealedLocalKeys[key.id]" class="mt-1 break-all border-t border-[var(--theme-border-default)] pt-1 font-mono text-[9px] text-[var(--theme-text-primary)]">{{ revealedLocalKeys[key.id] }}</p></div>
+                </div>
+              </section>
+            </template>
 
             <p v-if="feedback === 'error'" class="text-[10px] leading-snug text-red-500">{{ feedbackMessage }}</p>
             <p v-else-if="feedback === 'saved'" class="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-300"><Check class="h-3 w-3" />{{ t(locale, 'gateway.saveSuccess') }}</p>
@@ -382,8 +520,8 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
           </div>
 
           <footer class="flex gap-2 border-t border-[var(--theme-border-default)] px-4 py-3">
-            <button type="button" class="rounded-lg border border-[var(--theme-border-default)] px-3 text-[10.5px] font-semibold text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-hover)]" @click="cancelEditing">{{ t(locale, 'gateway.cancel') }}</button>
-            <button type="submit" class="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg bg-[var(--theme-accent-primary)] px-3 py-2 text-[10.5px] font-semibold text-[var(--theme-accent-contrast)] shadow-sm transition-opacity disabled:opacity-50" :disabled="saving"><Save class="h-3.5 w-3.5" />{{ draft.id ? t(locale, 'gateway.update') : t(locale, 'gateway.save') }}</button>
+            <button v-if="keyPanel" type="button" class="inline-flex flex-1 items-center justify-center rounded-lg border border-[var(--theme-border-default)] px-3 py-2 text-[10.5px] font-semibold text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-hover)]" @click="keyPanel = null">{{ t(locale, 'gateway.cancel') }}</button>
+            <template v-else><button type="button" class="rounded-lg border border-[var(--theme-border-default)] px-3 text-[10.5px] font-semibold text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-hover)]" @click="cancelEditing">{{ t(locale, 'gateway.cancel') }}</button><button type="submit" class="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg bg-[var(--theme-accent-primary)] px-3 py-2 text-[10.5px] font-semibold text-[var(--theme-accent-contrast)] shadow-sm transition-opacity disabled:opacity-50" :disabled="saving"><Save class="h-3.5 w-3.5" />{{ draft.id ? t(locale, 'gateway.update') : t(locale, 'gateway.save') }}</button></template>
           </footer>
         </form>
       </div>

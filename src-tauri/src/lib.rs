@@ -518,11 +518,18 @@ pub fn run() {
             commands::load_settings,
             commands::save_settings,
             commands::list_wsl_distros,
-            // 本地 API 网关（仅 profile 配置；不持久化 API Key）
+            // 本地 API 网关（凭据保存在操作系统钥匙串）
             commands::list_gateway_profiles,
             commands::create_gateway_profile,
             commands::update_gateway_profile,
             commands::delete_gateway_profile,
+            commands::create_gateway_upstream_key,
+            commands::delete_gateway_upstream_key,
+            commands::set_gateway_upstream_key_enabled,
+            commands::update_gateway_upstream_key,
+            commands::create_gateway_local_key,
+            commands::revoke_gateway_local_key,
+            commands::reveal_gateway_local_key,
             commands::get_gateway_status,
             // 用量命令
             commands::refresh_usage_bundle,

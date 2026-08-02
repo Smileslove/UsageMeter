@@ -130,7 +130,20 @@ fn normalize_settings(settings: &mut AppSettings) -> Result<(), String> {
     migrate_api_sources(settings);
     migrate_sync(settings)?;
     migrate_day_boundary(settings);
+    migrate_gateway(settings);
     Ok(())
+}
+
+/// Older builds may have written a local-key metadata record without its
+/// verifier. Keep the profile visible, but never accept that unverifiable key.
+fn migrate_gateway(settings: &mut AppSettings) {
+    for profile in &mut settings.gateway.profiles {
+        for key in &mut profile.local_keys {
+            if key.secret_hash.is_empty() || key.secret_salt.is_empty() {
+                key.enabled = false;
+            }
+        }
+    }
 }
 
 /// 确保代理配置有效，修复端口问题
