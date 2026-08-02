@@ -12,7 +12,25 @@ use super::{load_settings_blocking, save_settings_internal};
 
 #[tauri::command]
 pub async fn list_gateway_profiles() -> Result<Vec<GatewayProfileView>, String> {
-    let settings = load_settings_blocking()?;
+    let mut settings = load_settings_blocking()?;
+    let mut changed = false;
+    for profile in &mut settings.gateway.profiles {
+        if profile.local_keys.is_empty() {
+            let (metadata, generated) = gateway::create_local_key(
+                &profile.id,
+                GatewayLocalKeyInput {
+                    remark: String::new(),
+                },
+            )?;
+            gateway::store_upstream_secret(&metadata.secret_ref, &generated.key)?;
+            profile.local_keys.push(metadata);
+            profile.auth_mode = crate::models::GatewayAuthMode::ManagedKeys;
+            changed = true;
+        }
+    }
+    if changed {
+        save_settings_internal(settings.clone()).map_err(String::from)?;
+    }
     Ok(settings
         .gateway
         .profiles
@@ -33,7 +51,16 @@ pub async fn create_gateway_profile(
     input: GatewayProfileInput,
     state: State<'_, ProxyState>,
 ) -> Result<GatewayProfileView, String> {
-    let profile = gateway::create_profile(input)?;
+    let mut profile = gateway::create_profile(input)?;
+    let (local_metadata, local_generated) = gateway::create_local_key(
+        &profile.id,
+        GatewayLocalKeyInput {
+            remark: String::new(),
+        },
+    )?;
+    gateway::store_upstream_secret(&local_metadata.secret_ref, &local_generated.key)?;
+    profile.local_keys.push(local_metadata);
+    profile.auth_mode = crate::models::GatewayAuthMode::ManagedKeys;
     let mut settings = load_settings_blocking()?;
     settings.gateway.profiles.push(profile.clone());
     save_settings_internal(settings.clone()).map_err(String::from)?;
@@ -225,6 +252,11 @@ pub async fn create_gateway_local_key(
         .iter_mut()
         .find(|item| item.id == profile_id)
         .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
+    // A gateway profile represents one upstream and therefore has exactly one
+    // client credential. Revoke the existing key before creating another one.
+    if !profile.local_keys.is_empty() {
+        return Err("ERR_GATEWAY_LOCAL_KEY_ALREADY_EXISTS".to_string());
+    }
     let (metadata, generated) = gateway::create_local_key(&profile_id, input)?;
     gateway::store_upstream_secret(&metadata.secret_ref, &generated.key)?;
     let secret_ref = metadata.secret_ref.clone();

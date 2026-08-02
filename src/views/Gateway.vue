@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { Check, Copy, Eye, KeyRound, Link2, Pencil, Plus, RadioTower, Save, Trash2, X } from 'lucide-vue-next'
+import { Check, Copy, KeyRound, Link2, Pencil, Plus, RadioTower, Save, Trash2, X } from 'lucide-vue-next'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import type { GatewayDispatchStrategy, GatewayProfile, GatewayProtocol, GatewayStatus, GatewayUpstreamKey } from '../types'
@@ -66,6 +66,8 @@ const feedbackMessage = computed(() => {
 
   const errorKey = errorCode.value.startsWith('gateway.')
     ? errorCode.value
+    : errorCode.value === 'ERR_GATEWAY_LOCAL_KEY_ALREADY_EXISTS'
+      ? 'gateway.singleLocalKeyHint'
     : errorCode.value.startsWith('ERR_GATEWAY_PROFILE_NAME')
       ? 'gateway.validationName'
       : errorCode.value.startsWith('ERR_GATEWAY_BASE_URL')
@@ -258,36 +260,11 @@ async function updateUpstreamKey(key: GatewayUpstreamKey) {
   } finally { saving.value = false }
 }
 
-async function addLocalKey() {
-  if (!draft.value.id) return
-  saving.value = true
-  try {
-    const created = await invoke<{ id: string; remark: string; key: string }>('create_gateway_local_key', {
-      profileId: draft.value.id, input: { remark: localRemark.value.trim() }
-    })
-    generatedLocalKey.value = created.key
-    revealedLocalKeys.value[created.id] = created.key
-    localRemark.value = ''
-    await load()
-    const refreshed = profiles.value.find(profile => profile.id === draft.value.id)
-    if (refreshed) draft.value = { ...refreshed }
-    feedback.value = 'saved'
-  } catch (error) {
-    errorCode.value = String(error)
-    feedback.value = 'error'
-  } finally { saving.value = false }
-}
-
 async function revokeLocalKey(keyId: string) {
   if (!draft.value.id) return
   try {
     applyProfile(await invoke<GatewayProfile>('revoke_gateway_local_key', { profileId: draft.value.id, keyId }))
   } catch (error) { errorCode.value = String(error); feedback.value = 'error' }
-}
-
-async function copyLocalKey() {
-  try { await navigator.clipboard.writeText(generatedLocalKey.value); feedback.value = 'copied' }
-  catch { errorCode.value = 'gateway.operationError'; feedback.value = 'error' }
 }
 
 async function revealLocalKey(keyId: string) {
@@ -347,6 +324,20 @@ async function copyAddress(profile = selectedProfile.value) {
     errorCode.value = 'gateway.operationError'
     feedback.value = 'error'
   }
+}
+
+async function copyProfileBaseUrl(profile: GatewayProfile) {
+  const option = protocolOptions.find(item => item.value === profile.protocol)
+  await navigator.clipboard.writeText(`${listenerAddress.value}/gateway/${profile.id}${option?.basePath ?? '/v1'}`)
+  feedback.value = 'copied'
+}
+
+async function copyProfileApiKey(profile: GatewayProfile) {
+  const keyMeta = profile.localKeys[0]
+  if (!keyMeta) return
+  const key = await invoke<string>('reveal_gateway_local_key', { profileId: profile.id, keyId: keyMeta.id })
+  await navigator.clipboard.writeText(key)
+  feedback.value = 'copied'
 }
 
 function protocolLabel(protocol: GatewayProtocol) {
@@ -432,17 +423,16 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 
     <div v-else class="space-y-1.5">
       <div v-for="profile in profiles" :key="profile.id" :class="['theme-surface rounded-2xl border p-2.5 transition-colors', selectedId === profile.id ? 'border-emerald-500/35 bg-emerald-500/5' : '']">
-        <button class="flex w-full min-w-0 items-start gap-2 text-left" @click="selectProfile(profile)">
+        <div class="flex w-full min-w-0 items-start gap-2">
+          <button class="flex min-w-0 flex-1 items-start gap-2 text-left" @click="selectProfile(profile)">
           <span :class="['mt-1 h-2 w-2 shrink-0 rounded-full', profile.enabled ? 'bg-emerald-500' : 'bg-gray-400']"></span>
           <span class="min-w-0 flex-1">
-            <span class="block truncate text-[11.5px] font-semibold text-[var(--theme-text-primary)]">{{ profile.name }}</span>
-            <span class="mt-0.5 block truncate text-[9.5px] text-[var(--theme-text-tertiary)]">{{ protocolLabel(profile.protocol) }}</span>
+            <span class="flex min-w-0 items-center gap-2"><span class="truncate text-[11.5px] font-semibold text-[var(--theme-text-primary)]">{{ profile.name }}</span><span class="truncate text-[9.5px] text-[var(--theme-text-tertiary)]">{{ protocolLabel(profile.protocol) }}</span></span>
           </span>
-          <span class="shrink-0 text-[9px] text-[var(--theme-text-quaternary)]">{{ profile.enabled ? t(locale, 'common.enabled') : t(locale, 'common.disabled') }}</span>
-        </button>
-        <div class="mt-2 flex items-center justify-end gap-1">
-          <button class="rounded-lg p-1.5 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]" :title="t(locale, 'gateway.copyAddress')" :aria-label="t(locale, 'gateway.copyAddress')" @click="copyAddress(profile)"><Copy class="h-3.5 w-3.5" /></button>
-          <button class="rounded-lg p-1.5 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]" :title="profile.enabled ? t(locale, 'common.hide') : t(locale, 'common.enabled')" @click="toggleProfile(profile)"><Check v-if="profile.enabled" class="h-3.5 w-3.5 text-emerald-500" /><span v-else class="block h-3.5 w-3.5 rounded-full border border-current" /></button>
+          </button>
+          <button class="shrink-0 rounded-lg p-1.5 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]" :title="profile.enabled ? t(locale, 'common.hide') : t(locale, 'common.enabled')" @click="toggleProfile(profile)"><Check v-if="profile.enabled" class="h-3.5 w-3.5 text-emerald-500" /><span v-else class="block h-3.5 w-3.5 rounded-full border border-current" /></button>
+          <button class="rounded-lg p-1.5 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]" :title="t(locale, 'gateway.copyAddress')" :aria-label="t(locale, 'gateway.copyAddress')" @click="copyProfileBaseUrl(profile)"><Link2 class="h-3.5 w-3.5" /></button>
+          <button class="rounded-lg p-1.5 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]" :title="t(locale, 'gateway.copyLocalKey')" :aria-label="t(locale, 'gateway.copyLocalKey')" @click="copyProfileApiKey(profile)"><KeyRound class="h-3.5 w-3.5" /></button>
           <button class="rounded-lg p-1.5 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]" :title="t(locale, 'gateway.editProfile')" :aria-label="t(locale, 'gateway.editProfile')" @click="selectProfile(profile)"><Pencil class="h-3.5 w-3.5" /></button>
           <button class="rounded-lg p-1.5 text-red-500/75 hover:bg-red-500/10" :title="t(locale, 'gateway.delete')" :aria-label="t(locale, 'gateway.delete')" @click="deleteProfile(profile)"><Trash2 class="h-3.5 w-3.5" /></button>
         </div>
@@ -497,7 +487,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
               </div>
               <div v-if="draft.id" class="theme-surface-muted overflow-hidden rounded-xl border">
                 <button type="button" class="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-[var(--theme-bg-hover)]" @click="keyPanel = 'upstream'"><span class="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-500/10 text-amber-600"><KeyRound class="h-3.5 w-3.5" /></span><span class="min-w-0 flex-1"><span class="block text-[10.5px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'gateway.upstreamKeys') }}</span><span class="block text-[9px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.upstreamKeyHint') }}</span></span><span class="text-[11px] font-semibold text-[var(--theme-text-secondary)]">{{ draft.upstreamKeys.length }}</span></button>
-                <button type="button" class="flex w-full items-center gap-3 border-t border-[var(--theme-border-default)] px-3 py-2.5 text-left hover:bg-[var(--theme-bg-hover)]" @click="keyPanel = 'local'"><span class="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600"><KeyRound class="h-3.5 w-3.5" /></span><span class="min-w-0 flex-1"><span class="block text-[10.5px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'gateway.localKeys') }}</span><span class="block text-[9px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.localKeyHint') }}</span></span><span class="text-[11px] font-semibold text-[var(--theme-text-secondary)]">{{ draft.localKeys.length }}</span></button>
+                <button v-if="false" type="button" class="flex w-full items-center gap-3 border-t border-[var(--theme-border-default)] px-3 py-2.5 text-left" @click="keyPanel = 'local'"><span>{{ t(locale, 'gateway.localKeys') }}</span></button>
               </div>
             </template>
 
@@ -507,8 +497,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
                 <div class="border-b border-[var(--theme-border-default)] px-3 py-2.5"><h3 class="text-[11px] font-semibold text-[var(--theme-text-primary)]">{{ keyPanel === 'upstream' ? t(locale, 'gateway.upstreamKeys') : t(locale, 'gateway.localKeys') }}</h3><p class="mt-0.5 text-[9px] text-[var(--theme-text-tertiary)]">{{ keyPanel === 'upstream' ? t(locale, 'gateway.upstreamKeyHint') : t(locale, 'gateway.localKeyHint') }}</p></div>
                 <div class="p-2">
                   <div v-if="keyPanel === 'upstream'" class="flex gap-1.5"><input v-model="upstreamRemark" class="min-w-0 w-20 flex-1 rounded-lg border border-[var(--theme-border-default)] bg-transparent px-2 py-2 text-[10px] text-[var(--theme-text-primary)] outline-none" :placeholder="t(locale, 'gateway.keyRemark')" /><input v-model="upstreamSecret" type="password" class="min-w-0 flex-[1.6] rounded-lg border border-[var(--theme-border-default)] bg-transparent px-2 py-2 font-mono text-[10px] text-[var(--theme-text-primary)] outline-none" :placeholder="t(locale, 'gateway.upstreamKeyPlaceholder')" autocomplete="off" /><button type="button" class="theme-icon-button rounded-lg p-1.5" :title="t(locale, 'gateway.addKey')" :aria-label="t(locale, 'gateway.addKey')" :disabled="saving || !upstreamSecret.trim()" @click="addUpstreamKey"><Plus class="h-3.5 w-3.5" /></button></div>
-                  <div v-else class="flex gap-1.5"><input v-model="localRemark" class="min-w-0 flex-1 rounded-lg border border-[var(--theme-border-default)] bg-transparent px-2 py-2 text-[10px] text-[var(--theme-text-primary)] outline-none" :placeholder="t(locale, 'gateway.keyRemark')" /><button type="button" class="theme-icon-button rounded-lg p-1.5" :title="t(locale, 'gateway.createLocalKey')" :aria-label="t(locale, 'gateway.createLocalKey')" :disabled="saving" @click="addLocalKey"><Plus class="h-3.5 w-3.5" /></button></div>
-                  <div v-if="keyPanel === 'local' && generatedLocalKey" class="mt-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2"><div class="flex items-center justify-between gap-2"><span class="text-[9px] font-semibold text-emerald-700 dark:text-emerald-300">{{ t(locale, 'gateway.localKeyCreated') }}</span><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.copyLocalKey')" :aria-label="t(locale, 'gateway.copyLocalKey')" @click="copyLocalKey"><Copy class="h-3 w-3" /></button></div><p class="mt-1 break-all font-mono text-[9px] text-[var(--theme-text-primary)]">{{ generatedLocalKey }}</p></div>
+                  <div v-else class="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2 text-[10px] text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.singleLocalKeyHint') }}</div>
                   <div v-for="key in keyPanel === 'upstream' ? draft.upstreamKeys : draft.localKeys" :key="key.id" class="mt-1.5 rounded-lg border border-[var(--theme-border-default)] px-2 py-1.5 text-[10px]"><div class="flex h-6 items-center gap-2"><span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="key.enabled ? 'bg-emerald-500' : 'bg-gray-400'"></span><span class="min-w-0 flex-1 truncate text-[var(--theme-text-secondary)]">{{ key.remark || t(locale, 'gateway.unnamedKey') }}</span><template v-if="keyPanel === 'local'"><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.showLocalKey')" :aria-label="t(locale, 'gateway.showLocalKey')" @click="revealLocalKey(key.id)"><Eye class="h-3 w-3" /></button><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.copyLocalKey')" :aria-label="t(locale, 'gateway.copyLocalKey')" @click="copyStoredLocalKey(key.id)"><Copy class="h-3 w-3" /></button></template><button type="button" class="theme-icon-button rounded-lg p-1" :title="keyPanel === 'upstream' ? t(locale, 'gateway.deleteKey') : t(locale, 'gateway.revokeKey')" @click="keyPanel === 'upstream' ? deleteUpstreamKey(key.id) : revokeLocalKey(key.id)"><Trash2 class="h-3 w-3 text-red-500" /></button></div><div v-if="keyPanel === 'upstream'" class="mt-1 flex items-center gap-2 border-t border-[var(--theme-border-default)] pt-1"><label class="flex items-center gap-1 text-[9px] text-[var(--theme-text-tertiary)]"><input v-model="key.enabled" type="checkbox" class="h-3 w-3 accent-[var(--theme-accent-primary)]" :aria-label="t(locale, 'gateway.enabled')" @change="updateUpstreamKey(key as GatewayUpstreamKey)" />{{ t(locale, 'gateway.enabled') }}</label><label class="ml-auto flex items-center gap-1 text-[9px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.weight') }}<input v-model.number="(key as GatewayUpstreamKey).weight" type="number" min="1" max="65535" class="w-10 rounded border border-[var(--theme-border-default)] bg-transparent px-1 py-0.5 text-right text-[9px] text-[var(--theme-text-primary)] outline-none" @change="updateUpstreamKey(key as GatewayUpstreamKey)" /></label><label class="flex items-center gap-1 text-[9px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.priority') }}<input v-model.number="(key as GatewayUpstreamKey).priority" type="number" min="0" max="65535" class="w-10 rounded border border-[var(--theme-border-default)] bg-transparent px-1 py-0.5 text-right text-[9px] text-[var(--theme-text-primary)] outline-none" @change="updateUpstreamKey(key as GatewayUpstreamKey)" /></label></div><p v-if="keyPanel === 'local' && revealedLocalKeys[key.id]" class="mt-1 break-all border-t border-[var(--theme-border-default)] pt-1 font-mono text-[9px] text-[var(--theme-text-primary)]">{{ revealedLocalKeys[key.id] }}</p></div>
                 </div>
               </section>
