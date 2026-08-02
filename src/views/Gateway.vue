@@ -329,42 +329,62 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 
     <Teleport to="body">
       <div v-if="editing" class="theme-backdrop fixed inset-0 z-[80] flex items-center justify-center p-4" @click.self="cancelEditing">
-        <form class="max-h-[calc(100vh-2rem)] w-full max-w-[380px] overflow-y-auto rounded-2xl border border-[var(--theme-border-default)] bg-[var(--theme-bg-surface)] p-3 shadow-2xl" role="dialog" aria-modal="true" @submit.prevent="saveProfile">
-        <div class="flex items-center justify-between">
-          <div>
-            <h2 class="text-[12px] font-semibold text-[var(--theme-text-primary)]">{{ draft.id ? t(locale, 'gateway.editProfile') : t(locale, 'gateway.newProfile') }}</h2>
-            <p class="mt-0.5 text-[10px] text-[var(--theme-text-tertiary)]">{{ selectedProtocolLabel }}</p>
+        <form class="max-h-[calc(100vh-2rem)] w-full max-w-[380px] overflow-y-auto rounded-2xl border border-[var(--theme-border-default)] bg-[var(--theme-bg-surface)] shadow-2xl" role="dialog" aria-modal="true" @submit.prevent="saveProfile">
+          <header class="flex items-start justify-between border-b border-[var(--theme-border-default)] px-4 py-3.5">
+            <div class="min-w-0">
+              <h2 class="text-[14px] font-bold text-[var(--theme-text-primary)]">{{ draft.id ? t(locale, 'gateway.editProfile') : t(locale, 'gateway.newProfile') }}</h2>
+              <p class="mt-1 truncate text-[10px] text-[var(--theme-text-tertiary)]">{{ selectedProtocolLabel }}</p>
+            </div>
+            <button type="button" class="theme-icon-button -mr-1 -mt-1 rounded-lg p-2" :title="t(locale, 'gateway.cancel')" :aria-label="t(locale, 'gateway.cancel')" @click="cancelEditing"><X class="h-4 w-4" /></button>
+          </header>
+
+          <div class="space-y-2.5 p-4">
+            <section class="theme-surface-muted overflow-hidden rounded-xl border">
+              <label class="flex h-11 items-center gap-3 px-3">
+                <span class="w-[66px] shrink-0 text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.name') }}</span>
+                <input v-model="draft.name" class="min-w-0 flex-1 bg-transparent text-right text-[12px] font-semibold text-[var(--theme-text-primary)] outline-none placeholder:font-normal placeholder:text-[var(--theme-text-quaternary)]" :placeholder="t(locale, 'gateway.namePlaceholder')" />
+              </label>
+              <label class="flex h-11 items-center gap-3 border-t border-[var(--theme-border-default)] px-3">
+                <span class="w-[66px] shrink-0 text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.protocol') }}</span>
+                <select v-model="draft.protocol" class="min-w-0 flex-1 appearance-none bg-transparent py-0.5 text-right text-[11.5px] font-semibold text-[var(--theme-text-primary)] outline-none">
+                  <option v-for="option in protocolOptions" :key="option.value" :value="option.value">{{ t(locale, option.labelKey) }}</option>
+                </select>
+              </label>
+              <label class="flex h-11 items-center gap-3 border-t border-[var(--theme-border-default)] px-3">
+                <span class="w-[66px] shrink-0 text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.baseUrl') }}</span>
+                <input v-model="draft.baseUrl" class="min-w-0 flex-1 bg-transparent text-right font-mono text-[10.5px] text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]" :placeholder="t(locale, 'gateway.baseUrlPlaceholder')" inputmode="url" />
+              </label>
+              <label class="flex h-11 items-center gap-3 border-t border-[var(--theme-border-default)] px-3">
+                <span class="w-[66px] shrink-0 text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.clientLabel') }}</span>
+                <input v-model="draft.clientLabel" class="min-w-0 flex-1 bg-transparent text-right text-[11.5px] text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]" :placeholder="t(locale, 'gateway.clientLabelPlaceholder')" />
+              </label>
+              <label class="flex h-11 cursor-pointer items-center justify-between border-t border-[var(--theme-border-default)] px-3">
+                <span class="text-[10.5px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.enabled') }}</span>
+                <input v-model="draft.enabled" type="checkbox" class="peer sr-only" />
+                <span class="relative h-5 w-9 rounded-full bg-[var(--theme-border-strong)] transition-colors peer-checked:bg-[var(--theme-accent-primary)] after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:after:translate-x-4 peer-focus-visible:ring-2 peer-focus-visible:ring-[var(--theme-accent-primary)] peer-focus-visible:ring-offset-2"></span>
+              </label>
+            </section>
+
+            <p class="px-1 text-[9px] leading-snug text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.clientLabelHint') }}</p>
+
+            <div v-if="draft.id" class="theme-surface-muted rounded-xl border p-3">
+              <div class="flex items-center justify-between gap-2">
+                <span class="text-[9.5px] font-semibold text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.address') }}</span>
+                <button type="button" class="theme-icon-button rounded-lg p-1.5" :title="t(locale, 'gateway.copyAddress')" :aria-label="t(locale, 'gateway.copyAddress')" @click="copyAddress()"><Copy class="h-3.5 w-3.5" /></button>
+              </div>
+              <p class="mt-1.5 break-all font-mono text-[9.5px] leading-snug text-[var(--theme-text-primary)]">{{ selectedAddress }}</p>
+              <p class="mt-1.5 text-[9px] leading-snug text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.addressHint') }}</p>
+            </div>
+
+            <p v-if="feedback === 'error'" class="text-[10px] leading-snug text-red-500">{{ feedbackMessage }}</p>
+            <p v-else-if="feedback === 'saved'" class="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-300"><Check class="h-3 w-3" />{{ t(locale, 'gateway.saveSuccess') }}</p>
+            <p v-else-if="feedback === 'copied'" class="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-300"><Check class="h-3 w-3" />{{ t(locale, 'gateway.copied') }}</p>
           </div>
-          <button type="button" class="rounded-lg p-1.5 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]" :title="t(locale, 'gateway.cancel')" @click="cancelEditing"><X class="h-3.5 w-3.5" /></button>
-        </div>
 
-        <label class="mt-3 block text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.name') }}
-          <input v-model="draft.name" class="mt-1.5 w-full rounded-xl border border-[var(--theme-border-default)] bg-transparent px-2.5 py-2 text-[11px] text-[var(--theme-text-primary)] outline-none focus:border-emerald-500/50" :placeholder="t(locale, 'gateway.namePlaceholder')" />
-        </label>
-        <label class="mt-2.5 block text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.protocol') }}
-          <select v-model="draft.protocol" class="mt-1.5 w-full rounded-xl border border-[var(--theme-border-default)] bg-[var(--theme-bg-chrome)] px-2.5 py-2 text-[11px] text-[var(--theme-text-primary)] outline-none focus:border-emerald-500/50">
-            <option v-for="option in protocolOptions" :key="option.value" :value="option.value">{{ t(locale, option.labelKey) }}</option>
-          </select>
-        </label>
-        <label class="mt-2.5 block text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.baseUrl') }}
-          <input v-model="draft.baseUrl" class="mt-1.5 w-full rounded-xl border border-[var(--theme-border-default)] bg-transparent px-2.5 py-2 font-mono text-[10.5px] text-[var(--theme-text-primary)] outline-none focus:border-emerald-500/50" :placeholder="t(locale, 'gateway.baseUrlPlaceholder')" inputmode="url" />
-        </label>
-        <label class="mt-2.5 block text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.clientLabel') }}
-          <input v-model="draft.clientLabel" class="mt-1.5 w-full rounded-xl border border-[var(--theme-border-default)] bg-transparent px-2.5 py-2 text-[11px] text-[var(--theme-text-primary)] outline-none focus:border-emerald-500/50" :placeholder="t(locale, 'gateway.clientLabelPlaceholder')" />
-          <span class="mt-1 block text-[9.5px] font-normal text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.clientLabelHint') }}</span>
-        </label>
-        <label class="mt-3 flex items-center gap-2 text-[10.5px] font-semibold text-[var(--theme-text-secondary)]"><input v-model="draft.enabled" type="checkbox" class="h-3.5 w-3.5 accent-emerald-500" />{{ t(locale, 'gateway.enabled') }}</label>
-
-        <div v-if="draft.id" class="mt-3 rounded-xl bg-[var(--theme-bg-hover)] px-2.5 py-2">
-          <div class="flex items-center justify-between gap-2"><span class="text-[9.5px] font-semibold text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.address') }}</span><button type="button" class="rounded-lg p-1 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-chrome)]" :title="t(locale, 'gateway.copyAddress')" @click="copyAddress()"><Copy class="h-3.5 w-3.5" /></button></div>
-          <p class="mt-1 break-all font-mono text-[9px] leading-snug text-[var(--theme-text-primary)]">{{ selectedAddress }}</p>
-          <p class="mt-1 text-[9px] leading-snug text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.addressHint') }}</p>
-        </div>
-
-        <p v-if="feedback === 'error'" class="mt-2 text-[10px] leading-snug text-red-500">{{ feedbackMessage }}</p>
-        <p v-else-if="feedback === 'saved'" class="mt-2 flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-300"><Check class="h-3 w-3" />{{ t(locale, 'gateway.saveSuccess') }}</p>
-        <p v-else-if="feedback === 'copied'" class="mt-2 flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-300"><Check class="h-3 w-3" />{{ t(locale, 'gateway.copied') }}</p>
-        <button type="submit" class="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-[var(--theme-accent-primary)] px-3 py-2 text-[10.5px] font-semibold text-[var(--theme-accent-contrast)] disabled:opacity-50" :disabled="saving"><Save class="h-3.5 w-3.5" />{{ draft.id ? t(locale, 'gateway.update') : t(locale, 'gateway.save') }}</button>
+          <footer class="flex gap-2 border-t border-[var(--theme-border-default)] px-4 py-3">
+            <button type="button" class="rounded-lg border border-[var(--theme-border-default)] px-3 text-[10.5px] font-semibold text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-hover)]" @click="cancelEditing">{{ t(locale, 'gateway.cancel') }}</button>
+            <button type="submit" class="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg bg-[var(--theme-accent-primary)] px-3 py-2 text-[10.5px] font-semibold text-[var(--theme-accent-contrast)] shadow-sm transition-opacity disabled:opacity-50" :disabled="saving"><Save class="h-3.5 w-3.5" />{{ draft.id ? t(locale, 'gateway.update') : t(locale, 'gateway.save') }}</button>
+          </footer>
         </form>
       </div>
     </Teleport>
