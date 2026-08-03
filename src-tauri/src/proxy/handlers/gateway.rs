@@ -7,6 +7,7 @@
 use super::super::forwarder::{ForwardResult, RequestForwarder};
 use super::super::gemini_forwarder::GeminiForwardResult;
 use super::super::openai_forwarder::OpenAiForwardResult;
+use super::super::request_body::ForwardRequestBody;
 use super::super::request_common::{
     append_query, full, get_gemini_forwarder, get_openai_forwarder, json_error_response, BoxBody,
     HandlerResult,
@@ -17,10 +18,8 @@ use crate::gateway::{
     select_upstream_key, validate_profile, UpstreamOutcome,
 };
 use crate::models::{AppSettings, GatewayAuthMode, GatewayProfile, GatewayProtocol};
-use bytes::BytesMut;
-use http_body_util::BodyExt;
 use hyper::{
-    header::{HeaderName, HeaderValue, AUTHORIZATION, CONTENT_LENGTH},
+    header::{HeaderName, HeaderValue, AUTHORIZATION, CONNECTION, UPGRADE},
     Method, Request, StatusCode,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,7 +27,6 @@ use std::sync::Arc;
 
 const GATEWAY_PREFIX: &str = "/gateway/";
 const CLIENT_LABEL_HEADER: &str = "x-usagemeter-client";
-const MAX_GATEWAY_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
 static NEXT_GATEWAY_REQUEST: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,7 +34,18 @@ enum GatewayForwardMode {
     OpenAiUsage,
     OpenAiPassthrough,
     AnthropicUsage,
+    AnthropicPassthrough,
     GeminiUsage,
+    GeminiPassthrough,
+}
+
+impl GatewayForwardMode {
+    fn captures_usage(self) -> bool {
+        matches!(
+            self,
+            Self::OpenAiUsage | Self::AnthropicUsage | Self::GeminiUsage
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,7 +61,6 @@ enum GatewayRouteError {
     ProfileNotFound,
     ProfileInvalid,
     ProfileDisabled,
-    ProtocolMismatch,
     MethodNotAllowed,
     LocalKeyUnauthorized,
     UpstreamKeyUnavailable,
@@ -63,10 +71,7 @@ impl GatewayRouteError {
         // Unified error responses to avoid leaking gateway configuration details.
         // Specific error variants are logged internally but not exposed to clients.
         let (status, error_type, message) = match self {
-            Self::Malformed
-            | Self::ProfileNotFound
-            | Self::ProfileDisabled
-            | Self::ProtocolMismatch => (
+            Self::Malformed | Self::ProfileNotFound | Self::ProfileDisabled => (
                 StatusCode::NOT_FOUND,
                 "gateway_not_found",
                 "Gateway endpoint not found",
@@ -145,61 +150,31 @@ fn mode_for_profile(
     method: &Method,
     path: &str,
 ) -> Result<GatewayForwardMode, GatewayRouteError> {
+    if matches!(*method, Method::CONNECT | Method::TRACE) {
+        return Err(GatewayRouteError::MethodNotAllowed);
+    }
+
     match profile.protocol {
-        GatewayProtocol::OpenAiChatCompletions => {
-            if path == "/v1/chat/completions" {
-                if *method == Method::POST {
-                    Ok(GatewayForwardMode::OpenAiUsage)
-                } else {
-                    Err(GatewayRouteError::MethodNotAllowed)
-                }
-            } else if path == "/v1/models" {
-                if *method == Method::GET {
-                    Ok(GatewayForwardMode::OpenAiPassthrough)
-                } else {
-                    Err(GatewayRouteError::MethodNotAllowed)
-                }
-            } else {
-                Err(GatewayRouteError::ProtocolMismatch)
-            }
+        GatewayProtocol::OpenAiChatCompletions
+            if *method == Method::POST && path == "/v1/chat/completions" =>
+        {
+            Ok(GatewayForwardMode::OpenAiUsage)
         }
-        GatewayProtocol::OpenAiResponses => {
-            if path == "/v1/responses" {
-                if *method == Method::POST {
-                    Ok(GatewayForwardMode::OpenAiUsage)
-                } else {
-                    Err(GatewayRouteError::MethodNotAllowed)
-                }
-            } else if path == "/v1/models" {
-                if *method == Method::GET {
-                    Ok(GatewayForwardMode::OpenAiPassthrough)
-                } else {
-                    Err(GatewayRouteError::MethodNotAllowed)
-                }
-            } else {
-                Err(GatewayRouteError::ProtocolMismatch)
-            }
+        GatewayProtocol::OpenAiResponses if *method == Method::POST && path == "/v1/responses" => {
+            Ok(GatewayForwardMode::OpenAiUsage)
         }
-        GatewayProtocol::AnthropicMessages => {
-            if path == "/v1/messages" {
-                if *method == Method::POST {
-                    Ok(GatewayForwardMode::AnthropicUsage)
-                } else {
-                    Err(GatewayRouteError::MethodNotAllowed)
-                }
-            } else {
-                Err(GatewayRouteError::ProtocolMismatch)
-            }
+        GatewayProtocol::OpenAiChatCompletions | GatewayProtocol::OpenAiResponses => {
+            Ok(GatewayForwardMode::OpenAiPassthrough)
         }
+        GatewayProtocol::AnthropicMessages if *method == Method::POST && path == "/v1/messages" => {
+            Ok(GatewayForwardMode::AnthropicUsage)
+        }
+        GatewayProtocol::AnthropicMessages => Ok(GatewayForwardMode::AnthropicPassthrough),
         GatewayProtocol::GeminiGenerateContent => {
-            if gemini_path_matches(path) {
-                if *method == Method::POST {
-                    Ok(GatewayForwardMode::GeminiUsage)
-                } else {
-                    Err(GatewayRouteError::MethodNotAllowed)
-                }
+            if *method == Method::POST && gemini_path_matches(path) {
+                Ok(GatewayForwardMode::GeminiUsage)
             } else {
-                Err(GatewayRouteError::ProtocolMismatch)
+                Ok(GatewayForwardMode::GeminiPassthrough)
             }
         }
     }
@@ -249,7 +224,7 @@ fn sanitize_client_label(value: Option<&HeaderValue>) -> Result<Option<String>, 
     if value.chars().count() > 80
         || value.chars().any(|ch| {
             ch.is_control()
-            || matches!(ch, '\n' | '\r' | '\t' | '"' | '\'' | '<' | '>' | '\\' | '`')
+                || matches!(ch, '\n' | '\r' | '\t' | '"' | '\'' | '<' | '>' | '\\' | '`')
         })
     {
         return Err(GatewayRouteError::Malformed);
@@ -259,6 +234,18 @@ fn sanitize_client_label(value: Option<&HeaderValue>) -> Result<Option<String>, 
 
 fn remove_client_label_header(headers: &mut hyper::HeaderMap) {
     headers.remove(HeaderName::from_static(CLIENT_LABEL_HEADER));
+}
+
+fn is_upgrade_request(headers: &hyper::HeaderMap) -> bool {
+    headers.contains_key(UPGRADE)
+        || headers
+            .get(CONNECTION)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value
+                    .split(',')
+                    .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+            })
 }
 
 fn bearer_token(value: Option<&HeaderValue>) -> Option<&str> {
@@ -333,6 +320,16 @@ fn strip_query_key(raw_query: Option<&str>) -> Option<String> {
         .filter(|item| !item.starts_with("key="))
         .collect();
     (!items.is_empty()).then(|| items.join("&"))
+}
+
+fn forward_query(profile: &GatewayProfile, raw_query: Option<&str>) -> Option<String> {
+    if profile.auth_mode == GatewayAuthMode::ManagedKeys
+        && profile.protocol == GatewayProtocol::GeminiGenerateContent
+    {
+        strip_query_key(raw_query)
+    } else {
+        raw_query.map(str::to_string)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -438,42 +435,6 @@ fn build_gateway_response(
     builder.body(body).unwrap()
 }
 
-#[derive(Debug)]
-enum GatewayBodyError<E> {
-    TooLarge,
-    Read(E),
-}
-
-async fn collect_gateway_body<B>(
-    headers: &hyper::HeaderMap,
-    mut body: B,
-) -> Result<bytes::Bytes, GatewayBodyError<B::Error>>
-where
-    B: hyper::body::Body<Data = bytes::Bytes> + Unpin,
-{
-    if headers
-        .get(CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<usize>().ok())
-        .is_some_and(|length| length > MAX_GATEWAY_REQUEST_BODY_BYTES)
-    {
-        return Err(GatewayBodyError::TooLarge);
-    }
-
-    let mut bytes = BytesMut::new();
-    while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(GatewayBodyError::Read)?;
-        if let Ok(data) = frame.into_data() {
-            if bytes.len().saturating_add(data.len()) > MAX_GATEWAY_REQUEST_BODY_BYTES {
-                return Err(GatewayBodyError::TooLarge);
-            }
-            bytes.extend_from_slice(&data);
-        }
-    }
-
-    Ok(bytes.freeze())
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn forward_gateway_attempt(
     mode: GatewayForwardMode,
@@ -482,7 +443,7 @@ async fn forward_gateway_attempt(
     method: Method,
     forward_path: &str,
     headers: hyper::HeaderMap,
-    body: bytes::Bytes,
+    body: ForwardRequestBody,
     context: RequestContext,
 ) -> GatewayAttemptResult {
     match mode {
@@ -544,8 +505,9 @@ async fn forward_gateway_attempt(
                     }
                 }
             };
+            let (body, _) = body.into_parts();
             match forwarder
-                .forward_passthrough(method, forward_path, headers, body, context)
+                .forward_passthrough_stream(method, forward_path, headers, body, context)
                 .await
             {
                 Ok(OpenAiForwardResult::Streaming {
@@ -578,33 +540,42 @@ async fn forward_gateway_attempt(
                 Err(error) => GatewayAttemptResult::TransportError(error),
             }
         }
-        GatewayForwardMode::AnthropicUsage => match forwarder
-            .forward_with_usage(method, forward_path, body, context, headers)
-            .await
-        {
-            Ok(ForwardResult::Streaming {
-                status_code,
-                headers,
-                body,
-            }) => GatewayAttemptResult::Response {
-                status_code,
-                headers,
-                body,
-                retryable_before_response: false,
-            },
-            Ok(ForwardResult::NonStreaming {
-                status_code,
-                headers,
-                content,
-            }) => GatewayAttemptResult::Response {
-                status_code,
-                headers,
-                body: full(content),
-                retryable_before_response: true,
-            },
-            Err(error) => GatewayAttemptResult::TransportError(error),
-        },
-        GatewayForwardMode::GeminiUsage => {
+        GatewayForwardMode::AnthropicUsage | GatewayForwardMode::AnthropicPassthrough => {
+            let result = if mode == GatewayForwardMode::AnthropicUsage {
+                forwarder
+                    .forward_with_usage(method, forward_path, body, context, headers)
+                    .await
+            } else {
+                let (body, _) = body.into_parts();
+                forwarder
+                    .forward_passthrough_stream(method, forward_path, body, context, headers)
+                    .await
+            };
+            match result {
+                Ok(ForwardResult::Streaming {
+                    status_code,
+                    headers,
+                    body,
+                }) => GatewayAttemptResult::Response {
+                    status_code,
+                    headers,
+                    body,
+                    retryable_before_response: false,
+                },
+                Ok(ForwardResult::NonStreaming {
+                    status_code,
+                    headers,
+                    content,
+                }) => GatewayAttemptResult::Response {
+                    status_code,
+                    headers,
+                    body: full(content),
+                    retryable_before_response: true,
+                },
+                Err(error) => GatewayAttemptResult::TransportError(error),
+            }
+        }
+        GatewayForwardMode::GeminiUsage | GatewayForwardMode::GeminiPassthrough => {
             let forwarder = match get_gemini_forwarder(state).await {
                 Ok(forwarder) => forwarder,
                 Err(response) => {
@@ -616,10 +587,17 @@ async fn forward_gateway_attempt(
                     }
                 }
             };
-            match forwarder
-                .forward_with_usage(method, forward_path, headers, body, context)
-                .await
-            {
+            let result = if mode == GatewayForwardMode::GeminiUsage {
+                forwarder
+                    .forward_with_usage(method, forward_path, headers, body, context)
+                    .await
+            } else {
+                let (body, _) = body.into_parts();
+                forwarder
+                    .forward_passthrough_stream(method, forward_path, headers, body, context)
+                    .await
+            };
+            match result {
                 Ok(GeminiForwardResult::Streaming {
                     status_code,
                     headers,
@@ -653,6 +631,142 @@ async fn forward_gateway_attempt(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn forward_gateway_passthrough_attempt(
+    mode: GatewayForwardMode,
+    forwarder: &Arc<RequestForwarder>,
+    state: &Arc<ProxyState>,
+    method: Method,
+    forward_path: &str,
+    headers: hyper::HeaderMap,
+    body: reqwest::Body,
+    context: RequestContext,
+) -> GatewayAttemptResult {
+    match mode {
+        GatewayForwardMode::OpenAiPassthrough => {
+            let forwarder = match get_openai_forwarder(state).await {
+                Ok(forwarder) => forwarder,
+                Err(response) => {
+                    return GatewayAttemptResult::Response {
+                        status_code: response.status().as_u16(),
+                        headers: Vec::new(),
+                        body: response.into_body(),
+                        retryable_before_response: true,
+                    }
+                }
+            };
+            match forwarder
+                .forward_passthrough_stream(method, forward_path, headers, body, context)
+                .await
+            {
+                Ok(OpenAiForwardResult::Streaming {
+                    status_code,
+                    headers,
+                    body,
+                }) => GatewayAttemptResult::Response {
+                    status_code,
+                    headers,
+                    body,
+                    retryable_before_response: false,
+                },
+                Ok(
+                    OpenAiForwardResult::NonStreaming {
+                        status_code,
+                        headers,
+                        content,
+                    }
+                    | OpenAiForwardResult::UpstreamError {
+                        status_code,
+                        headers,
+                        content,
+                    },
+                ) => GatewayAttemptResult::Response {
+                    status_code,
+                    headers,
+                    body: full(content),
+                    retryable_before_response: false,
+                },
+                Err(error) => GatewayAttemptResult::TransportError(error),
+            }
+        }
+        GatewayForwardMode::AnthropicPassthrough => match forwarder
+            .forward_passthrough_stream(method, forward_path, body, context, headers)
+            .await
+        {
+            Ok(ForwardResult::Streaming {
+                status_code,
+                headers,
+                body,
+            }) => GatewayAttemptResult::Response {
+                status_code,
+                headers,
+                body,
+                retryable_before_response: false,
+            },
+            Ok(ForwardResult::NonStreaming {
+                status_code,
+                headers,
+                content,
+            }) => GatewayAttemptResult::Response {
+                status_code,
+                headers,
+                body: full(content),
+                retryable_before_response: false,
+            },
+            Err(error) => GatewayAttemptResult::TransportError(error),
+        },
+        GatewayForwardMode::GeminiPassthrough => {
+            let forwarder = match get_gemini_forwarder(state).await {
+                Ok(forwarder) => forwarder,
+                Err(response) => {
+                    return GatewayAttemptResult::Response {
+                        status_code: response.status().as_u16(),
+                        headers: Vec::new(),
+                        body: response.into_body(),
+                        retryable_before_response: true,
+                    }
+                }
+            };
+            match forwarder
+                .forward_passthrough_stream(method, forward_path, headers, body, context)
+                .await
+            {
+                Ok(GeminiForwardResult::Streaming {
+                    status_code,
+                    headers,
+                    body,
+                }) => GatewayAttemptResult::Response {
+                    status_code,
+                    headers,
+                    body,
+                    retryable_before_response: false,
+                },
+                Ok(
+                    GeminiForwardResult::NonStreaming {
+                        status_code,
+                        headers,
+                        content,
+                    }
+                    | GeminiForwardResult::UpstreamError {
+                        status_code,
+                        headers,
+                        content,
+                    },
+                ) => GatewayAttemptResult::Response {
+                    status_code,
+                    headers,
+                    body: full(content),
+                    retryable_before_response: false,
+                },
+                Err(error) => GatewayAttemptResult::TransportError(error),
+            }
+        }
+        _ => GatewayAttemptResult::TransportError(
+            "Gateway passthrough mode classification failed".to_string(),
+        ),
+    }
+}
+
 async fn record_final_proxy_status(state: &Arc<ProxyState>, status_code: u16) {
     let mut status = state.status.write().await;
     if status_code < 400 {
@@ -678,6 +792,9 @@ pub(crate) async fn handle_gateway_request(
         Ok(route) => route,
         Err(error) => return Ok(error.response()),
     };
+    if is_upgrade_request(req.headers()) {
+        return Ok(GatewayRouteError::MethodNotAllowed.response());
+    }
     let caller_label = match sanitize_client_label(req.headers().get(CLIENT_LABEL_HEADER)) {
         Ok(label) => label.or_else(|| {
             (!route.profile.client_label.trim().is_empty())
@@ -691,24 +808,20 @@ pub(crate) async fn handle_gateway_request(
     let managed_key_remark = if route.profile.auth_mode == GatewayAuthMode::ManagedKeys {
         let local_key = incoming_local_key(&route.profile, &headers, raw_query)
             .and_then(|value| {
-                route
-                    .profile
-                    .local_keys
-                    .iter()
-                    .find(|key| {
-                        match crate::gateway::verify_local_key_with_expiry(value, key) {
-                            Ok(()) => true,
-                            Err(crate::gateway::LocalKeyVerifyError::Expired) => {
-                                log::debug!("Local key {} has expired", key.id);
-                                false
-                            }
-                            Err(crate::gateway::LocalKeyVerifyError::QuotaExceeded) => {
-                                log::debug!("Local key {} quota exceeded", key.id);
-                                false
-                            }
-                            Err(_) => false
+                route.profile.local_keys.iter().find(|key| {
+                    match crate::gateway::verify_local_key_with_expiry(value, key) {
+                        Ok(()) => true,
+                        Err(crate::gateway::LocalKeyVerifyError::Expired) => {
+                            log::debug!("Local key {} has expired", key.id);
+                            false
                         }
-                    })
+                        Err(crate::gateway::LocalKeyVerifyError::QuotaExceeded) => {
+                            log::debug!("Local key {} quota exceeded", key.id);
+                            false
+                        }
+                        Err(_) => false,
+                    }
+                })
             })
             .ok_or(GatewayRouteError::LocalKeyUnauthorized);
         let local_key = match local_key {
@@ -762,17 +875,6 @@ pub(crate) async fn handle_gateway_request(
     } else {
         None
     };
-    let body = match collect_gateway_body(&headers, req.into_body()).await {
-        Ok(body) => body,
-        Err(GatewayBodyError::TooLarge) => {
-            return Ok(json_error_response(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "gateway_request_too_large",
-                "Gateway request body exceeds the configured limit",
-            ));
-        }
-        Err(GatewayBodyError::Read(error)) => return Err(error),
-    };
     remove_client_label_header(&mut headers);
 
     let request_start_time_ms = chrono::Utc::now().timestamp_millis();
@@ -796,20 +898,38 @@ pub(crate) async fn handle_gateway_request(
         )),
         ..Default::default()
     };
-    // Always strip query key parameter for Gemini to prevent credential leakage in upstream logs
-    let forward_path = append_query(&route.path, strip_query_key(raw_query).as_deref());
+    // In managed mode the local Gemini query key must not reach the upstream.
+    // Client-passthrough profiles preserve the caller's query string verbatim.
+    let query = forward_query(&route.profile, raw_query);
+    let forward_path = append_query(&route.path, query.as_deref());
 
-    let result = forward_gateway_attempt(
-        route.mode,
-        &forwarder,
-        state,
-        method.clone(),
-        &forward_path,
-        headers,
-        body.clone(),
-        context.clone(),
-    )
-    .await;
+    let result = if route.mode.captures_usage() {
+        let body = ForwardRequestBody::observed_stream(req.into_body());
+        forward_gateway_attempt(
+            route.mode,
+            &forwarder,
+            state,
+            method.clone(),
+            &forward_path,
+            headers,
+            body,
+            context.clone(),
+        )
+        .await
+    } else {
+        let (body, _) = ForwardRequestBody::passthrough_stream(req.into_body()).into_parts();
+        forward_gateway_passthrough_attempt(
+            route.mode,
+            &forwarder,
+            state,
+            method.clone(),
+            &forward_path,
+            headers,
+            body,
+            context.clone(),
+        )
+        .await
+    };
     if let Some(key_id) = selected_upstream_key_id.as_deref() {
         report_upstream_outcome(&route.profile.id, key_id, result.outcome());
     }
@@ -823,10 +943,7 @@ pub(crate) async fn handle_gateway_request(
 mod tests {
     use super::*;
     use crate::models::{GatewayProfile, GatewayProtocol, GatewaySettings};
-    use futures::stream;
-    use hyper::body::Frame;
     use hyper::header::HeaderValue;
-    use std::convert::Infallible;
 
     fn profile(id: &str, protocol: GatewayProtocol) -> GatewayProfile {
         GatewayProfile {
@@ -888,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_disabled_missing_and_mismatched_routes() {
+    fn rejects_disabled_and_missing_routes() {
         let mut disabled = profile("disabled", GatewayProtocol::OpenAiResponses);
         disabled.enabled = false;
         assert_eq!(
@@ -907,14 +1024,48 @@ mod tests {
             ),
             Err(GatewayRouteError::ProfileNotFound)
         );
-        assert_eq!(
-            resolve_route(
-                "/gateway/other/v1/chat/completions",
-                &Method::POST,
-                &settings(profile("other", GatewayProtocol::OpenAiResponses))
+    }
+
+    #[test]
+    fn forwards_unknown_and_non_usage_endpoints_with_the_protocol_adapter() {
+        let cases = [
+            (
+                GatewayProtocol::OpenAiChatCompletions,
+                Method::GET,
+                "/gateway/openai/v1/models",
+                GatewayForwardMode::OpenAiPassthrough,
             ),
-            Err(GatewayRouteError::ProtocolMismatch)
-        );
+            (
+                GatewayProtocol::OpenAiResponses,
+                Method::GET,
+                "/gateway/openai/dashboard/billing/credit_grants",
+                GatewayForwardMode::OpenAiPassthrough,
+            ),
+            (
+                GatewayProtocol::AnthropicMessages,
+                Method::GET,
+                "/gateway/anthropic/v1/models",
+                GatewayForwardMode::AnthropicPassthrough,
+            ),
+            (
+                GatewayProtocol::GeminiGenerateContent,
+                Method::GET,
+                "/gateway/gemini/v1beta/models",
+                GatewayForwardMode::GeminiPassthrough,
+            ),
+            (
+                GatewayProtocol::OpenAiResponses,
+                Method::POST,
+                "/gateway/openai/v1/chat/completions",
+                GatewayForwardMode::OpenAiPassthrough,
+            ),
+        ];
+
+        for (protocol, method, path, expected) in cases {
+            let id = path.split('/').nth(2).unwrap();
+            let route = resolve_route(path, &method, &settings(profile(id, protocol))).unwrap();
+            assert_eq!(route.mode, expected, "{path}");
+        }
     }
 
     #[test]
@@ -932,7 +1083,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_traversal_and_wrong_method() {
+    fn rejects_traversal_and_unsupported_methods() {
         assert_eq!(
             resolve_route(
                 "/gateway/../v1/messages",
@@ -941,13 +1092,53 @@ mod tests {
             ),
             Err(GatewayRouteError::Malformed)
         );
+        for method in [Method::CONNECT, Method::TRACE] {
+            assert_eq!(
+                resolve_route(
+                    "/gateway/anthropic/v1/messages",
+                    &method,
+                    &settings(profile("anthropic", GatewayProtocol::AnthropicMessages))
+                ),
+                Err(GatewayRouteError::MethodNotAllowed)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_upgrade_requests_without_forwarding_them() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(UPGRADE, HeaderValue::from_static("websocket"));
+        assert!(is_upgrade_request(&headers));
+
+        let mut connection_only = hyper::HeaderMap::new();
+        connection_only.insert(CONNECTION, HeaderValue::from_static("keep-alive, Upgrade"));
+        assert!(is_upgrade_request(&connection_only));
+
+        let ordinary = hyper::HeaderMap::new();
+        assert!(!is_upgrade_request(&ordinary));
+    }
+
+    #[test]
+    fn only_strips_gemini_query_key_for_managed_profiles() {
+        let mut managed = profile("gemini", GatewayProtocol::GeminiGenerateContent);
+        managed.auth_mode = GatewayAuthMode::ManagedKeys;
         assert_eq!(
-            resolve_route(
-                "/gateway/anthropic/v1/messages",
-                &Method::GET,
-                &settings(profile("anthropic", GatewayProtocol::AnthropicMessages))
-            ),
-            Err(GatewayRouteError::MethodNotAllowed)
+            forward_query(&managed, Some("key=umg_local&alt=sse")),
+            Some("alt=sse".to_string())
+        );
+        assert_eq!(forward_query(&managed, Some("key=umg_local")), None);
+
+        let passthrough = profile("gemini", GatewayProtocol::GeminiGenerateContent);
+        assert_eq!(
+            forward_query(&passthrough, Some("key=upstream&alt=sse")),
+            Some("key=upstream&alt=sse".to_string())
+        );
+
+        let mut managed_openai = profile("openai", GatewayProtocol::OpenAiResponses);
+        managed_openai.auth_mode = GatewayAuthMode::ManagedKeys;
+        assert_eq!(
+            forward_query(&managed_openai, Some("key=filter-value")),
+            Some("key=filter-value".to_string())
         );
     }
 
@@ -997,41 +1188,5 @@ mod tests {
             assert!(!should_failover_status(status, true), "{status}");
         }
         assert!(!should_failover_status(503, false));
-    }
-
-    #[tokio::test]
-    async fn rejects_a_body_larger_than_the_declared_content_length_limit() {
-        let mut headers = hyper::HeaderMap::new();
-        headers.insert(
-            CONTENT_LENGTH,
-            HeaderValue::from_str(&(MAX_GATEWAY_REQUEST_BODY_BYTES + 1).to_string()).unwrap(),
-        );
-
-        let result =
-            collect_gateway_body(&headers, http_body_util::Full::new(bytes::Bytes::new())).await;
-        assert!(matches!(result, Err(GatewayBodyError::TooLarge)));
-    }
-
-    #[tokio::test]
-    async fn rejects_chunked_body_that_exceeds_the_limit() {
-        let body = http_body_util::StreamBody::new(stream::iter(vec![
-            Ok::<_, Infallible>(Frame::data(bytes::Bytes::from(
-                vec![0; MAX_GATEWAY_REQUEST_BODY_BYTES],
-            ))),
-            Ok(Frame::data(bytes::Bytes::from_static(&[1]))),
-        ]));
-
-        let result = collect_gateway_body(&hyper::HeaderMap::new(), body).await;
-        assert!(matches!(result, Err(GatewayBodyError::TooLarge)));
-    }
-
-    #[tokio::test]
-    async fn accepts_small_body_and_preserves_its_content() {
-        let body = http_body_util::Full::new(bytes::Bytes::from_static(b"small request"));
-
-        let bytes = collect_gateway_body(&hyper::HeaderMap::new(), body)
-            .await
-            .expect("small body should be accepted");
-        assert_eq!(bytes.as_ref(), b"small request");
     }
 }

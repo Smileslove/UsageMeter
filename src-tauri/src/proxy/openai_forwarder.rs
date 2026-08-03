@@ -1,6 +1,7 @@
 //! OpenAI-compatible proxy forwarding and usage capture for Codex.
 
 use super::collector::UsageCollector;
+use super::request_body::ForwardRequestBody;
 use super::sse::{append_utf8_safe, strip_sse_field, take_sse_block};
 use super::types::{RequestContext, UsageRecord};
 use crate::net::HttpClientFactory;
@@ -105,7 +106,7 @@ impl OpenAiForwarder {
         method: Method,
         path: &str,
         headers: HeaderMap,
-        body: bytes::Bytes,
+        body: ForwardRequestBody,
         mut context: RequestContext,
     ) -> Result<OpenAiForwardResult, String> {
         let target_base_url = context
@@ -114,18 +115,25 @@ impl OpenAiForwarder {
             .ok_or_else(|| "No target base URL found for Codex provider".to_string())?;
         let url = openai_endpoint_url(&target_base_url, path);
 
-        if let Ok(json) = serde_json::from_slice::<Value>(&body) {
-            context.model = json
-                .get("model")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            context.stream = json
-                .get("stream")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-        }
+        let (body, observation) = match body {
+            ForwardRequestBody::Buffered(body) => {
+                if let Ok(json) = serde_json::from_slice::<Value>(&body) {
+                    context.model = json
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    context.stream = json
+                        .get("stream")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                }
+                (body.into(), None)
+            }
+            ForwardRequestBody::Streaming { body, observation } => (body, observation),
+        };
 
-        let prefer_streaming_client = should_use_streaming_client(&headers, context.stream);
+        let prefer_streaming_client =
+            observation.is_some() || should_use_streaming_client(&headers, context.stream);
 
         let method = reqwest::Method::from_bytes(method.as_str().as_bytes())
             .unwrap_or(reqwest::Method::POST);
@@ -136,11 +144,15 @@ impl OpenAiForwarder {
         };
         let mut request = client.request(method, &url);
         request = apply_passthrough_headers(request, &headers);
+        request = apply_stream_content_length(request, &headers);
         let response = request
             .body(body)
             .send()
             .await
             .map_err(|e| format!("Failed to send Codex request: {}", e))?;
+        if let Some(observation) = observation {
+            observation.apply_to_context(&mut context);
+        }
 
         let status = response.status();
         let status_code = status.as_u16();
@@ -195,26 +207,29 @@ impl OpenAiForwarder {
         body: bytes::Bytes,
         context: RequestContext,
     ) -> Result<OpenAiForwardResult, String> {
+        self.forward_passthrough_stream(method, path, headers, body.into(), context)
+            .await
+    }
+
+    pub async fn forward_passthrough_stream(
+        &self,
+        method: Method,
+        path: &str,
+        headers: HeaderMap,
+        body: reqwest::Body,
+        context: RequestContext,
+    ) -> Result<OpenAiForwardResult, String> {
         let target_base_url = context
             .target_base_url
             .clone()
             .ok_or_else(|| "No target base URL found for Codex provider".to_string())?;
         let url = openai_endpoint_url(&target_base_url, path);
 
-        let prefer_streaming_client = headers
-            .get(header::ACCEPT)
-            .and_then(|value| value.to_str().ok())
-            .map(|value| value.contains("text/event-stream"))
-            .unwrap_or(false);
         let method =
             reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET);
-        let client = if prefer_streaming_client {
-            &self.streaming_client
-        } else {
-            &self.client
-        };
-        let mut request = client.request(method, &url);
+        let mut request = self.streaming_client.request(method, &url);
         request = apply_passthrough_headers(request, &headers);
+        request = apply_stream_content_length(request, &headers);
 
         let response = request
             .body(body)
@@ -222,36 +237,15 @@ impl OpenAiForwarder {
             .await
             .map_err(|e| format!("Failed to send Codex passthrough request: {}", e))?;
         let status_code = response.status().as_u16();
-        let upstream_is_sse = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(|value| value.contains("text/event-stream"))
-            .unwrap_or(false);
         let response_headers = collect_passthrough_response_headers(response.headers());
-
-        if upstream_is_sse {
-            let stream = response
-                .bytes_stream()
-                .map_ok(Frame::data)
-                .map_err(|e| std::io::Error::other(e.to_string()));
-            return Ok(OpenAiForwardResult::Streaming {
-                status_code,
-                headers: response_headers,
-                body: http_body_util::BodyExt::boxed_unsync(StreamBody::new(stream)),
-            });
-        }
-
-        let content = response
-            .bytes()
-            .await
-            .map_err(|e| format!("Failed to read Codex passthrough response: {}", e))?
-            .to_vec();
-
-        Ok(OpenAiForwardResult::NonStreaming {
+        let stream = response
+            .bytes_stream()
+            .map_ok(Frame::data)
+            .map_err(|e| std::io::Error::other(e.to_string()));
+        Ok(OpenAiForwardResult::Streaming {
             status_code,
             headers: response_headers,
-            content,
+            body: http_body_util::BodyExt::boxed_unsync(StreamBody::new(stream)),
         })
     }
 
@@ -498,7 +492,15 @@ fn apply_passthrough_headers(
         let name = name.as_str();
         if matches!(
             name.to_ascii_lowercase().as_str(),
-            "host" | "content-length" | "connection" | "accept-encoding" | "proxy-authorization"
+            "host"
+                | "content-length"
+                | "connection"
+                | "accept-encoding"
+                | "proxy-authorization"
+                | "transfer-encoding"
+                | "te"
+                | "trailer"
+                | "upgrade"
         ) {
             continue;
         }
@@ -507,6 +509,20 @@ fn apply_passthrough_headers(
         }
     }
     request
+}
+
+fn apply_stream_content_length(
+    request: reqwest::RequestBuilder,
+    headers: &HeaderMap,
+) -> reqwest::RequestBuilder {
+    if let Some(value) = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+    {
+        request.header(reqwest::header::CONTENT_LENGTH, value)
+    } else {
+        request
+    }
 }
 
 fn collect_passthrough_response_headers(

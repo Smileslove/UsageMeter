@@ -1,6 +1,7 @@
 //! 请求转发器，用于将请求代理到 Anthropic API
 
 use super::collector::UsageCollector;
+use super::request_body::ForwardRequestBody;
 use super::stream_processor::{
     create_database_collector, create_passthrough_stream, StreamContext,
 };
@@ -78,7 +79,7 @@ impl RequestForwarder {
         &self,
         method: Method,
         path: &str,
-        body: bytes::Bytes,
+        body: ForwardRequestBody,
         context: RequestContext,
         headers: hyper::HeaderMap,
     ) -> Result<ForwardResult, String> {
@@ -89,35 +90,24 @@ impl RequestForwarder {
             .unwrap_or_else(|| self.target_base_url.clone());
         let url = anthropic_endpoint_url(&target_base_url, path);
 
-        // 解析请求体以提取元数据
-        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) {
-            context.model = json
-                .get("model")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            context.stream = json
-                .get("stream")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-
-            // 如果可用，从请求中提取使用量信息
-            if let Some(usage) = json.get("usage") {
-                context.input_tokens = usage
-                    .get("input_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                context.cache_create_tokens = usage
-                    .get("cache_creation_input_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                context.cache_read_tokens = usage
-                    .get("cache_read_input_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
+        let (body, observation) = match body {
+            ForwardRequestBody::Buffered(body) => {
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) {
+                    context.model = json
+                        .get("model")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    context.stream = json
+                        .get("stream")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                }
+                (body.into(), None)
             }
-        }
+            ForwardRequestBody::Streaming { body, observation } => (body, observation),
+        };
 
-        let client = if context.stream {
+        let client = if observation.is_some() || context.stream {
             &self.streaming_client
         } else {
             &self.client
@@ -128,6 +118,7 @@ impl RequestForwarder {
             .unwrap_or(reqwest::Method::POST);
         let mut request = client.request(method, &url);
         request = apply_passthrough_headers(request, &headers);
+        request = apply_stream_content_length(request, &headers);
         request = request.body(body);
 
         // 发送请求
@@ -135,6 +126,9 @@ impl RequestForwarder {
             .send()
             .await
             .map_err(|e| format!("Failed to send request: {}", e))?;
+        if let Some(observation) = observation {
+            observation.apply_to_context(&mut context);
+        }
 
         let status_code = response.status().as_u16();
         let response_headers = collect_passthrough_response_headers(response.headers());
@@ -411,25 +405,28 @@ impl RequestForwarder {
         context: RequestContext,
         headers: hyper::HeaderMap,
     ) -> Result<ForwardResult, String> {
+        self.forward_passthrough_stream(method, path, body.into(), context, headers)
+            .await
+    }
+
+    pub async fn forward_passthrough_stream(
+        &self,
+        method: Method,
+        path: &str,
+        body: reqwest::Body,
+        context: RequestContext,
+        headers: hyper::HeaderMap,
+    ) -> Result<ForwardResult, String> {
         let target_base_url = context
             .target_base_url
             .clone()
             .unwrap_or_else(|| self.target_base_url.clone());
         let url = anthropic_endpoint_url(&target_base_url, path);
-        let use_streaming_client = headers
-            .get(hyper::header::ACCEPT)
-            .and_then(|value| value.to_str().ok())
-            .map(|value| value.contains("text/event-stream"))
-            .unwrap_or(false);
         let method =
             reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET);
-        let client = if use_streaming_client {
-            &self.streaming_client
-        } else {
-            &self.client
-        };
-        let mut request = client.request(method, &url);
+        let mut request = self.streaming_client.request(method, &url);
         request = apply_passthrough_headers(request, &headers);
+        request = apply_stream_content_length(request, &headers);
         request = request.body(body);
 
         let response = request
@@ -438,38 +435,14 @@ impl RequestForwarder {
             .map_err(|e| format!("Failed to send request: {}", e))?;
         let status_code = response.status().as_u16();
         let response_headers = collect_passthrough_response_headers(response.headers());
-        let content_type = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        let is_streaming = content_type
-            .as_deref()
-            .map(|value| value.contains("text/event-stream"))
-            .unwrap_or(false);
-
-        if is_streaming {
-            let stream = response
-                .bytes_stream()
-                .map_ok(Frame::data)
-                .map_err(|e| std::io::Error::other(e.to_string()));
-
-            return Ok(ForwardResult::Streaming {
-                status_code,
-                headers: response_headers,
-                body: StreamBody::new(stream).boxed_unsync(),
-            });
-        }
-
-        let content = response
-            .bytes()
-            .await
-            .map_err(|e| format!("Failed to read response body: {}", e))?;
-
-        Ok(ForwardResult::NonStreaming {
+        let stream = response
+            .bytes_stream()
+            .map_ok(Frame::data)
+            .map_err(|e| std::io::Error::other(e.to_string()));
+        Ok(ForwardResult::Streaming {
             status_code,
             headers: response_headers,
-            content: content.to_vec(),
+            body: StreamBody::new(stream).boxed_unsync(),
         })
     }
 }
@@ -541,6 +514,20 @@ fn apply_passthrough_headers(
         }
     }
     request
+}
+
+fn apply_stream_content_length(
+    request: reqwest::RequestBuilder,
+    headers: &hyper::HeaderMap,
+) -> reqwest::RequestBuilder {
+    if let Some(value) = headers
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+    {
+        request.header(reqwest::header::CONTENT_LENGTH, value)
+    } else {
+        request
+    }
 }
 
 fn collect_passthrough_response_headers(

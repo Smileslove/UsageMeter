@@ -15,6 +15,7 @@ mod openai_forwarder;
 mod opencode_config;
 mod opencode_protocol;
 mod reasonix_config;
+mod request_body;
 pub(crate) mod request_common;
 mod response_bridge;
 mod routing;

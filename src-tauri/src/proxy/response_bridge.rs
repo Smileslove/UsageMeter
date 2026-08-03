@@ -91,7 +91,13 @@ pub(crate) async fn forward_codex_with_usage(
     state: &Arc<ProxyState>,
 ) -> HandlerResult {
     match forwarder
-        .forward_with_headers(method, forward_path, request_headers, body_bytes, context)
+        .forward_with_headers(
+            method,
+            forward_path,
+            request_headers,
+            body_bytes.into(),
+            context,
+        )
         .await
     {
         Ok(result) => match result {
@@ -189,7 +195,13 @@ pub(crate) async fn forward_gemini_with_usage(
     state: &Arc<ProxyState>,
 ) -> HandlerResult {
     match forwarder
-        .forward_with_usage(method, forward_path, request_headers, body_bytes, context)
+        .forward_with_usage(
+            method,
+            forward_path,
+            request_headers,
+            body_bytes.into(),
+            context,
+        )
         .await
     {
         Ok(GeminiForwardResult::Streaming {
@@ -277,7 +289,13 @@ pub(crate) async fn forward_claude_with_usage(
     state: &Arc<ProxyState>,
 ) -> HandlerResult {
     match forwarder
-        .forward_with_usage(method, forward_path, body_bytes, context, request_headers)
+        .forward_with_usage(
+            method,
+            forward_path,
+            body_bytes.into(),
+            context,
+            request_headers,
+        )
         .await
     {
         Ok(ForwardResult::Streaming {
