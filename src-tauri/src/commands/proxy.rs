@@ -38,6 +38,10 @@ pub async fn ensure_passive_proxy_monitor_started(state: &ProxyState) {
         )),
         takeover_conflicts: std::sync::Arc::new(tokio::sync::RwLock::new(Default::default())),
         passive_recovery_enabled: std::sync::Arc::new(tokio::sync::RwLock::new(true)),
+        gateway_rate_limiter: crate::gateway::rate_limit::GatewayRateLimiter::new(),
+        gateway_auditor: std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::gateway::audit::GatewayAuditor::new(),
+        )),
     });
     let server_state = state.server.clone();
 

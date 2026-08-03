@@ -838,6 +838,8 @@ impl ProxyServer {
             settings_file_mtime: Arc::new(RwLock::new(initial_settings_mtime)),
             takeover_conflicts: Arc::new(RwLock::new(Default::default())),
             passive_recovery_enabled: Arc::new(RwLock::new(false)),
+            gateway_rate_limiter: crate::gateway::rate_limit::GatewayRateLimiter::new(),
+            gateway_auditor: Arc::new(RwLock::new(crate::gateway::audit::GatewayAuditor::new())),
         });
 
         Self {
@@ -1664,6 +1666,8 @@ mod tests {
             settings_file_mtime: Arc::new(RwLock::new(None)),
             takeover_conflicts: Arc::new(RwLock::new(Default::default())),
             passive_recovery_enabled: Arc::new(RwLock::new(false)),
+            gateway_rate_limiter: crate::gateway::rate_limit::GatewayRateLimiter::new(),
+            gateway_auditor: Arc::new(RwLock::new(crate::gateway::audit::GatewayAuditor::new())),
         });
         let server = ProxyServer {
             config: proxy_config,

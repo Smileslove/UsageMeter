@@ -49,6 +49,10 @@ pub async fn create_gateway_profile(
     input: GatewayProfileInput,
     state: State<'_, ProxyState>,
 ) -> Result<GatewayProfileView, String> {
+    use crate::gateway::compensation::{CompensationScope, DeleteSecretAction};
+
+    let compensation = CompensationScope::new();
+
     let mut profile = gateway::create_profile(input)?;
     let (local_metadata, local_generated) = gateway::create_local_key(
         &profile.id,
@@ -57,7 +61,12 @@ pub async fn create_gateway_profile(
         },
     )?;
     gateway::store_upstream_secret(&local_metadata.secret_ref, &local_generated.key)?;
-    let local_secret_ref = local_metadata.secret_ref.clone();
+
+    // Register compensation: delete the secret if settings update fails
+    compensation.register(Box::new(DeleteSecretAction {
+        secret_ref: local_metadata.secret_ref.clone(),
+    }));
+
     profile.local_keys.push(local_metadata);
     profile.auth_mode = crate::models::GatewayAuthMode::ManagedKeys;
 
@@ -74,14 +83,26 @@ pub async fn create_gateway_profile(
         settings.gateway.profiles.push(profile_to_insert.clone());
         Ok(GatewayProfileView::from(&profile_to_insert))
     });
-    let (view, settings) = match update {
-        Ok(result) => result,
-        Err(error) => {
-            gateway::delete_upstream_secret(&local_secret_ref);
-            return Err(error.into());
-        }
-    };
+    let (view, settings) = update.map_err(String::from)?;
+
+    // Success: commit the transaction
+    compensation.commit();
+
     refresh_running_proxy_settings(&state, &settings).await;
+
+    // Audit log
+    crate::gateway::audit::log_audit(crate::gateway::audit::GatewayAuditEvent {
+        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+        event_type: crate::gateway::audit::GatewayAuditEventType::ProfileCreated,
+        profile_id: profile.id.clone(),
+        actor: None,
+        details: serde_json::json!({
+            "name": profile.name,
+            "protocol": format!("{:?}", profile.protocol),
+        }),
+        result: crate::gateway::audit::AuditResult::Success,
+    });
+
     Ok(view)
 }
 
@@ -139,6 +160,19 @@ pub async fn delete_gateway_profile(
     }
     gateway::clear_profile_runtime_state(&removed.id);
     refresh_running_proxy_settings(&state, &settings).await;
+
+    // Audit log
+    crate::gateway::audit::log_audit(crate::gateway::audit::GatewayAuditEvent {
+        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+        event_type: crate::gateway::audit::GatewayAuditEventType::ProfileDeleted,
+        profile_id: removed.id.clone(),
+        actor: None,
+        details: serde_json::json!({
+            "name": removed.name,
+        }),
+        result: crate::gateway::audit::AuditResult::Success,
+    });
+
     Ok(())
 }
 
@@ -148,28 +182,50 @@ pub async fn create_gateway_upstream_key(
     input: GatewayUpstreamKeyInput,
     state: State<'_, ProxyState>,
 ) -> Result<GatewayProfileView, String> {
+    use crate::gateway::compensation::{CompensationScope, DeleteSecretAction};
+
+    let compensation = CompensationScope::new();
+
     let (key, secret) = gateway::create_upstream_key(&profile_id, input)?;
     gateway::store_upstream_secret(&key.secret_ref, &secret)?;
-    let secret_ref = key.secret_ref.clone();
+
+    // Register compensation: delete the secret if settings update fails
+    compensation.register(Box::new(DeleteSecretAction {
+        secret_ref: key.secret_ref.clone(),
+    }));
+
+    let key_id = key.id.clone();
+    let profile_id_clone = profile_id.clone();
     let update = update_settings_internal(move |settings| {
         let profile = settings
             .gateway
             .profiles
             .iter_mut()
-            .find(|item| item.id == profile_id)
+            .find(|item| item.id == profile_id_clone)
             .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
         profile.upstream_keys.push(key);
         profile.auth_mode = crate::models::GatewayAuthMode::ManagedKeys;
         Ok(GatewayProfileView::from(&*profile))
     });
-    let (view, settings) = match update {
-        Ok(result) => result,
-        Err(error) => {
-            gateway::delete_upstream_secret(&secret_ref);
-            return Err(error.into());
-        }
-    };
+    let (view, settings) = update.map_err(String::from)?;
+
+    // Success: commit the transaction
+    compensation.commit();
+
     refresh_running_proxy_settings(&state, &settings).await;
+
+    // Audit log
+    crate::gateway::audit::log_audit(crate::gateway::audit::GatewayAuditEvent {
+        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+        event_type: crate::gateway::audit::GatewayAuditEventType::UpstreamKeyAdded,
+        profile_id: profile_id.clone(),
+        actor: None,
+        details: serde_json::json!({
+            "key_id": key_id,
+        }),
+        result: crate::gateway::audit::AuditResult::Success,
+    });
+
     Ok(view)
 }
 

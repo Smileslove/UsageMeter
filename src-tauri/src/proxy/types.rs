@@ -471,6 +471,10 @@ pub struct ProxyState {
     /// 代理关闭后的被动恢复模式。true 时检测残留的 UsageMeter URL 并恢复原始 upstream。
     #[allow(dead_code)]
     pub passive_recovery_enabled: Arc<RwLock<bool>>,
+    /// Gateway rate limiter for controlling request rates per local key and globally.
+    pub gateway_rate_limiter: crate::gateway::rate_limit::GatewayRateLimiter,
+    /// Gateway auditor for logging security-relevant operations.
+    pub gateway_auditor: Arc<RwLock<crate::gateway::audit::GatewayAuditor>>,
 }
 
 /// 单个工具的接管冲突运行态。

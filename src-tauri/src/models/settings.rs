@@ -101,6 +101,15 @@ pub struct GatewayLocalKey {
     pub created_at_ms: i64,
     #[serde(default)]
     pub last_used_at_ms: Option<i64>,
+    /// Optional expiration timestamp in milliseconds. None means the key never expires.
+    #[serde(default)]
+    pub expires_at_ms: Option<i64>,
+    /// Optional maximum number of requests this key can make. None means unlimited.
+    #[serde(default)]
+    pub max_requests: Option<u64>,
+    /// Current request count for quota enforcement.
+    #[serde(default)]
+    pub request_count: u64,
 }
 
 pub fn default_gateway_key_weight() -> u16 {

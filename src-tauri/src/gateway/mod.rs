@@ -3,6 +3,10 @@
 //! Gateway profiles keep only credential metadata. Raw credentials live in the
 //! operating system credential store.
 
+pub mod audit;
+pub mod compensation;
+pub mod rate_limit;
+
 use crate::models::{
     GatewayAuthMode, GatewayDispatchStrategy, GatewayLocalKey, GatewayProfile, GatewayProtocol,
     GatewayUpstreamKey,
@@ -12,7 +16,7 @@ use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -243,6 +247,26 @@ pub fn validate_profile(profile: &GatewayProfile) -> Result<(), String> {
     {
         return Err("ERR_GATEWAY_BASE_URL_INVALID".to_string());
     }
+
+    // Additional DNS rebinding protection: resolve the hostname and check if any
+    // resolved IP addresses point to private networks. This prevents attacks where
+    // a public domain resolves to a private IP.
+    if let Ok(socket_addrs) = format!("{}:443", host).to_socket_addrs() {
+        for addr in socket_addrs {
+            if is_disallowed_upstream_ip(addr.ip()) {
+                log::warn!(
+                    "Gateway upstream {} resolves to disallowed IP: {}",
+                    host,
+                    addr.ip()
+                );
+                return Err("ERR_GATEWAY_BASE_URL_RESOLVES_TO_PRIVATE".to_string());
+            }
+        }
+    }
+    // If DNS resolution fails, we allow it to proceed - the actual HTTPS request
+    // will fail later with a proper network error. This avoids rejecting valid
+    // configurations due to temporary DNS issues during profile creation.
+
     Ok(())
 }
 
@@ -344,6 +368,9 @@ pub fn create_local_key(
         secret_ref: local_secret_ref(profile_id, &id),
         created_at_ms: chrono::Utc::now().timestamp_millis(),
         last_used_at_ms: None,
+        expires_at_ms: None,  // Default: never expires
+        max_requests: None,   // Default: unlimited requests
+        request_count: 0,
     };
     let generated = GeneratedGatewayLocalKey {
         id,
@@ -353,12 +380,52 @@ pub fn create_local_key(
     Ok((metadata, generated))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalKeyVerifyError {
+    Disabled,
+    Expired,
+    QuotaExceeded,
+    Invalid,
+}
+
 pub fn verify_local_key(key: &str, candidate: &GatewayLocalKey) -> bool {
-    if !candidate.enabled || !key.starts_with("umg_") {
-        return false;
+    matches!(verify_local_key_with_expiry(key, candidate), Ok(()))
+}
+
+pub fn verify_local_key_with_expiry(
+    key: &str,
+    candidate: &GatewayLocalKey,
+) -> Result<(), LocalKeyVerifyError> {
+    if !candidate.enabled {
+        return Err(LocalKeyVerifyError::Disabled);
     }
+
+    if !key.starts_with("umg_") {
+        return Err(LocalKeyVerifyError::Invalid);
+    }
+
+    // Check expiration
+    if let Some(expires_at) = candidate.expires_at_ms {
+        let now = chrono::Utc::now().timestamp_millis();
+        if now > expires_at {
+            return Err(LocalKeyVerifyError::Expired);
+        }
+    }
+
+    // Check quota
+    if let Some(max_requests) = candidate.max_requests {
+        if candidate.request_count >= max_requests {
+            return Err(LocalKeyVerifyError::QuotaExceeded);
+        }
+    }
+
+    // Verify hash
     let actual = hash_local_key(key, &candidate.secret_salt);
-    constant_time_eq(actual.as_bytes(), candidate.secret_hash.as_bytes())
+    if !constant_time_eq(actual.as_bytes(), candidate.secret_hash.as_bytes()) {
+        return Err(LocalKeyVerifyError::Invalid);
+    }
+
+    Ok(())
 }
 
 pub fn select_upstream_key(profile: &GatewayProfile) -> Option<&GatewayUpstreamKey> {
@@ -524,7 +591,8 @@ fn upstream_key_is_available(profile_id: &str, key_id: &str) -> bool {
 }
 
 fn open_circuit(entry: &mut KeyHealth) {
-    entry.trip_count = entry.trip_count.saturating_add(1);
+    // Cap trip_count to prevent potential overflow and limit exponential backoff
+    entry.trip_count = entry.trip_count.saturating_add(1).min(10);
     entry.consecutive_failures = 0;
     entry.consecutive_auth_failures = 0;
     entry.half_open_probe_in_flight = false;

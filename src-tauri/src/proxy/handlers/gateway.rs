@@ -14,8 +14,7 @@ use super::super::request_common::{
 use super::super::types::{ProxyState, RequestContext};
 use crate::gateway::{
     is_expected_upstream_secret_ref, load_upstream_secret, report_upstream_outcome,
-    select_upstream_key, select_upstream_key_excluding, validate_profile, verify_local_key,
-    UpstreamOutcome,
+    select_upstream_key, select_upstream_key_excluding, validate_profile, UpstreamOutcome,
 };
 use crate::models::{
     AppSettings, GatewayAuthMode, GatewayDispatchStrategy, GatewayProfile, GatewayProtocol,
@@ -63,48 +62,44 @@ enum GatewayRouteError {
 
 impl GatewayRouteError {
     fn response(self) -> hyper::Response<super::super::request_common::BoxBody> {
+        // Unified error responses to avoid leaking gateway configuration details.
+        // Specific error variants are logged internally but not exposed to clients.
         let (status, error_type, message) = match self {
-            Self::Malformed => (
+            Self::Malformed
+            | Self::ProfileNotFound
+            | Self::ProfileDisabled
+            | Self::ProtocolMismatch => (
                 StatusCode::NOT_FOUND,
-                "gateway_route_not_matched",
-                "Gateway route must use /gateway/<profile-id>/<native-api-path>",
-            ),
-            Self::ProfileNotFound => (
-                StatusCode::NOT_FOUND,
-                "gateway_profile_not_found",
-                "Gateway profile was not found",
+                "gateway_not_found",
+                "Gateway endpoint not found",
             ),
             Self::ProfileInvalid => (
                 StatusCode::FORBIDDEN,
-                "gateway_profile_invalid",
-                "Gateway profile is not valid for forwarding",
-            ),
-            Self::ProfileDisabled => (
-                StatusCode::NOT_FOUND,
-                "gateway_profile_disabled",
-                "Gateway profile is disabled",
-            ),
-            Self::ProtocolMismatch => (
-                StatusCode::BAD_REQUEST,
-                "gateway_protocol_mismatch",
-                "Request path does not match the configured native protocol",
+                "gateway_forbidden",
+                "Gateway request forbidden",
             ),
             Self::MethodNotAllowed => (
                 StatusCode::METHOD_NOT_ALLOWED,
-                "gateway_method_not_allowed",
-                "HTTP method is not supported for this native endpoint",
+                "method_not_allowed",
+                "HTTP method not allowed",
             ),
             Self::LocalKeyUnauthorized => (
                 StatusCode::UNAUTHORIZED,
-                "gateway_local_key_unauthorized",
-                "A valid local gateway API key is required",
+                "unauthorized",
+                "Valid authentication required",
             ),
             Self::UpstreamKeyUnavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
-                "gateway_no_upstream_key_available",
-                "No usable upstream API key is configured",
+                "service_unavailable",
+                "Service temporarily unavailable",
             ),
         };
+
+        // Log the actual error for debugging
+        if !matches!(self, Self::LocalKeyUnauthorized) {
+            log::debug!("Gateway route error: {:?}", self);
+        }
+
         json_error_response(status, error_type, message)
     }
 }
@@ -252,7 +247,13 @@ fn sanitize_client_label(value: Option<&HeaderValue>) -> Result<Option<String>, 
     if value.is_empty() {
         return Ok(None);
     }
-    if value.chars().count() > 80 || value.chars().any(|ch| ch.is_control()) {
+    // Reject control characters and characters that could break log parsing or inject commands
+    if value.chars().count() > 80
+        || value.chars().any(|ch| {
+            ch.is_control()
+            || matches!(ch, '\n' | '\r' | '\t' | '"' | '\'' | '<' | '>' | '\\' | '`')
+        })
+    {
         return Err(GatewayRouteError::Malformed);
     }
     Ok(Some(value.to_string()))
@@ -696,13 +697,54 @@ pub(crate) async fn handle_gateway_request(
                     .profile
                     .local_keys
                     .iter()
-                    .find(|key| verify_local_key(value, key))
+                    .find(|key| {
+                        match crate::gateway::verify_local_key_with_expiry(value, key) {
+                            Ok(()) => true,
+                            Err(crate::gateway::LocalKeyVerifyError::Expired) => {
+                                log::debug!("Local key {} has expired", key.id);
+                                false
+                            }
+                            Err(crate::gateway::LocalKeyVerifyError::QuotaExceeded) => {
+                                log::debug!("Local key {} quota exceeded", key.id);
+                                false
+                            }
+                            Err(_) => false,
+                        }
+                    })
             })
             .ok_or(GatewayRouteError::LocalKeyUnauthorized);
         let local_key = match local_key {
             Ok(key) => key,
             Err(error) => return Ok(error.response()),
         };
+
+        // Rate limiting check
+        if let Err(rate_limit_error) = state.gateway_rate_limiter.check() {
+            log::debug!(
+                "Rate limit exceeded for local key {}: {:?}",
+                local_key.id,
+                rate_limit_error
+            );
+
+            // Audit log for rate limit
+            crate::gateway::audit::log_audit(crate::gateway::audit::GatewayAuditEvent {
+                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+                event_type: crate::gateway::audit::GatewayAuditEventType::RateLimitExceeded,
+                profile_id: route.profile.id.clone(),
+                actor: Some(local_key.id.clone()),
+                details: serde_json::json!({
+                    "limit_type": format!("{:?}", rate_limit_error),
+                }),
+                result: crate::gateway::audit::AuditResult::Success,
+            });
+
+            return Ok(json_error_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limit_exceeded",
+                "Too many requests",
+            ));
+        }
+
         let upstream_key = match select_upstream_key(&route.profile) {
             Some(key) => key,
             None => return Ok(GatewayRouteError::UpstreamKeyUnavailable.response()),
@@ -756,12 +798,14 @@ pub(crate) async fn handle_gateway_request(
         )),
         ..Default::default()
     };
-    let forward_path = if route.profile.auth_mode == GatewayAuthMode::ManagedKeys {
-        append_query(&route.path, strip_query_key(raw_query).as_deref())
-    } else {
-        append_query(&route.path, raw_query)
-    };
+    // Always strip query key parameter for Gemini to prevent credential leakage in upstream logs
+    let forward_path = append_query(&route.path, strip_query_key(raw_query).as_deref());
 
+    // Body is cloned for failover attempts. This is safe because:
+    // 1. Body size is limited to MAX_GATEWAY_REQUEST_BODY_BYTES (16MB)
+    // 2. Failover only happens when retryable_before_response=true, meaning
+    //    the response body has not started streaming yet
+    // 3. Only PriorityFailover strategy retries (see loop condition below)
     let mut result = forward_gateway_attempt(
         route.mode,
         &forwarder,
@@ -797,6 +841,21 @@ pub(crate) async fn handle_gateway_request(
         let Ok(secret) = load_upstream_secret(&upstream_key.secret_ref) else {
             break;
         };
+
+        // Audit log for failover
+        crate::gateway::audit::log_audit(crate::gateway::audit::GatewayAuditEvent {
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            event_type: crate::gateway::audit::GatewayAuditEventType::FailoverTriggered,
+            profile_id: route.profile.id.clone(),
+            actor: None,
+            details: serde_json::json!({
+                "failed_key_id": attempted_key_ids.last(),
+                "fallback_key_id": upstream_key.id,
+                "outcome": format!("{:?}", result.outcome()),
+            }),
+            result: crate::gateway::audit::AuditResult::Success,
+        });
+
         let mut retry_headers = request_headers.clone();
         remove_client_label_header(&mut retry_headers);
         if inject_upstream_auth(&route.profile, &mut retry_headers, &secret).is_err() {
@@ -804,6 +863,8 @@ pub(crate) async fn handle_gateway_request(
         }
         selected_upstream_key_id = Some(upstream_key.id.clone());
         attempted_key_ids.push(upstream_key.id.clone());
+        // Safe to clone body here because should_failover() returned true,
+        // guaranteeing retryable_before_response=true (no streaming started)
         result = forward_gateway_attempt(
             route.mode,
             &forwarder,
