@@ -438,48 +438,14 @@ pub fn select_upstream_key_excluding<'a>(
     profile: &'a GatewayProfile,
     excluded_key_ids: &[String],
 ) -> Option<&'a GatewayUpstreamKey> {
-    let mut keys: Vec<&GatewayUpstreamKey> = profile
+    // A profile represents one third-party endpoint and one credential. Keep
+    // selecting deterministically for compatibility with older settings that
+    // may still contain more than one key; new writes reject that state.
+    profile
         .upstream_keys
         .iter()
-        .filter(|key| {
-            key.enabled
-                && !excluded_key_ids.iter().any(|id| id == &key.id)
-                && upstream_key_is_available(&profile.id, &key.id)
-        })
-        .collect();
-    if keys.is_empty() {
-        return None;
-    }
-    match profile.dispatch_strategy {
-        GatewayDispatchStrategy::PriorityFailover => {
-            keys.sort_by_key(|key| key.priority);
-            keys.into_iter().next()
-        }
-        GatewayDispatchStrategy::Weighted => {
-            let total: u32 = keys.iter().map(|key| key.weight.max(1) as u32).sum();
-            let ticket = OsRng.next_u32() % total.max(1);
-            let mut cursor = 0u32;
-            keys.into_iter().find(|key| {
-                cursor += key.weight.max(1) as u32;
-                ticket < cursor
-            })
-        }
-        GatewayDispatchStrategy::Random => {
-            Some(keys.swap_remove((OsRng.next_u32() as usize) % keys.len()))
-        }
-        GatewayDispatchStrategy::RoundRobin => {
-            let index = match ROUND_ROBIN_CURSORS.lock() {
-                Ok(mut cursors) => {
-                    let cursor = cursors.entry(profile.id.clone()).or_insert(0);
-                    let index = *cursor as usize % keys.len();
-                    *cursor = cursor.wrapping_add(1);
-                    index
-                }
-                Err(_) => 0,
-            };
-            Some(keys.swap_remove(index))
-        }
-    }
+        .filter(|key| key.enabled && !excluded_key_ids.iter().any(|id| id == &key.id))
+        .next()
 }
 
 pub fn upstream_secret_ref(profile_id: &str, key_id: &str) -> String {
@@ -563,32 +529,6 @@ pub fn clear_profile_runtime_state(profile_id: &str) {
     }
     if let Ok(mut cursors) = ROUND_ROBIN_CURSORS.lock() {
         cursors.remove(profile_id);
-    }
-}
-
-fn upstream_key_is_available(profile_id: &str, key_id: &str) -> bool {
-    let mut health = match KEY_HEALTH.lock() {
-        Ok(health) => health,
-        Err(_) => return true,
-    };
-    let key = format!("{profile_id}:{key_id}");
-    let Some(entry) = health.get_mut(&key) else {
-        return true;
-    };
-    match entry.cooling_until {
-        Some(until) if Instant::now() < until => false,
-        Some(_) => {
-            // Half-open state: reserve exactly one probe after cooldown. Other
-            // concurrent requests keep using alternate keys until its outcome
-            // is reported.
-            entry.cooling_until = None;
-            entry.consecutive_failures = 0;
-            entry.consecutive_auth_failures = 0;
-            entry.half_open_probe_in_flight = true;
-            true
-        }
-        None if entry.half_open_probe_in_flight => false,
-        None => true,
     }
 }
 
@@ -872,7 +812,7 @@ mod tests {
         report_upstream_outcome(&profile.id, key_id, UpstreamOutcome::InvalidCredentials);
         assert!(select_upstream_key(&profile).is_some());
         report_upstream_outcome(&profile.id, key_id, UpstreamOutcome::InvalidCredentials);
-        assert!(select_upstream_key(&profile).is_none());
+        assert!(select_upstream_key(&profile).is_some());
         clear_profile_runtime_state(&profile.id);
     }
 
@@ -884,12 +824,12 @@ mod tests {
         report_upstream_outcome(&profile.id, key_id, UpstreamOutcome::ServerError);
         assert!(select_upstream_key(&profile).is_some());
         report_upstream_outcome(&profile.id, key_id, UpstreamOutcome::ServerError);
-        assert!(select_upstream_key(&profile).is_none());
+        assert!(select_upstream_key(&profile).is_some());
         clear_profile_runtime_state(&profile.id);
     }
 
     #[test]
-    fn priority_strategy_selects_lowest_priority_value() {
+    fn legacy_multiple_keys_use_the_first_enabled_key() {
         let mut profile = create_profile(input("https://api.deepseek.com")).unwrap();
         profile.dispatch_strategy = GatewayDispatchStrategy::PriorityFailover;
         profile.upstream_keys = vec![
@@ -910,6 +850,6 @@ mod tests {
                 secret_ref: "b".to_string(),
             },
         ];
-        assert_eq!(select_upstream_key(&profile).unwrap().id, "b");
+        assert_eq!(select_upstream_key(&profile).unwrap().id, "a");
     }
 }

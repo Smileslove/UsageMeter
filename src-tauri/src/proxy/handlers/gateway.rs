@@ -14,11 +14,9 @@ use super::super::request_common::{
 use super::super::types::{ProxyState, RequestContext};
 use crate::gateway::{
     is_expected_upstream_secret_ref, load_upstream_secret, report_upstream_outcome,
-    select_upstream_key, select_upstream_key_excluding, validate_profile, UpstreamOutcome,
+    select_upstream_key, validate_profile, UpstreamOutcome,
 };
-use crate::models::{
-    AppSettings, GatewayAuthMode, GatewayDispatchStrategy, GatewayProfile, GatewayProtocol,
-};
+use crate::models::{AppSettings, GatewayAuthMode, GatewayProfile, GatewayProtocol};
 use bytes::BytesMut;
 use http_body_util::BodyExt;
 use hyper::{
@@ -708,7 +706,7 @@ pub(crate) async fn handle_gateway_request(
                                 log::debug!("Local key {} quota exceeded", key.id);
                                 false
                             }
-                            Err(_) => false,
+                            Err(_) => false
                         }
                     })
             })
@@ -801,12 +799,7 @@ pub(crate) async fn handle_gateway_request(
     // Always strip query key parameter for Gemini to prevent credential leakage in upstream logs
     let forward_path = append_query(&route.path, strip_query_key(raw_query).as_deref());
 
-    // Body is cloned for failover attempts. This is safe because:
-    // 1. Body size is limited to MAX_GATEWAY_REQUEST_BODY_BYTES (16MB)
-    // 2. Failover only happens when retryable_before_response=true, meaning
-    //    the response body has not started streaming yet
-    // 3. Only PriorityFailover strategy retries (see loop condition below)
-    let mut result = forward_gateway_attempt(
+    let result = forward_gateway_attempt(
         route.mode,
         &forwarder,
         state,
@@ -817,65 +810,8 @@ pub(crate) async fn handle_gateway_request(
         context.clone(),
     )
     .await;
-    let mut attempted_key_ids = selected_upstream_key_id
-        .clone()
-        .into_iter()
-        .collect::<Vec<_>>();
-    loop {
-        if let Some(key_id) = selected_upstream_key_id.as_deref() {
-            report_upstream_outcome(&route.profile.id, key_id, result.outcome());
-        }
-        if route.profile.auth_mode != GatewayAuthMode::ManagedKeys
-            || route.profile.dispatch_strategy != GatewayDispatchStrategy::PriorityFailover
-            || !result.should_failover()
-        {
-            break;
-        }
-        let Some(upstream_key) = select_upstream_key_excluding(&route.profile, &attempted_key_ids)
-        else {
-            break;
-        };
-        if !is_expected_upstream_secret_ref(&route.profile.id, upstream_key) {
-            break;
-        }
-        let Ok(secret) = load_upstream_secret(&upstream_key.secret_ref) else {
-            break;
-        };
-
-        // Audit log for failover
-        crate::gateway::audit::log_audit(crate::gateway::audit::GatewayAuditEvent {
-            timestamp_ms: chrono::Utc::now().timestamp_millis(),
-            event_type: crate::gateway::audit::GatewayAuditEventType::FailoverTriggered,
-            profile_id: route.profile.id.clone(),
-            actor: None,
-            details: serde_json::json!({
-                "failed_key_id": attempted_key_ids.last(),
-                "fallback_key_id": upstream_key.id,
-                "outcome": format!("{:?}", result.outcome()),
-            }),
-            result: crate::gateway::audit::AuditResult::Success,
-        });
-
-        let mut retry_headers = request_headers.clone();
-        remove_client_label_header(&mut retry_headers);
-        if inject_upstream_auth(&route.profile, &mut retry_headers, &secret).is_err() {
-            break;
-        }
-        selected_upstream_key_id = Some(upstream_key.id.clone());
-        attempted_key_ids.push(upstream_key.id.clone());
-        // Safe to clone body here because should_failover() returned true,
-        // guaranteeing retryable_before_response=true (no streaming started)
-        result = forward_gateway_attempt(
-            route.mode,
-            &forwarder,
-            state,
-            method.clone(),
-            &forward_path,
-            retry_headers,
-            body.clone(),
-            context.clone(),
-        )
-        .await;
+    if let Some(key_id) = selected_upstream_key_id.as_deref() {
+        report_upstream_outcome(&route.profile.id, key_id, result.outcome());
     }
 
     let response = result.into_response();

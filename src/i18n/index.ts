@@ -111,6 +111,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       upstreamKey: '上游 API Key',
       upstreamKeyKeepHint: '留空表示保持现有 Key',
       validationUpstreamKey: '请输入上游 API Key',
+      singleUpstreamKeyHint: '每个上游只配置一个 API Key；编辑时输入新 Key 可直接替换。',
       upstreamKeyPlaceholder: '输入上游 API Key',
       localKeys: '本地 Key',
       localKeyHint: '可填写备注，不限制使用的客户端。',
@@ -138,6 +139,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       saveSuccess: '上游配置已保存',
       saveError: '上游配置保存失败',
       operationError: '网关操作失败，请稍后重试',
+      upstreamKeyAlreadyExists: '每个上游只能配置一个 API Key，请先删除现有 Key。',
       loadError: '上游配置加载失败',
       noRouteYet: '启动本地代理后，网关路由才可用',
       startProxy: '启动代理',
@@ -1092,6 +1094,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       localAccess: '本機接入',
       upstreamKey: '上游 API Key', upstreamKeyKeepHint: '留空表示保留現有 Key', validationUpstreamKey: '請輸入上游 API Key',
       operationError: '閘道操作失敗，請稍後再試',
+      singleUpstreamKeyHint: '每個上游只設定一個 API Key；編輯時輸入新 Key 可直接替換。',
       title: 'API 閘道', subtitle: '按地址轉發並統計多種原生 API', running: '閘道已執行', stopped: '閘道未執行', routingReady: '路由已就緒', routingPending: '正在啟動監聽服務', autoStartHint: '隨 UsageMeter 啟動，無需手動開啟。', listener: '監聽地址', profiles: '上游設定', profileCount: '{count} 個設定', newProfile: '新增上游', editProfile: '編輯上游', emptyTitle: '尚無上游設定', emptyBody: '新增地址後，為客戶端建立獨立的本機接入地址。', name: '名稱', namePlaceholder: '例如 DeepSeek', protocol: '原生協議', baseUrl: '上游地址', baseUrlPlaceholder: 'https://api.example.com', clientLabel: '呼叫方標籤', clientLabelPlaceholder: '例如 Cursor（可選）', clientLabelHint: '僅用於統計展示，不參與認證。', enabled: '啟用設定', save: '儲存設定', update: '更新設定', cancel: '取消編輯', delete: '刪除設定', copyAddress: '複製接入地址', copied: '已複製接入地址', address: '接入地址', addressHint: '客戶端使用產生的本機 Key；上游 Key 安全存放在系統憑據庫。', strategy: '分配策略', strategyRoundRobin: '輪詢', strategyRandom: '隨機', strategyWeighted: '加權', strategyFailover: '優先級故障轉移', weight: '權重', priority: '優先級', managedKeyHint: '上游 Key 安全保存在系統憑據庫；客戶端使用下方產生的本機 Key。', upstreamKeys: '上游 Key', upstreamKeyHint: '僅在新增時輸入，之後不會顯示。', upstreamKeyPlaceholder: '輸入上游 API Key', localKeys: '本機 Key', localKeyHint: '可填寫備註，不限制使用的客戶端。', keyRemark: '備註（可選）', addKey: '新增 Key', deleteKey: '刪除 Key', unnamedKey: '未命名 Key', createLocalKey: '產生本機 Key', localKeyCreated: '本機 Key 已產生，可隨時在此列表中查看和複製。', copyLocalKey: '複製本機 Key', showLocalKey: '查看本機 Key', revokeKey: '撤銷本機 Key', status: '狀態', requestPath: '請求路徑', protocolOpenAiChat: 'OpenAI Chat Completions', protocolOpenAiResponses: 'OpenAI Responses', protocolAnthropic: 'Anthropic Messages', protocolGemini: 'Gemini GenerateContent', validationName: '請輸入上游名稱', validationUrl: '請輸入有效的 HTTPS 公網地址', deleteConfirm: '確定刪除這個上游設定嗎？', saveSuccess: '上游設定已儲存', saveError: '上游設定儲存失敗', loadError: '閘道設定載入失敗', noRouteYet: '本機代理啟動後，閘道路由即可使用', startProxy: '啟動代理', startProxyHint: '本機代理會隨 UsageMeter 自動啟動。'
     },
     metrics: {
@@ -2042,6 +2045,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       localAccess: 'Local access',
       upstreamKey: 'Upstream API key', upstreamKeyKeepHint: 'Leave blank to keep the current key', validationUpstreamKey: 'Enter an upstream API key',
       operationError: 'Gateway operation failed. Try again shortly.',
+      singleUpstreamKeyHint: 'Each upstream uses one API key. Enter a new key while editing to replace it.',
       title: 'API Gateway', subtitle: 'Route and measure native API traffic by address', running: 'Gateway running', stopped: 'Gateway stopped', routingReady: 'Routing ready', routingPending: 'Starting local listener', autoStartHint: 'Starts with UsageMeter. No manual start is needed.', listener: 'Listener', profiles: 'Upstreams', profileCount: '{count} profiles', newProfile: 'Add upstream', editProfile: 'Edit upstream', emptyTitle: 'No upstreams yet', emptyBody: 'Add an address to create a dedicated local endpoint for a client.', name: 'Name', namePlaceholder: 'e.g. DeepSeek', protocol: 'Native protocol', baseUrl: 'Upstream URL', baseUrlPlaceholder: 'https://api.example.com', clientLabel: 'Caller label', clientLabelPlaceholder: 'e.g. Cursor (optional)', clientLabelHint: 'Used for statistics only, never authentication.', enabled: 'Enable profile', save: 'Save profile', update: 'Update profile', cancel: 'Cancel editing', delete: 'Delete profile', copyAddress: 'Copy endpoint', copied: 'Endpoint copied', address: 'Endpoint', addressHint: 'Clients use a generated local key; upstream keys stay in the system credential store.', strategy: 'Dispatch strategy', strategyRoundRobin: 'Round robin', strategyRandom: 'Random', strategyWeighted: 'Weighted', strategyFailover: 'Priority failover', weight: 'Weight', priority: 'Priority', managedKeyHint: 'Upstream keys stay in the system credential store. Clients use a generated local key below.', upstreamKeys: 'Upstream keys', upstreamKeyHint: 'Enter a key only when adding it. It is never shown again.', upstreamKeyPlaceholder: 'Enter upstream API key', localKeys: 'Local key', localKeyHint: 'Each upstream has one local key shared by your clients.', singleLocalKeyHint: 'Each upstream can have only one local key. Revoke it before creating a replacement.', keyRemark: 'Remark (optional)', addKey: 'Add key', deleteKey: 'Delete key', unnamedKey: 'Unnamed key', createLocalKey: 'Create local key', localKeyCreated: 'The local key is available here whenever you need to view or copy it.', copyLocalKey: 'Copy local key', copyConnectionDetails: 'Copy Base URL and API key', showLocalKey: 'Show local key', revokeKey: 'Revoke local key', status: 'Status', requestPath: 'Request path', protocolOpenAiChat: 'OpenAI Chat Completions', protocolOpenAiResponses: 'OpenAI Responses', protocolAnthropic: 'Anthropic Messages', protocolGemini: 'Gemini GenerateContent', validationName: 'Enter an upstream name', validationUrl: 'Enter a valid public HTTPS URL', deleteConfirm: 'Delete this upstream profile?', saveSuccess: 'Upstream profile saved', saveError: 'Failed to save upstream profile', loadError: 'Failed to load upstream profiles', noRouteYet: 'Gateway routing becomes available when the local listener starts', startProxy: 'Start proxy', startProxyHint: 'The local listener starts automatically with UsageMeter.'
     },
     metrics: {

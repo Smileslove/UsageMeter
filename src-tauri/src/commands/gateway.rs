@@ -12,8 +12,14 @@ use super::{load_settings_blocking, update_settings_internal};
 
 #[tauri::command]
 pub async fn list_gateway_profiles() -> Result<Vec<GatewayProfileView>, String> {
-    let (profiles, _) = update_settings_internal(|settings| {
+    let ((profiles, removed_secret_refs), _) = update_settings_internal(|settings| {
+        let mut removed_secret_refs = Vec::new();
         for profile in &mut settings.gateway.profiles {
+            for extra in profile.upstream_keys.drain(1..) {
+                if gateway::is_expected_upstream_secret_ref(&profile.id, &extra) {
+                    removed_secret_refs.push(extra.secret_ref);
+                }
+            }
             if profile.local_keys.is_empty() {
                 let (metadata, generated) = gateway::create_local_key(
                     &profile.id,
@@ -26,14 +32,17 @@ pub async fn list_gateway_profiles() -> Result<Vec<GatewayProfileView>, String> 
                 profile.auth_mode = crate::models::GatewayAuthMode::ManagedKeys;
             }
         }
-        Ok(settings
+        Ok((settings
             .gateway
             .profiles
             .iter()
             .map(GatewayProfileView::from)
-            .collect())
+            .collect(), removed_secret_refs))
     })
     .map_err(String::from)?;
+    for secret_ref in removed_secret_refs {
+        gateway::delete_upstream_secret(&secret_ref);
+    }
     Ok(profiles)
 }
 
@@ -68,14 +77,26 @@ pub async fn create_gateway_profile(
         secret_ref: local_metadata.secret_ref.clone(),
     }));
 
+    if let Some(secret) = upstream_secret {
+        let (upstream_key, _) = gateway::create_upstream_key(
+            &profile.id,
+            GatewayUpstreamKeyInput {
+                remark: String::new(),
+                secret: secret.clone(),
+                enabled: true,
+                weight: 1,
+                priority: 0,
+            },
+        )?;
+        gateway::store_upstream_secret(&upstream_key.secret_ref, &secret)?;
+        compensation.register(Box::new(DeleteSecretAction {
+            secret_ref: upstream_key.secret_ref.clone(),
+        }));
+        profile.upstream_keys.push(upstream_key);
+    }
+
     profile.local_keys.push(local_metadata);
     profile.auth_mode = crate::models::GatewayAuthMode::ManagedKeys;
-    if let Some(secret) = upstream_secret {
-        let (key, _) = gateway::create_upstream_key(&profile.id, GatewayUpstreamKeyInput { remark: String::new(), secret: secret.clone(), enabled: true, weight: 1, priority: 0 })?;
-        gateway::store_upstream_secret(&key.secret_ref, &secret)?;
-        compensation.register(Box::new(DeleteSecretAction { secret_ref: key.secret_ref.clone() }));
-        profile.upstream_keys.push(key);
-    }
 
     let profile_to_insert = profile.clone();
     let update = update_settings_internal(move |settings| {
@@ -216,6 +237,9 @@ pub async fn create_gateway_upstream_key(
             .iter_mut()
             .find(|item| item.id == profile_id_clone)
             .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
+        if !profile.upstream_keys.is_empty() {
+            return Err("ERR_GATEWAY_UPSTREAM_KEY_ALREADY_EXISTS".to_string());
+        }
         profile.upstream_keys.push(key);
         profile.auth_mode = crate::models::GatewayAuthMode::ManagedKeys;
         Ok(GatewayProfileView::from(&*profile))
