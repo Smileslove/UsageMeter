@@ -67,6 +67,8 @@ pub struct GatewayProfileInput {
     pub client_label: String,
     #[serde(default)]
     pub dispatch_strategy: GatewayDispatchStrategy,
+    #[serde(default)]
+    pub upstream_secret: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -752,6 +754,7 @@ mod tests {
             enabled: true,
             client_label: " Cursor ".to_string(),
             dispatch_strategy: GatewayDispatchStrategy::RoundRobin,
+            upstream_secret: None,
         }
     }
 

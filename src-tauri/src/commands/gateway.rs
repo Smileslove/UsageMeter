@@ -53,6 +53,7 @@ pub async fn create_gateway_profile(
 
     let compensation = CompensationScope::new();
 
+    let upstream_secret = input.upstream_secret.clone().filter(|value| !value.trim().is_empty());
     let mut profile = gateway::create_profile(input)?;
     let (local_metadata, local_generated) = gateway::create_local_key(
         &profile.id,
@@ -69,6 +70,12 @@ pub async fn create_gateway_profile(
 
     profile.local_keys.push(local_metadata);
     profile.auth_mode = crate::models::GatewayAuthMode::ManagedKeys;
+    if let Some(secret) = upstream_secret {
+        let (key, _) = gateway::create_upstream_key(&profile.id, GatewayUpstreamKeyInput { remark: String::new(), secret: secret.clone(), enabled: true, weight: 1, priority: 0 })?;
+        gateway::store_upstream_secret(&key.secret_ref, &secret)?;
+        compensation.register(Box::new(DeleteSecretAction { secret_ref: key.secret_ref.clone() }));
+        profile.upstream_keys.push(key);
+    }
 
     let profile_to_insert = profile.clone();
     let update = update_settings_internal(move |settings| {
@@ -112,6 +119,12 @@ pub async fn update_gateway_profile(
     input: GatewayProfileInput,
     state: State<'_, ProxyState>,
 ) -> Result<GatewayProfileView, String> {
+    if let Some(secret) = input.upstream_secret.clone().filter(|value| !value.trim().is_empty()) {
+        let settings = load_settings_blocking().map_err(String::from)?;
+        let profile = settings.gateway.profiles.iter().find(|profile| profile.id == id).ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
+        let key = profile.upstream_keys.first().ok_or_else(|| "ERR_GATEWAY_UPSTREAM_KEY_NOT_FOUND".to_string())?;
+        gateway::store_upstream_secret(&key.secret_ref, &secret)?;
+    }
     let mut updated_profile = gateway::update_profile(&id, input)?;
     let (view, settings) = update_settings_internal(move |settings| {
         let existing = settings

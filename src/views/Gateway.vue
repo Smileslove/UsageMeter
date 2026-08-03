@@ -90,6 +90,7 @@ function selectProfile(profile: GatewayProfile) {
   selectedId.value = profile.id
   editing.value = true
   draft.value = { ...profile }
+  upstreamSecret.value = ''
   feedback.value = null
   errorCode.value = ''
   keyPanel.value = null
@@ -129,6 +130,7 @@ async function load() {
 
 function validateDraft() {
   if (!draft.value.name.trim()) return 'gateway.validationName'
+  if (!draft.value.id && !upstreamSecret.value.trim()) return 'gateway.validationUpstreamKey'
   try {
     const parsed = new URL(draft.value.baseUrl.trim())
     if (
@@ -187,7 +189,8 @@ async function saveProfile() {
     baseUrl: draft.value.baseUrl.trim().replace(/\/$/, ''),
     enabled: draft.value.enabled,
     clientLabel: draft.value.clientLabel.trim(),
-    dispatchStrategy: draft.value.dispatchStrategy
+    dispatchStrategy: draft.value.dispatchStrategy,
+    upstreamSecret: upstreamSecret.value.trim() || undefined
   }
   try {
     const saved = draft.value.id
@@ -467,6 +470,10 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
                 <input v-model="draft.baseUrl" class="min-w-0 flex-1 bg-transparent text-right font-mono text-[10.5px] text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]" :placeholder="t(locale, 'gateway.baseUrlPlaceholder')" inputmode="url" />
               </label>
               <label class="flex h-11 items-center gap-3 border-t border-[var(--theme-border-default)] px-3">
+                <span class="w-[66px] shrink-0 text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.upstreamKey') }}</span>
+                <input v-model="upstreamSecret" type="password" class="min-w-0 flex-1 bg-transparent text-right font-mono text-[10.5px] text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]" :placeholder="draft.id ? t(locale, 'gateway.upstreamKeyKeepHint') : t(locale, 'gateway.upstreamKeyPlaceholder')" autocomplete="off" />
+              </label>
+              <label class="flex h-11 items-center gap-3 border-t border-[var(--theme-border-default)] px-3">
                 <span class="w-[66px] shrink-0 text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.strategy') }}</span>
                 <select v-model="draft.dispatchStrategy" class="min-w-0 flex-1 appearance-none bg-transparent py-0.5 text-right text-[11.5px] font-semibold text-[var(--theme-text-primary)] outline-none">
                   <option v-for="option in strategyOptions" :key="option.value" :value="option.value">{{ t(locale, option.labelKey) }}</option>
@@ -485,10 +492,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
                 <div class="flex items-center justify-between gap-2"><span class="text-[9.5px] font-semibold text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.address') }}</span><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.copyAddress')" :aria-label="t(locale, 'gateway.copyAddress')" @click="copyAddress()"><Copy class="h-3.5 w-3.5" /></button></div>
                 <p class="mt-1 break-all font-mono text-[9px] leading-snug text-[var(--theme-text-primary)]">{{ selectedAddress }}</p>
               </div>
-              <div v-if="draft.id" class="theme-surface-muted overflow-hidden rounded-xl border">
-                <button type="button" class="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-[var(--theme-bg-hover)]" @click="keyPanel = 'upstream'"><span class="flex h-7 w-7 items-center justify-center rounded-lg bg-amber-500/10 text-amber-600"><KeyRound class="h-3.5 w-3.5" /></span><span class="min-w-0 flex-1"><span class="block text-[10.5px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'gateway.upstreamKeys') }}</span><span class="block text-[9px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.upstreamKeyHint') }}</span></span><span class="text-[11px] font-semibold text-[var(--theme-text-secondary)]">{{ draft.upstreamKeys.length }}</span></button>
-                <button v-if="false" type="button" class="flex w-full items-center gap-3 border-t border-[var(--theme-border-default)] px-3 py-2.5 text-left" @click="keyPanel = 'local'"><span>{{ t(locale, 'gateway.localKeys') }}</span></button>
-              </div>
+              <p class="px-1 text-[9px] leading-snug text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.singleUpstreamKeyHint') }}</p>
             </template>
 
             <template v-else>
