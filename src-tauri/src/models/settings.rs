@@ -22,8 +22,8 @@ pub struct ProxyConfig {
     pub streaming_idle_timeout_seconds: u64,
 }
 
-/// A local API gateway route. Credential metadata lives with the profile while
-/// raw credentials are kept in the operating system credential store.
+/// A local API gateway route. Gateway credentials are persisted in the local
+/// settings document (the same cross-platform model used by CC Switch).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayProfile {
@@ -64,8 +64,8 @@ pub enum GatewayDispatchStrategy {
     PriorityFailover,
 }
 
-/// Non-secret metadata for an upstream credential. `secret_ref` resolves only
-/// through the operating system credential store.
+/// An upstream credential. `secret` is the v2 local-settings representation;
+/// `secret_ref` is retained solely for reading/migrating v1 profiles.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayUpstreamKey {
@@ -78,11 +78,15 @@ pub struct GatewayUpstreamKey {
     #[serde(default)]
     pub priority: u16,
     #[serde(default)]
+    pub secret: String,
+    /// Legacy reference to an OS credential-store entry.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub secret_ref: String,
 }
 
-/// A generated local credential has a salted verifier in settings and its raw
-/// value in the operating system credential store for explicit user reveal.
+/// A generated local credential. New profiles persist the raw value in
+/// `secret`; the salted verifier remains for compatibility with v1 data and
+/// for constant-time request authentication.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayLocalKey {
@@ -94,9 +98,11 @@ pub struct GatewayLocalKey {
     pub secret_hash: String,
     #[serde(default)]
     pub secret_salt: String,
-    /// Reference to the local credential in the OS credential store. The raw
-    /// local key itself is never written to settings.
+    /// Raw local key in the v2 settings representation.
     #[serde(default)]
+    pub secret: String,
+    /// Legacy reference to the local credential in the OS credential store.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub secret_ref: String,
     pub created_at_ms: i64,
     #[serde(default)]
@@ -125,11 +131,32 @@ pub enum GatewayProtocol {
     GeminiGenerateContent,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewaySettings {
+    // Missing versions identify v1 files and are handled by the migration
+    // path; freshly-created settings use Default (v2) below.
+    #[serde(default = "default_gateway_storage_version_legacy")]
+    pub storage_version: u8,
     #[serde(default)]
     pub profiles: Vec<GatewayProfile>,
+}
+
+pub fn default_gateway_storage_version() -> u8 {
+    2
+}
+
+pub fn default_gateway_storage_version_legacy() -> u8 {
+    1
+}
+
+impl Default for GatewaySettings {
+    fn default() -> Self {
+        Self {
+            storage_version: default_gateway_storage_version(),
+            profiles: Vec::new(),
+        }
+    }
 }
 
 pub fn default_gateway_profile_enabled() -> bool {
@@ -1171,6 +1198,26 @@ mod tests {
         );
         assert!(profile.upstream_keys.is_empty());
         assert!(profile.local_keys.is_empty());
+    }
+
+    #[test]
+    fn gateway_settings_default_to_v2_and_serialize_storage_version() {
+        let settings = GatewaySettings::default();
+        assert_eq!(settings.storage_version, 2);
+        let value = serde_json::to_value(&settings).expect("gateway settings");
+        assert_eq!(
+            value.get("storageVersion").and_then(|v| v.as_u64()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn gateway_settings_without_version_load_as_v1_for_migration() {
+        let settings: GatewaySettings = serde_json::from_value(serde_json::json!({
+            "profiles": []
+        }))
+        .expect("gateway settings");
+        assert_eq!(settings.storage_version, 1);
     }
 
     #[test]

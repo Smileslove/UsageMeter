@@ -63,6 +63,10 @@ const feedbackMessage = computed(() => {
       ? 'gateway.singleLocalKeyHint'
     : errorCode.value === 'ERR_GATEWAY_UPSTREAM_KEY_ALREADY_EXISTS'
       ? 'gateway.singleUpstreamKeyHint'
+    : errorCode.value === 'ERR_GATEWAY_UPSTREAM_KEY_MIGRATION_REQUIRED'
+      ? 'gateway.upstreamKeyMigrationRequired'
+    : errorCode.value === 'ERR_GATEWAY_LOCAL_KEY_REGENERATE_REQUIRED'
+      ? 'gateway.localKeyRegenerateRequired'
     : errorCode.value.startsWith('ERR_GATEWAY_PROFILE_NAME')
       ? 'gateway.validationName'
       : errorCode.value.startsWith('ERR_GATEWAY_BASE_URL')

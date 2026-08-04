@@ -1,7 +1,8 @@
 //! Transaction-like compensation helpers for gateway operations.
 //!
-//! Since we store secrets in the OS keychain and metadata in JSON settings,
-//! we need explicit compensation logic to maintain consistency.
+//! Legacy transaction helpers for gateway mutations. V2 secrets are part of
+//! the settings document, so no credential-store rollback is needed for new
+//! writes; the delete action remains for v1 migration cleanup compatibility.
 
 use std::sync::Mutex;
 
@@ -60,11 +61,7 @@ impl Default for CompensationScope {
 
 impl Drop for CompensationScope {
     fn drop(&mut self) {
-        let should_rollback = self
-            .committed
-            .lock()
-            .map(|c| !*c)
-            .unwrap_or(false);
+        let should_rollback = self.committed.lock().map(|c| !*c).unwrap_or(false);
 
         if should_rollback {
             self.rollback();
@@ -72,18 +69,18 @@ impl Drop for CompensationScope {
     }
 }
 
-/// Compensation action for deleting a secret from the OS credential store.
+/// Compensation action for deleting a legacy secret from the OS credential store.
 pub struct DeleteSecretAction {
     pub secret_ref: String,
 }
 
 impl CompensationAction for DeleteSecretAction {
     fn rollback(&self) {
-        crate::gateway::delete_upstream_secret(&self.secret_ref);
+        crate::gateway::delete_legacy_keychain_secret(&self.secret_ref);
     }
 
     fn description(&self) -> &str {
-        "delete secret from credential store"
+        "delete legacy secret from credential store"
     }
 }
 
@@ -105,8 +102,8 @@ impl CompensationAction for ClearProfileStateAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     struct TestAction {
         rolled_back: Arc<AtomicBool>,

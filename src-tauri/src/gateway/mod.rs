@@ -1,10 +1,9 @@
 //! Local API gateway domain types and validation.
 //!
-//! Gateway profiles keep only credential metadata. Raw credentials live in the
-//! operating system credential store.
+//! Gateway profiles persist their credentials in the local settings document.
+//! Old macOS Keychain references are read only during one-time migration.
 
 pub mod audit;
-pub mod compensation;
 pub mod rate_limit;
 
 use crate::models::{
@@ -327,7 +326,7 @@ pub fn normalize_profile(mut profile: GatewayProfile) -> GatewayProfile {
 }
 
 pub fn create_upstream_key(
-    profile_id: &str,
+    _profile_id: &str,
     input: GatewayUpstreamKeyInput,
 ) -> Result<(GatewayUpstreamKey, String), String> {
     validate_key_remark(&input.remark)?;
@@ -338,7 +337,7 @@ pub fn create_upstream_key(
         return Err("ERR_GATEWAY_UPSTREAM_KEY_WEIGHT_INVALID".to_string());
     }
     let id = next_key_id("upstream");
-    let secret_ref = upstream_secret_ref(profile_id, &id);
+    let secret = input.secret.trim().to_string();
     Ok((
         GatewayUpstreamKey {
             id,
@@ -346,14 +345,16 @@ pub fn create_upstream_key(
             enabled: input.enabled,
             weight: input.weight,
             priority: input.priority,
-            secret_ref,
+            secret: secret.clone(),
+            // New records intentionally leave the v1 keychain reference empty.
+            secret_ref: String::new(),
         },
-        input.secret.trim().to_string(),
+        secret,
     ))
 }
 
 pub fn create_local_key(
-    profile_id: &str,
+    _profile_id: &str,
     input: GatewayLocalKeyInput,
 ) -> Result<(GatewayLocalKey, GeneratedGatewayLocalKey), String> {
     validate_key_remark(&input.remark)?;
@@ -367,11 +368,13 @@ pub fn create_local_key(
         enabled: true,
         secret_hash: hash_local_key(&key, &salt),
         secret_salt: salt,
-        secret_ref: local_secret_ref(profile_id, &id),
+        secret: key.clone(),
+        // New records intentionally leave the v1 keychain reference empty.
+        secret_ref: String::new(),
         created_at_ms: chrono::Utc::now().timestamp_millis(),
         last_used_at_ms: None,
-        expires_at_ms: None,  // Default: never expires
-        max_requests: None,   // Default: unlimited requests
+        expires_at_ms: None, // Default: never expires
+        max_requests: None,  // Default: unlimited requests
         request_count: 0,
     };
     let generated = GeneratedGatewayLocalKey {
@@ -421,9 +424,20 @@ pub fn verify_local_key_with_expiry(
         }
     }
 
-    // Verify hash
-    let actual = hash_local_key(key, &candidate.secret_salt);
-    if !constant_time_eq(actual.as_bytes(), candidate.secret_hash.as_bytes()) {
+    // v2 stores the raw value for cross-platform reveal; v1 records contain
+    // only a salted verifier. Keep both paths valid during migration.
+    let verified = if !candidate.secret_hash.is_empty() && !candidate.secret_salt.is_empty() {
+        let actual = hash_local_key(key, &candidate.secret_salt);
+        constant_time_eq(actual.as_bytes(), candidate.secret_hash.as_bytes())
+    } else if !candidate.secret.is_empty() {
+        // Last-resort compatibility for malformed/imported records that have
+        // a raw value but no verifier. Normal v2 records always take the hash
+        // branch above.
+        constant_time_eq(key.as_bytes(), candidate.secret.as_bytes())
+    } else {
+        false
+    };
+    if !verified {
         return Err(LocalKeyVerifyError::Invalid);
     }
 
@@ -457,11 +471,21 @@ pub fn local_secret_ref(profile_id: &str, key_id: &str) -> String {
 }
 
 pub fn is_expected_upstream_secret_ref(profile_id: &str, key: &GatewayUpstreamKey) -> bool {
-    key.secret_ref == upstream_secret_ref(profile_id, &key.id)
+    !key.secret_ref.is_empty() && key.secret_ref == upstream_secret_ref(profile_id, &key.id)
 }
 
 pub fn is_expected_local_secret_ref(profile_id: &str, key: &GatewayLocalKey) -> bool {
-    key.secret_ref == local_secret_ref(profile_id, &key.id)
+    !key.secret_ref.is_empty() && key.secret_ref == local_secret_ref(profile_id, &key.id)
+}
+
+/// Returns a v2 upstream secret without consulting an operating-system store.
+pub fn local_upstream_secret(key: &GatewayUpstreamKey) -> Option<&str> {
+    (!key.secret.is_empty()).then_some(key.secret.as_str())
+}
+
+/// Returns a v2 local client key without consulting an operating-system store.
+pub fn local_client_secret(key: &GatewayLocalKey) -> Option<&str> {
+    (!key.secret.is_empty()).then_some(key.secret.as_str())
 }
 
 /// Updates only in-memory health state. It contains no credential material and
@@ -549,35 +573,9 @@ fn open_circuit(entry: &mut KeyHealth) {
     );
 }
 
-pub fn store_upstream_secret(secret_ref: &str, secret: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let status = std::process::Command::new("security")
-            .args([
-                "add-generic-password",
-                "-U",
-                "-a",
-                secret_ref,
-                "-s",
-                KEYRING_SERVICE,
-                "-w",
-                secret,
-            ])
-            .status()
-            .map_err(|_| "ERR_GATEWAY_CREDENTIAL_STORE_UNAVAILABLE".to_string())?;
-        status
-            .success()
-            .then_some(())
-            .ok_or_else(|| "ERR_GATEWAY_CREDENTIAL_STORE_UNAVAILABLE".to_string())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (secret_ref, secret);
-        Err("ERR_GATEWAY_CREDENTIAL_STORE_UNAVAILABLE".to_string())
-    }
-}
-
-pub fn load_upstream_secret(secret_ref: &str) -> Result<String, String> {
+/// Reads a v1 macOS Keychain entry. It is intentionally not used by new
+/// gateway operations; callers should migrate the returned value into `secret`.
+pub fn load_legacy_keychain_secret(secret_ref: &str) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         let output = std::process::Command::new("security")
@@ -605,7 +603,9 @@ pub fn load_upstream_secret(secret_ref: &str) -> Result<String, String> {
     }
 }
 
-pub fn delete_upstream_secret(secret_ref: &str) {
+/// Best-effort cleanup for v1 Keychain records after a successful migration.
+/// New v2 credentials never call this function.
+pub fn delete_legacy_keychain_secret(secret_ref: &str) {
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("security")
@@ -779,6 +779,53 @@ mod tests {
         assert!(!verify_local_key("umg_wrong_value", &metadata));
     }
 
+    #[test]
+    fn generated_local_key_keeps_v2_secret_for_direct_reads() {
+        let (metadata, generated) = create_local_key(
+            "gateway-test",
+            GatewayLocalKeyInput {
+                remark: String::new(),
+            },
+        )
+        .expect("local key");
+        assert_eq!(metadata.secret, generated.key);
+        assert!(metadata.secret_ref.is_empty());
+        assert_eq!(local_client_secret(&metadata), Some(generated.key.as_str()));
+    }
+
+    #[test]
+    fn legacy_local_key_verifies_from_hash_when_secret_is_absent() {
+        let (mut metadata, generated) = create_local_key(
+            "gateway-test",
+            GatewayLocalKeyInput {
+                remark: String::new(),
+            },
+        )
+        .expect("local key");
+        metadata.secret.clear();
+        assert!(verify_local_key(&generated.key, &metadata));
+        assert_eq!(local_client_secret(&metadata), None);
+    }
+
+    #[test]
+    fn upstream_key_persists_v2_secret_without_keychain_reference() {
+        let (key, returned_secret) = create_upstream_key(
+            "gateway-test",
+            GatewayUpstreamKeyInput {
+                remark: "primary".to_string(),
+                secret: " sk-test ".to_string(),
+                enabled: true,
+                weight: 1,
+                priority: 0,
+            },
+        )
+        .expect("upstream key");
+        assert_eq!(key.secret, "sk-test");
+        assert_eq!(returned_secret, "sk-test");
+        assert!(key.secret_ref.is_empty());
+        assert_eq!(local_upstream_secret(&key), Some("sk-test"));
+    }
+
     fn health_test_profile(profile_id: &str, key_id: &str) -> GatewayProfile {
         let mut profile = create_profile(input("https://api.deepseek.com")).unwrap();
         profile.id = profile_id.to_string();
@@ -788,6 +835,7 @@ mod tests {
             enabled: true,
             weight: 1,
             priority: 0,
+            secret: "legacy-secret".to_string(),
             secret_ref: upstream_secret_ref(profile_id, key_id),
         }];
         profile
@@ -839,6 +887,7 @@ mod tests {
                 enabled: true,
                 weight: 1,
                 priority: 20,
+                secret: String::new(),
                 secret_ref: "a".to_string(),
             },
             GatewayUpstreamKey {
@@ -847,6 +896,7 @@ mod tests {
                 enabled: true,
                 weight: 1,
                 priority: 1,
+                secret: String::new(),
                 secret_ref: "b".to_string(),
             },
         ];

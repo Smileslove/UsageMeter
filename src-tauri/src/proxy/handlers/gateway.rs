@@ -14,8 +14,7 @@ use super::super::request_common::{
 };
 use super::super::types::{ProxyState, RequestContext};
 use crate::gateway::{
-    is_expected_upstream_secret_ref, load_upstream_secret, report_upstream_outcome,
-    select_upstream_key, validate_profile, UpstreamOutcome,
+    report_upstream_outcome, select_upstream_key, validate_profile, UpstreamOutcome,
 };
 use crate::models::{AppSettings, GatewayAuthMode, GatewayProfile, GatewayProtocol};
 use hyper::{
@@ -860,14 +859,11 @@ pub(crate) async fn handle_gateway_request(
             Some(key) => key,
             None => return Ok(GatewayRouteError::UpstreamKeyUnavailable.response()),
         };
-        if !is_expected_upstream_secret_ref(&route.profile.id, upstream_key) {
+        let secret = upstream_key.secret.trim();
+        if secret.is_empty() {
             return Ok(GatewayRouteError::UpstreamKeyUnavailable.response());
         }
-        let secret = match load_upstream_secret(&upstream_key.secret_ref) {
-            Ok(secret) => secret,
-            Err(_) => return Ok(GatewayRouteError::UpstreamKeyUnavailable.response()),
-        };
-        if let Err(error) = inject_upstream_auth(&route.profile, &mut headers, &secret) {
+        if let Err(error) = inject_upstream_auth(&route.profile, &mut headers, secret) {
             return Ok(error.response());
         }
         selected_upstream_key_id = Some(upstream_key.id.clone());
@@ -963,6 +959,7 @@ mod tests {
     fn settings(profile: GatewayProfile) -> AppSettings {
         AppSettings {
             gateway: GatewaySettings {
+                storage_version: 2,
                 profiles: vec![profile],
             },
             ..AppSettings::default()
