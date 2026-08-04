@@ -2397,12 +2397,9 @@ async fn ensure_materialized_history_with_db(
     let proxy_signature = ProxyDatabase::get_global()
         .map(|db| db.get_merge_cache_signature())
         .transpose()?;
-    let mut pricings = settings.model_pricing.pricings.clone();
-    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
-        if let Ok(db_pricings) = db.get_all_model_pricings() {
-            pricings.extend(db_pricings);
-        }
-    }
+    let pricings = crate::proxy::ProxyDatabase::get_global()
+        .and_then(|db| db.get_all_model_pricings().ok())
+        .unwrap_or_default();
     let pricing_match_mode = settings.model_pricing.match_mode.clone();
     let effective_range =
         if let Some((data_start, data_end)) = combined_data_time_bounds(&local_db)? {
@@ -2542,12 +2539,9 @@ async fn get_merged_request_facts_with_db(
         .max(range_start);
     let tool_filter = settings.client_tools.build_filter();
     let source_filter = settings.source_aware.build_filter();
-    let mut pricings = settings.model_pricing.pricings.clone();
-    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
-        if let Ok(db_pricings) = db.get_all_model_pricings() {
-            pricings.extend(db_pricings);
-        }
-    }
+    let pricings = crate::proxy::ProxyDatabase::get_global()
+        .and_then(|db| db.get_all_model_pricings().ok())
+        .unwrap_or_default();
     let pricing_match_mode = settings.model_pricing.match_mode.clone();
 
     let local_signature = local_db.get_merge_cache_signature()?;
@@ -2889,12 +2883,9 @@ async fn get_merged_sessions_with_db(
     let include_errors = settings.proxy.include_error_requests;
     let tool_filter = settings.client_tools.build_filter();
     let source_filter = settings.source_aware.build_filter();
-    let mut pricings = settings.model_pricing.pricings.clone();
-    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
-        if let Ok(db_pricings) = db.get_all_model_pricings() {
-            pricings.extend(db_pricings);
-        }
-    }
+    let pricings = crate::proxy::ProxyDatabase::get_global()
+        .and_then(|db| db.get_all_model_pricings().ok())
+        .unwrap_or_default();
     let local_signature = local_db.get_merge_cache_signature()?;
     let proxy_signature = ProxyDatabase::get_global()
         .map(|db| db.get_merge_cache_signature())
@@ -3090,12 +3081,9 @@ pub async fn get_merged_session_detail(
     let include_errors = settings.proxy.include_error_requests;
     let tool_filter = settings.client_tools.build_filter();
     let source_filter = settings.source_aware.build_filter();
-    let mut pricings = settings.model_pricing.pricings.clone();
-    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
-        if let Ok(db_pricings) = db.get_all_model_pricings() {
-            pricings.extend(db_pricings);
-        }
-    }
+    let pricings = crate::proxy::ProxyDatabase::get_global()
+        .and_then(|db| db.get_all_model_pricings().ok())
+        .unwrap_or_default();
     let local_signature = local_db.get_merge_cache_signature()?;
     let proxy_signature = ProxyDatabase::get_global()
         .map(|db| db.get_merge_cache_signature())
@@ -3209,12 +3197,9 @@ async fn get_merged_project_stats_with_db(
     let include_errors = settings.proxy.include_error_requests;
     let tool_filter = settings.client_tools.build_filter();
     let source_filter = settings.source_aware.build_filter();
-    let mut pricings = settings.model_pricing.pricings.clone();
-    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
-        if let Ok(db_pricings) = db.get_all_model_pricings() {
-            pricings.extend(db_pricings);
-        }
-    }
+    let pricings = crate::proxy::ProxyDatabase::get_global()
+        .and_then(|db| db.get_all_model_pricings().ok())
+        .unwrap_or_default();
     let local_signature = local_db.get_merge_cache_signature()?;
     let proxy_signature = ProxyDatabase::get_global()
         .map(|db| db.get_merge_cache_signature())

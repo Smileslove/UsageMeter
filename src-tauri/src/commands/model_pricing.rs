@@ -11,7 +11,7 @@ static MODEL_PRICING_DB: std::sync::OnceLock<Arc<std::sync::Mutex<Option<ProxyDa
 
 /// 获取模型价格数据库实例
 fn get_pricing_db() -> Result<Arc<std::sync::Mutex<Option<ProxyDatabase>>>, String> {
-    let db = MODEL_PRICING_DB.get_or_init(|| match ProxyDatabase::new() {
+    let db = MODEL_PRICING_DB.get_or_init(|| match ProxyDatabase::new_pricing_store() {
         Ok(database) => Arc::new(std::sync::Mutex::new(Some(database))),
         Err(e) => {
             eprintln!("[ModelPricing] Failed to create database: {}", e);

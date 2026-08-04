@@ -2,6 +2,7 @@
 //!
 //! 一款用于实时监控 Claude Code 使用情况的系统托盘应用。
 
+mod app_config;
 mod commands;
 mod copilot;
 mod gateway;

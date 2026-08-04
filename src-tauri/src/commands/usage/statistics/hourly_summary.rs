@@ -81,12 +81,9 @@ fn build_hourly_summary_cache_key(
     let proxy_signature = ProxyDatabase::get_global()
         .map(|db| db.get_merge_cache_signature())
         .transpose()?;
-    let mut pricings = settings.model_pricing.pricings.clone();
-    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
-        if let Ok(db_pricings) = db.get_all_model_pricings() {
-            pricings.extend(db_pricings);
-        }
-    }
+    let pricings = crate::proxy::ProxyDatabase::get_global()
+        .and_then(|db| db.get_all_model_pricings().ok())
+        .unwrap_or_default();
 
     Ok(HourlySummaryCacheKey {
         local_date: local_date.to_string(),
@@ -153,12 +150,9 @@ fn try_load_ready_historical_day(
     let Some(state) = state else {
         return Ok(None);
     };
-    let mut pricings = settings.model_pricing.pricings.clone();
-    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
-        if let Ok(db_pricings) = db.get_all_model_pricings() {
-            pricings.extend(db_pricings);
-        }
-    }
+    let pricings = crate::proxy::ProxyDatabase::get_global()
+        .and_then(|db| db.get_all_model_pricings().ok())
+        .unwrap_or_default();
     let pricing_fingerprint = fingerprint_pricings(&pricings);
     let (boundary_start, boundary_end) =
         crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds_with_settings(

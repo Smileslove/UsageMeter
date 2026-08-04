@@ -110,12 +110,9 @@ fn build_activity_cache_key(
     let proxy_signature = ProxyDatabase::get_global()
         .map(|db| db.get_merge_cache_signature())
         .transpose()?;
-    let mut pricings = settings.model_pricing.pricings.clone();
-    if let Some(db) = crate::proxy::ProxyDatabase::get_global() {
-        if let Ok(db_pricings) = db.get_all_model_pricings() {
-            pricings.extend(db_pricings);
-        }
-    }
+    let pricings = crate::proxy::ProxyDatabase::get_global()
+        .and_then(|db| db.get_all_model_pricings().ok())
+        .unwrap_or_default();
 
     Ok(ActivityCacheKey {
         kind,

@@ -116,6 +116,27 @@ impl ProxyDatabase {
         Self::new_with_path(&db_path)
     }
 
+    /// Opens only the shared model-pricing table without running usage-data
+    /// migrations. Configuration import uses this path to avoid recursively
+    /// loading application settings from a proxy schema migration.
+    pub fn new_pricing_store() -> Result<Self, String> {
+        let db_path = Self::get_db_path()?;
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create database directory: {}", e))?;
+        }
+        let conn = Connection::open(&db_path)
+            .map_err(|e| format!("Failed to open pricing database: {}", e))?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .map_err(|e| format!("Failed to enable pricing WAL mode: {}", e))?;
+        conn.busy_timeout(Duration::from_secs(30))
+            .map_err(|e| format!("Failed to set pricing database busy timeout: {}", e))?;
+        Self::create_model_pricing_table_static(&conn)?;
+        Ok(Self {
+            conn: Arc::new(std::sync::Mutex::new(conn)),
+        })
+    }
+
     /// 使用指定路径创建数据库连接（用于独立查询）
     pub fn new_with_path(db_path: &PathBuf) -> Result<Self, String> {
         // 确保父目录存在

@@ -2,6 +2,7 @@
 
 use crate::models::{AppSettings, CurrencySettings};
 use crate::net::HttpClientFactory;
+use crate::{app_config::with_config_database, proxy::ProxyDatabase};
 use std::fs;
 use std::path::Path;
 use std::sync::{LazyLock, Mutex};
@@ -11,22 +12,43 @@ static SETTINGS_WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()
 
 /// 加载应用设置（同步实现，供 Rust 内部直接调用；macOS 上可能 spawn Keychain 子进程）
 pub fn load_settings_blocking() -> Result<AppSettings, String> {
+    let mut settings = with_config_database(|database| {
+        if let Some(mut settings) = database.load_settings()? {
+            normalize_settings(&mut settings)?;
+            if migrate_legacy_model_pricings(&mut settings)? {
+                database.save_settings(&settings)?;
+                write_legacy_settings_mirror(&settings);
+            }
+            Ok(settings)
+        } else {
+            let mut settings = load_legacy_settings_file()?.unwrap_or_default();
+            normalize_settings(&mut settings)?;
+            migrate_legacy_model_pricings(&mut settings)?;
+
+            let previous_settings = settings.clone();
+            crate::subscription::source_quota_secrets::persist_settings(
+                &mut settings,
+                &previous_settings,
+            )?;
+            database.save_settings(&settings)?;
+            write_legacy_settings_mirror(&settings);
+            Ok(settings)
+        }
+    })?;
+
+    crate::subscription::source_quota_secrets::hydrate_settings(&mut settings)?;
+    Ok(settings)
+}
+
+fn load_legacy_settings_file() -> Result<Option<AppSettings>, String> {
     let path = AppSettings::settings_path()?;
     if !path.exists() {
-        let mut settings = AppSettings::default();
-        normalize_settings(&mut settings)?;
-        crate::subscription::source_quota_secrets::hydrate_settings(&mut settings)?;
-        return Ok(settings);
+        return Ok(None);
     }
-
     let raw = fs::read_to_string(path).map_err(|e| format!("ERR_READ_SETTINGS: {e}"))?;
-    let mut settings: AppSettings =
-        serde_json::from_str(&raw).map_err(|e| format!("ERR_PARSE_SETTINGS: {e}"))?;
-
-    normalize_settings(&mut settings)?;
-    crate::subscription::source_quota_secrets::hydrate_settings(&mut settings)?;
-
-    Ok(settings)
+    serde_json::from_str(&raw)
+        .map(Some)
+        .map_err(|e| format!("ERR_PARSE_SETTINGS: {e}"))
 }
 
 /// 加载应用设置
@@ -120,17 +142,12 @@ fn save_settings_locked(
     previous_settings: &AppSettings,
 ) -> Result<(), SaveSettingsError> {
     normalize_settings(&mut settings).map_err(SaveSettingsError::Other)?;
+    migrate_legacy_model_pricings(&mut settings).map_err(SaveSettingsError::Other)?;
     crate::subscription::source_quota_secrets::persist_settings(&mut settings, previous_settings)
         .map_err(SaveSettingsError::Other)?;
-    let path = AppSettings::settings_path().map_err(SaveSettingsError::Other)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| SaveSettingsError::Other(format!("ERR_CREATE_SETTINGS_DIR: {e}")))?;
-    }
-
-    let content = serde_json::to_string_pretty(&settings)
-        .map_err(|e| SaveSettingsError::Other(format!("ERR_SERIALIZE_SETTINGS: {e}")))?;
-    atomic_write(&path, &content).map_err(SaveSettingsError::Other)?;
+    with_config_database(|database| database.save_settings(&settings))
+        .map_err(SaveSettingsError::Other)?;
+    write_legacy_settings_mirror(&settings);
 
     if previous_settings.day_boundary_mode != settings.day_boundary_mode {
         reset_day_boundary_caches().map_err(SaveSettingsError::Other)?;
@@ -142,6 +159,46 @@ fn save_settings_locked(
     }
     Ok(())
 }
+
+/// Imports the pre-database pricing vector into its existing authoritative table.
+/// The vector is then removed from application settings to prevent two sources of truth.
+fn migrate_legacy_model_pricings(settings: &mut AppSettings) -> Result<bool, String> {
+    if settings.model_pricing.pricings.is_empty() {
+        return Ok(false);
+    }
+    let database = ProxyDatabase::new_pricing_store()?;
+    database.upsert_model_pricings(&settings.model_pricing.pricings)?;
+    settings.model_pricing.pricings.clear();
+    Ok(true)
+}
+
+/// `app_config.db` is authoritative. This JSON file is a best-effort readable
+/// compatibility mirror and first-run import source for older releases.
+fn write_legacy_settings_mirror(settings: &AppSettings) {
+    let result = (|| -> Result<(), String> {
+        let path = AppSettings::settings_path()?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("ERR_CREATE_SETTINGS_DIR: {e}"))?;
+        }
+        let content = serde_json::to_string_pretty(settings)
+            .map_err(|e| format!("ERR_SERIALIZE_SETTINGS: {e}"))?;
+        atomic_write(&path, &content)?;
+        set_private_file_permissions(&path);
+        Ok(())
+    })();
+    if let Err(error) = result {
+        eprintln!("[UsageMeter] Failed to update legacy settings mirror: {error}");
+    }
+}
+
+#[cfg(unix)]
+fn set_private_file_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn set_private_file_permissions(_path: &Path) {}
 
 fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
     let parent = path
@@ -363,7 +420,15 @@ mod tests {
     use super::*;
     use crate::models::{AppSettings, CurrencySettings, SyncSettings};
     use std::collections::HashMap;
+    use std::ffi::OsString;
     use tempfile::tempdir;
+
+    fn restore_home(previous: Option<OsString>) {
+        match previous {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+    }
 
     #[test]
     fn migrate_proxy_config_fills_missing_timeout_fields() {
@@ -455,5 +520,75 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&path).expect("read back"), "new");
         assert!(!dir.path().join("settings.json.tmp").exists());
+    }
+
+    #[test]
+    fn first_load_imports_legacy_json_and_database_becomes_authoritative() {
+        let _guard = crate::test_support::env_lock();
+        let previous_home = std::env::var_os("HOME");
+        let dir = tempdir().expect("tempdir");
+        std::env::set_var("HOME", dir.path());
+
+        let result = (|| -> Result<(AppSettings, AppSettings), String> {
+            let settings_dir = dir.path().join(".usagemeter");
+            fs::create_dir_all(&settings_dir).map_err(|e| e.to_string())?;
+            let mut legacy = AppSettings {
+                locale: "en-US".to_string(),
+                ..AppSettings::default()
+            };
+            fs::write(
+                settings_dir.join("settings.json"),
+                serde_json::to_string(&legacy).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+
+            let imported = load_settings_blocking()?;
+            legacy.locale = "zh-CN".to_string();
+            fs::write(
+                settings_dir.join("settings.json"),
+                serde_json::to_string(&legacy).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            let authoritative = load_settings_blocking()?;
+            Ok((imported, authoritative))
+        })();
+
+        restore_home(previous_home);
+        let (imported, authoritative) = result.unwrap();
+        assert_eq!(imported.locale, "en-US");
+        assert_eq!(authoritative.locale, "en-US");
+        assert!(dir.path().join(".usagemeter/app_config.db").exists());
+    }
+
+    #[test]
+    fn legacy_model_pricings_move_to_proxy_database() {
+        let _guard = crate::test_support::env_lock();
+        let previous_home = std::env::var_os("HOME");
+        let dir = tempdir().expect("tempdir");
+        std::env::set_var("HOME", dir.path());
+
+        let result = (|| -> Result<(bool, AppSettings, Option<crate::models::ModelPricingConfig>), String> {
+            let mut settings = AppSettings::default();
+            settings.model_pricing.pricings.push(crate::models::ModelPricingConfig {
+                model_id: "legacy-model".to_string(),
+                display_name: Some("Legacy Model".to_string()),
+                input_price: 1.0,
+                output_price: 2.0,
+                cache_write_price: None,
+                cache_read_price: None,
+                source: "custom".to_string(),
+                last_updated: 1,
+            });
+
+            let migrated = migrate_legacy_model_pricings(&mut settings)?;
+            let pricing = ProxyDatabase::new_pricing_store()?.get_model_pricing("legacy-model")?;
+            Ok((migrated, settings, pricing))
+        })();
+
+        restore_home(previous_home);
+        let (migrated, settings, pricing) = result.unwrap();
+        assert!(migrated);
+        assert!(settings.model_pricing.pricings.is_empty());
+        assert_eq!(pricing.unwrap().output_price, 2.0);
     }
 }

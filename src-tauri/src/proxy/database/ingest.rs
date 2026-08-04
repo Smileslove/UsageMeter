@@ -7,10 +7,7 @@ use rusqlite::Connection;
 impl ProxyDatabase {
     fn current_pricing_context(&self) -> (Vec<ModelPricingConfig>, String, String) {
         let settings = crate::commands::load_settings_blocking().unwrap_or_default();
-        let mut pricings = settings.model_pricing.pricings;
-        if let Ok(db_pricings) = self.get_all_model_pricings() {
-            pricings.extend(db_pricings);
-        }
+        let pricings = self.get_all_model_pricings().unwrap_or_default();
         let match_mode = settings.model_pricing.match_mode;
         let snapshot_id = Self::pricing_snapshot_id(&pricings, &match_mode);
         (pricings, match_mode, snapshot_id)
