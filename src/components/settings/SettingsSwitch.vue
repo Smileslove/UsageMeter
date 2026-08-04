@@ -2,6 +2,7 @@
 const props = defineProps<{
   checked: boolean
   disabled?: boolean
+  compact?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -22,15 +23,17 @@ const handleClick = () => {
     :disabled="disabled"
     :aria-pressed="checked"
     :class="[
-      'theme-switch relative flex h-6 w-10 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+      'theme-switch relative flex shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+      props.compact ? 'h-5 w-8' : 'h-6 w-10',
       checked ? 'theme-switch--checked' : 'theme-switch--unchecked'
     ]"
     @click="handleClick"
   >
     <span
       :class="[
-        'absolute h-[20px] w-[20px] rounded-full transition-all theme-switch__thumb',
-        checked ? 'right-[2px]' : 'left-[2px]'
+        'absolute rounded-full transition-all theme-switch__thumb',
+        props.compact ? 'h-4 w-4' : 'h-5 w-5',
+        checked ? (props.compact ? 'right-0.5' : 'right-[2px]') : (props.compact ? 'left-0.5' : 'left-[2px]')
       ]"
     ></span>
   </button>

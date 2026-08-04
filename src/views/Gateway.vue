@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { Check, Copy, KeyRound, Link2, Pencil, Plus, RadioTower, Save, Trash2, X } from 'lucide-vue-next'
+import { Check, Copy, Eye, KeyRound, Link2, Pencil, Plus, RadioTower, Save, Trash2, X } from 'lucide-vue-next'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import type { GatewayDispatchStrategy, GatewayProfile, GatewayProtocol, GatewayStatus, GatewayUpstreamKey } from '../types'
 import ProxyControlPanel from '../components/settings/ProxyControlPanel.vue'
 import CcSwitchCompatPanel from '../components/settings/CcSwitchCompatPanel.vue'
+import SettingsSwitch from '../components/settings/SettingsSwitch.vue'
 
 const store = useMonitorStore()
 const profiles = ref<GatewayProfile[]>([])
@@ -15,6 +16,7 @@ const selectedId = ref<string | null>(null)
 const editing = ref(false)
 const saving = ref(false)
 const loading = ref(false)
+const activePanel = ref<'takeover' | 'manual'>('takeover')
 const feedback = ref<'copied' | 'saved' | 'error' | null>(null)
 const errorCode = ref('')
 const upstreamRemark = ref('')
@@ -24,11 +26,11 @@ const generatedLocalKey = ref('')
 const keyPanel = ref<'upstream' | 'local' | null>(null)
 const revealedLocalKeys = ref<Record<string, string>>({})
 
-const protocolOptions: Array<{ value: GatewayProtocol; labelKey: string; basePath: string }> = [
-  { value: 'open_ai_chat_completions', labelKey: 'gateway.protocolOpenAiChat', basePath: '/v1' },
-  { value: 'open_ai_responses', labelKey: 'gateway.protocolOpenAiResponses', basePath: '/v1' },
-  { value: 'anthropic_messages', labelKey: 'gateway.protocolAnthropic', basePath: '/v1' },
-  { value: 'gemini_generate_content', labelKey: 'gateway.protocolGemini', basePath: '/v1beta' }
+const protocolOptions: Array<{ value: GatewayProtocol; labelKey: string; compactLabelKey: string; basePath: string }> = [
+  { value: 'open_ai_chat_completions', labelKey: 'gateway.protocolOpenAiChat', compactLabelKey: 'gateway.protocolOpenAiChatCompact', basePath: '/v1' },
+  { value: 'open_ai_responses', labelKey: 'gateway.protocolOpenAiResponses', compactLabelKey: 'gateway.protocolOpenAiResponses', basePath: '/v1' },
+  { value: 'anthropic_messages', labelKey: 'gateway.protocolAnthropic', compactLabelKey: 'gateway.protocolAnthropic', basePath: '/v1' },
+  { value: 'gemini_generate_content', labelKey: 'gateway.protocolGemini', compactLabelKey: 'gateway.protocolGemini', basePath: '/v1beta' }
 ]
 
 const draft = ref({
@@ -46,8 +48,7 @@ const draft = ref({
 const locale = computed(() => store.settings.locale)
 const selectedProfile = computed(() => profiles.value.find(profile => profile.id === selectedId.value) ?? null)
 const listenerAddress = computed(() => status.value?.listenerAddress || `http://127.0.0.1:${store.settings.proxy.port}`)
-const selectedBasePath = computed(() => protocolOptions.find(option => option.value === (selectedProfile.value?.protocol ?? draft.value.protocol))?.basePath ?? '/v1')
-const selectedAddress = computed(() => selectedProfile.value ? `${listenerAddress.value}/gateway/${selectedProfile.value.id}${selectedBasePath.value}` : '')
+const selectedAddress = computed(() => selectedProfile.value ? profileAddress(selectedProfile.value) : '')
 const selectedProtocolLabel = computed(() => {
   const option = protocolOptions.find(item => item.value === (selectedProfile.value?.protocol ?? draft.value.protocol))
   return option ? t(locale.value, option.labelKey) : ''
@@ -96,6 +97,7 @@ function selectProfile(profile: GatewayProfile) {
 }
 
 function startNewProfile() {
+  activePanel.value = 'manual'
   selectedId.value = null
   editing.value = true
   resetDraft()
@@ -329,8 +331,7 @@ async function copyAddress(profile = selectedProfile.value) {
 }
 
 async function copyProfileBaseUrl(profile: GatewayProfile) {
-  const option = protocolOptions.find(item => item.value === profile.protocol)
-  await navigator.clipboard.writeText(`${listenerAddress.value}/gateway/${profile.id}${option?.basePath ?? '/v1'}`)
+  await navigator.clipboard.writeText(profileAddress(profile))
   feedback.value = 'copied'
 }
 
@@ -342,9 +343,14 @@ async function copyProfileApiKey(profile: GatewayProfile) {
   feedback.value = 'copied'
 }
 
-function protocolLabel(protocol: GatewayProtocol) {
+function compactProtocolLabel(protocol: GatewayProtocol) {
   const option = protocolOptions.find(item => item.value === protocol)
-  return option ? t(locale.value, option.labelKey) : protocol
+  return option ? t(locale.value, option.compactLabelKey) : protocol
+}
+
+function profileAddress(profile: GatewayProfile) {
+  const option = protocolOptions.find(item => item.value === profile.protocol)
+  return `${listenerAddress.value}/gateway/${profile.id}${option?.basePath ?? '/v1'}`
 }
 
 function handleKeydown(event: KeyboardEvent) {
@@ -356,52 +362,54 @@ onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
 })
 
-onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeydown)
+})
 </script>
 
 <template>
   <section class="space-y-3 pb-3">
-    <header class="flex items-start gap-3 px-1 pt-1">
-      <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-emerald-500/12 text-emerald-600 dark:text-emerald-300">
-        <RadioTower class="h-4.5 w-4.5" />
-      </div>
-      <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2">
-          <h1 class="truncate text-[15px] font-bold text-[var(--theme-text-primary)]">{{ t(locale, 'gateway.title') }}</h1>
-          <span :class="['rounded-full px-2 py-0.5 text-[10px] font-semibold', status?.proxyRunning ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-300' : 'bg-gray-500/10 text-[var(--theme-text-tertiary)]']">
-            {{ status?.proxyRunning ? t(locale, 'gateway.running') : t(locale, 'gateway.stopped') }}
-          </span>
-        </div>
-        <p class="mt-0.5 text-[10.5px] leading-snug text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.subtitle') }}</p>
-      </div>
+    <nav class="gateway-tabs px-1 pt-1" :aria-label="t(locale, 'gateway.title')">
       <button
-        class="theme-icon-button rounded-xl p-2"
-        :title="t(locale, 'common.refresh')"
-        :aria-label="t(locale, 'common.refresh')"
-        @click="load"
+        type="button"
+        class="gateway-tabs__item"
+        :class="{ 'gateway-tabs__item--on': activePanel === 'takeover' }"
+        :aria-selected="activePanel === 'takeover'"
+        @click="activePanel = 'takeover'"
       >
-        <Link2 class="h-3.5 w-3.5" :class="{ 'animate-pulse': loading }" />
+        {{ t(locale, 'gateway.tabs.toolTakeover') }}
       </button>
-    </header>
+      <button
+        type="button"
+        class="gateway-tabs__item"
+        :class="{ 'gateway-tabs__item--on': activePanel === 'manual' }"
+        :aria-selected="activePanel === 'manual'"
+        @click="activePanel = 'manual'"
+      >
+        {{ t(locale, 'gateway.tabs.manualAccess') }}
+      </button>
+    </nav>
 
     <div v-if="feedback && !editing" :class="['rounded-xl border px-3 py-2 text-[10.5px] leading-snug', feedback === 'error' ? 'border-red-500/20 bg-red-500/8 text-red-600 dark:text-red-300' : 'border-emerald-500/20 bg-emerald-500/8 text-emerald-600 dark:text-emerald-300']">
       {{ feedbackMessage }}
     </div>
 
-    <section class="theme-surface overflow-hidden rounded-2xl border">
-      <div class="flex items-center justify-between border-b border-[var(--theme-border-default)] px-3 py-2.5">
-        <div>
-          <h2 class="text-[11.5px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'gateway.localAccess') }}</h2>
-          <p class="mt-0.5 text-[9.5px] text-[var(--theme-text-tertiary)]">{{ listenerAddress }}</p>
-          <p class="mt-0.5 text-[9px] leading-snug text-[var(--theme-text-quaternary)]">{{ t(locale, 'gateway.autoStartHint') }}</p>
+    <template v-if="activePanel === 'takeover'">
+      <ProxyControlPanel />
+      <CcSwitchCompatPanel />
+    </template>
+
+    <template v-else>
+      <section class="theme-surface overflow-hidden rounded-2xl border">
+        <div class="flex items-center justify-between gap-3 px-3 py-2.5">
+          <div class="min-w-0">
+            <h2 class="text-[11.5px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'gateway.localAccess') }}</h2>
+            <p class="mt-0.5 truncate font-mono text-[9.5px] text-[var(--theme-text-tertiary)]">{{ listenerAddress }}</p>
+            <p class="mt-0.5 text-[9px] leading-snug text-[var(--theme-text-quaternary)]">{{ t(locale, 'gateway.manualAccessDescription') }}</p>
+          </div>
+          <span :class="['shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold', status?.routingActive ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-300' : 'bg-gray-500/10 text-[var(--theme-text-tertiary)]']">{{ status?.routingActive ? t(locale, 'gateway.routingReady') : t(locale, 'gateway.routingPending') }}</span>
         </div>
-        <span :class="['rounded-full px-2 py-0.5 text-[9px] font-semibold', status?.routingActive ? 'bg-emerald-500/12 text-emerald-600 dark:text-emerald-300' : 'bg-gray-500/10 text-[var(--theme-text-tertiary)]']">{{ status?.routingActive ? t(locale, 'gateway.routingReady') : t(locale, 'gateway.routingPending') }}</span>
-      </div>
-      <div class="space-y-2 p-2">
-        <ProxyControlPanel />
-        <CcSwitchCompatPanel />
-      </div>
-    </section>
+      </section>
 
     <div class="flex items-center justify-between px-1 pt-1">
       <div>
@@ -423,23 +431,25 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
       </button>
     </div>
 
-    <div v-else class="space-y-1.5">
-      <div v-for="profile in profiles" :key="profile.id" :class="['theme-surface rounded-2xl border p-2.5 transition-colors', selectedId === profile.id ? 'border-emerald-500/35 bg-emerald-500/5' : '']">
-        <div class="flex w-full min-w-0 items-start gap-2">
-          <button class="flex min-w-0 flex-1 items-start gap-2 text-left" @click="selectProfile(profile)">
-          <span :class="['mt-1 h-2 w-2 shrink-0 rounded-full', profile.enabled ? 'bg-emerald-500' : 'bg-gray-400']"></span>
-          <span class="min-w-0 flex-1">
-            <span class="flex min-w-0 items-center gap-2"><span class="truncate text-[11.5px] font-semibold text-[var(--theme-text-primary)]">{{ profile.name }}</span><span class="truncate text-[9.5px] text-[var(--theme-text-tertiary)]">{{ protocolLabel(profile.protocol) }}</span></span>
-          </span>
+    <div v-else class="space-y-2">
+      <article v-for="profile in profiles" :key="profile.id" class="theme-surface overflow-visible rounded-xl border px-3 py-2.5 transition-colors hover:border-[var(--theme-border-strong)]">
+        <div class="flex min-w-0 items-center gap-2">
+          <button type="button" class="min-w-0 flex-1 text-left" :title="t(locale, 'gateway.editProfile')" @click="selectProfile(profile)">
+            <div class="flex min-w-0 items-center gap-2">
+              <span class="truncate text-[12px] font-semibold text-[var(--theme-text-primary)]">{{ profile.name }}</span>
+              <span class="max-w-[88px] shrink truncate rounded-md border border-[var(--theme-border-default)] bg-[var(--theme-bg-hover)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--theme-text-tertiary)]">{{ compactProtocolLabel(profile.protocol) }}</span>
+            </div>
           </button>
-          <button class="shrink-0 rounded-lg p-1.5 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]" :title="profile.enabled ? t(locale, 'common.hide') : t(locale, 'common.enabled')" @click="toggleProfile(profile)"><Check v-if="profile.enabled" class="h-3.5 w-3.5 text-emerald-500" /><span v-else class="block h-3.5 w-3.5 rounded-full border border-current" /></button>
-          <button class="rounded-lg p-1.5 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]" :title="t(locale, 'gateway.copyAddress')" :aria-label="t(locale, 'gateway.copyAddress')" @click="copyProfileBaseUrl(profile)"><Link2 class="h-3.5 w-3.5" /></button>
-          <button class="rounded-lg p-1.5 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]" :title="t(locale, 'gateway.copyLocalKey')" :aria-label="t(locale, 'gateway.copyLocalKey')" @click="copyProfileApiKey(profile)"><KeyRound class="h-3.5 w-3.5" /></button>
-          <button class="rounded-lg p-1.5 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]" :title="t(locale, 'gateway.editProfile')" :aria-label="t(locale, 'gateway.editProfile')" @click="selectProfile(profile)"><Pencil class="h-3.5 w-3.5" /></button>
-          <button class="rounded-lg p-1.5 text-red-500/75 hover:bg-red-500/10" :title="t(locale, 'gateway.delete')" :aria-label="t(locale, 'gateway.delete')" @click="deleteProfile(profile)"><Trash2 class="h-3.5 w-3.5" /></button>
+          <button type="button" class="gateway-profile-icon-action" :title="t(locale, 'gateway.copyAddress')" :aria-label="t(locale, 'gateway.copyAddress')" @click="copyProfileBaseUrl(profile)"><Link2 class="h-3.5 w-3.5" /></button>
+          <button type="button" class="gateway-profile-icon-action" :title="t(locale, 'gateway.copyLocalKey')" :aria-label="t(locale, 'gateway.copyLocalKey')" :disabled="profile.localKeys.length === 0" @click="copyProfileApiKey(profile)"><KeyRound class="h-3.5 w-3.5" /></button>
+          <button type="button" class="gateway-profile-icon-action" :title="t(locale, 'gateway.editProfile')" :aria-label="t(locale, 'gateway.editProfile')" @click="selectProfile(profile)"><Pencil class="h-3.5 w-3.5" /></button>
+          <button type="button" class="gateway-profile-icon-action gateway-profile-icon-action--danger" :title="t(locale, 'gateway.delete')" :aria-label="t(locale, 'gateway.delete')" @click="deleteProfile(profile)"><Trash2 class="h-3.5 w-3.5" /></button>
+          <SettingsSwitch compact :checked="profile.enabled" :aria-label="t(locale, 'gateway.enabled')" @toggle="toggleProfile(profile)" />
         </div>
-      </div>
+        <p class="mt-1.5 break-all border-t border-[var(--theme-border-default)] pt-1.5 font-mono text-[9.5px] leading-snug text-[var(--theme-text-tertiary)]">{{ profileAddress(profile) }}</p>
+      </article>
     </div>
+    </template>
 
     <Teleport to="body">
       <div v-if="editing" class="theme-backdrop fixed inset-0 z-[80] flex items-center justify-center p-4" @click.self="cancelEditing">
@@ -515,3 +525,74 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
     </Teleport>
   </section>
 </template>
+
+<style scoped>
+.gateway-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 10px;
+  background: var(--theme-bg-surface);
+}
+
+.gateway-tabs__item {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--theme-text-tertiary);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  transition: color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.gateway-tabs__item:hover:not(.gateway-tabs__item--on) {
+  color: var(--theme-text-primary);
+}
+
+.gateway-tabs__item--on {
+  background: var(--theme-accent-primary);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--theme-accent-primary) 30%, transparent);
+  color: var(--theme-accent-contrast);
+}
+
+.gateway-profile-icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  color: var(--theme-text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+.gateway-profile-icon-action {
+  height: 26px;
+  width: 26px;
+  flex: 0 0 26px;
+}
+
+.gateway-profile-icon-action:hover {
+  background: var(--theme-bg-hover);
+  color: var(--theme-text-primary);
+}
+
+.gateway-profile-icon-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.gateway-profile-icon-action--danger {
+  color: rgb(239 68 68 / 0.85);
+}
+
+.gateway-profile-icon-action--danger:hover {
+  background: rgb(239 68 68 / 0.08);
+  color: rgb(220 38 38);
+}
+</style>
