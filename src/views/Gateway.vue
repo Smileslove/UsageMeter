@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { Check, Copy, Eye, KeyRound, Link2, Pencil, Plus, RadioTower, Save, Trash2, X } from 'lucide-vue-next'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
-import type { GatewayDispatchStrategy, GatewayProfile, GatewayProtocol, GatewayStatus, GatewayUpstreamKey } from '../types'
+import type { GatewayCredentialRecovery, GatewayDispatchStrategy, GatewayProfile, GatewayProtocol, GatewayStatus, GatewayUpstreamKey } from '../types'
 import ProxyControlPanel from '../components/settings/ProxyControlPanel.vue'
 import CcSwitchCompatPanel from '../components/settings/CcSwitchCompatPanel.vue'
 import SettingsSwitch from '../components/settings/SettingsSwitch.vue'
@@ -25,6 +25,7 @@ const localRemark = ref('')
 const generatedLocalKey = ref('')
 const keyPanel = ref<'upstream' | 'local' | null>(null)
 const revealedLocalKeys = ref<Record<string, string>>({})
+const emptyCredentialRecovery = (): GatewayCredentialRecovery => ({ upstreamKeyRequired: false, localKeyRotationRecommended: false })
 
 const protocolOptions: Array<{ value: GatewayProtocol; labelKey: string; compactLabelKey: string; basePath: string }> = [
   { value: 'open_ai_chat_completions', labelKey: 'gateway.protocolOpenAiChat', compactLabelKey: 'gateway.protocolOpenAiChatCompact', basePath: '/v1' },
@@ -42,7 +43,8 @@ const draft = ref({
   clientLabel: '',
   dispatchStrategy: 'round_robin' as GatewayDispatchStrategy,
   upstreamKeys: [] as GatewayProfile['upstreamKeys'],
-  localKeys: [] as GatewayProfile['localKeys']
+  localKeys: [] as GatewayProfile['localKeys'],
+  credentialRecovery: emptyCredentialRecovery()
 })
 
 const locale = computed(() => store.settings.locale)
@@ -53,6 +55,8 @@ const selectedProtocolLabel = computed(() => {
   const option = protocolOptions.find(item => item.value === (selectedProfile.value?.protocol ?? draft.value.protocol))
   return option ? t(locale.value, option.labelKey) : ''
 })
+const upstreamKeyRecoveryRequired = computed(() => draft.value.credentialRecovery.upstreamKeyRequired)
+const localKeyRotationRecommended = computed(() => draft.value.credentialRecovery.localKeyRotationRecommended)
 const feedbackMessage = computed(() => {
   if (feedback.value === 'saved') return t(locale.value, 'gateway.saveSuccess')
   if (feedback.value === 'copied') return t(locale.value, 'gateway.copied')
@@ -77,7 +81,7 @@ const feedbackMessage = computed(() => {
 })
 
 function resetDraft() {
-  draft.value = { id: undefined, name: '', protocol: 'open_ai_chat_completions', baseUrl: '', enabled: true, clientLabel: '', dispatchStrategy: 'round_robin', upstreamKeys: [], localKeys: [] }
+  draft.value = { id: undefined, name: '', protocol: 'open_ai_chat_completions', baseUrl: '', enabled: true, clientLabel: '', dispatchStrategy: 'round_robin', upstreamKeys: [], localKeys: [], credentialRecovery: emptyCredentialRecovery() }
   upstreamRemark.value = ''
   upstreamSecret.value = ''
   localRemark.value = ''
@@ -271,6 +275,25 @@ async function revokeLocalKey(keyId: string) {
   } catch (error) { errorCode.value = String(error); feedback.value = 'error' }
 }
 
+async function createReplacementLocalKey() {
+  if (!draft.value.id) return
+  saving.value = true
+  try {
+    const generated = await invoke<{ key: string }>('create_gateway_local_key', {
+      profileId: draft.value.id,
+      input: { remark: localRemark.value.trim() }
+    })
+    generatedLocalKey.value = generated.key
+    const updated = (await invoke<GatewayProfile[]>('list_gateway_profiles')).find(profile => profile.id === draft.value.id)
+    if (updated) applyProfile(updated)
+    localRemark.value = ''
+    feedback.value = 'saved'
+  } catch (error) {
+    errorCode.value = String(error)
+    feedback.value = 'error'
+  } finally { saving.value = false }
+}
+
 async function revealLocalKey(keyId: string) {
   if (!draft.value.id) return
   try {
@@ -447,6 +470,8 @@ onUnmounted(() => {
           <SettingsSwitch compact :checked="profile.enabled" :aria-label="t(locale, 'gateway.enabled')" @toggle="toggleProfile(profile)" />
         </div>
         <p class="mt-1.5 break-all border-t border-[var(--theme-border-default)] pt-1.5 font-mono text-[9.5px] leading-snug text-[var(--theme-text-tertiary)]">{{ profileAddress(profile) }}</p>
+        <p v-if="profile.credentialRecovery.upstreamKeyRequired" class="mt-1 text-[9px] leading-snug text-amber-600 dark:text-amber-300">{{ t(locale, 'gateway.upstreamKeyRecoveryNotice') }}</p>
+        <p v-if="profile.credentialRecovery.localKeyRotationRecommended" class="mt-1 text-[9px] leading-snug text-amber-600 dark:text-amber-300">{{ t(locale, 'gateway.localKeyRecoveryNotice') }}</p>
       </article>
     </div>
     </template>
@@ -480,7 +505,7 @@ onUnmounted(() => {
               </label>
               <label class="flex h-11 items-center gap-3 border-t border-[var(--theme-border-default)] px-3">
                 <span class="w-[66px] shrink-0 text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.upstreamKey') }}</span>
-                <input v-model="upstreamSecret" type="password" class="min-w-0 flex-1 bg-transparent text-right font-mono text-[10.5px] text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]" :placeholder="draft.id ? t(locale, 'gateway.upstreamKeyKeepHint') : t(locale, 'gateway.upstreamKeyPlaceholder')" autocomplete="off" />
+                <input v-model="upstreamSecret" type="password" class="min-w-0 flex-1 bg-transparent text-right font-mono text-[10.5px] text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]" :placeholder="upstreamKeyRecoveryRequired ? t(locale, 'gateway.upstreamKeyRecoveryPlaceholder') : (draft.id ? t(locale, 'gateway.upstreamKeyKeepHint') : t(locale, 'gateway.upstreamKeyPlaceholder'))" autocomplete="off" />
               </label>
               <label class="flex h-11 cursor-pointer items-center justify-between border-t border-[var(--theme-border-default)] px-3">
                 <span class="text-[10.5px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.enabled') }}</span>
@@ -490,9 +515,13 @@ onUnmounted(() => {
             </section>
 
             <template v-if="!keyPanel">
+              <div v-if="upstreamKeyRecoveryRequired || localKeyRotationRecommended" class="rounded-xl border border-amber-500/25 bg-amber-500/8 px-3 py-2 text-[9.5px] leading-snug text-amber-700 dark:text-amber-200">
+                <p v-if="upstreamKeyRecoveryRequired">{{ t(locale, 'gateway.upstreamKeyRecoveryNotice') }}</p>
+                <p v-if="localKeyRotationRecommended" :class="{ 'mt-1': upstreamKeyRecoveryRequired }">{{ t(locale, 'gateway.localKeyRecoveryNotice') }}</p>
+              </div>
               <p class="px-1 text-[9px] leading-snug text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.managedKeyHint') }}</p>
               <div v-if="draft.id" class="theme-surface-muted rounded-xl border px-3 py-2.5">
-                <div class="flex items-center justify-between gap-2"><span class="text-[9.5px] font-semibold text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.address') }}</span><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.copyAddress')" :aria-label="t(locale, 'gateway.copyAddress')" @click="copyAddress()"><Copy class="h-3.5 w-3.5" /></button></div>
+                <div class="flex items-center justify-between gap-2"><span class="text-[9.5px] font-semibold text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.address') }}</span><div class="flex items-center gap-1"><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.localKeys')" :aria-label="t(locale, 'gateway.localKeys')" @click="keyPanel = 'local'"><KeyRound class="h-3.5 w-3.5" /></button><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.copyAddress')" :aria-label="t(locale, 'gateway.copyAddress')" @click="copyAddress()"><Copy class="h-3.5 w-3.5" /></button></div></div>
                 <p class="mt-1 break-all font-mono text-[9px] leading-snug text-[var(--theme-text-primary)]">{{ selectedAddress }}</p>
               </div>
               <p class="px-1 text-[9px] leading-snug text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.singleUpstreamKeyHint') }}</p>
@@ -505,6 +534,7 @@ onUnmounted(() => {
                 <div class="p-2">
                   <div v-if="keyPanel === 'upstream' && draft.upstreamKeys.length === 0" class="flex gap-1.5"><input v-model="upstreamRemark" class="min-w-0 w-20 flex-1 rounded-lg border border-[var(--theme-border-default)] bg-transparent px-2 py-2 text-[10px] text-[var(--theme-text-primary)] outline-none" :placeholder="t(locale, 'gateway.keyRemark')" /><input v-model="upstreamSecret" type="password" class="min-w-0 flex-[1.6] rounded-lg border border-[var(--theme-border-default)] bg-transparent px-2 py-2 font-mono text-[10px] text-[var(--theme-text-primary)] outline-none" :placeholder="t(locale, 'gateway.upstreamKeyPlaceholder')" autocomplete="off" /><button type="button" class="theme-icon-button rounded-lg p-1.5" :title="t(locale, 'gateway.addKey')" :aria-label="t(locale, 'gateway.addKey')" :disabled="saving || !upstreamSecret.trim()" @click="addUpstreamKey"><Plus class="h-3.5 w-3.5" /></button></div>
                   <div v-else-if="keyPanel === 'upstream'" class="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2 text-[10px] text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.singleUpstreamKeyHint') }}</div>
+                  <div v-else-if="draft.localKeys.length === 0" class="flex gap-1.5"><input v-model="localRemark" class="min-w-0 flex-1 rounded-lg border border-[var(--theme-border-default)] bg-transparent px-2 py-2 text-[10px] text-[var(--theme-text-primary)] outline-none" :placeholder="t(locale, 'gateway.keyRemark')" /><button type="button" class="theme-icon-button rounded-lg p-1.5" :title="t(locale, 'gateway.createLocalKey')" :aria-label="t(locale, 'gateway.createLocalKey')" :disabled="saving" @click="createReplacementLocalKey"><Plus class="h-3.5 w-3.5" /></button></div>
                   <div v-else class="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-2 text-[10px] text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.singleLocalKeyHint') }}</div>
                   <div v-for="key in keyPanel === 'upstream' ? draft.upstreamKeys : draft.localKeys" :key="key.id" class="mt-1.5 rounded-lg border border-[var(--theme-border-default)] px-2 py-1.5 text-[10px]"><div class="flex h-6 items-center gap-2"><span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="key.enabled ? 'bg-emerald-500' : 'bg-gray-400'"></span><span class="min-w-0 flex-1 truncate text-[var(--theme-text-secondary)]">{{ key.remark || t(locale, 'gateway.unnamedKey') }}</span><template v-if="keyPanel === 'local'"><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.showLocalKey')" :aria-label="t(locale, 'gateway.showLocalKey')" @click="revealLocalKey(key.id)"><Eye class="h-3 w-3" /></button><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.copyLocalKey')" :aria-label="t(locale, 'gateway.copyLocalKey')" @click="copyStoredLocalKey(key.id)"><Copy class="h-3 w-3" /></button></template><button type="button" class="theme-icon-button rounded-lg p-1" :title="keyPanel === 'upstream' ? t(locale, 'gateway.deleteKey') : t(locale, 'gateway.revokeKey')" @click="keyPanel === 'upstream' ? deleteUpstreamKey(key.id) : revokeLocalKey(key.id)"><Trash2 class="h-3 w-3 text-red-500" /></button></div><div v-if="keyPanel === 'upstream'" class="mt-1 flex items-center gap-2 border-t border-[var(--theme-border-default)] pt-1"><label class="flex items-center gap-1 text-[9px] text-[var(--theme-text-tertiary)]"><input v-model="key.enabled" type="checkbox" class="h-3 w-3 accent-[var(--theme-accent-primary)]" :aria-label="t(locale, 'gateway.enabled')" @change="updateUpstreamKey(key as GatewayUpstreamKey)" />{{ t(locale, 'gateway.enabled') }}</label></div><p v-if="keyPanel === 'local' && revealedLocalKeys[key.id]" class="mt-1 break-all border-t border-[var(--theme-border-default)] pt-1 font-mono text-[9px] text-[var(--theme-text-primary)]">{{ revealedLocalKeys[key.id] }}</p></div>
                 </div>

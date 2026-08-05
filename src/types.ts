@@ -55,6 +55,11 @@ export interface GatewayLocalKey {
   lastUsedAtMs?: number | null
 }
 
+export interface GatewayCredentialRecovery {
+  upstreamKeyRequired: boolean
+  localKeyRotationRecommended: boolean
+}
+
 export interface GatewayProfile {
   id: string
   name: string
@@ -66,6 +71,7 @@ export interface GatewayProfile {
   dispatchStrategy: GatewayDispatchStrategy
   upstreamKeys: GatewayUpstreamKey[]
   localKeys: GatewayLocalKey[]
+  credentialRecovery: GatewayCredentialRecovery
 }
 
 export interface GatewaySettings {

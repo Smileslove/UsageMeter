@@ -121,6 +121,16 @@ pub struct GatewayProfileView {
     pub dispatch_strategy: GatewayDispatchStrategy,
     pub upstream_keys: Vec<GatewayUpstreamKeyView>,
     pub local_keys: Vec<GatewayLocalKeyView>,
+    pub credential_recovery: GatewayCredentialRecoveryView,
+}
+
+/// Non-sensitive recovery information for profiles imported from the v1
+/// macOS Keychain representation. It never exposes credential references.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayCredentialRecoveryView {
+    pub upstream_key_required: bool,
+    pub local_key_rotation_recommended: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -176,6 +186,15 @@ impl From<&GatewayProfile> for GatewayProfileView {
                     last_used_at_ms: key.last_used_at_ms,
                 })
                 .collect(),
+            credential_recovery: GatewayCredentialRecoveryView {
+                upstream_key_required: profile.upstream_keys.iter().any(|key| {
+                    key.secret.trim().is_empty()
+                        && is_expected_upstream_secret_ref(&profile.id, key)
+                }),
+                local_key_rotation_recommended: profile.local_keys.iter().any(|key| {
+                    key.secret.trim().is_empty() && is_expected_local_secret_ref(&profile.id, key)
+                }),
+            },
         }
     }
 }
@@ -805,6 +824,36 @@ mod tests {
         metadata.secret.clear();
         assert!(verify_local_key(&generated.key, &metadata));
         assert_eq!(local_client_secret(&metadata), None);
+    }
+
+    #[test]
+    fn profile_view_marks_legacy_credentials_that_need_manual_recovery() {
+        let mut profile = create_profile(input("https://api.deepseek.com")).expect("profile");
+        profile.id = "gateway-legacy".to_string();
+        profile.upstream_keys = vec![GatewayUpstreamKey {
+            id: "upstream-legacy".to_string(),
+            remark: String::new(),
+            enabled: false,
+            weight: 1,
+            priority: 0,
+            secret: String::new(),
+            secret_ref: upstream_secret_ref(&profile.id, "upstream-legacy"),
+        }];
+        let (mut local_key, _) = create_local_key(
+            &profile.id,
+            GatewayLocalKeyInput {
+                remark: String::new(),
+            },
+        )
+        .expect("local key");
+        local_key.secret.clear();
+        local_key.secret_ref = local_secret_ref(&profile.id, &local_key.id);
+        profile.local_keys = vec![local_key];
+
+        let view = GatewayProfileView::from(&profile);
+
+        assert!(view.credential_recovery.upstream_key_required);
+        assert!(view.credential_recovery.local_key_rotation_recommended);
     }
 
     #[test]
