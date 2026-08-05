@@ -1,15 +1,16 @@
-//! Claude Code 配置管理器
+//! Claude Code 配置管理器。
 //!
-//! 处理 Claude Code settings.json 的接管和恢复
+//! 正常接管的原始路由由 `ProxySourceRegistry` 保存，和其他工具一致。旧版
+//! `claude_settings_backup.json` 只在升级恢复时读取一次，绝不由新版本创建。
 
 use super::source_registry::ProxySourceRegistry;
 use super::types::ClaudeSettings;
 use super::url_identity;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ClaudeRouteState {
     had_base_url: bool,
@@ -21,8 +22,8 @@ struct ClaudeRouteState {
 pub struct ClaudeConfigManager {
     /// Claude settings.json 路径
     settings_path: PathBuf,
-    /// 备份文件路径
-    backup_path: PathBuf,
+    /// 旧版本独立备份路径，仅用于一次性迁移恢复。
+    legacy_backup_path: PathBuf,
 }
 
 impl ClaudeConfigManager {
@@ -40,11 +41,11 @@ impl ClaudeConfigManager {
             claude_dir.join("settings.json")
         };
 
-        let backup_path = usagemeter_dir.join("claude_settings_backup.json");
+        let legacy_backup_path = usagemeter_dir.join("claude_settings_backup.json");
 
         Self {
             settings_path,
-            backup_path,
+            legacy_backup_path,
         }
     }
 
@@ -82,14 +83,14 @@ impl ClaudeConfigManager {
         url_identity::extract_source_id_from_proxy_url(base_url, &["claude-code"])
     }
 
-    /// 检查备份是否存在
-    pub fn has_backup(&self) -> bool {
-        self.backup_path.exists()
+    /// 检查是否有升级前遗留的独立备份文件。
+    pub fn has_legacy_backup(&self) -> bool {
+        self.legacy_backup_path.exists()
     }
 
     fn read_route_state(&self) -> Result<ClaudeRouteState, String> {
-        let backup_content = fs::read_to_string(&self.backup_path)
-            .map_err(|e| format!("Failed to read backup: {}", e))?;
+        let backup_content = fs::read_to_string(&self.legacy_backup_path)
+            .map_err(|e| format!("Failed to read legacy backup: {}", e))?;
         serde_json::from_str::<ClaudeRouteState>(&backup_content)
             .or_else(|_| {
                 serde_json::from_str::<ClaudeSettings>(&backup_content).map(|settings| {
@@ -100,17 +101,7 @@ impl ClaudeConfigManager {
                     }
                 })
             })
-            .map_err(|e| format!("Failed to parse backup: {}", e))
-    }
-
-    fn write_route_state(&self, state: &ClaudeRouteState) -> Result<(), String> {
-        if let Some(parent) = self.backup_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create backup directory: {}", e))?;
-        }
-        let content = serde_json::to_string_pretty(state)
-            .map_err(|e| format!("Failed to serialize backup: {}", e))?;
-        fs::write(&self.backup_path, content).map_err(|e| format!("Failed to write backup: {}", e))
+            .map_err(|e| format!("Failed to parse legacy backup: {}", e))
     }
 
     /// 读取当前 Claude 设置
@@ -145,8 +136,7 @@ impl ClaudeConfigManager {
         Ok(())
     }
 
-    /// 接管 Claude 配置
-    /// 备份原始设置并修改为指向代理
+    /// 接管 Claude 配置。
     #[allow(dead_code)]
     pub fn takeover(&self, proxy_port: u16) -> Result<(), String> {
         self.takeover_with_path_prefix(proxy_port, None)
@@ -170,15 +160,6 @@ impl ClaudeConfigManager {
         // 读取当前设置
         let mut settings = self.read_settings()?;
 
-        // 如果备份不存在则创建恢复所需的最小路由状态
-        if !self.has_backup() {
-            let base_url = settings.get_base_url();
-            self.write_route_state(&ClaudeRouteState {
-                had_base_url: base_url.is_some(),
-                base_url,
-            })?;
-        }
-
         // 修改设置指向代理
         let proxy_url = match path_prefix
             .map(|p| p.trim().trim_matches('/'))
@@ -198,10 +179,10 @@ impl ClaudeConfigManager {
         Ok(())
     }
 
-    pub fn clear_backup(&self) -> Result<(), String> {
-        if self.has_backup() {
-            fs::remove_file(&self.backup_path)
-                .map_err(|e| format!("Failed to remove backup: {}", e))?;
+    pub fn clear_legacy_backup(&self) -> Result<(), String> {
+        if self.has_legacy_backup() {
+            fs::remove_file(&self.legacy_backup_path)
+                .map_err(|e| format!("Failed to remove legacy backup: {}", e))?;
         }
         Ok(())
     }
@@ -229,15 +210,14 @@ impl ClaudeConfigManager {
             settings.env.remove("ANTHROPIC_BASE_URL");
         }
         self.write_settings(&settings)?;
-        self.clear_backup()?;
+        self.clear_legacy_backup()?;
         Ok(true)
     }
 
-    /// 从备份恢复原始 Claude 配置
-    pub fn restore(&self) -> Result<(), String> {
-        if !self.has_backup() {
-            // 没有备份，无需恢复
-            return Ok(());
+    /// 恢复升级前的无来源 ID 接管，并移除旧版独立备份。
+    pub fn restore_from_legacy_backup(&self) -> Result<bool, String> {
+        if !self.has_legacy_backup() {
+            return Ok(false);
         }
 
         let route_state = self.read_route_state()?;
@@ -250,16 +230,14 @@ impl ClaudeConfigManager {
         }
         self.write_settings(&settings)?;
 
-        // 删除备份文件
-        fs::remove_file(&self.backup_path)
-            .map_err(|e| format!("Failed to remove backup: {}", e))?;
+        self.clear_legacy_backup()?;
 
-        Ok(())
+        Ok(true)
     }
 
-    /// 获取原始基础 URL（如果备份存在则从备份获取，否则从当前设置获取）
+    /// 获取原始基础 URL。仅为仍在使用旧版无来源 ID 接管的用户读取遗留文件。
     pub fn get_original_base_url(&self) -> Option<String> {
-        if self.has_backup() {
+        if self.has_legacy_backup() {
             self.read_route_state()
                 .ok()?
                 .base_url
@@ -277,14 +255,9 @@ impl ClaudeConfigManager {
     pub fn detect_issues(&self) -> Vec<String> {
         let mut issues = Vec::new();
 
-        // 检查孤立备份
-        if self.has_backup() && !self.is_takeover_active() {
-            issues.push("Backup exists but takeover is not active".to_string());
-        }
-
-        // 检查接管但没有备份（正常情况下不应发生）
-        if self.is_takeover_active() && !self.has_backup() {
-            issues.push("Takeover is active but no backup found".to_string());
+        // 检查遗留备份。
+        if self.has_legacy_backup() && !self.is_takeover_active() {
+            issues.push("Legacy backup exists but takeover is not active".to_string());
         }
 
         issues
@@ -292,29 +265,24 @@ impl ClaudeConfigManager {
 
     /// 检测并恢复孤立状态
     ///
-    /// 当应用异常崩溃后，可能存在以下情况：
-    /// 1. 备份存在但配置未被接管（孤立备份）→ 删除备份文件
-    /// 2. 配置被接管但备份不存在（异常情况）→ 清除 ANTHROPIC_BASE_URL
-    /// 3. 备份存在且配置被接管（崩溃残留）→ 从备份恢复原始配置
+    /// 正常的来源感知接管从来源注册表恢复。独立备份仅支持升级前遗留的
+    /// 无来源 ID URL，并在使用后删除。
     ///
     /// 返回恢复操作的描述，如果没有需要恢复的则返回 None
     pub fn check_and_recover_orphaned_state(&self) -> Option<String> {
-        let has_backup = self.has_backup();
+        let has_legacy_backup = self.has_legacy_backup();
         let is_takeover = self.is_takeover_active();
 
-        match (has_backup, is_takeover) {
-            // 情况1：孤立备份（备份存在但未接管）
-            // 这可能是上次正常关闭但删除备份失败，或者用户手动修改了配置
-            // 安全做法：删除孤立备份
+        match (has_legacy_backup, is_takeover) {
+            // 配置已不是代理地址，遗留文件没有恢复价值，直接清理。
             (true, false) => {
-                if let Err(e) = fs::remove_file(&self.backup_path) {
-                    return Some(format!("Failed to remove orphaned backup: {}", e));
+                if let Err(e) = self.clear_legacy_backup() {
+                    return Some(format!("Failed to remove legacy backup: {}", e));
                 }
-                Some("Removed orphaned backup file".to_string())
+                Some("Removed obsolete Claude legacy backup".to_string())
             }
 
-            // 情况2：接管但没有备份（异常情况）
-            // source-aware URL 可从 registry 恢复；legacy 接管才清除 BASE_URL。
+            // 来源感知 URL 从注册表恢复；找不到时移除不可用的本地代理地址。
             (false, true) => {
                 match self.restore_from_active_source_handle() {
                     Ok(true) => {
@@ -338,8 +306,7 @@ impl ClaudeConfigManager {
                 Some("Failed to read settings while clearing orphaned takeover".to_string())
             }
 
-            // 情况3：备份存在且接管活跃（崩溃残留）
-            // source-aware URL 优先从 registry 恢复当前 handle；backup 只作 legacy fallback。
+            // 来源感知 URL 优先从注册表恢复；仅旧 URL 使用遗留备份。
             (true, true) => {
                 match self.restore_from_active_source_handle() {
                     Ok(true) => {
@@ -352,13 +319,13 @@ impl ClaudeConfigManager {
                     Err(e) => return Some(e),
                 }
 
-                if let Err(e) = self.restore() {
-                    return Some(format!("Failed to restore from backup: {}", e));
+                if let Err(e) = self.restore_from_legacy_backup() {
+                    return Some(format!("Failed to restore from legacy backup: {}", e));
                 }
-                Some("Restored Claude config from backup (recovered from crash)".to_string())
+                Some("Restored Claude config from legacy backup (recovered from crash)".to_string())
             }
 
-            // 正常状态：无备份，未接管
+            // 正常状态：无遗留文件，未接管。
             (false, false) => None,
         }
     }
@@ -406,7 +373,7 @@ mod tests {
         fs::create_dir_all(&claude_dir).unwrap();
         ClaudeConfigManager {
             settings_path: claude_dir.join("settings.json"),
-            backup_path: usagemeter_dir.join("claude_settings_backup.json"),
+            legacy_backup_path: usagemeter_dir.join("claude_settings_backup.json"),
         }
     }
 
@@ -468,32 +435,43 @@ mod tests {
     }
 
     #[test]
-    fn restore_from_backup_when_source_handle_cannot_be_resolved() {
-        let root = unique_test_dir("claude_restore_backup_fallback");
+    fn new_takeover_does_not_create_legacy_backup() {
+        let root = unique_test_dir("claude_no_legacy_backup");
         let manager = manager_for_test(&root);
 
         let mut settings = ClaudeSettings::default();
         settings.set_base_url("https://api.anthropic.com");
         manager.write_settings(&settings).unwrap();
-
         manager
-            .takeover_with_path_prefix_and_source(18765, Some("claude-code"), Some("src_missing"))
+            .takeover_with_path_prefix_and_source(18765, Some("claude-code"), Some("src_test"))
             .unwrap();
 
-        assert!(
-            manager
-                .restore_from_active_source_handle()
-                .expect("source restore result")
-                == false
-        );
+        assert!(!manager.has_legacy_backup());
+        let _ = fs::remove_dir_all(root);
+    }
 
-        manager.restore().unwrap();
+    #[test]
+    fn restores_and_removes_legacy_backup_when_source_handle_cannot_be_resolved() {
+        let root = unique_test_dir("claude_restore_backup_fallback");
+        let manager = manager_for_test(&root);
+
+        let mut settings = ClaudeSettings::default();
+        settings.set_base_url("http://127.0.0.1:18765/claude-code");
+        manager.write_settings(&settings).unwrap();
+        fs::write(
+            &manager.legacy_backup_path,
+            r#"{"hadBaseUrl":true,"baseUrl":"https://api.anthropic.com"}"#,
+        )
+        .unwrap();
+
+        assert!(!manager.restore_from_active_source_handle().unwrap());
+        assert!(manager.restore_from_legacy_backup().unwrap());
         let restored = manager.read_settings().unwrap();
         assert_eq!(
             restored.get_base_url().as_deref(),
             Some("https://api.anthropic.com")
         );
-        assert!(!manager.has_backup());
+        assert!(!manager.has_legacy_backup());
 
         let _ = fs::remove_dir_all(root);
     }

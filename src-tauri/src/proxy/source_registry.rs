@@ -19,6 +19,7 @@ use std::fs;
 use std::path::PathBuf;
 
 const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
+const RUNTIME_DOCUMENT_KEY: &str = "proxy_source_handles";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -150,6 +151,27 @@ impl ProxySourceRegistry {
     }
 
     fn read_data(&self) -> Result<ProxySourceRegistryData, String> {
+        #[cfg(test)]
+        return self.read_legacy_data();
+
+        #[cfg(not(test))]
+        {
+            if let Some(value) = crate::app_config::load_runtime_document(RUNTIME_DOCUMENT_KEY)? {
+                return serde_json::from_value(value).map_err(|e| {
+                    format!("Failed to parse proxy source registry from database: {e}")
+                });
+            }
+            let data = self.read_legacy_data()?;
+            if self.path.exists() {
+                self.write_data(&data)?;
+                crate::utils::remove_usagemeter_state_file(&self.path, "proxy_source_handles.json")
+                    .map_err(|e| format!("Failed to remove migrated proxy source registry: {e}"))?;
+            }
+            Ok(data)
+        }
+    }
+
+    fn read_legacy_data(&self) -> Result<ProxySourceRegistryData, String> {
         if !self.path.exists() {
             return Ok(ProxySourceRegistryData::default());
         }
@@ -161,15 +183,26 @@ impl ProxySourceRegistry {
     }
 
     fn write_data(&self, data: &ProxySourceRegistryData) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create proxy source registry directory: {}", e))?;
+        #[cfg(not(test))]
+        {
+            let value = serde_json::to_value(data)
+                .map_err(|e| format!("Failed to serialize proxy source registry: {e}"))?;
+            return crate::app_config::save_runtime_document(RUNTIME_DOCUMENT_KEY, &value);
         }
-        let content = serde_json::to_string_pretty(data)
-            .map_err(|e| format!("Failed to serialize proxy source registry: {}", e))?;
-        fs::write(&self.path, content)
-            .map_err(|e| format!("Failed to save proxy source registry: {}", e))?;
-        Ok(())
+
+        #[cfg(test)]
+        {
+            if let Some(parent) = self.path.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    format!("Failed to create proxy source registry directory: {}", e)
+                })?;
+            }
+            let content = serde_json::to_string_pretty(data)
+                .map_err(|e| format!("Failed to serialize proxy source registry: {}", e))?;
+            fs::write(&self.path, content)
+                .map_err(|e| format!("Failed to save proxy source registry: {}", e))?;
+            Ok(())
+        }
     }
 }
 

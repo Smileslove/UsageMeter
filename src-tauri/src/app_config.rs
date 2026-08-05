@@ -88,6 +88,12 @@ impl AppConfigDatabase {
                 revision INTEGER NOT NULL DEFAULT 1,
                 updated_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS runtime_documents (
+                document_key TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
             "#,
         )
         .map_err(|e| format!("ERR_CREATE_CONFIG_SCHEMA: {e}"))?;
@@ -191,6 +197,41 @@ impl AppConfigDatabase {
         Ok(())
     }
 
+    pub fn load_runtime_document(&self, key: &str) -> Result<Option<Value>, String> {
+        let payload = self
+            .conn
+            .query_row(
+                "SELECT payload_json FROM runtime_documents WHERE document_key = ?1",
+                [key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| format!("ERR_READ_RUNTIME_DOCUMENT:{key}:{e}"))?;
+        payload
+            .map(|json| {
+                serde_json::from_str(&json)
+                    .map_err(|e| format!("ERR_PARSE_RUNTIME_DOCUMENT:{key}:{e}"))
+            })
+            .transpose()
+    }
+
+    pub fn save_runtime_document(&mut self, key: &str, value: &Value) -> Result<(), String> {
+        let payload = serde_json::to_string(value)
+            .map_err(|e| format!("ERR_SERIALIZE_RUNTIME_DOCUMENT:{key}:{e}"))?;
+        self.conn
+            .execute(
+                "INSERT INTO runtime_documents (document_key, payload_json, updated_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(document_key) DO UPDATE SET
+                    payload_json = excluded.payload_json,
+                    updated_at = excluded.updated_at",
+                params![key, payload, chrono::Utc::now().timestamp_millis()],
+            )
+            .map_err(|e| format!("ERR_SAVE_RUNTIME_DOCUMENT:{key}:{e}"))?;
+        set_sqlite_private_permissions(&self.path);
+        Ok(())
+    }
+
     #[cfg(test)]
     fn document_revision(&self, key: &str) -> Result<Option<i64>, String> {
         self.conn
@@ -202,6 +243,14 @@ impl AppConfigDatabase {
             .optional()
             .map_err(|e| format!("ERR_READ_CONFIG_REVISION: {e}"))
     }
+}
+
+pub fn load_runtime_document(key: &str) -> Result<Option<Value>, String> {
+    with_config_database(|database| database.load_runtime_document(key))
+}
+
+pub fn save_runtime_document(key: &str, value: &Value) -> Result<(), String> {
+    with_config_database(|database| database.save_runtime_document(key, value))
 }
 
 fn settings_documents(settings: &AppSettings) -> Result<Map<String, Value>, String> {

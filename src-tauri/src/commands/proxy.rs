@@ -344,8 +344,10 @@ pub(crate) fn restore_claude_takeover_if_proxy_url_present(port: u16) -> Result<
         return Ok(true);
     }
 
-    if manager.has_backup() {
-        manager.restore()?;
+    if manager.has_legacy_backup() {
+        if !manager.restore_from_legacy_backup()? {
+            return Ok(false);
+        }
         let restored_settings = manager.read_settings()?;
         let restored_base_url = restored_settings.get_base_url();
         let still_proxy = restored_base_url

@@ -2,7 +2,7 @@
 
 pub mod business_time;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// 获取用户主目录
 #[allow(dead_code)]
@@ -14,6 +14,15 @@ pub fn home_dir() -> Result<PathBuf, String> {
 #[allow(dead_code)]
 pub fn usagemeter_dir() -> Result<PathBuf, String> {
     Ok(home_dir()?.join(".usagemeter"))
+}
+
+/// Deletes only a named UsageMeter-owned state file directly inside ~/.usagemeter.
+pub fn remove_usagemeter_state_file(path: &Path, file_name: &str) -> Result<(), String> {
+    let expected = usagemeter_dir()?.join(file_name);
+    if path != expected {
+        return Err("ERR_INVALID_USAGEMETER_STATE_FILE_PATH".to_string());
+    }
+    std::fs::remove_file(expected).map_err(|e| format!("ERR_REMOVE_USAGEMETER_STATE_FILE:{e}"))
 }
 
 /// 获取 Claude 配置目录

@@ -699,7 +699,7 @@ fn rewrite_codex_urls_in_quoted_strings(
 // 兼容状态持久化与清洗编排
 // ---------------------------------------------------------------------------
 
-/// 持久化在 ~/.usagemeter/ccswitch_compat_state.json 的兼容层状态。
+/// 持久化在 app_config.db 的兼容层状态。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CcSwitchCompatState {
@@ -720,24 +720,48 @@ fn compat_state_path() -> PathBuf {
     home.join(".usagemeter").join("ccswitch_compat_state.json")
 }
 
+const RUNTIME_DOCUMENT_KEY: &str = "ccswitch_compat_state";
+
 pub fn read_compat_state() -> CcSwitchCompatState {
+    #[cfg(not(test))]
+    if let Ok(Some(value)) = crate::app_config::load_runtime_document(RUNTIME_DOCUMENT_KEY) {
+        return serde_json::from_value(value).unwrap_or_default();
+    }
     let path = compat_state_path();
     if !path.exists() {
         return CcSwitchCompatState::default();
     }
-    fs::read_to_string(&path)
+    let state = fs::read_to_string(&path)
         .ok()
         .and_then(|content| serde_json::from_str(&content).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    #[cfg(not(test))]
+    if let Ok(value) = serde_json::to_value(&state) {
+        if crate::app_config::save_runtime_document(RUNTIME_DOCUMENT_KEY, &value).is_ok() {
+            let _ = crate::utils::remove_usagemeter_state_file(&path, "ccswitch_compat_state.json");
+        }
+    }
+    state
 }
 
 fn write_compat_state(state: &CcSwitchCompatState) {
-    let path = compat_state_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+    #[cfg(not(test))]
+    {
+        if let Ok(value) = serde_json::to_value(state) {
+            let _ = crate::app_config::save_runtime_document(RUNTIME_DOCUMENT_KEY, &value);
+        }
+        return;
     }
-    if let Ok(content) = serde_json::to_string_pretty(state) {
-        let _ = fs::write(&path, content);
+
+    #[cfg(test)]
+    {
+        let path = compat_state_path();
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(content) = serde_json::to_string_pretty(state) {
+            let _ = fs::write(&path, content);
+        }
     }
 }
 

@@ -402,15 +402,18 @@ pub(crate) async fn sync_external_config_change(
                 }
 
                 // source_id 无法在 registry 解析（映射丢失/handle 被手工删除）：
-                // 降级恢复而非放任请求 502。有备份走备份，否则清掉代理地址，
+                // 降级恢复而非放任请求 502。仅升级前遗留备份可参与恢复，否则清掉代理地址，
                 // 下一轮 tick 会按 live 真实配置重新注册并接管。
                 eprintln!(
                     "[proxy] Claude config points at unknown source handle {}, recovering",
                     source_id
                 );
-                if config_manager.has_backup() {
-                    if let Err(e) = config_manager.restore() {
-                        eprintln!("[proxy] Failed to restore Claude config from backup: {}", e);
+                if config_manager.has_legacy_backup() {
+                    if let Err(e) = config_manager.restore_from_legacy_backup() {
+                        eprintln!(
+                            "[proxy] Failed to restore Claude config from legacy backup: {}",
+                            e
+                        );
                     }
                 } else if let Ok(mut live_settings) = config_manager.read_settings() {
                     live_settings.env.remove("ANTHROPIC_BASE_URL");
@@ -1175,13 +1178,18 @@ impl ProxyServer {
                     self.config.port,
                 ) {
                     if !config_manager.restore_from_active_source_handle()? {
-                        config_manager.restore()?;
+                        if !config_manager.restore_from_legacy_backup()? {
+                            return Err(
+                                "Claude is pointed at UsageMeter, but its original source is unavailable. Restore ~/.claude/settings.json manually before stopping the proxy."
+                                    .to_string(),
+                            );
+                        }
                     }
                 } else {
-                    config_manager.clear_backup()?;
+                    config_manager.clear_legacy_backup()?;
                 }
             } else {
-                config_manager.clear_backup()?;
+                config_manager.clear_legacy_backup()?;
             }
         }
 

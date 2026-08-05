@@ -19,6 +19,7 @@ use std::path::PathBuf;
 
 const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 const ENV_KEY: &str = "GOOGLE_GEMINI_BASE_URL";
+const RUNTIME_DOCUMENT_KEY: &str = "gemini_proxy_source_handles";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -128,6 +129,28 @@ impl GeminiSourceRegistry {
     }
 
     fn read_data(&self) -> Result<GeminiSourceRegistryData, String> {
+        #[cfg(test)]
+        return self.read_legacy_data();
+        #[cfg(not(test))]
+        {
+            if let Some(value) = crate::app_config::load_runtime_document(RUNTIME_DOCUMENT_KEY)? {
+                return serde_json::from_value(value).map_err(|e| {
+                    format!("Failed to parse Gemini source registry from database: {e}")
+                });
+            }
+            let data = self.read_legacy_data()?;
+            if self.path.exists() {
+                self.write_data(&data)?;
+                crate::utils::remove_usagemeter_state_file(
+                    &self.path,
+                    "gemini_proxy_source_handles.json",
+                )
+                .map_err(|e| format!("Failed to remove migrated Gemini source registry: {e}"))?;
+            }
+            Ok(data)
+        }
+    }
+    fn read_legacy_data(&self) -> Result<GeminiSourceRegistryData, String> {
         if !self.path.exists() {
             return Ok(GeminiSourceRegistryData::default());
         }
@@ -138,14 +161,23 @@ impl GeminiSourceRegistry {
     }
 
     fn write_data(&self, data: &GeminiSourceRegistryData) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create Gemini source registry dir: {}", e))?;
+        #[cfg(not(test))]
+        {
+            let value = serde_json::to_value(data)
+                .map_err(|e| format!("Failed to serialize Gemini source registry: {e}"))?;
+            return crate::app_config::save_runtime_document(RUNTIME_DOCUMENT_KEY, &value);
         }
-        let content = serde_json::to_string_pretty(data)
-            .map_err(|e| format!("Failed to serialize Gemini source registry: {}", e))?;
-        fs::write(&self.path, content)
-            .map_err(|e| format!("Failed to save Gemini source registry: {}", e))
+        #[cfg(test)]
+        {
+            if let Some(parent) = self.path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create Gemini source registry dir: {}", e))?;
+            }
+            let content = serde_json::to_string_pretty(data)
+                .map_err(|e| format!("Failed to serialize Gemini source registry: {}", e))?;
+            fs::write(&self.path, content)
+                .map_err(|e| format!("Failed to save Gemini source registry: {}", e))
+        }
     }
 }
 
