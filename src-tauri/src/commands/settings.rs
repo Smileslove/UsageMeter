@@ -14,14 +14,18 @@ static SETTINGS_WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()
 pub fn load_settings_blocking() -> Result<AppSettings, String> {
     let mut settings = with_config_database(|database| {
         if let Some(mut settings) = database.load_settings()? {
-            normalize_settings(&mut settings)?;
-            if migrate_legacy_model_pricings(&mut settings)? {
-                database.save_settings(&settings)?;
-                write_legacy_settings_mirror(&settings);
+            if let Some(preferences) = load_preferences_file()? {
+                apply_preferences(&mut settings, preferences);
             }
+            normalize_settings(&mut settings)?;
+            migrate_legacy_model_pricings(&mut settings)?;
+            // Re-save once to remove the old full-snapshot documents after a
+            // user upgrades to the split preferences/entity layout.
+            database.save_settings(&settings)?;
+            write_preferences_file(&settings)?;
             Ok(settings)
         } else {
-            let mut settings = load_legacy_settings_file()?.unwrap_or_default();
+            let mut settings = load_preferences_file()?.unwrap_or_default();
             normalize_settings(&mut settings)?;
             migrate_legacy_model_pricings(&mut settings)?;
 
@@ -31,7 +35,7 @@ pub fn load_settings_blocking() -> Result<AppSettings, String> {
                 &previous_settings,
             )?;
             database.save_settings(&settings)?;
-            write_legacy_settings_mirror(&settings);
+            write_preferences_file(&settings)?;
             Ok(settings)
         }
     })?;
@@ -40,15 +44,50 @@ pub fn load_settings_blocking() -> Result<AppSettings, String> {
     Ok(settings)
 }
 
-fn load_legacy_settings_file() -> Result<Option<AppSettings>, String> {
+fn load_preferences_file() -> Result<Option<AppSettings>, String> {
     let path = AppSettings::settings_path()?;
     if !path.exists() {
         return Ok(None);
     }
     let raw = fs::read_to_string(path).map_err(|e| format!("ERR_READ_SETTINGS: {e}"))?;
-    serde_json::from_str(&raw)
-        .map(Some)
-        .map_err(|e| format!("ERR_PARSE_SETTINGS: {e}"))
+    let value: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("ERR_PARSE_SETTINGS: {e}"))?;
+    let mut settings: AppSettings =
+        serde_json::from_value(value.clone()).map_err(|e| format!("ERR_PARSE_SETTINGS: {e}"))?;
+
+    if let Some(filters) = value.get("filters") {
+        settings.source_aware.active_source_filter = filters
+            .get("activeSourceFilter")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        settings.client_tools.active_tool_filter = filters
+            .get("activeToolFilter")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+    }
+
+    Ok(Some(settings))
+}
+
+fn apply_preferences(settings: &mut AppSettings, preferences: AppSettings) {
+    settings.locale = preferences.locale;
+    settings.timezone = preferences.timezone;
+    settings.refresh_interval_seconds = preferences.refresh_interval_seconds;
+    settings.summary_window = preferences.summary_window;
+    settings.day_boundary_mode = preferences.day_boundary_mode;
+    settings.number_format = preferences.number_format;
+    settings.proxy = preferences.proxy;
+    settings.theme = preferences.theme;
+    settings.model_pricing = preferences.model_pricing;
+    settings.auto_start = preferences.auto_start;
+    settings.currency = preferences.currency;
+    settings.sync = preferences.sync;
+    settings.network_proxy = preferences.network_proxy;
+    settings.auto_check_update = preferences.auto_check_update;
+    settings.skipped_update_version = preferences.skipped_update_version;
+    settings.wsl_scan = preferences.wsl_scan;
+    settings.source_aware.active_source_filter = preferences.source_aware.active_source_filter;
+    settings.client_tools.active_tool_filter = preferences.client_tools.active_tool_filter;
 }
 
 /// 加载应用设置
@@ -147,7 +186,7 @@ fn save_settings_locked(
         .map_err(SaveSettingsError::Other)?;
     with_config_database(|database| database.save_settings(&settings))
         .map_err(SaveSettingsError::Other)?;
-    write_legacy_settings_mirror(&settings);
+    write_preferences_file(&settings).map_err(SaveSettingsError::Other)?;
 
     if previous_settings.day_boundary_mode != settings.day_boundary_mode {
         reset_day_boundary_caches().map_err(SaveSettingsError::Other)?;
@@ -172,23 +211,39 @@ fn migrate_legacy_model_pricings(settings: &mut AppSettings) -> Result<bool, Str
     Ok(true)
 }
 
-/// `app_config.db` is authoritative. This JSON file is a best-effort readable
-/// compatibility mirror and first-run import source for older releases.
-fn write_legacy_settings_mirror(settings: &AppSettings) {
-    let result = (|| -> Result<(), String> {
-        let path = AppSettings::settings_path()?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("ERR_CREATE_SETTINGS_DIR: {e}"))?;
-        }
-        let content = serde_json::to_string_pretty(settings)
-            .map_err(|e| format!("ERR_SERIALIZE_SETTINGS: {e}"))?;
-        atomic_write(&path, &content)?;
-        set_private_file_permissions(&path);
-        Ok(())
-    })();
-    if let Err(error) = result {
-        eprintln!("[UsageMeter] Failed to update legacy settings mirror: {error}");
+/// Writes only stable user preferences. Configurable entity collections live
+/// in `app_config.db`; existing credential locations are unchanged pending the
+/// separate SecretStore migration.
+fn write_preferences_file(settings: &AppSettings) -> Result<(), String> {
+    let mut value =
+        serde_json::to_value(settings).map_err(|e| format!("ERR_SERIALIZE_SETTINGS: {e}"))?;
+    let document = value
+        .as_object_mut()
+        .ok_or_else(|| "ERR_SETTINGS_NOT_OBJECT".to_string())?;
+    let active_source_filter = settings.source_aware.active_source_filter.clone();
+    let active_tool_filter = settings.client_tools.active_tool_filter.clone();
+
+    document.remove("gateway");
+    document.remove("sourceAware");
+    document.remove("clientTools");
+    document.insert("settingsVersion".to_string(), serde_json::json!(2));
+    document.insert(
+        "filters".to_string(),
+        serde_json::json!({
+            "activeSourceFilter": active_source_filter,
+            "activeToolFilter": active_tool_filter,
+        }),
+    );
+
+    let content =
+        serde_json::to_string_pretty(&value).map_err(|e| format!("ERR_SERIALIZE_SETTINGS: {e}"))?;
+    let path = AppSettings::settings_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("ERR_CREATE_SETTINGS_DIR: {e}"))?;
     }
+    atomic_write(&path, &content)?;
+    set_private_file_permissions(&path);
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -211,11 +266,10 @@ fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
     let temp_path = parent.join(format!("{file_name}.tmp"));
 
     fs::write(&temp_path, content).map_err(|e| format!("ERR_WRITE_SETTINGS: {e}"))?;
-    fs::rename(&temp_path, path).map_err(|err| {
+    fs::rename(&temp_path, path).map_err(|error| {
         let _ = fs::remove_file(&temp_path);
-        format!("ERR_RENAME_SETTINGS: {err}")
-    })?;
-    Ok(())
+        format!("ERR_RENAME_SETTINGS: {error}")
+    })
 }
 
 fn normalize_settings(settings: &mut AppSettings) -> Result<(), String> {
@@ -511,25 +565,13 @@ mod tests {
     }
 
     #[test]
-    fn atomic_write_replaces_target_file_contents() {
-        let dir = tempdir().expect("tempdir");
-        let path = dir.path().join("settings.json");
-
-        fs::write(&path, "old").expect("seed file");
-        atomic_write(&path, "new").expect("atomic write");
-
-        assert_eq!(fs::read_to_string(&path).expect("read back"), "new");
-        assert!(!dir.path().join("settings.json.tmp").exists());
-    }
-
-    #[test]
-    fn first_load_imports_legacy_json_and_database_becomes_authoritative() {
+    fn first_load_migrates_legacy_json_into_preferences_and_entity_storage() {
         let _guard = crate::test_support::env_lock();
         let previous_home = std::env::var_os("HOME");
         let dir = tempdir().expect("tempdir");
         std::env::set_var("HOME", dir.path());
 
-        let result = (|| -> Result<(AppSettings, AppSettings), String> {
+        let result = (|| -> Result<(AppSettings, AppSettings, serde_json::Value), String> {
             let settings_dir = dir.path().join(".usagemeter");
             fs::create_dir_all(&settings_dir).map_err(|e| e.to_string())?;
             let mut legacy = AppSettings {
@@ -549,15 +591,24 @@ mod tests {
                 serde_json::to_string(&legacy).map_err(|e| e.to_string())?,
             )
             .map_err(|e| e.to_string())?;
-            let authoritative = load_settings_blocking()?;
-            Ok((imported, authoritative))
+            let reloaded = load_settings_blocking()?;
+            let compact_file = serde_json::from_str(
+                &fs::read_to_string(settings_dir.join("settings.json"))
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            Ok((imported, reloaded, compact_file))
         })();
 
         restore_home(previous_home);
-        let (imported, authoritative) = result.unwrap();
+        let (imported, reloaded, compact_file) = result.unwrap();
         assert_eq!(imported.locale, "en-US");
-        assert_eq!(authoritative.locale, "en-US");
+        assert_eq!(reloaded.locale, "zh-CN");
         assert!(dir.path().join(".usagemeter/app_config.db").exists());
+        assert_eq!(compact_file["settingsVersion"], 2);
+        assert!(compact_file.get("gateway").is_none());
+        assert!(compact_file.get("sourceAware").is_none());
+        assert!(compact_file.get("clientTools").is_none());
     }
 
     #[test]

@@ -13,6 +13,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 const CONFIG_SCHEMA_VERSION: i64 = 1;
+const ENTITY_DOCUMENT_KEYS: [&str; 3] = ["gateway", "sourceAware", "clientTools"];
 
 #[cfg(not(test))]
 static GLOBAL_CONFIG_DB: LazyLock<Mutex<Option<AppConfigDatabase>>> =
@@ -154,6 +155,12 @@ impl AppConfigDatabase {
             .transaction()
             .map_err(|e| format!("ERR_BEGIN_CONFIG_TRANSACTION: {e}"))?;
         Self::save_documents(&tx, documents)?;
+        tx.execute(
+            "DELETE FROM config_documents
+             WHERE document_key NOT IN ('gateway', 'sourceAware', 'clientTools')",
+            [],
+        )
+        .map_err(|e| format!("ERR_REMOVE_LEGACY_CONFIG_DOCUMENTS: {e}"))?;
         tx.commit()
             .map_err(|e| format!("ERR_COMMIT_CONFIG_TRANSACTION: {e}"))?;
         set_sqlite_private_permissions(&self.path);
@@ -199,7 +206,10 @@ impl AppConfigDatabase {
 
 fn settings_documents(settings: &AppSettings) -> Result<Map<String, Value>, String> {
     match serde_json::to_value(settings).map_err(|e| format!("ERR_SERIALIZE_SETTINGS: {e}"))? {
-        Value::Object(documents) => Ok(documents),
+        Value::Object(mut documents) => {
+            documents.retain(|key, _| ENTITY_DOCUMENT_KEYS.contains(&key.as_str()));
+            Ok(documents)
+        }
         _ => Err("ERR_SETTINGS_NOT_OBJECT".to_string()),
     }
 }
@@ -227,36 +237,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn settings_round_trip_across_namespace_documents() {
+    fn settings_round_trip_preserves_entity_documents_only() {
         let temp = tempfile::tempdir().unwrap();
         let mut db = AppConfigDatabase::new_with_path(&temp.path().join("app_config.db")).unwrap();
         let mut settings = AppSettings {
             locale: "en-US".to_string(),
             ..AppSettings::default()
         };
-        settings.proxy.port = 19001;
-        settings.theme.appearance = "dark".to_string();
+        settings
+            .gateway
+            .profiles
+            .push(crate::models::GatewayProfile {
+                id: "gateway-1".to_string(),
+                name: "Test gateway".to_string(),
+                protocol: crate::models::GatewayProtocol::OpenAiChatCompletions,
+                base_url: "https://example.com".to_string(),
+                enabled: true,
+                client_label: String::new(),
+                auth_mode: crate::models::GatewayAuthMode::ClientPassthrough,
+                dispatch_strategy: crate::models::GatewayDispatchStrategy::RoundRobin,
+                upstream_keys: vec![],
+                local_keys: vec![],
+            });
 
         db.save_settings(&settings).unwrap();
         let loaded = db.load_settings().unwrap().unwrap();
 
-        assert_eq!(loaded.locale, "en-US");
-        assert_eq!(loaded.proxy.port, 19001);
-        assert_eq!(loaded.theme.appearance, "dark");
+        assert_eq!(loaded.locale, crate::models::default_locale());
+        assert_eq!(loaded.gateway.profiles[0].id, "gateway-1");
     }
 
     #[test]
-    fn repeated_save_increments_each_namespace_revision() {
+    fn repeated_save_only_tracks_entity_document_revisions() {
         let temp = tempfile::tempdir().unwrap();
         let mut db = AppConfigDatabase::new_with_path(&temp.path().join("app_config.db")).unwrap();
         let mut settings = AppSettings::default();
 
         db.save_settings(&settings).unwrap();
-        settings.locale = "en-US".to_string();
+        settings.gateway.storage_version = 7;
         db.save_settings(&settings).unwrap();
 
-        assert_eq!(db.document_revision("locale").unwrap(), Some(2));
-        assert_eq!(db.document_revision("gateway").unwrap(), Some(1));
+        assert_eq!(db.document_revision("locale").unwrap(), None);
+        assert_eq!(db.document_revision("gateway").unwrap(), Some(2));
     }
 
     #[test]
@@ -293,12 +315,12 @@ mod tests {
         db.save_settings(&AppSettings::default()).unwrap();
         db.conn
             .execute(
-                "UPDATE config_documents SET payload_json = '{' WHERE document_key = 'theme'",
+                "UPDATE config_documents SET payload_json = '{' WHERE document_key = 'gateway'",
                 [],
             )
             .unwrap();
 
         let error = db.load_settings().unwrap_err();
-        assert!(error.starts_with("ERR_PARSE_CONFIG_DOCUMENT:theme:"));
+        assert!(error.starts_with("ERR_PARSE_CONFIG_DOCUMENT:gateway:"));
     }
 }
