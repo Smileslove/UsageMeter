@@ -474,6 +474,8 @@ pub struct ProxyState {
     /// Gateway rate limiter for controlling request rates per local key and globally.
     pub gateway_rate_limiter: crate::gateway::rate_limit::GatewayRateLimiter,
     /// Gateway auditor for logging security-relevant operations.
+    // Reserved for per-proxy audit sinks; current gateway events use the global auditor.
+    #[allow(dead_code)]
     pub gateway_auditor: Arc<RwLock<crate::gateway::audit::GatewayAuditor>>,
 }
 

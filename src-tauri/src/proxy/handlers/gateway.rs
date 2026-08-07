@@ -331,6 +331,7 @@ fn forward_query(profile: &GatewayProfile, raw_query: Option<&str>) -> Option<St
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GatewayTransportFailure {
     Connect,
@@ -365,6 +366,7 @@ enum GatewayAttemptResult {
         status_code: u16,
         headers: Vec<(String, String)>,
         body: BoxBody,
+        #[allow(dead_code)]
         retryable_before_response: bool,
     },
     TransportError(String),
@@ -391,6 +393,7 @@ impl GatewayAttemptResult {
         }
     }
 
+    #[allow(dead_code)]
     fn should_failover(&self) -> bool {
         match self {
             Self::TransportError(error) => GatewayTransportFailure::classify(error).retryable(),
@@ -417,6 +420,7 @@ impl GatewayAttemptResult {
     }
 }
 
+#[allow(dead_code)]
 fn should_failover_status(status_code: u16, retryable_before_response: bool) -> bool {
     retryable_before_response && matches!(status_code, 401 | 402 | 429 | 500 | 502 | 503 | 504)
 }

@@ -67,6 +67,7 @@ impl GatewayAuditor {
     }
 
     /// Create a new auditor with file output enabled.
+    #[allow(dead_code)]
     pub fn with_file(audit_file_path: PathBuf) -> Result<Self, String> {
         let file = OpenOptions::new()
             .create(true)

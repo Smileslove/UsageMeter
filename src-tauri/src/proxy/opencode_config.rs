@@ -246,7 +246,7 @@ impl OpenCodeSourceRegistry {
         {
             let value = serde_json::to_value(data)
                 .map_err(|e| format!("Failed to serialize OpenCode source registry: {e}"))?;
-            return crate::app_config::save_runtime_document(RUNTIME_DOCUMENT_KEY, &value);
+            crate::app_config::save_runtime_document(RUNTIME_DOCUMENT_KEY, &value)
         }
         #[cfg(test)]
         {

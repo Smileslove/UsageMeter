@@ -62,7 +62,7 @@ impl AppConfigDatabase {
             .map_err(|e| format!("ERR_CONFIG_DB_WAL: {e}"))?;
         conn.pragma_update(None, "wal_autocheckpoint", 1000_i64)
             .map_err(|e| format!("ERR_CONFIG_DB_WAL_AUTOCHECKPOINT: {e}"))?;
-        conn.pragma_update(None, "journal_size_limit", 1_i64 * 1024 * 1024)
+        conn.pragma_update(None, "journal_size_limit", 1_048_576_i64)
             .map_err(|e| format!("ERR_CONFIG_DB_JOURNAL_SIZE_LIMIT: {e}"))?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(|e| format!("ERR_CONFIG_DB_FOREIGN_KEYS: {e}"))?;

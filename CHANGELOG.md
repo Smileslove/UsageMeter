@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.0] - 2026-08-07
+
+### Added
+
+- **Local API Gateway**: Added a dedicated gateway panel and automatic loopback routing for OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Gemini GenerateContent. Each profile uses one stored upstream credential and one generated local client key, with streaming responses preserved end to end
+- **Reasonix Telemetry v2**: Added Reasonix telemetry v2 parsing and residual-usage reconciliation in unified statistics
+
+### Changed
+
+- **Configuration Storage**: Split stable user preferences from configurable entities, moving entity collections and proxy runtime documents into SQLite while retaining a compact preferences file
+- **Gateway Credentials**: Moved gateway credentials from macOS-only Keychain references to local cross-platform configuration, with recovery prompts for legacy credentials that cannot be migrated on the current device
+
+### Fixed
+
+- **Gateway Routing**: Fixed concurrent profile updates, restored deterministic single-upstream routing, and hardened legacy credential recovery
+- **Sync Recovery**: Restored pending sync-queue recovery and authoritative session-snapshot reconciliation for local usage data
+
+---
+
+### 新增
+
+- **本地 API 网关**：新增独立网关面板与自动本地回环路由，支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Gemini GenerateContent；每个配置使用一个本地保存的上游凭据与一个自动生成的客户端 Key，并保持响应全链路流式传输
+- **Reasonix Telemetry v2**：新增 Reasonix telemetry v2 解析，并在统一统计中对残差用量进行对账合并
+
+### 变更
+
+- **配置存储**：拆分稳定用户偏好与可配置实体；实体集合和代理运行文档迁移至 SQLite，同时保留精简偏好文件
+- **网关凭据**：将网关凭据从仅限 macOS 的 Keychain 引用迁移至跨平台本地配置，并在当前设备无法迁移旧凭据时提供恢复提示
+
+### 修复
+
+- **网关路由**：修复配置并发更新，恢复确定性单上游路由，并增强旧凭据恢复流程
+- **同步恢复**：恢复待处理同步队列，并修复本地用量数据的权威会话快照对账
+
+---
+
 ## [0.10.0] - 2026-07-29
 
 ### Added
@@ -859,6 +895,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.11.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.0
 [0.10.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.10.0
 [0.9.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.9.1
 [0.9.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.9.0

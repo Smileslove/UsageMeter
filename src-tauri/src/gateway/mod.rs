@@ -412,6 +412,7 @@ pub enum LocalKeyVerifyError {
     Invalid,
 }
 
+#[allow(dead_code)]
 pub fn verify_local_key(key: &str, candidate: &GatewayLocalKey) -> bool {
     matches!(verify_local_key_with_expiry(key, candidate), Ok(()))
 }
@@ -477,8 +478,7 @@ pub fn select_upstream_key_excluding<'a>(
     profile
         .upstream_keys
         .iter()
-        .filter(|key| key.enabled && !excluded_key_ids.iter().any(|id| id == &key.id))
-        .next()
+        .find(|key| key.enabled && !excluded_key_ids.iter().any(|id| id == &key.id))
 }
 
 pub fn upstream_secret_ref(profile_id: &str, key_id: &str) -> String {
@@ -498,11 +498,13 @@ pub fn is_expected_local_secret_ref(profile_id: &str, key: &GatewayLocalKey) -> 
 }
 
 /// Returns a v2 upstream secret without consulting an operating-system store.
+#[allow(dead_code)]
 pub fn local_upstream_secret(key: &GatewayUpstreamKey) -> Option<&str> {
     (!key.secret.is_empty()).then_some(key.secret.as_str())
 }
 
 /// Returns a v2 local client key without consulting an operating-system store.
+#[allow(dead_code)]
 pub fn local_client_secret(key: &GatewayLocalKey) -> Option<&str> {
     (!key.secret.is_empty()).then_some(key.secret.as_str())
 }

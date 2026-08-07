@@ -22,7 +22,7 @@ UsageMeter 是一款面向 AI 编程工具重度用户的本地优先托盘应�
 ## 当前定位
 
 - `macOS 优先` 的桌面应用，技术栈为 Vue 3 + TypeScript + Tauri 2
-- `四面板结构`：概览、统计、会话、设置
+- `五面板结构`：概览、统计、会话、网关、设置
 - `本地优先`，可选代理增强，并在统一统计层合并展示
 
 ## 当前支持范围
@@ -31,6 +31,7 @@ UsageMeter 是一款面向 AI 编程工具重度用户的本地优先托盘应�
 | --- | --- |
 | 本地历史扫描 | Claude Code、Codex CLI、OpenClaw、OpenCode、Qoder CLI / IDE / IDE CN / Work / Work CN、Reasonix、Gemini CLI、GitHub Copilot CLI、Hermes Agent |
 | 代理接管与请求采集 | Claude Code、Codex、OpenCode 全局配置路由、Reasonix 全局配置、Gemini CLI 基于环境变量的配置；为 Claude Code 与 Codex 提供 cc-switch 共存保护 |
+| 本地 API 网关 | 支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、Gemini GenerateContent；每个配置保存一个上游凭据，并生成一个本地客户端 Key |
 | 来源 / 供应商归因 | 代理流量自动识别来源，支持来源命名、合并、删除、Key 前缀备注、来源级过滤 |
 | 官方或账号额度查询 | Codex ChatGPT OAuth、Claude、Gemini CLI、GitHub Copilot |
 | 第三方中转额度查询 | 已配置中转来源的 profile 化额度 / 余额查询 |
@@ -60,6 +61,15 @@ UsageMeter 是一款面向 AI 编程工具重度用户的本地优先托盘应�
 - 查看项目级聚合统计
 - 下钻到会话详情，查看 Token、费用、模型与请求性能
 
+### API 网关
+
+- 为公开 HTTPS 上游创建配置，支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Gemini GenerateContent
+- 使用配置专属的本地回环地址与自动生成的 `umg_...` Key 接入客户端，由 UsageMeter 注入已保存的上游凭据
+- 保持响应全链路流式传输，同时记录受支持的用量、运行时指标与来源归因
+- 将手动客户端路由与工具配置接管分开管理
+- 每个配置使用单一上游凭据和单一本地客户端 Key，支持替换上游凭据或撤销后重新生成本地 Key
+- 尽可能恢复旧版 macOS Keychain 配置；当前设备无法读取旧凭据时会明确提示手动替换
+
 ### 设置与运维
 
 - 开关本地代理采集
@@ -85,6 +95,15 @@ UsageMeter 当前有两条采集路径：
 | 本地代理 | 通过可选本地代理捕获实时请求与运行时元数据 | TTFT、请求耗时、Token 速率、状态码、来源归因 |
 
 应用会尽量把两条链路合并到统一视图中：本地历史负责打底，代理模式负责补足运行时维度。
+
+API 网关复用同一本地监听器，将受支持的原生协议流量接入现有运行时与来源归因链路，不转换请求协议。
+
+## 本地存储
+
+- 稳定用户偏好保留在精简的本地设置文件中
+- 可配置实体集合与代理运行文档存储在 `app_config.db`
+- 规范化本地用量、会话事实与同步状态继续存储在本地用量 SQLite 数据库中
+- 网关凭据保存在 UsageMeter 本地配置中；旧版 macOS Keychain 引用会尝试迁移，无法迁移时提示手动恢复
 
 ## 截图
 
@@ -151,13 +170,15 @@ npm run lint
 UsageMeter/
 ├── src/                    # Vue 前端
 │   ├── components/         # 可复用 UI 组件
-│   ├── views/              # 概览 / 统计 / 会话 / 设置
+│   ├── views/              # 概览 / 统计 / 会话 / 网关 / 设置
 │   ├── stores/             # Pinia 状态
 │   ├── i18n/               # 国际化
 │   └── utils/              # 格式化与界面辅助函数
 ├── src-tauri/              # Tauri 后端
 │   └── src/
+│       ├── app_config.rs   # 可配置实体存储与运行文档
 │       ├── commands/       # Tauri 命令入口
+│       ├── gateway/        # 本地 API 网关领域逻辑、审计与速率限制
 │       ├── session/        # 各工具本地读取器
 │       ├── proxy/          # 代理采集、接管、路由
 │       ├── local_usage/    # 本地用量 SQLite 缓存

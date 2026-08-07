@@ -12,6 +12,24 @@ use super::{
     TimestampSqlColumn,
 };
 
+type RemovedSessionContext = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    i64,
+    i64,
+);
+type RemovedFact = (
+    String,
+    String,
+    Option<String>,
+    i64,
+    Option<String>,
+    String,
+    String,
+);
+
 fn reasonix_meta_timestamp(meta: &SessionMeta) -> i64 {
     if meta.end_time > 0 {
         meta.end_time
@@ -468,14 +486,7 @@ impl LocalUsageDatabase {
         let mut touched_history_dates: HashSet<String> = HashSet::new();
 
         for session_id in &removed_ids {
-            let session_context: Option<(
-                String,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                i64,
-                i64,
-            )> = tx
+            let session_context: Option<RemovedSessionContext> = tx
                 .query_row(
                     "SELECT tool, project_key, project_name, scope, start_time, end_time
                      FROM local_sessions WHERE session_id = ?1",
@@ -587,15 +598,7 @@ impl LocalUsageDatabase {
             touched_history_dates.extend(Self::collect_history_dates_for_session_tx(
                 &tx, session_id, &settings, &today,
             )?);
-            let removed_facts: Vec<(
-                String,
-                String,
-                Option<String>,
-                i64,
-                Option<String>,
-                String,
-                String,
-            )> = {
+            let removed_facts: Vec<RemovedFact> = {
                 let mut stmt = tx
                     .prepare(
                         "SELECT tool, session_id, request_key, timestamp, message_id,

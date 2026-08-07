@@ -1177,13 +1177,13 @@ impl ProxyServer {
                     &base_url,
                     self.config.port,
                 ) {
-                    if !config_manager.restore_from_active_source_handle()? {
-                        if !config_manager.restore_from_legacy_backup()? {
-                            return Err(
-                                "Claude is pointed at UsageMeter, but its original source is unavailable. Restore ~/.claude/settings.json manually before stopping the proxy."
-                                    .to_string(),
-                            );
-                        }
+                    if !config_manager.restore_from_active_source_handle()?
+                        && !config_manager.restore_from_legacy_backup()?
+                    {
+                        return Err(
+                            "Claude is pointed at UsageMeter, but its original source is unavailable. Restore ~/.claude/settings.json manually before stopping the proxy."
+                                .to_string(),
+                        );
                     }
                 } else {
                     config_manager.clear_legacy_backup()?;

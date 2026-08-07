@@ -750,7 +750,6 @@ fn write_compat_state(state: &CcSwitchCompatState) {
         if let Ok(value) = serde_json::to_value(state) {
             let _ = crate::app_config::save_runtime_document(RUNTIME_DOCUMENT_KEY, &value);
         }
-        return;
     }
 
     #[cfg(test)]
