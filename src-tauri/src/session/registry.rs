@@ -82,6 +82,12 @@ pub fn parse_session_file_for_storage(
 }
 
 pub fn parse_session_file(session: &SessionFile) -> Result<ParsedSessionData, String> {
+    if crate::tool_catalog::find(&session.tool)
+        .filter(|descriptor| descriptor.has_local_sessions)
+        .is_none()
+    {
+        return Err(format!("unsupported session tool: {}", session.tool));
+    }
     let Some(source) = all_sources()
         .into_iter()
         .find(|source| source.tool_id() == session.tool)

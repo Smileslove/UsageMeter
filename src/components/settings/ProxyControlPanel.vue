@@ -10,6 +10,7 @@ import SettingsSwitch from './SettingsSwitch.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import { TOOL_LOBE_ICONS } from '../../iconConfig'
 import { formatToolDisplayName } from '../../utils/toolDisplay'
+import { PROXY_TOOL_IDS } from '../../toolCatalog'
 
 const store = useMonitorStore()
 
@@ -27,7 +28,7 @@ watch(() => store.settings.proxy.includeErrorRequests, (value) => {
 })
 
 const managedToolProfiles = computed(() => {
-  return store.settings.clientTools.profiles.filter(profile => ['claude_code', 'codex', 'opencode', 'reasonix', 'gemini'].includes(profile.tool))
+  return store.settings.clientTools.profiles.filter(profile => PROXY_TOOL_IDS.has(profile.tool))
 })
 
 const toolAlerts = computed(() => {

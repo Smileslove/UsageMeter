@@ -16,6 +16,7 @@ mod subscription;
 mod sync;
 #[cfg(test)]
 mod test_support;
+mod tool_catalog;
 mod unified_usage;
 mod utils;
 

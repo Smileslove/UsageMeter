@@ -4,7 +4,7 @@
 
 mod claude_reader;
 mod codex_reader;
-mod constants;
+pub(crate) mod constants;
 mod copilot_cli_reader;
 mod gemini_reader;
 mod hermes_reader;

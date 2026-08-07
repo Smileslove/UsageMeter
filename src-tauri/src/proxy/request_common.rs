@@ -70,7 +70,8 @@ pub(crate) fn settings_file_mtime() -> Option<SystemTime> {
 }
 
 pub(crate) fn detect_client_route(path: &str, settings: &AppSettings) -> ClientRoute {
-    for tool in ["claude-code", "codex", "opencode", "reasonix", "gemini"] {
+    for descriptor in crate::tool_catalog::proxy_tools() {
+        let tool = descriptor.path_prefix;
         if let Some(normalized_path) = strip_known_usagemeter_tool_prefix(path, tool) {
             let (normalized_path, provider_id, source_id, detection_method) = if tool == "opencode"
             {
@@ -93,10 +94,7 @@ pub(crate) fn detect_client_route(path: &str, settings: &AppSettings) -> ClientR
                 };
                 (normalized_path, None, source_id, detection_method)
             };
-            let client_tool = match tool {
-                "claude-code" => "claude_code",
-                other => other,
-            };
+            let client_tool = descriptor.id;
             let profile = settings
                 .client_tools
                 .profiles

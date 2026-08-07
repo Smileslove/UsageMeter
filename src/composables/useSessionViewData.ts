@@ -2,12 +2,9 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { ref, watch, type Ref } from 'vue'
 import type { ProjectStats, RequestRecord, SessionStats } from '../types'
 import type { useMonitorStore } from '../stores/monitor'
+import { SESSION_SOURCE_TOOLS } from '../toolCatalog'
 
-export const SESSION_SOURCE_TOOLS = new Set([
-  'claude_code', 'codex', 'hermes', 'openclaw', 'opencode',
-  'qoder_ide', 'qoder_ide_cn', 'qoder_cli', 'qoder_work', 'qoder_work_cn',
-  'reasonix', 'copilot'
-])
+export { SESSION_SOURCE_TOOLS }
 
 export const normalizeSessionTool = (tool: string | null | undefined) => (
   tool && SESSION_SOURCE_TOOLS.has(tool) ? tool : null
