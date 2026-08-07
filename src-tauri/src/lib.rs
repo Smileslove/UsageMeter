@@ -12,6 +12,7 @@ mod net;
 mod proxy;
 mod qoder_models;
 mod session;
+mod settings;
 mod subscription;
 mod sync;
 #[cfg(test)]
