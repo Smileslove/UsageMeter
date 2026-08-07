@@ -46,8 +46,8 @@ const chartOptions = computed(() => {
     tooltip: {
       trigger: 'item',
       formatter: (params: any) => {
-        const countLabel = t(store.settings.locale, 'metrics.requests') || '请求数'
-        const percentLabel = t(store.settings.locale, 'metrics.percent') || '占比'
+        const countLabel = t(store.settings.locale, 'metrics.requests')
+        const percentLabel = t(store.settings.locale, 'metrics.percent')
         const textColor = themeColorVar('--theme-chart-tooltip-text')
         const secondaryColor = themeColorVar('--theme-chart-tooltip-subtext')
         const valueColor = themeColorVar('--theme-text-primary')

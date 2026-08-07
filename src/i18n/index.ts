@@ -4,7 +4,7 @@ interface TranslationNode {
   [key: string]: string | TranslationNode
 }
 
-const messages: Record<AppLocale, TranslationNode> = {
+const messages = {
   'zh-CN': {
     app: {
       name: 'UsageMeter',
@@ -30,6 +30,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       save: '保存设置',
       saving: '保存中...',
       cancel: '取消',
+      close: '关闭',
       noData: '暂无数据',
       token: 'Token',
       requests: '请求',
@@ -198,6 +199,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       snapshotTaskFailed: '后台任务执行失败',
       localJsonlNotFound: '未找到 Claude 本地 JSONL 会话文件',
       statisticsTimeout: '统计数据加载超时',
+      configuredSourceQuotaFailed: '来源额度查询失败',
       unknown: '未知错误'
     },
     settings: {
@@ -1067,6 +1069,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       save: '儲存設定',
       saving: '儲存中...',
       cancel: '取消',
+      close: '關閉',
       noData: '暫無資料',
       token: 'Token',
       requests: '請求',
@@ -1158,6 +1161,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       snapshotTaskFailed: '背景任務執行失敗',
       localJsonlNotFound: '未找到 Claude 本地 JSONL 會話檔案',
       statisticsTimeout: '統計資料載入逾時',
+      configuredSourceQuotaFailed: '來源額度查詢失敗',
       unknown: '未知錯誤'
     },
     settings: {
@@ -2026,6 +2030,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       save: 'Save Settings',
       saving: 'Saving...',
       cancel: 'Cancel',
+      close: 'Close',
       noData: 'No data',
       token: 'Token',
       requests: 'Requests',
@@ -2117,6 +2122,7 @@ const messages: Record<AppLocale, TranslationNode> = {
       snapshotTaskFailed: 'Background task execution failed',
       localJsonlNotFound: 'Claude local JSONL session files not found',
       statisticsTimeout: 'Statistics data load timed out',
+      configuredSourceQuotaFailed: 'Configured source quota query failed',
       unknown: 'Unknown error'
     },
     settings: {
@@ -2960,7 +2966,18 @@ const messages: Record<AppLocale, TranslationNode> = {
       tool: { claudeCode: 'Claude Code', codex: 'Codex', hermes: 'Hermes Agent', opencode: 'OpenCode', qoderIde: 'Qoder', qoderIdeCn: 'Qoder IDE CN', qoderCli: 'Qoder CLI', qoderWork: 'Qoder Work', qoderWorkCn: 'Qoder Work CN' }
     }
   }
-}
+} satisfies Record<AppLocale, TranslationNode>
+
+type StringLeafPaths<T, Prefix extends string = ''> = {
+  [K in keyof T & string]: T[K] extends string
+    ? `${Prefix}${K}`
+    : T[K] extends TranslationNode
+      ? StringLeafPaths<T[K], `${Prefix}${K}.`>
+      : never
+}[keyof T & string]
+
+/** All translation keys known at build time. Prefer this type in new UI code. */
+export type TranslationKey = StringLeafPaths<typeof messages['en-US']>
 
 const SOURCE_KEY_MAP: Record<string, string> = {
   'local-files': 'source.localFiles',
@@ -2989,6 +3006,8 @@ export function normalizeLocale(locale: string | undefined): AppLocale {
   return 'zh-CN'
 }
 
+export function t(locale: string | undefined, key: TranslationKey, params?: Record<string, string | number>): string
+export function t(locale: string | undefined, key: string, params?: Record<string, string | number>): string
 export function t(locale: string | undefined, key: string, params?: Record<string, string | number>): string {
   const resolvedLocale = normalizeLocale(locale)
   const value = getByPath(messages[resolvedLocale], key)
@@ -3025,7 +3044,8 @@ const ERROR_KEY_MAP: Record<string, string> = {
   ERR_WRITE_SETTINGS: 'backendError.writeSettings',
   ERR_SNAPSHOT_TASK_FAILED: 'backendError.snapshotTaskFailed',
   ERR_LOCAL_JSONL_NOT_FOUND: 'backendError.localJsonlNotFound',
-  ERR_STATISTICS_TIMEOUT: 'backendError.statisticsTimeout'
+  ERR_STATISTICS_TIMEOUT: 'backendError.statisticsTimeout',
+  ERR_CONFIGURED_SOURCE_QUOTA_FAILED: 'backendError.configuredSourceQuotaFailed'
 }
 
 function parseCodeAndDetail(raw: string): { code: string; detail: string } {

@@ -1,131 +1,54 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
 import { setNumberFormatMode } from '../utils/format'
-import type { AppSettings, ClientToolSettings, CurrencySettings, ModelPricingSettings, MonthActivity, OverviewBreakdown, OverviewDeferredBundle, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SourceAwareSettings, SubscriptionQueryResult, SubscriptionQuota, SyncSettings, NetworkProxyConfig, ThemeSettings, WslScanSettings, LimitSurvivalSnapshot, SourceQuotaBindingConfig, ConfiguredSourceQuotaQueryResult, CopilotAuthStatus, GitHubAccount, SourceQuotaBindingTestResult, SourceQuotaBindingRuntimeState, SourceQuotaProfileDescriptor } from '../types'
-
-const defaultModelPricing: ModelPricingSettings = {
-  matchMode: 'fuzzy',
-  lastSyncTime: null,
-  pricings: []
-}
-
-const defaultSourceAware: SourceAwareSettings = {
-  sources: [],
-  activeSourceFilter: null
-}
-
-const defaultCurrency: CurrencySettings = {
-  displayCurrency: 'USD',
-  exchangeRates: { USD: 1.0 },
-  trackedCurrencies: ['USD'],
-  lastRateUpdate: null
-}
-
-const defaultSync: SyncSettings = {
-  enabled: false,
-  provider: 'webdav',
-  url: '',
-  username: '',
-  password: '',
-  syncPassword: '',
-  deviceId: '',
-  intervalMinutes: 15,
-  autoSync: false,
-  includeSessionText: false
-}
-
-const defaultWslScan: WslScanSettings = {
-  enabled: false,
-  distros: [],
-  extraRoots: []
-}
-
-const defaultNetworkProxy: NetworkProxyConfig = {
-  enabled: false,
-  scheme: 'http',
-  host: '127.0.0.1',
-  port: 7890,
-  username: undefined,
-  password: undefined
-}
-
-const defaultTheme: ThemeSettings = {
-  appearance: 'system',
-  lightPalette: 'cloud',
-  darkPalette: 'midnight'
-}
-
-const CONFIGURED_SOURCE_SUCCESS_REFRESH_MS = 5 * 60 * 1000
-const CONFIGURED_SOURCE_FAILURE_BASE_MS = 2 * 60 * 1000
-const CONFIGURED_SOURCE_FAILURE_MAX_MS = 30 * 60 * 1000
-
-const defaultClientTools: ClientToolSettings = {
-  profiles: [
-    { id: 'claude_code', tool: 'claude_code', displayName: 'Claude Code', pathPrefix: 'claude-code', enabled: true, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'claudecode' },
-    { id: 'codex', tool: 'codex', displayName: 'Codex', pathPrefix: 'codex', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'codex' },
-    { id: 'hermes', tool: 'hermes', displayName: 'Hermes Agent', pathPrefix: 'hermes', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'hermesagent' },
-    { id: 'openclaw', tool: 'openclaw', displayName: 'OpenClaw', pathPrefix: 'openclaw', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'openclaw' },
-    { id: 'opencode', tool: 'opencode', displayName: 'OpenCode', pathPrefix: 'opencode', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'opencode' },
-    { id: 'qoder_ide', tool: 'qoder_ide', displayName: 'Qoder IDE', pathPrefix: 'qoder', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'qoder' },
-    { id: 'reasonix', tool: 'reasonix', displayName: 'Reasonix', pathPrefix: 'reasonix', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'reasonix' },
-    { id: 'gemini', tool: 'gemini', displayName: 'Gemini CLI', pathPrefix: 'gemini', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'geminicli' },
-    { id: 'copilot', tool: 'copilot', displayName: 'GitHub Copilot CLI', pathPrefix: 'copilot', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'copilot' }
-  ],
-  activeToolFilter: null
-}
+import type { AppSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SubscriptionQueryResult, SubscriptionQuota, LimitSurvivalSnapshot, SourceQuotaBindingConfig, CopilotAuthStatus, SourceQuotaBindingRuntimeState, SourceQuotaProfileDescriptor } from '../types'
+import {
+  CONFIGURED_SOURCE_FAILURE_BASE_MS,
+  CONFIGURED_SOURCE_FAILURE_MAX_MS,
+  CONFIGURED_SOURCE_SUCCESS_REFRESH_MS,
+  createDefaultSettings
+} from './monitorDefaults'
+import {
+  queryProjectStats,
+  queryRecentRequestRecords,
+  querySessionDetail,
+  querySessions
+} from './sessionQueries'
+import {
+  queryMonthActivity,
+  queryOverviewBreakdown,
+  queryOverviewDeferredBundle,
+  queryStatisticsSummary,
+  queryYearActivity
+} from './statisticsQueries'
+import {
+  probeSourceQuotaBinding,
+  queryBoolean,
+  queryConfiguredSourceQuotas,
+  queryCopilotAccounts,
+  queryCopilotAuthStatus,
+  querySourceQuotaBindingStates,
+  querySourceQuotaProfiles,
+  querySubscriptionQuota,
+  testSourceQuotaBinding
+} from './subscriptionQueries'
+import {
+  addKeyPrefix,
+  deleteSource,
+  mergeSource,
+  renameSource,
+  updateSourceKeyNote
+} from './sourceQueries'
+import { failedSubscriptionQuery } from './subscriptionErrors'
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
   return String(error)
 }
 
-function invokeWithTimeout<T>(command: string, args: Record<string, unknown>, timeoutMs = 120000): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | null = null
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('ERR_STATISTICS_TIMEOUT')), timeoutMs)
-  })
-
-  return Promise.race([invoke<T>(command, args), timeout]).finally(() => {
-    if (timer) {
-      clearTimeout(timer)
-    }
-  })
-}
-
-const defaultSettings: AppSettings = {
-  locale: 'zh-CN',
-  timezone: 'Asia/Shanghai',
-  refreshIntervalSeconds: 30,
-  summaryWindow: '24h',
-  dayBoundaryMode: 'standard',
-  numberFormat: 'international',
-  proxy: {
-    enabled: false,
-    port: 18765,
-    autoStart: false,
-    includeErrorRequests: true,
-    requestTimeoutSeconds: 120,
-    streamingIdleTimeoutSeconds: 0
-  },
-  gateway: {
-    profiles: []
-  },
-  theme: defaultTheme,
-  modelPricing: defaultModelPricing,
-  autoStart: false,
-  sourceAware: defaultSourceAware,
-  clientTools: defaultClientTools,
-  currency: defaultCurrency,
-  sync: defaultSync,
-  networkProxy: defaultNetworkProxy,
-  autoCheckUpdate: true,
-  skippedUpdateVersion: '',
-  wslScan: defaultWslScan,
-}
-
 export const useMonitorStore = defineStore('monitor', {
   state: () => ({
-    settings: defaultSettings as AppSettings,
+    settings: createDefaultSettings(),
     snapshot: null as UsageSnapshot | null,
     proxyStatus: null as ProxyStatus | null,
     proxyUsage: null as ProxyUsageSnapshot | null,
@@ -326,10 +249,7 @@ export const useMonitorStore = defineStore('monitor', {
       this.statisticsLoading = true
       try {
         this.statisticsError = ''
-        const summary = await invokeWithTimeout<StatisticsSummary>('get_statistics_summary', {
-          query,
-          settings: this.settings
-        })
+        const summary = await queryStatisticsSummary(this.settings, query)
         if (requestSeq === this.statisticsRequestSeq) {
           this.statisticsSummary = summary
         }
@@ -353,12 +273,7 @@ export const useMonitorStore = defineStore('monitor', {
       this.monthActivityLoading = true
       try {
         this.statisticsError = ''
-        const activity = await invokeWithTimeout<MonthActivity>('get_month_activity', {
-          year,
-          month,
-          metric,
-          settings: this.settings
-        })
+        const activity = await queryMonthActivity(this.settings, year, month, metric)
         if (requestSeq === this.monthActivityRequestSeq) {
           this.monthActivity = activity
         }
@@ -382,11 +297,7 @@ export const useMonitorStore = defineStore('monitor', {
       this.yearActivityLoading = true
       try {
         this.statisticsError = ''
-        const activity = await invokeWithTimeout<YearActivity>('get_year_activity', {
-          year,
-          metric,
-          settings: this.settings
-        })
+        const activity = await queryYearActivity(this.settings, year, metric)
         if (requestSeq === this.yearActivityRequestSeq) {
           this.yearActivity = activity
         }
@@ -405,10 +316,7 @@ export const useMonitorStore = defineStore('monitor', {
       this.overviewBreakdownLoading = true
       try {
         this.overviewBreakdownError = ''
-        const breakdown = await invokeWithTimeout<OverviewBreakdown>('get_overview_breakdown', {
-          window,
-          settings: this.settings
-        }, 60000)
+        const breakdown = await queryOverviewBreakdown(this.settings, window)
         if (requestSeq === this.overviewBreakdownRequestSeq) {
           this.overviewBreakdown = breakdown
         }
@@ -430,10 +338,7 @@ export const useMonitorStore = defineStore('monitor', {
       this.overviewBreakdownLoading = true
       try {
         this.overviewBreakdownError = ''
-        const bundle = await invokeWithTimeout<OverviewDeferredBundle>('get_overview_deferred_bundle', {
-          window,
-          settings: this.settings
-        }, 60000)
+        const bundle = await queryOverviewDeferredBundle(this.settings, window)
         if (requestSeq === this.overviewDeferredRequestSeq) {
           if (this.snapshot) {
             const existingWindows = this.snapshot.windows.filter(item => item.window !== bundle.windowUsage.window)
@@ -569,11 +474,7 @@ export const useMonitorStore = defineStore('monitor', {
         this.sessionsLoading = true
       }
       try {
-        const newSessions = await invoke<SessionStats[]>('get_sessions', {
-          limit,
-          offset,
-          settings: this.settings
-        })
+        const newSessions = await querySessions(this.settings, limit, offset)
         if (append) {
           this.sessions = [...this.sessions, ...newSessions]
         } else {
@@ -595,14 +496,7 @@ export const useMonitorStore = defineStore('monitor', {
         this.sessionsLoading = true
       }
       try {
-        const settings = {
-          ...this.settings,
-          clientTools: {
-            ...this.settings.clientTools,
-            activeToolFilter: toolFilter
-          }
-        }
-        const newSessions = await invoke<SessionStats[]>('get_sessions', { limit, offset, settings })
+        const newSessions = await querySessions(this.settings, limit, offset, toolFilter)
         if (append) {
           this.sessions = [...this.sessions, ...newSessions]
         } else {
@@ -624,7 +518,7 @@ export const useMonitorStore = defineStore('monitor', {
      */
     async fetchSessionDetail(sessionId: string) {
       try {
-        this.selectedSession = await invoke<SessionStats | null>('get_session_detail', { sessionId, settings: this.settings })
+        this.selectedSession = await querySessionDetail(this.settings, sessionId)
       } catch (e) {
         console.error('Failed to fetch session detail:', e)
         this.selectedSession = null
@@ -641,17 +535,7 @@ export const useMonitorStore = defineStore('monitor', {
         this.requestRecordsLoading = true
       }
       try {
-        const settings = {
-          ...this.settings,
-          clientTools: {
-            ...this.settings.clientTools,
-            activeToolFilter: toolFilter
-          }
-        }
-        const records = await invoke<RequestRecord[]>('get_recent_request_records', {
-          query: { limit, offset },
-          settings
-        })
+        const records = await queryRecentRequestRecords(this.settings, toolFilter, limit, offset)
         if (append) {
           this.requestRecords = [...this.requestRecords, ...records]
         } else {
@@ -674,7 +558,7 @@ export const useMonitorStore = defineStore('monitor', {
     async fetchProjectStats() {
       this.projectStatsLoading = true
       try {
-        this.projectStats = await invoke<ProjectStats[]>('get_project_stats', { settings: this.settings })
+        this.projectStats = await queryProjectStats(this.settings)
       } catch (e) {
         console.error('Failed to fetch project stats:', e)
         this.projectStats = []
@@ -685,14 +569,7 @@ export const useMonitorStore = defineStore('monitor', {
     async fetchProjectStatsForTool(toolFilter: string | null) {
       this.projectStatsLoading = true
       try {
-        const settings = {
-          ...this.settings,
-          clientTools: {
-            ...this.settings.clientTools,
-            activeToolFilter: toolFilter
-          }
-        }
-        this.projectStats = await invoke<ProjectStats[]>('get_project_stats', { settings })
+        this.projectStats = await queryProjectStats(this.settings, toolFilter)
       } catch (e) {
         console.error('Failed to fetch project stats:', e)
         this.projectStats = []
@@ -733,14 +610,14 @@ export const useMonitorStore = defineStore('monitor', {
         source.displayName = name.trim() || undefined
         source.autoDetected = false
       }
-      await invoke('rename_api_source', { sourceId, name })
+      await renameSource(sourceId, name)
       await this.loadSettings()
     },
     /**
      * 删除来源
      */
     async deleteSource(sourceId: string, alsoDeleteRecords: boolean = false) {
-      await invoke('delete_api_source', { sourceId, alsoDeleteRecords })
+      await deleteSource(sourceId, alsoDeleteRecords)
       await this.loadSettings()
       await this.refreshUsage()
     },
@@ -748,7 +625,7 @@ export const useMonitorStore = defineStore('monitor', {
      * 合并两个来源
      */
     async mergeSource(sourceIdFrom: string, sourceIdInto: string) {
-      await invoke('merge_api_source', { sourceIdFrom, sourceIdInto })
+      await mergeSource(sourceIdFrom, sourceIdInto)
       await this.loadSettings()
       await this.refreshUsage()
     },
@@ -756,7 +633,7 @@ export const useMonitorStore = defineStore('monitor', {
      * 添加 Key 前缀到来源
      */
     async addKeyPrefixToSource(sourceId: string, keyPrefix: string) {
-      await invoke('add_key_prefix_to_source', { sourceId, keyPrefix })
+      await addKeyPrefix(sourceId, keyPrefix)
       await this.loadSettings()
     },
     /**
@@ -774,7 +651,7 @@ export const useMonitorStore = defineStore('monitor', {
         }
         source.autoDetected = false
       }
-      await invoke('update_api_source_key_note', { sourceId, keyPrefix, note })
+      await updateSourceKeyNote(sourceId, keyPrefix, note)
       await this.loadSettings()
     },
     async updateSourceQuotaQuery(sourceId: string, quotaQuery: SourceQuotaBindingConfig | null) {
@@ -787,13 +664,11 @@ export const useMonitorStore = defineStore('monitor', {
       await this.forceFetchConfiguredSourceQuotas()
     },
     async fetchSourceQuotaProfiles() {
-      this.sourceQuotaProfiles = await invoke<SourceQuotaProfileDescriptor[]>('get_source_quota_profiles')
+      this.sourceQuotaProfiles = await querySourceQuotaProfiles()
       return this.sourceQuotaProfiles
     },
     async fetchSourceQuotaBindingStates(sourceId?: string) {
-      const states = await invoke<SourceQuotaBindingRuntimeState[]>('get_source_quota_binding_states', {
-        sourceId: sourceId ?? null,
-      })
+      const states = await querySourceQuotaBindingStates(sourceId)
       const next = { ...this.sourceQuotaBindingStates }
       for (const state of states) {
         next[state.sourceId] = state
@@ -802,10 +677,7 @@ export const useMonitorStore = defineStore('monitor', {
       return states
     },
     async probeSourceQuotaQuery(sourceId: string, binding: SourceQuotaBindingConfig | null = null) {
-      const state = await invoke<SourceQuotaBindingRuntimeState>('probe_source_quota_query', {
-        sourceId,
-        binding,
-      })
+      const state = await probeSourceQuotaBinding(sourceId, binding)
       this.sourceQuotaBindingStates = {
         ...this.sourceQuotaBindingStates,
         [state.sourceId]: state,
@@ -813,7 +685,7 @@ export const useMonitorStore = defineStore('monitor', {
       return state
     },
     async testSourceQuotaQuery(sourceId: string, binding: SourceQuotaBindingConfig) {
-      const result = await invoke<SourceQuotaBindingTestResult>('test_source_quota_query', { sourceId, binding })
+      const result = await testSourceQuotaBinding(sourceId, binding)
       await this.fetchSourceQuotaBindingStates(sourceId)
       return result
     },
@@ -823,7 +695,7 @@ export const useMonitorStore = defineStore('monitor', {
      */
     async checkChatGptOAuth() {
       try {
-        this.hasChatGptOAuth = await invoke<boolean>('has_chatgpt_oauth')
+        this.hasChatGptOAuth = await queryBoolean('has_chatgpt_oauth')
       } catch (e) {
         console.error('Failed to check ChatGPT OAuth:', e)
         this.hasChatGptOAuth = false
@@ -835,16 +707,11 @@ export const useMonitorStore = defineStore('monitor', {
     async fetchSubscriptionQuota() {
       this.subscriptionLoading = true
       try {
-        this.subscriptionQuota = await invoke<SubscriptionQueryResult>('get_subscription_quota', { provider: 'gpt' })
+        this.subscriptionQuota = await querySubscriptionQuota('gpt')
       } catch (e) {
         console.error('Failed to fetch subscription quota:', e)
         // 设置错误状态，避免显示旧数据
-        this.subscriptionQuota = {
-          success: false,
-          credentialStatus: { queryFailed: { error: String(e) } },
-          error: String(e),
-          queriedAt: Date.now()
-        }
+        this.subscriptionQuota = failedSubscriptionQuery(e)
       } finally {
         this.subscriptionLoading = false
       }
@@ -855,16 +722,11 @@ export const useMonitorStore = defineStore('monitor', {
     async refreshSubscriptionQuota() {
       this.subscriptionLoading = true
       try {
-        this.subscriptionQuota = await invoke<SubscriptionQueryResult>('refresh_subscription_quota', { provider: 'gpt' })
+        this.subscriptionQuota = await querySubscriptionQuota('gpt', true)
       } catch (e) {
         console.error('Failed to refresh subscription quota:', e)
         // 设置错误状态，避免显示旧数据
-        this.subscriptionQuota = {
-          success: false,
-          credentialStatus: { queryFailed: { error: String(e) } },
-          error: String(e),
-          queriedAt: Date.now()
-        }
+        this.subscriptionQuota = failedSubscriptionQuery(e)
       } finally {
         this.subscriptionLoading = false
       }
@@ -874,7 +736,7 @@ export const useMonitorStore = defineStore('monitor', {
      */
     async checkClaudeOAuth() {
       try {
-        this.hasClaudeOAuth = await invoke<boolean>('has_claude_oauth')
+        this.hasClaudeOAuth = await queryBoolean('has_claude_oauth')
       } catch (e) {
         console.error('Failed to check Claude OAuth:', e)
         this.hasClaudeOAuth = false
@@ -886,15 +748,10 @@ export const useMonitorStore = defineStore('monitor', {
     async fetchClaudeQuota() {
       this.claudeLoading = true
       try {
-        this.claudeQuota = await invoke<SubscriptionQueryResult>('get_subscription_quota', { provider: 'claude' })
+        this.claudeQuota = await querySubscriptionQuota('claude')
       } catch (e) {
         console.error('Failed to fetch Claude quota:', e)
-        this.claudeQuota = {
-          success: false,
-          credentialStatus: { queryFailed: { error: String(e) } },
-          error: String(e),
-          queriedAt: Date.now()
-        }
+        this.claudeQuota = failedSubscriptionQuery(e)
       } finally {
         this.claudeLoading = false
       }
@@ -905,15 +762,10 @@ export const useMonitorStore = defineStore('monitor', {
     async refreshClaudeQuota() {
       this.claudeLoading = true
       try {
-        this.claudeQuota = await invoke<SubscriptionQueryResult>('refresh_subscription_quota', { provider: 'claude' })
+        this.claudeQuota = await querySubscriptionQuota('claude', true)
       } catch (e) {
         console.error('Failed to refresh Claude quota:', e)
-        this.claudeQuota = {
-          success: false,
-          credentialStatus: { queryFailed: { error: String(e) } },
-          error: String(e),
-          queriedAt: Date.now()
-        }
+        this.claudeQuota = failedSubscriptionQuery(e)
       } finally {
         this.claudeLoading = false
       }
@@ -924,7 +776,7 @@ export const useMonitorStore = defineStore('monitor', {
      */
     async checkGeminiOAuth() {
       try {
-        this.hasGeminiOAuth = await invoke<boolean>('has_gemini_oauth')
+        this.hasGeminiOAuth = await queryBoolean('has_gemini_oauth')
       } catch (e) {
         console.error('Failed to check Gemini OAuth:', e)
         this.hasGeminiOAuth = false
@@ -936,15 +788,10 @@ export const useMonitorStore = defineStore('monitor', {
     async fetchGeminiQuota() {
       this.geminiQuotaLoading = true
       try {
-        this.geminiQuota = await invoke<SubscriptionQueryResult>('get_subscription_quota', { provider: 'gemini' })
+        this.geminiQuota = await querySubscriptionQuota('gemini')
       } catch (e) {
         console.error('Failed to fetch Gemini quota:', e)
-        this.geminiQuota = {
-          success: false,
-          credentialStatus: { queryFailed: { error: String(e) } },
-          error: String(e),
-          queriedAt: Date.now()
-        }
+        this.geminiQuota = failedSubscriptionQuery(e)
       } finally {
         this.geminiQuotaLoading = false
       }
@@ -955,22 +802,17 @@ export const useMonitorStore = defineStore('monitor', {
     async refreshGeminiQuota() {
       this.geminiQuotaLoading = true
       try {
-        this.geminiQuota = await invoke<SubscriptionQueryResult>('refresh_subscription_quota', { provider: 'gemini' })
+        this.geminiQuota = await querySubscriptionQuota('gemini', true)
       } catch (e) {
         console.error('Failed to refresh Gemini quota:', e)
-        this.geminiQuota = {
-          success: false,
-          credentialStatus: { queryFailed: { error: String(e) } },
-          error: String(e),
-          queriedAt: Date.now()
-        }
+        this.geminiQuota = failedSubscriptionQuery(e)
       } finally {
         this.geminiQuotaLoading = false
       }
     },
     async refreshCopilotAuthStatus() {
       try {
-        this.copilotAuthStatus = await invoke<CopilotAuthStatus>('copilot_get_auth_status')
+        this.copilotAuthStatus = await queryCopilotAuthStatus()
         this.hasCopilotAuth = !!this.copilotAuthStatus?.authenticated
       } catch (e) {
         console.error('Failed to fetch Copilot auth status:', e)
@@ -980,7 +822,7 @@ export const useMonitorStore = defineStore('monitor', {
     },
     async checkCopilotAuth() {
       try {
-        this.hasCopilotAuth = await invoke<boolean>('copilot_is_authenticated')
+        this.hasCopilotAuth = await queryBoolean('copilot_is_authenticated')
       } catch (e) {
         console.error('Failed to check Copilot auth:', e)
         this.hasCopilotAuth = false
@@ -989,15 +831,10 @@ export const useMonitorStore = defineStore('monitor', {
     async fetchCopilotQuota() {
       this.copilotQuotaLoading = true
       try {
-        this.copilotQuota = await invoke<SubscriptionQueryResult>('get_subscription_quota', { provider: 'copilot' })
+        this.copilotQuota = await querySubscriptionQuota('copilot')
       } catch (e) {
         console.error('Failed to fetch Copilot quota:', e)
-        this.copilotQuota = {
-          success: false,
-          credentialStatus: { queryFailed: { error: String(e) } },
-          error: String(e),
-          queriedAt: Date.now()
-        }
+        this.copilotQuota = failedSubscriptionQuery(e)
       } finally {
         this.copilotQuotaLoading = false
       }
@@ -1005,21 +842,16 @@ export const useMonitorStore = defineStore('monitor', {
     async refreshCopilotQuota() {
       this.copilotQuotaLoading = true
       try {
-        this.copilotQuota = await invoke<SubscriptionQueryResult>('refresh_subscription_quota', { provider: 'copilot' })
+        this.copilotQuota = await querySubscriptionQuota('copilot', true)
       } catch (e) {
         console.error('Failed to refresh Copilot quota:', e)
-        this.copilotQuota = {
-          success: false,
-          credentialStatus: { queryFailed: { error: String(e) } },
-          error: String(e),
-          queriedAt: Date.now()
-        }
+        this.copilotQuota = failedSubscriptionQuery(e)
       } finally {
         this.copilotQuotaLoading = false
       }
     },
     async copilotListAccounts() {
-      return invoke<GitHubAccount[]>('copilot_list_accounts')
+      return queryCopilotAccounts()
     },
     /**
      * 查询各工具已配置来源的第三方中转额度/余额（一行一来源，A 静默降级）。
@@ -1062,7 +894,7 @@ export const useMonitorStore = defineStore('monitor', {
         this.configuredSourceActiveSeq = activeSeq
         this.configuredSourceLastAttemptAt = Date.now()
         try {
-          const result = await invoke<ConfiguredSourceQuotaQueryResult>('get_configured_source_quotas')
+          const result = await queryConfiguredSourceQuotas()
           // 仅最新请求可落地结果，避免初始化/旧刷新覆盖更新后的来源状态。
           if (activeSeq === this.configuredSourceRequestSeq) {
             if (result.attemptedCount === 0) {
@@ -1084,7 +916,8 @@ export const useMonitorStore = defineStore('monitor', {
             } else {
               this.configuredSourceConsecutiveFailures += 1
               this.configuredSourceLastFailureAt = result.queriedAt
-              this.configuredSourceLastError = result.errors.join(' | ') || 'Configured source quota query failed'
+              // Store only carries stable backend codes; UI resolves them through i18n.
+              this.configuredSourceLastError = result.errors.join(' | ') || 'ERR_CONFIGURED_SOURCE_QUOTA_FAILED'
               const backoffMs = Math.min(
                 CONFIGURED_SOURCE_FAILURE_BASE_MS * (2 ** (this.configuredSourceConsecutiveFailures - 1)),
                 CONFIGURED_SOURCE_FAILURE_MAX_MS

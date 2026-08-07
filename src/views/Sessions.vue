@@ -1,605 +1,81 @@
 <script setup lang="ts">
-import { LayoutGrid, ChevronDown } from 'lucide-vue-next'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import type { ProjectStats, ProjectToolStats, RequestRecord, SessionStats } from '../types'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
+import type { RequestRecord, SessionStats } from '../types'
 import SessionDetailModal from '../components/SessionDetailModal.vue'
+import RequestDetailModal from '../components/RequestDetailModal.vue'
+import SessionSourceFilter from '../components/SessionSourceFilter.vue'
 import LobeIcon from '../components/LobeIcon.vue'
-import { TOOL_LOBE_ICONS } from '../iconConfig'
-import { getFamilyForTool, getFamilyHead } from '../toolFamilies'
-import { formatCost as formatCostUtil, formatTokenValue, formatRequestCount } from '../utils/format'
-import { formatModelDisplayName } from '../utils/modelDisplay'
-import { formatToolDisplayName, formatToolFilterDisplayName, getToolProfileByTool } from '../utils/toolDisplay'
+import { useSessionDisplay } from '../composables/useSessionDisplay'
+import { SESSION_SOURCE_TOOLS, useSessionViewData } from '../composables/useSessionViewData'
 
 const store = useMonitorStore()
-const SESSION_SOURCE_TOOLS = new Set([
-  'claude_code', 'codex', 'hermes', 'openclaw', 'opencode',
-  'qoder_ide', 'qoder_ide_cn', 'qoder_cli', 'qoder_work', 'qoder_work_cn',
-  'reasonix', 'copilot'
-])
-const normalizeSessionTool = (tool: string | null | undefined) => (
-  tool && SESSION_SOURCE_TOOLS.has(tool) ? tool : null
-)
-const uuidLikePattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
+const {
+  formatTime,
+  formatTokens,
+  formatCost,
+  formatDuration,
+  requestModelLabel,
+  sessionModelLabel,
+  requestStatusLabel,
+  requestStatusClasses,
+  requestCoverageLabel,
+  requestProjectLabel,
+  requestSourceLabel,
+  requestToolLabel,
+  requestCacheTokens,
+  requestHasProxyPerformance,
+  localRequests,
+  coveredRequests,
+  sessionUsageVisible,
+  projectUsageVisible,
+  projectToolUsageVisible,
+  sessionHasPartialCoverage,
+  displayTokens,
+  displayCost,
+  displayRequestValue,
+  displaySessionCacheHitRate,
+  displaySessionPrimaryLabel,
+  displaySessionPrimaryValue,
+  displayProjectCoverageHint,
+  displayToolCoverageHint,
+  displaySessionTitle,
+  displaySessionProjectBadge,
+  projectBadgeClasses,
+  displayProjectName,
+  displayProjectHint,
+  displayProjectWslBadge,
+  displayProjectWslTitle,
+  displayProxyTokenValue,
+  displayProxyRateValue,
+  getToolIcon,
+  projectToolRows,
+  projectTotalTokens,
+  shouldShowProjectTotalRow,
+} = useSessionDisplay(store)
 // 视图切换状态
 const activeTab = ref<'recent' | 'requests' | 'projects'>('recent')
-const selectedTool = ref<string | null>(normalizeSessionTool(store.settings.clientTools.activeToolFilter))
-const lastGlobalTool = ref<string | null>(normalizeSessionTool(store.settings.clientTools.activeToolFilter))
-// 已展开子菜单的家族 head ID
-const expandedFamily = ref<string | null>(null)
-const filterDropdownOpen = ref(false)
-const filterDropdownRef = ref<HTMLElement | null>(null)
+const {
+  selectedTool,
+  hasMore,
+  loadingMore,
+  requestHasMore,
+  loadingMoreRequests,
+  loadMore,
+  loadMoreRequests,
+  initialize: initializeSessionView,
+  dispose: disposeSessionView,
+} = useSessionViewData(store, activeTab)
 
-// 选中的会话（用于模态框）
 const selectedSession = ref<SessionStats | null>(null)
 const showModal = ref(false)
 const selectedRequest = ref<RequestRecord | null>(null)
 const showRequestModal = ref(false)
 
-interface SessionCacheEntry {
-  items: SessionStats[]
-  currentPage: number
-  hasMore: boolean
-}
-
-interface RequestCacheEntry {
-  items: RequestRecord[]
-  currentPage: number
-  hasMore: boolean
-}
-
-const sessionCache = new Map<string, SessionCacheEntry>()
-const requestCache = new Map<string, RequestCacheEntry>()
-const projectCache = new Map<string, ProjectStats[]>()
-const lastProxyRecordCount = ref<number | null>(null)
-const proxyRefreshDebounceMs = 10000
 const copiedProjectPath = ref<string | null>(null)
-let proxyRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let copiedProjectPathTimer: ReturnType<typeof setTimeout> | null = null
 let loadTriggerObserveTimer: ReturnType<typeof setTimeout> | null = null
-
-const cacheKey = () => `${selectedTool.value ?? '__all__'}`
-
-interface SourceOption {
-  key: string
-  tool: string | null
-  label: string
-  icon: string | null
-  /** 若非 null，点击此条目展开/收起子菜单而非直接筛选 */
-  familyHead: string | null
-  children: SourceOption[]
-}
-
-const sourceOptions = computed<SourceOption[]>(() => {
-  const profiles = store.settings.clientTools.profiles
-    .filter(profile => SESSION_SOURCE_TOOLS.has(profile.tool))
-    .sort((a, b) => {
-      if (a.tool === 'claude_code') return -1
-      if (b.tool === 'claude_code') return 1
-      return (a.displayName || a.tool).localeCompare(b.displayName || b.tool)
-    })
-
-  const items: SourceOption[] = [
-    { key: '__all__', tool: null, label: t(store.settings.locale, 'tools.all'), icon: null, familyHead: null, children: [] }
-  ]
-
-  for (const profile of profiles) {
-    const family = getFamilyForTool(profile.tool)
-    // 只有家族 head 本身出现在一级列表
-    if (family && profile.tool === family.head) {
-      const subItems: SourceOption[] = family.members.map(memberId => ({
-        key: memberId,
-        tool: memberId,
-        label: formatToolDisplayName(memberId, store.settings.locale, profiles),
-        icon: TOOL_LOBE_ICONS[memberId] || null,
-        familyHead: null,
-        children: [],
-      }))
-      items.push({
-        key: profile.tool,
-        tool: profile.tool,       // 点击 head → 家族整体过滤
-        label: formatToolFilterDisplayName(profile.tool, store.settings.locale, profiles),
-        icon: profile.icon || TOOL_LOBE_ICONS[profile.tool] || null,
-        familyHead: family.head,  // 标记为家族 head，模板据此渲染展开箭头
-        children: subItems,
-      })
-    } else if (!family) {
-      // 非家族成员，直接一级条目
-      items.push({
-        key: profile.tool,
-        tool: profile.tool,
-        label: formatToolDisplayName(profile.tool, store.settings.locale, profiles),
-        icon: profile.icon || TOOL_LOBE_ICONS[profile.tool] || null,
-        familyHead: null,
-        children: [],
-      })
-    }
-    // 家族非 head 成员不出现在一级，由 head 的 children 承载
-  }
-  return items
-})
-
-const menuSourceOptions = computed(() => sourceOptions.value.filter(option => option.key !== '__all__'))
-
-const activeFamilyHead = computed(() => (
-  selectedTool.value ? getFamilyHead(selectedTool.value) : null
-))
-
-const currentSourceOption = computed<SourceOption>(() => {
-  if (selectedTool.value === null) {
-    return sourceOptions.value[0]
-  }
-
-  for (const option of sourceOptions.value) {
-    if (option.tool === selectedTool.value) {
-      return option
-    }
-    const child = option.children.find(item => item.tool === selectedTool.value)
-    if (child) {
-      return child
-    }
-  }
-
-  return sourceOptions.value[0]
-})
-
-const closeFilterDropdown = () => {
-  filterDropdownOpen.value = false
-  expandedFamily.value = null
-}
-
-const toggleFilterDropdown = () => {
-  const next = !filterDropdownOpen.value
-  filterDropdownOpen.value = next
-  if (!next) {
-    expandedFamily.value = null
-    return
-  }
-  expandedFamily.value = activeFamilyHead.value && activeFamilyHead.value !== selectedTool.value
-    ? activeFamilyHead.value
-    : null
-}
-
-const selectSourceTool = (tool: string | null) => {
-  selectedTool.value = tool
-  closeFilterDropdown()
-}
-
-const toggleFamilyMenu = (headId: string) => {
-  expandedFamily.value = expandedFamily.value === headId ? null : headId
-}
-
-const handleFilterClickOutside = (event: MouseEvent) => {
-  if (!filterDropdownRef.value?.contains(event.target as Node)) {
-    closeFilterDropdown()
-  }
-}
-
-const applySessionCache = (entry: SessionCacheEntry) => {
-  store.sessions = entry.items
-  currentPage.value = entry.currentPage
-  hasMore.value = entry.hasMore
-  store.sessionsLoading = false
-}
-
-const rememberSessionCache = (key: string) => {
-  sessionCache.set(key, {
-    items: [...store.sessions],
-    currentPage: currentPage.value,
-    hasMore: hasMore.value
-  })
-}
-
-const clearViewCaches = () => {
-  sessionCache.clear()
-  requestCache.clear()
-  projectCache.clear()
-}
-
-const projectCacheKey = () => `projects:${selectedTool.value ?? '__all__'}`
-
-const triggerSessionViewRefresh = async () => {
-  clearViewCaches()
-  if (activeTab.value === 'requests') {
-    await reloadRequestRecords(true)
-  } else {
-    await reloadSessions(true)
-  }
-  if (activeTab.value === 'projects') {
-    await reloadProjectStats(true)
-  } else {
-    store.projectStats = []
-  }
-}
-
-const scheduleProxyRefresh = () => {
-  if (proxyRefreshTimer) {
-    clearTimeout(proxyRefreshTimer)
-  }
-  proxyRefreshTimer = setTimeout(() => {
-    proxyRefreshTimer = null
-    void triggerSessionViewRefresh()
-  }, proxyRefreshDebounceMs)
-}
-
-const reloadSessions = async (force = false) => {
-  const key = cacheKey()
-  if (!force) {
-    const cached = sessionCache.get(key)
-    if (cached) {
-      applySessionCache(cached)
-      return
-    }
-  }
-
-  // 静默刷新（force）且已加载多页时，一次性取回等长列表，避免列表被截回第一页、丢失滚动位置
-  const fetchLimit = force && store.sessions.length > pageSize
-    ? Math.max(pageSize, Math.ceil(store.sessions.length / pageSize) * pageSize)
-    : pageSize
-  currentPage.value = 0
-  hasMore.value = true
-  const count = await store.fetchSessionsForTool(selectedTool.value, fetchLimit, 0, false)
-  currentPage.value = Math.max(0, Math.ceil(count / pageSize) - 1)
-  if (count < fetchLimit) {
-    hasMore.value = false
-  }
-  rememberSessionCache(key)
-}
-
-const reloadProjectStats = async (force = false) => {
-  const key = projectCacheKey()
-  if (!force) {
-    const cached = projectCache.get(key)
-    if (cached) {
-      store.projectStats = [...cached]
-      store.projectStatsLoading = false
-      return
-    }
-  }
-
-  await store.fetchProjectStatsForTool(selectedTool.value)
-  projectCache.set(key, [...store.projectStats])
-}
-
-// 切换 tab 时加载项目统计
-watch(activeTab, async (newTab) => {
-  closeFilterDropdown()
-  if (newTab === 'requests') {
-    await reloadRequestRecords()
-  }
-  if (newTab === 'projects') {
-    await reloadProjectStats()
-  }
-})
-
-// 分页状态
-const currentPage = ref(0)
-const pageSize = 30
-const hasMore = ref(true)
-const loadingMore = ref(false)
-const requestCurrentPage = ref(0)
-const requestPageSize = 30
-const requestHasMore = ref(true)
-const loadingMoreRequests = ref(false)
-
-const applyRequestCache = (entry: RequestCacheEntry) => {
-  store.requestRecords = entry.items
-  requestCurrentPage.value = entry.currentPage
-  requestHasMore.value = entry.hasMore
-  store.requestRecordsLoading = false
-}
-
-const rememberRequestCache = (key: string) => {
-  requestCache.set(key, {
-    items: [...store.requestRecords],
-    currentPage: requestCurrentPage.value,
-    hasMore: requestHasMore.value
-  })
-}
-
-const reloadRequestRecords = async (force = false) => {
-  const key = cacheKey()
-  if (!force) {
-    const cached = requestCache.get(key)
-    if (cached) {
-      applyRequestCache(cached)
-      return
-    }
-  }
-
-  // 静默刷新（force）且已加载多页时，一次性取回等长列表（保持 200 条上限），避免丢失滚动位置
-  const fetchLimit = force && store.requestRecords.length > requestPageSize
-    ? Math.min(200, Math.max(requestPageSize, Math.ceil(store.requestRecords.length / requestPageSize) * requestPageSize))
-    : requestPageSize
-  requestCurrentPage.value = 0
-  requestHasMore.value = true
-  const count = await store.fetchRecentRequestRecordsForTool(selectedTool.value, fetchLimit, 0, false)
-  requestCurrentPage.value = Math.max(0, Math.ceil(count / requestPageSize) - 1)
-  if (count < fetchLimit || count >= 200) {
-    requestHasMore.value = false
-  }
-  rememberRequestCache(key)
-}
-
-// 格式化时间
-const formatTime = (epoch: number) => {
-  if (!epoch) return '-'
-  const date = new Date(epoch * 1000)
-  const now = new Date()
-  const diffMs = now.getTime() - date.getTime()
-  const diffMins = Math.floor(diffMs / 60000)
-  const diffHours = Math.floor(diffMs / 3600000)
-
-  const isSameYear = date.getFullYear() === now.getFullYear()
-  const locale = store.settings.locale.replace('_', '-') // 确保传入合法的语言标签(如 zh-CN)
-
-  // 1小时内显示分钟前，24小时内显示小时前
-  if (diffMins < 1) return t(store.settings.locale, 'common.justNow')
-  if (diffMins < 60) return t(store.settings.locale, 'sessions.timeMinutesAgo', { count: diffMins })
-  if (diffHours < 24) return t(store.settings.locale, 'sessions.timeHoursAgo', { count: diffHours })
-
-  // 超过24小时就直接显示具体的月日+时间(如果是当年)，否则带上年份
-  return date.toLocaleString(locale, {
-    year: isSameYear ? undefined : 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  })
-}
-
-// 格式化 Token 数量（保留2位小数，超过K/M/B自动换算单位）
-const formatTokens = (tokens: number) => {
-  if (!tokens) return '0'
-  return formatTokenValue(tokens)
-}
-
-// 格式化费用（统一4位小数，支持多货币）
-const formatCost = (cost: number | undefined) => {
-  if (cost === undefined || cost === null) return '-'
-  return formatCostUtil(cost, store.settings.currency, 4)
-}
-
-const formatDuration = (ms?: number | null) => {
-  if (!ms) return '—'
-  if (ms < 1000) return `${ms}ms`
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
-  const minutes = Math.floor(ms / 60000)
-  const seconds = Math.round((ms % 60000) / 1000)
-  return `${minutes}m ${seconds}s`
-}
-
-const requestModelLabel = (request: RequestRecord) => (
-  formatModelDisplayName(request.model, request.tool, store.settings.locale, store.settings.clientTools.profiles)
-)
-
-const sessionModelLabel = (session: SessionStats) => (
-  formatModelDisplayName(session.models[0], session.tool, store.settings.locale, store.settings.clientTools.profiles)
-)
-
-const requestStatusLabel = (request: RequestRecord) => {
-  if (request.coverageOrigin === 'local_only') return t(store.settings.locale, 'sessions.requestLocalOnly')
-  const statusCode = request.statusCode
-  if (!statusCode) return t(store.settings.locale, 'common.unknown')
-  if (statusCode < 400) return t(store.settings.locale, 'common.success')
-  return t(store.settings.locale, 'common.error')
-}
-
-const requestStatusClasses = (request: RequestRecord) => {
-  if (request.coverageOrigin === 'local_only') {
-    return 'bg-slate-50 text-slate-500 border-slate-100 dark:bg-white/[0.04] dark:text-slate-300 dark:border-white/8'
-  }
-  const statusCode = request.statusCode || 0
-  if (statusCode >= 400) {
-    return 'bg-rose-50 text-rose-600 border-rose-100 dark:bg-rose-500/15 dark:text-rose-300 dark:border-rose-400/20'
-  }
-  return 'bg-emerald-50 text-emerald-600 border-emerald-100 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-400/20'
-}
-
-const requestCoverageLabel = (origin: RequestRecord['coverageOrigin']) => {
-  if (origin === 'proxy_only') return t(store.settings.locale, 'sessions.requestCoverageProxy')
-  if (origin === 'merged_proxy_preferred' || origin === 'merged_fuzzy_matched') {
-    return t(store.settings.locale, 'sessions.requestCoverageMerged')
-  }
-  return t(store.settings.locale, 'sessions.requestCoverageLocal')
-}
-
-const requestProjectLabel = (request: RequestRecord) => {
-  const pathParts = request.projectPath?.split('/').filter(Boolean) || []
-  return request.projectName?.trim()
-    || pathParts[pathParts.length - 1]
-    || t(store.settings.locale, 'common.unknownProject')
-}
-
-const requestSourceLabel = (request: RequestRecord) => (
-  request.sourceLabel?.trim()
-    || request.requestBaseUrl?.trim()
-    || t(store.settings.locale, 'source.unknown')
-)
-
-const requestToolLabel = (tool: string) => {
-  return formatToolDisplayName(tool, store.settings.locale, store.settings.clientTools.profiles)
-}
-
-const requestCacheTokens = (request: RequestRecord) => (
-  (request.cacheCreateTokens || 0) + (request.cacheReadTokens || 0)
-)
-
-const requestHasProxyPerformance = (request: RequestRecord) => (
-  request.durationMs !== null && request.durationMs !== undefined
-)
-
-const sessionCacheHitRate = (session: SessionStats): string => {
-  const total = (session.totalInputTokens || 0) + (session.totalCacheCreateTokens || 0) + (session.totalCacheReadTokens || 0)
-  if (total === 0) return '—'
-  return `${((session.totalCacheReadTokens || 0) / total * 100).toFixed(1)}%`
-}
-
-const coveredRequests = (value?: number) => value || 0
-const uncoveredRequests = (value?: number) => value || 0
-const localRequests = (session: SessionStats) => coveredRequests(session.coveredRequests) + uncoveredRequests(session.uncoveredRequests)
-const hasReasonixCoverageData = (covered?: number, uncovered?: number, usageFullyCovered?: boolean) => (
-  (covered || 0) > 0 || (uncovered || 0) > 0 || usageFullyCovered === false
-)
-const sessionUsageVisible = (session: SessionStats) => (
-  session.tool !== 'reasonix' || hasReasonixCoverageData(session.coveredRequests, session.uncoveredRequests, session.usageFullyCovered)
-)
-const projectUsageVisible = (project: ProjectStats) => (
-  !project.toolBreakdown?.some(tool => tool.tool === 'reasonix')
-  || hasReasonixCoverageData(project.coveredRequests, project.uncoveredRequests, project.usageFullyCovered)
-)
-const projectToolUsageVisible = (tool: ProjectToolStats) => (
-  tool.tool !== 'reasonix'
-  || hasReasonixCoverageData(tool.coveredRequests, tool.uncoveredRequests, tool.usageFullyCovered)
-)
-const sessionHasPartialCoverage = (session: SessionStats) => (
-  session.tool === 'reasonix' && uncoveredRequests(session.uncoveredRequests) > 0
-)
-const displayTokens = (value: number, visible: boolean) => (visible ? formatTokens(value) : '—')
-const displayCost = (value: number | undefined, visible: boolean) => (visible ? formatCost(value) : '—')
-const displayRequestValue = (value: number) => formatRequestCount(value)
-const displaySessionCacheHitRate = (session: SessionStats) => (
-  sessionUsageVisible(session) ? sessionCacheHitRate(session) : '—'
-)
-const displaySessionPrimaryLabel = (session: SessionStats) => (
-  sessionHasPartialCoverage(session)
-    ? t(store.settings.locale, 'common.covered')
-    : t(store.settings.locale, 'common.totalTokens')
-)
-const displaySessionPrimaryValue = (session: SessionStats) => (
-  sessionHasPartialCoverage(session)
-    ? displayRequestValue(coveredRequests(session.coveredRequests))
-    : displayTokens(
-      (session.totalInputTokens || 0)
-        + (session.totalOutputTokens || 0)
-        + (session.totalCacheCreateTokens || 0)
-        + (session.totalCacheReadTokens || 0),
-      sessionUsageVisible(session)
-    )
-)
-const displayProjectCoverageHint = (project: ProjectStats) => (
-  uncoveredRequests(project.uncoveredRequests) > 0
-    ? t(store.settings.locale, 'sessions.uncoveredRequests', { count: uncoveredRequests(project.uncoveredRequests) })
-    : ''
-)
-const displayToolCoverageHint = (tool: ProjectToolStats) => (
-  uncoveredRequests(tool.uncoveredRequests) > 0
-    ? t(store.settings.locale, 'sessions.uncoveredRequests', { count: uncoveredRequests(tool.uncoveredRequests) })
-    : ''
-)
-
-const displaySessionTitle = (session: SessionStats) => {
-  const sessionName = session.sessionName?.trim()
-  if (session.topic?.trim()) return session.topic
-  if (sessionName && !uuidLikePattern.test(sessionName)) return sessionName
-  if (session.lastPrompt?.trim()) return session.lastPrompt
-  if (session.projectName?.trim()) return session.projectName
-  return t(store.settings.locale, 'sessions.untitled')
-}
-
-const displaySessionProjectBadge = (session: SessionStats) => {
-  if (session.projectName?.trim()) return session.projectName
-  if (session.projectIdentity === 'global') return t(store.settings.locale, 'common.global')
-  if (session.projectIdentity === 'unknown') return t(store.settings.locale, 'common.unknownProject')
-  return ''
-}
-
-const projectBadgeClasses = (identity?: string) => {
-  if (identity === 'global') {
-    return 'bg-slate-50 text-slate-500 dark:bg-slate-500/15 dark:text-slate-300 border border-slate-100 dark:border-slate-400/20'
-  }
-  if (identity === 'unknown') {
-    return 'bg-amber-50 text-amber-600 dark:bg-amber-500/15 dark:text-amber-300 border border-amber-100 dark:border-amber-400/20'
-  }
-  return 'bg-indigo-50 text-indigo-500 dark:bg-indigo-500/20 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-500/30'
-}
-
-const displayProjectName = (project: ProjectStats) => {
-  if (project.projectIdentity === 'global') return t(store.settings.locale, 'common.global')
-  if (project.projectIdentity === 'unknown') return t(store.settings.locale, 'common.unknownProject')
-  return project.name
-}
-
-const displayProjectHint = (project: ProjectStats) => {
-  if (project.projectIdentity === 'global') return t(store.settings.locale, 'sessions.globalSessionHint')
-  if (project.projectIdentity === 'unknown') return t(store.settings.locale, 'sessions.unknownProjectHint')
-  return ''
-}
-
-const projectWslDistros = (project: ProjectStats) => {
-  const distros = project.wslDistros?.filter(distro => distro.trim()) || []
-  if (distros.length > 0) return distros
-  return project.wslDistro ? [project.wslDistro] : []
-}
-
-const displayProjectWslBadge = (project: ProjectStats) => {
-  const distros = projectWslDistros(project)
-  if (distros.length === 0) return ''
-  if (distros.length === 1) return distros[0]
-  return `${distros[0]} +${distros.length - 1}`
-}
-
-const displayProjectWslTitle = (project: ProjectStats) => {
-  const distros = projectWslDistros(project)
-  if (distros.length === 0) return ''
-  return t(store.settings.locale, 'sessions.wslBadgeTitle', { distro: distros.join(', ') })
-}
-
-const displayProxyTokenValue = (session: SessionStats) => (
-  coveredRequests(session.coveredRequests) > 0
-    ? formatTokens(
-      (session.totalInputTokens || 0)
-        + (session.totalOutputTokens || 0)
-        + (session.totalCacheCreateTokens || 0)
-        + (session.totalCacheReadTokens || 0)
-    )
-    : '—'
-)
-
-const displayProxyRateValue = (session: SessionStats) => (
-  coveredRequests(session.coveredRequests) > 0 && (session.avgOutputTokensPerSecond || 0) > 0
-    ? `${session.avgOutputTokensPerSecond.toFixed(1)}t/s`
-    : '—'
-)
-
-const getToolProfile = (tool: string) => {
-  return getToolProfileByTool(store.settings.clientTools.profiles, tool)
-}
-
-const getToolIcon = (tool: string) => {
-  const profile = getToolProfile(tool)
-  return profile?.icon || TOOL_LOBE_ICONS[tool] || TOOL_LOBE_ICONS[getFamilyHead(tool)] || null
-}
-
-const projectToolRows = (project: ProjectStats) => {
-  const rows = project.toolBreakdown?.length
-    ? project.toolBreakdown
-    : [{
-        tool: 'unknown',
-        requestCount: project.requestCount,
-        sessionCount: project.sessionCount,
-        totalInputTokens: project.totalInputTokens,
-        totalOutputTokens: project.totalOutputTokens,
-        totalCacheCreateTokens: project.totalCacheCreateTokens,
-        totalCacheReadTokens: project.totalCacheReadTokens,
-        totalCost: project.totalCost,
-        lastActive: project.lastActive
-      }]
-
-  return [...rows].sort((a, b) => b.lastActive - a.lastActive)
-}
-
-const projectTotalTokens = (project: ProjectStats) => (
-  project.totalInputTokens
-  + project.totalOutputTokens
-  + project.totalCacheCreateTokens
-  + project.totalCacheReadTokens
-)
-
-const shouldShowProjectTotalRow = (project: ProjectStats) => projectToolRows(project).length > 1
 
 const copyProjectPath = async (projectPath?: string | null) => {
   if (!projectPath) return
@@ -659,96 +135,6 @@ const closeRequestModal = () => {
   selectedRequest.value = null
 }
 
-// 加载更多
-const loadMore = async () => {
-  if (loadingMore.value || !hasMore.value) return
-
-  loadingMore.value = true
-  currentPage.value++
-
-  const count = await store.fetchSessionsForTool(selectedTool.value, pageSize, currentPage.value * pageSize, true)
-  if (count < pageSize) {
-    hasMore.value = false
-  }
-  rememberSessionCache(cacheKey())
-  loadingMore.value = false
-}
-
-const loadMoreRequests = async () => {
-  if (loadingMoreRequests.value || !requestHasMore.value) return
-  const remaining = 200 - store.requestRecords.length
-  if (remaining <= 0) {
-    requestHasMore.value = false
-    return
-  }
-
-  loadingMoreRequests.value = true
-  requestCurrentPage.value++
-  const nextLimit = Math.min(requestPageSize, remaining)
-
-  const count = await store.fetchRecentRequestRecordsForTool(
-    selectedTool.value,
-    nextLimit,
-    requestCurrentPage.value * requestPageSize,
-    true
-  )
-  if (count < nextLimit || store.requestRecords.length >= 200) {
-    requestHasMore.value = false
-  }
-  rememberRequestCache(cacheKey())
-  loadingMoreRequests.value = false
-}
-
-// 监听工具筛选变化
-watch([selectedTool], async () => {
-  if (activeTab.value === 'requests') {
-    await reloadRequestRecords()
-  } else {
-    await reloadSessions()
-  }
-  if (activeTab.value === 'projects') {
-    await reloadProjectStats()
-  } else {
-    store.projectStats = []
-  }
-})
-
-watch(() => store.settings.clientTools.activeToolFilter, globalTool => {
-  const normalizedGlobalTool = normalizeSessionTool(globalTool)
-  if (selectedTool.value === lastGlobalTool.value) {
-    selectedTool.value = normalizedGlobalTool
-  }
-  lastGlobalTool.value = normalizedGlobalTool
-})
-
-watch(() => store.sessionViewsRevision, async (current, previous) => {
-  if (current === previous) {
-    return
-  }
-
-  await triggerSessionViewRefresh()
-})
-
-watch(() => store.proxyStatus?.recordCount ?? null, async (current, previous) => {
-  if (current === null) {
-    lastProxyRecordCount.value = current
-    return
-  }
-
-  if (previous === null || lastProxyRecordCount.value === null) {
-    lastProxyRecordCount.value = current
-    return
-  }
-
-  if (current <= lastProxyRecordCount.value) {
-    lastProxyRecordCount.value = current
-    return
-  }
-
-  lastProxyRecordCount.value = current
-  scheduleProxyRefresh()
-})
-
 // 触底加载触发元素
 const loadMoreTrigger = ref<HTMLElement | null>(null)
 const requestLoadMoreTrigger = ref<HTMLElement | null>(null)
@@ -786,18 +172,8 @@ watch(() => store.sessions.length, () => {
   scheduleObserveLoadTriggers()
 })
 
-// 初始加载
-let unlistenLocalUsageSynced: UnlistenFn | null = null
-
 onMounted(async () => {
-  document.addEventListener('click', handleFilterClickOutside)
-  await reloadSessions()
-
-  // 后端后台扫描完成且有新数据落库时静默刷新（快照优先读路径的配套通知）。
-  // 活跃会话的 transcript 持续变化会让事件较频繁，复用代理刷新的防抖节奏。
-  unlistenLocalUsageSynced = await listen('local_usage_synced', () => {
-    scheduleProxyRefresh()
-  })
+  await initializeSessionView()
 
   // 监听触底加载
   setTimeout(() => {
@@ -818,17 +194,9 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  document.removeEventListener('click', handleFilterClickOutside)
-  if (unlistenLocalUsageSynced) {
-    unlistenLocalUsageSynced()
-    unlistenLocalUsageSynced = null
-  }
+  disposeSessionView()
   if (observer) {
     observer.disconnect()
-  }
-  if (proxyRefreshTimer) {
-    clearTimeout(proxyRefreshTimer)
-    proxyRefreshTimer = null
   }
   if (copiedProjectPathTimer) {
     clearTimeout(copiedProjectPathTimer)
@@ -871,93 +239,11 @@ onUnmounted(() => {
       </button>
     </div>
 
-    <div v-if="activeTab === 'recent' || activeTab === 'requests'" ref="filterDropdownRef" class="tool-filter">
-      <button
-        type="button"
-        class="tool-filter__trigger"
-        :class="{ 'tool-filter__trigger--open': filterDropdownOpen }"
-        :aria-expanded="filterDropdownOpen"
-        :title="currentSourceOption.label"
-        @click="toggleFilterDropdown"
-      >
-        <LayoutGrid v-if="!currentSourceOption.icon" class="h-3.5 w-3.5 shrink-0" />
-        <LobeIcon v-else :slug="currentSourceOption.icon" :size="14" @error="() => {}" />
-        <span class="tool-filter__current">{{ currentSourceOption.label }}</span>
-        <ChevronDown :class="['h-3.5 w-3.5 shrink-0 transition-transform duration-150', filterDropdownOpen && 'rotate-180']" />
-      </button>
-
-      <Transition
-        enter-active-class="transition ease-out duration-120"
-        enter-from-class="transform opacity-0 -translate-y-1"
-        enter-to-class="transform opacity-100 translate-y-0"
-        leave-active-class="transition ease-in duration-100"
-        leave-from-class="transform opacity-100 translate-y-0"
-        leave-to-class="transform opacity-0 -translate-y-1"
-      >
-        <div v-if="filterDropdownOpen" class="tool-filter__menu">
-          <button
-            type="button"
-            class="tool-filter__menu-item"
-            :class="{ 'tool-filter__menu-item--on': selectedTool === null }"
-            @click="selectSourceTool(null)"
-          >
-            <LayoutGrid class="h-3.5 w-3.5 shrink-0" />
-            <span class="truncate">{{ t(store.settings.locale, 'tools.all') }}</span>
-          </button>
-
-          <div class="tool-filter__menu-list">
-            <template v-for="option in menuSourceOptions" :key="option.key">
-              <div class="tool-filter__menu-row">
-                <button
-                  type="button"
-                  class="tool-filter__menu-item tool-filter__menu-item--family"
-                  :class="{ 'tool-filter__menu-item--on': selectedTool === option.tool }"
-                  @click="selectSourceTool(option.tool)"
-                >
-                  <LobeIcon v-if="option.icon" :slug="option.icon" :size="14" @error="() => {}" />
-                  <LayoutGrid v-else class="h-3.5 w-3.5 shrink-0" />
-                  <span class="truncate">{{ option.label }}</span>
-                </button>
-                <button
-                  v-if="option.familyHead"
-                  type="button"
-                  class="tool-filter__menu-expand"
-                  :title="expandedFamily === option.familyHead ? t(store.settings.locale, 'tools.collapseVariants') : t(store.settings.locale, 'tools.expandVariants')"
-                  @click.stop="toggleFamilyMenu(option.familyHead)"
-                >
-                  <ChevronDown :class="['h-3 w-3 transition-transform duration-150', expandedFamily === option.familyHead && 'rotate-180']" />
-                </button>
-              </div>
-
-              <div v-if="option.familyHead && expandedFamily === option.familyHead" class="tool-filter__submenu">
-                <button
-                  type="button"
-                  class="tool-filter__menu-item tool-filter__menu-item--child"
-                  :class="{ 'tool-filter__menu-item--on': selectedTool === option.tool }"
-                  @click="selectSourceTool(option.tool)"
-                >
-                  <LayoutGrid class="h-3 w-3 shrink-0" />
-                  <span class="truncate">{{ t(store.settings.locale, 'tools.familyAll') }}</span>
-                </button>
-                <button
-                  v-for="child in option.children"
-                  :key="child.key"
-                  type="button"
-                  class="tool-filter__menu-item tool-filter__menu-item--child"
-                  :class="{ 'tool-filter__menu-item--on': selectedTool === child.tool }"
-                  @click="selectSourceTool(child.tool)"
-                >
-                  <LobeIcon v-if="child.icon" :slug="child.icon" :size="12" @error="() => {}" />
-                  <LayoutGrid v-else class="h-3 w-3 shrink-0" />
-                  <span class="truncate">{{ child.label }}</span>
-                </button>
-              </div>
-            </template>
-          </div>
-        </div>
-      </Transition>
-    </div>
-
+    <SessionSourceFilter
+      v-if="activeTab === 'recent' || activeTab === 'requests'"
+      v-model="selectedTool"
+      :source-tools="SESSION_SOURCE_TOOLS"
+    />
     <!-- 1. 会话列表视图 -->
     <template v-if="activeTab === 'recent'">
       <div v-if="store.sessionsLoading && store.sessions.length === 0" class="flex justify-center py-8">
@@ -1329,112 +615,7 @@ onUnmounted(() => {
     <!-- 会话详情模态框 -->
     <SessionDetailModal :visible="showModal" :session="selectedSession" @close="closeModal" />
 
-    <Teleport to="#app">
-      <div
-        v-if="showRequestModal && selectedRequest"
-        class="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
-        style="-webkit-app-region: no-drag; app-region: no-drag"
-        @click.self="closeRequestModal"
-      >
-        <div class="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-[#1C1C1E]">
-          <div class="flex items-start justify-between border-b border-gray-100 p-4 dark:border-neutral-800">
-            <div class="min-w-0 pr-3">
-              <div class="mb-1 flex items-center gap-1.5">
-                <span class="request-card__status" :class="requestStatusClasses(selectedRequest)">
-                  {{ requestStatusLabel(selectedRequest) }}
-                </span>
-                <span class="text-[10px] text-gray-400">{{ formatTime(selectedRequest.timestampSec) }}</span>
-              </div>
-              <h3 class="truncate text-base font-semibold text-gray-800 dark:text-gray-100">
-                {{ requestModelLabel(selectedRequest) }}
-              </h3>
-              <p class="mt-0.5 truncate text-[10px] text-gray-400">
-                {{ requestProjectLabel(selectedRequest) }} / {{ requestToolLabel(selectedRequest.tool) }} / {{ requestSourceLabel(selectedRequest) }}
-              </p>
-            </div>
-            <button
-              type="button"
-              class="shrink-0 rounded-lg p-1.5 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800"
-              @click="closeRequestModal"
-            >
-              <svg class="h-4 w-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-
-          <div class="max-h-[calc(80vh-64px)] space-y-3 overflow-y-auto p-4">
-            <div class="grid grid-cols-3 gap-2">
-              <div class="request-detail-stat">
-                <span>{{ t(store.settings.locale, 'common.totalTokens') }}</span>
-                <strong>{{ formatTokens(selectedRequest.totalTokens) }}</strong>
-              </div>
-              <div class="request-detail-stat">
-                <span>{{ t(store.settings.locale, 'sessions.cost') }}</span>
-                <strong class="text-[var(--theme-chart-cost)]">{{ formatCost(selectedRequest.estimatedCost) }}</strong>
-              </div>
-              <div class="request-detail-stat">
-                <span>{{ t(store.settings.locale, 'sessions.duration') }}</span>
-                <strong>{{ formatDuration(selectedRequest.durationMs) }}</strong>
-              </div>
-            </div>
-
-            <div class="request-detail-section">
-              <div class="request-detail-row">
-                <span>{{ t(store.settings.locale, 'sessions.input') }}</span>
-                <strong>{{ formatTokens(selectedRequest.inputTokens) }}</strong>
-              </div>
-              <div class="request-detail-row">
-                <span>{{ t(store.settings.locale, 'sessions.output') }}</span>
-                <strong>{{ formatTokens(selectedRequest.outputTokens) }}</strong>
-              </div>
-              <div class="request-detail-row">
-                <span>{{ t(store.settings.locale, 'statistics.cacheCreate') }}</span>
-                <strong>{{ formatTokens(selectedRequest.cacheCreateTokens) }}</strong>
-              </div>
-              <div class="request-detail-row">
-                <span>{{ t(store.settings.locale, 'statistics.cacheRead') }}</span>
-                <strong>{{ formatTokens(selectedRequest.cacheReadTokens) }}</strong>
-              </div>
-            </div>
-
-            <div class="request-detail-section">
-              <div class="request-detail-row">
-                <span>{{ t(store.settings.locale, 'sessions.ttft') }}</span>
-                <strong>{{ formatDuration(selectedRequest.ttftMs) }}</strong>
-              </div>
-              <div class="request-detail-row">
-                <span>{{ t(store.settings.locale, 'metrics.tokensPerSecond') }}</span>
-                <strong>{{ selectedRequest.outputTokensPerSecond ? selectedRequest.outputTokensPerSecond.toFixed(1) : '—' }}</strong>
-              </div>
-              <div class="request-detail-row">
-                <span>{{ t(store.settings.locale, 'statistics.status') }}</span>
-                <strong>{{ selectedRequest.statusCode || '—' }}</strong>
-              </div>
-              <div class="request-detail-row">
-                <span>{{ t(store.settings.locale, 'sessions.requestCoverage') }}</span>
-                <strong>{{ requestCoverageLabel(selectedRequest.coverageOrigin) }}</strong>
-              </div>
-            </div>
-
-            <div class="request-detail-section">
-              <div class="request-detail-row">
-                <span>{{ t(store.settings.locale, 'common.source') }}</span>
-                <strong class="truncate text-right">{{ requestSourceLabel(selectedRequest) }}</strong>
-              </div>
-              <div class="request-detail-row">
-                <span>{{ t(store.settings.locale, 'sessions.sessionId') }}</span>
-                <strong class="truncate text-right">{{ selectedRequest.sessionId || '—' }}</strong>
-              </div>
-              <div class="request-detail-row">
-                <span>{{ t(store.settings.locale, 'sessions.requestKey') }}</span>
-                <strong class="truncate text-right">{{ selectedRequest.requestKey }}</strong>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <RequestDetailModal :visible="showRequestModal" :request="selectedRequest" @close="closeRequestModal" />
   </div>
 </template>
 
@@ -1473,149 +654,6 @@ onUnmounted(() => {
   box-shadow: 0 2px 6px color-mix(in srgb, var(--theme-accent-primary) 30%, transparent);
 }
 
-/* Tool filter — compact dropdown keeps the session view stable as the tool list grows. */
-.tool-filter {
-  position: relative;
-  padding: 2px 0 4px;
-}
-
-.tool-filter__trigger {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
-  border-radius: 10px;
-  border: 1px solid var(--theme-border-default);
-  background: var(--theme-bg-elevated);
-  text-align: left;
-  cursor: pointer;
-  outline: none;
-  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
-}
-
-.tool-filter__trigger:hover,
-.tool-filter__trigger--open {
-  border-color: var(--theme-border-strong);
-}
-
-.tool-filter__current {
-  flex: 1;
-  min-width: 0;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.3;
-  color: var(--theme-text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.tool-filter__menu {
-  position: absolute;
-  top: calc(100% + 5px);
-  left: 0;
-  right: 0;
-  z-index: 40;
-  max-height: 216px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 4px;
-  border-radius: 12px;
-  border: 1px solid var(--theme-border-default);
-  background: var(--theme-bg-overlay);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
-  backdrop-filter: blur(14px);
-}
-
-.tool-filter__menu-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.tool-filter__menu-row {
-  display: flex;
-  align-items: stretch;
-  gap: 4px;
-}
-
-.tool-filter__menu-item {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-  padding: 5px 8px;
-  border-radius: 8px;
-  border: none;
-  background: transparent;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.3;
-  color: var(--theme-text-secondary);
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.14s ease, color 0.14s ease;
-}
-
-.tool-filter__menu-item:hover {
-  background: var(--theme-bg-hover);
-  color: var(--theme-text-primary);
-}
-
-.tool-filter__menu-item--on {
-  background: var(--theme-accent-soft);
-  color: var(--theme-accent-primary);
-}
-
-.tool-filter__menu-item--family {
-  flex: 1;
-}
-
-.tool-filter__menu-expand {
-  width: 28px;
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--theme-text-tertiary);
-  cursor: pointer;
-  transition: background 0.14s ease, color 0.14s ease;
-}
-
-.tool-filter__menu-expand:hover {
-  background: var(--theme-bg-hover);
-  color: var(--theme-text-primary);
-}
-
-.tool-filter__submenu {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 1px 0 3px;
-  padding-left: 12px;
-  position: relative;
-}
-
-.tool-filter__submenu::before {
-  content: '';
-  position: absolute;
-  left: 4px;
-  top: 2px;
-  bottom: 2px;
-  width: 1px;
-  background: color-mix(in srgb, var(--theme-accent-primary) 18%, var(--theme-border-subtle));
-}
-
-.tool-filter__menu-item--child {
-  font-size: 10px;
-  padding: 5px 8px;
-}
-
 .request-card__status {
   display: inline-flex;
   align-items: center;
@@ -1629,47 +667,4 @@ onUnmounted(() => {
   line-height: 1;
 }
 
-.request-detail-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  border-radius: 14px;
-  background: var(--theme-bg-surface);
-  padding: 9px 8px;
-  text-align: center;
-}
-
-.request-detail-stat span,
-.request-detail-row span {
-  font-size: 10px;
-  color: var(--theme-text-tertiary);
-}
-
-.request-detail-stat strong {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 13px;
-  color: var(--theme-text-primary);
-}
-
-.request-detail-section {
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: 14px;
-  background: var(--theme-bg-elevated);
-  padding: 8px 10px;
-}
-
-.request-detail-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 4px 0;
-}
-
-.request-detail-row strong {
-  min-width: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 11px;
-  color: var(--theme-text-primary);
-}
 </style>

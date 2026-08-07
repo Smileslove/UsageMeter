@@ -106,21 +106,23 @@ impl SubscriptionState {
     /// Get or create GPT provider instance with shared token cache
     pub async fn get_gpt_provider(&self) -> GptSubscriptionProvider {
         let mut provider = self.gpt_provider.write().await;
-        if provider.is_none() {
-            *provider = Some(GptSubscriptionProvider::with_token_cache(
-                self.token_cache.clone(),
-            ));
+        if let Some(existing) = provider.as_ref() {
+            return existing.clone();
         }
-        provider.clone().unwrap()
+        let instance = GptSubscriptionProvider::with_token_cache(self.token_cache.clone());
+        *provider = Some(instance.clone());
+        instance
     }
 
     /// Get or create the Gemini provider instance (preserves token cache)
     pub async fn get_gemini_provider(&self) -> GeminiSubscriptionProvider {
         let mut provider = self.gemini_provider.write().await;
-        if provider.is_none() {
-            *provider = Some(GeminiSubscriptionProvider::new());
+        if let Some(existing) = provider.as_ref() {
+            return existing.clone();
         }
-        provider.clone().unwrap()
+        let instance = GeminiSubscriptionProvider::new();
+        *provider = Some(instance.clone());
+        instance
     }
 
     pub async fn get_copilot_provider(&self) -> CopilotSubscriptionProvider {
@@ -166,7 +168,8 @@ impl SubscriptionState {
     /// Clear cache for a specific provider
     pub async fn clear_cache(&self, provider: &str) {
         let mut cache = self.cache.write().await;
-        cache.retain(|key, _| !key.starts_with(&format!("{}::", cache_key_for_provider(provider))));
+        let provider_prefix = format!("{}::", provider.trim());
+        cache.retain(|key, _| !key.starts_with(&provider_prefix));
     }
 
     /// Clear all cached data
@@ -235,5 +238,36 @@ mod tests {
         assert_eq!(cached.source_tool.as_deref(), Some("claude-code"));
         assert_ne!(cached.tool, "relay");
         assert_ne!(cached.tool, deepseek.tool);
+    }
+
+    #[tokio::test]
+    async fn clear_cache_removes_all_variants_for_provider() {
+        let state = SubscriptionState::new();
+        let quota = |provider: &str, tool: &str| SubscriptionQuota {
+            provider: provider.to_string(),
+            tool: tool.to_string(),
+            source_tool: None,
+            credential_status: "valid".to_string(),
+            credential_message: None,
+            success: true,
+            tiers: Vec::new(),
+            updated_at: 0,
+            from_cache: false,
+            error: None,
+            plan_label: None,
+            account_label: None,
+        };
+
+        state.update_cache(quota("relay", "deepseek")).await;
+        state.update_cache(quota("relay", "openrouter")).await;
+        state.update_cache(quota("claude", "claude-code")).await;
+
+        state.clear_cache("relay").await;
+
+        assert!(state.get_cached("relay").await.is_none());
+        assert_eq!(
+            state.get_cached("claude").await.unwrap().tool,
+            "claude-code"
+        );
     }
 }

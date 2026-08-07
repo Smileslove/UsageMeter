@@ -1,3 +1,11 @@
+mod aggregation_support;
+mod cold_facts_support;
+mod derived_support;
+mod inflight_support;
+mod match_support;
+mod materialization_support;
+mod query_support;
+mod reasonix_support;
 mod service;
 mod types;
 
