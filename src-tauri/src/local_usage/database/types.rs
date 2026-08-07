@@ -3,6 +3,9 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncExportSession {
+    /// Marks a session as deleted on the originating device.
+    #[serde(default)]
+    pub deleted: bool,
     pub session_id: String,
     pub tool: String,
     pub project_key: Option<String>,
@@ -33,6 +36,10 @@ pub struct SyncExportSession {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncExportRequest {
+    /// Marks a request as a tombstone. Tombstones remove the corresponding
+    /// remote fact while preserving ordering and idempotency.
+    #[serde(default)]
+    pub deleted: bool,
     pub request_key: String,
     pub session_id: String,
     pub tool: String,

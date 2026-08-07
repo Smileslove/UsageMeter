@@ -31,6 +31,10 @@ impl LocalUsageDatabase {
                         model_list_json, total_reasoning_tokens, total_elapsed_ms, explicit_cost,
                         explicit_cost_currency, usage_sources_json
                  FROM local_sessions
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM local_session_tombstones t
+                     WHERE t.session_id = local_sessions.session_id
+                 )
                  ORDER BY end_time ASC",
             )
             .map_err(|e| format!("Failed to prepare sync session export: {}", e))?;
@@ -39,6 +43,7 @@ impl LocalUsageDatabase {
                 let model_list_json: String = row.get(13)?;
                 let usage_sources_json: String = row.get(18)?;
                 Ok(SyncExportSession {
+                    deleted: false,
                     session_id: row.get(0)?,
                     tool: row.get(1)?,
                     project_key: row.get(2)?,
@@ -79,12 +84,53 @@ impl LocalUsageDatabase {
             sessions.push(row.map_err(|e| format!("Failed to read sync session row: {}", e))?);
         }
 
+        // Deleted sessions are retained as compact local tombstones so an
+        // authoritative snapshot can remove them from other devices too.
+        let mut tombstone_stmt = conn
+            .prepare(
+                "SELECT session_id, tool, project_key, project_name, scope,
+                        start_time, end_time
+                 FROM local_session_tombstones
+                 ORDER BY deleted_at ASC",
+            )
+            .map_err(|e| format!("Failed to prepare sync session tombstone export: {}", e))?;
+        let tombstones = tombstone_stmt
+            .query_map([], |row| {
+                Ok(SyncExportSession {
+                    deleted: true,
+                    session_id: row.get(0)?,
+                    tool: row.get(1)?,
+                    project_key: row.get(2)?,
+                    project_name: row.get(3)?,
+                    scope: row.get(4)?,
+                    start_time: row.get(5)?,
+                    end_time: row.get(6)?,
+                    request_count: 0,
+                    total_input_tokens: 0,
+                    total_output_tokens: 0,
+                    total_cache_create_tokens: 0,
+                    total_cache_read_tokens: 0,
+                    total_tokens: 0,
+                    total_reasoning_tokens: 0,
+                    total_elapsed_ms: 0,
+                    explicit_cost: None,
+                    explicit_cost_currency: None,
+                    usage_sources: Default::default(),
+                    model_list: Vec::new(),
+                })
+            })
+            .map_err(|e| format!("Failed to query sync session tombstones: {}", e))?;
+        for row in tombstones {
+            sessions
+                .push(row.map_err(|e| format!("Failed to read sync session tombstone: {}", e))?);
+        }
+
         let mut request_stmt = conn
             .prepare(
-                "SELECT session_id, tool, project_key, timestamp, message_id, dedupe_key,
+                "SELECT session_id, tool, project_key, timestamp, message_id, dedupe_key, request_key,
                         model, input_tokens, output_tokens, cache_create_tokens,
                         cache_read_tokens, total_tokens, request_count, explicit_estimated_cost,
-                        is_subagent
+                        is_subagent, source_file_present
                  FROM local_request_facts
                  ORDER BY timestamp ASC",
             )
@@ -95,27 +141,34 @@ impl LocalUsageDatabase {
                 let tool: String = row.get(1)?;
                 let timestamp: i64 = row.get(3)?;
                 let message_id: Option<String> = row.get(4)?;
-                let model: String = row.get(6)?;
-                let input_tokens = LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(7)?);
+                let stored_request_key: Option<String> = row.get(6)?;
+                let model: String = row.get(7)?;
+                let input_tokens = LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(8)?);
                 let output_tokens =
-                    LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(8)?);
-                let total_tokens =
+                    LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(9)?);
+                let cache_create_tokens =
+                    LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(10)?);
+                let cache_read_tokens =
                     LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(11)?);
-                let request_key = match message_id.as_deref() {
-                    Some(value) if !value.trim().is_empty() => format!("{}:{}", tool, value),
-                    _ => format!(
-                        "{}:{}:{}:{}:{}:{}:{}:{}:{}",
-                        tool,
-                        session_id,
-                        timestamp,
-                        model,
-                        input_tokens,
-                        output_tokens,
-                        LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(9)?),
-                        LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(10)?),
-                        total_tokens
-                    ),
-                };
+                let total_tokens =
+                    LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(12)?);
+                let request_key = stored_request_key
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| match message_id.as_deref() {
+                        Some(value) if !value.trim().is_empty() => format!("{}:{}", tool, value),
+                        _ => format!(
+                            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                            tool,
+                            session_id,
+                            timestamp,
+                            model,
+                            input_tokens,
+                            output_tokens,
+                            cache_create_tokens,
+                            cache_read_tokens,
+                            total_tokens
+                        ),
+                    });
 
                 Ok(SyncExportRequest {
                     request_key,
@@ -128,19 +181,16 @@ impl LocalUsageDatabase {
                     model,
                     input_tokens,
                     output_tokens,
-                    cache_create_tokens: LocalUsageDatabase::saturating_i64_to_u64(
-                        row.get::<_, i64>(9)?,
-                    ),
-                    cache_read_tokens: LocalUsageDatabase::saturating_i64_to_u64(
-                        row.get::<_, i64>(10)?,
-                    ),
+                    cache_create_tokens,
+                    cache_read_tokens,
                     total_tokens,
                     request_count: LocalUsageDatabase::saturating_i64_to_u64(
-                        row.get::<_, i64>(12)?,
+                        row.get::<_, i64>(13)?,
                     )
                     .max(1),
-                    explicit_estimated_cost: row.get(13)?,
-                    is_subagent: row.get::<_, i64>(14)? != 0,
+                    explicit_estimated_cost: row.get(14)?,
+                    is_subagent: row.get::<_, i64>(15)? != 0,
+                    deleted: row.get::<_, i64>(16)? == 0,
                     source_kind: "local_usage".to_string(),
                 })
             })
@@ -159,6 +209,28 @@ impl LocalUsageDatabase {
         device_id: &str,
         export_seq: i64,
         data: &SyncExportData,
+    ) -> Result<(), String> {
+        self.import_remote_sync_data_inner(device_id, export_seq, data, false)
+    }
+
+    /// Imports a complete origin snapshot. The snapshot is authoritative for
+    /// this origin, so facts/sessions absent from it are removed in the same
+    /// transaction before its rows are applied.
+    pub fn import_remote_sync_snapshot_data(
+        &self,
+        device_id: &str,
+        export_seq: i64,
+        data: &SyncExportData,
+    ) -> Result<(), String> {
+        self.import_remote_sync_data_inner(device_id, export_seq, data, true)
+    }
+
+    fn import_remote_sync_data_inner(
+        &self,
+        device_id: &str,
+        export_seq: i64,
+        data: &SyncExportData,
+        authoritative_snapshot: bool,
     ) -> Result<(), String> {
         let now = chrono::Utc::now().timestamp();
         let conn = self.conn.lock().unwrap();
@@ -181,6 +253,120 @@ impl LocalUsageDatabase {
             params![device_id, now, export_seq, now],
         )
         .map_err(|e| format!("Failed to upsert remote device: {}", e))?;
+
+        if authoritative_snapshot {
+            tx.execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS sync_snapshot_request_keys (
+                    request_key TEXT PRIMARY KEY
+                );
+                 CREATE TEMP TABLE IF NOT EXISTS sync_snapshot_session_ids (
+                    session_id TEXT PRIMARY KEY
+                );
+                 DELETE FROM sync_snapshot_request_keys;
+                 DELETE FROM sync_snapshot_session_ids;",
+            )
+            .map_err(|e| format!("Failed to prepare sync snapshot coverage tables: {e}"))?;
+            for request in data.requests.iter().filter(|request| !request.deleted) {
+                tx.execute(
+                    "INSERT OR IGNORE INTO sync_snapshot_request_keys (request_key) VALUES (?1)",
+                    params![request.request_key.as_str()],
+                )
+                .map_err(|e| format!("Failed to record snapshot request coverage: {e}"))?;
+            }
+            for session in data.sessions.iter().filter(|session| !session.deleted) {
+                tx.execute(
+                    "INSERT OR IGNORE INTO sync_snapshot_session_ids (session_id) VALUES (?1)",
+                    params![session.session_id.as_str()],
+                )
+                .map_err(|e| format!("Failed to record snapshot session coverage: {e}"))?;
+            }
+            {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT timestamp FROM remote_request_facts
+                         WHERE origin_device_id = ?1
+                           AND NOT EXISTS (
+                               SELECT 1 FROM sync_snapshot_request_keys k
+                               WHERE k.request_key = remote_request_facts.request_key
+                           )
+                           AND export_seq <= ?2",
+                    )
+                    .map_err(|e| {
+                        format!("Failed to inspect remote facts absent from snapshot: {e}")
+                    })?;
+                let rows = stmt
+                    .query_map(params![device_id, export_seq], |row| row.get::<_, i64>(0))
+                    .map_err(|e| {
+                        format!("Failed to query remote facts absent from snapshot: {e}")
+                    })?;
+                for row in rows {
+                    let timestamp = row.map_err(|e| {
+                        format!("Failed to read remote fact snapshot cleanup row: {e}")
+                    })?;
+                    let date = crate::utils::business_time::business_date_for_timestamp(
+                        timestamp, &settings,
+                    );
+                    if date < today {
+                        touched_history_dates.insert(date);
+                    }
+                }
+            }
+            {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT end_time FROM remote_sessions
+                         WHERE origin_device_id = ?1
+                           AND NOT EXISTS (
+                               SELECT 1 FROM sync_snapshot_session_ids s
+                               WHERE s.session_id = remote_sessions.session_id
+                           )
+                           AND export_seq <= ?2",
+                    )
+                    .map_err(|e| {
+                        format!("Failed to inspect remote sessions absent from snapshot: {e}")
+                    })?;
+                let rows = stmt
+                    .query_map(params![device_id, export_seq], |row| row.get::<_, i64>(0))
+                    .map_err(|e| {
+                        format!("Failed to query remote sessions absent from snapshot: {e}")
+                    })?;
+                for row in rows {
+                    let end_time = row.map_err(|e| {
+                        format!("Failed to read remote session snapshot cleanup row: {e}")
+                    })?;
+                    if end_time > 0 {
+                        let date = crate::utils::business_time::business_date_for_timestamp(
+                            end_time, &settings,
+                        );
+                        if date < today {
+                            touched_history_dates.insert(date);
+                        }
+                    }
+                }
+            }
+            tx.execute(
+                "DELETE FROM remote_request_facts
+                 WHERE origin_device_id = ?1
+                   AND NOT EXISTS (
+                       SELECT 1 FROM sync_snapshot_request_keys k
+                       WHERE k.request_key = remote_request_facts.request_key
+                   )
+                   AND export_seq <= ?2",
+                params![device_id, export_seq],
+            )
+            .map_err(|e| format!("Failed to remove remote facts absent from snapshot: {e}"))?;
+            tx.execute(
+                "DELETE FROM remote_sessions
+                 WHERE origin_device_id = ?1
+                   AND NOT EXISTS (
+                       SELECT 1 FROM sync_snapshot_session_ids s
+                       WHERE s.session_id = remote_sessions.session_id
+                   )
+                   AND export_seq <= ?2",
+                params![device_id, export_seq],
+            )
+            .map_err(|e| format!("Failed to remove remote sessions absent from snapshot: {e}"))?;
+        }
 
         for session in &data.sessions {
             let existing_end_time = tx
@@ -214,6 +400,15 @@ impl LocalUsageDatabase {
                 }
             }
 
+            if session.deleted {
+                tx.execute(
+                    "DELETE FROM remote_sessions
+                     WHERE origin_device_id = ?1 AND session_id = ?2 AND ?3 >= export_seq",
+                    params![device_id, session.session_id.as_str(), export_seq],
+                )
+                .map_err(|e| format!("Failed to apply remote session tombstone: {e}"))?;
+                continue;
+            }
             let model_list_json = serde_json::to_string(&session.model_list)
                 .map_err(|e| format!("Failed to serialize remote session models: {}", e))?;
             let usage_sources_json = serde_json::to_string(&session.usage_sources)
@@ -284,6 +479,17 @@ impl LocalUsageDatabase {
             );
             if date < today {
                 touched_history_dates.insert(date);
+            }
+            if request.deleted {
+                tx.execute(
+                    "DELETE FROM remote_request_facts
+                     WHERE origin_device_id = ?1
+                       AND request_key = ?2
+                       AND ?3 >= export_seq",
+                    params![device_id, request.request_key.as_str(), export_seq],
+                )
+                .map_err(|e| format!("Failed to apply remote request tombstone: {e}"))?;
+                continue;
             }
             tx.execute(
                 "INSERT INTO remote_request_facts (

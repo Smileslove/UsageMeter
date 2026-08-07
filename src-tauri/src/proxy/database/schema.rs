@@ -619,7 +619,7 @@ impl ProxyDatabase {
             ALTER TABLE usage_records_v2 RENAME TO usage_records;
             CREATE INDEX IF NOT EXISTS idx_timestamp ON usage_records(timestamp);
             CREATE INDEX IF NOT EXISTS idx_message_id ON usage_records(message_id);
-            CREATE INDEX IF NOT EXISTS idx_usage_storage_key ON usage_records(storage_dedupe_key);
+            DROP INDEX IF EXISTS idx_usage_storage_key;
             CREATE INDEX IF NOT EXISTS idx_usage_canonical_key ON usage_records(canonical_request_key);
             CREATE INDEX IF NOT EXISTS idx_session_id ON usage_records(session_id);
             CREATE INDEX IF NOT EXISTS idx_model_timestamp ON usage_records(model, timestamp);

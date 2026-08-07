@@ -188,6 +188,28 @@ fn save_settings_locked(
         .map_err(SaveSettingsError::Other)?;
     write_preferences_file(&settings).map_err(SaveSettingsError::Other)?;
 
+    // Apply the sync policy immediately when the toggle changes. This keeps a
+    // disabled account from accumulating payloads until the next app restart;
+    // local facts and summaries are never touched by this reconciliation.
+    if previous_settings.sync.enabled != settings.sync.enabled {
+        match crate::local_usage::get_local_usage_db() {
+            Ok(db) => {
+                let _ = db.mark_sync_policy_reconcile_pending(true);
+                match db.reconcile_sync_policy(settings.sync.enabled) {
+                    Ok(removed) if removed > 0 => {
+                        eprintln!(
+                            "[database] Reconciled {removed} sync outbox rows after settings change"
+                        );
+                        db.compact_after_large_delete(removed);
+                    }
+                    Ok(_) => {}
+                    Err(err) => eprintln!("[database] Sync policy reconciliation deferred: {err}"),
+                }
+            }
+            Err(err) => eprintln!("[database] Sync policy reconciliation deferred: {err}"),
+        }
+    }
+
     if previous_settings.day_boundary_mode != settings.day_boundary_mode {
         reset_day_boundary_caches().map_err(SaveSettingsError::Other)?;
     }

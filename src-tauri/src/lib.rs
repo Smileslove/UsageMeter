@@ -283,7 +283,8 @@ pub fn run() {
                 let prewarm_settings = initial_settings.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Some(settings) = prewarm_settings {
-                        // 预热统一合并层缓存（含历史物化 + 热日合并）
+                        // 预热统一合并层热窗口；无开始时间的查询会由统一层限制在
+                        // 请求级物化保留窗口内，不再重建已驱逐的全部历史日期。
                         let _ = crate::unified_usage::get_merged_request_facts_no_sync(
                             &settings,
                             None,

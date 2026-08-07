@@ -211,7 +211,8 @@ impl LocalUsageDatabase {
                 pricing_fingerprint INTEGER NOT NULL DEFAULT 0,
                 is_finalized INTEGER NOT NULL DEFAULT 0,
                 finalized_at INTEGER,
-                materialized_at INTEGER NOT NULL
+                materialized_at INTEGER NOT NULL,
+                fact_cache_status TEXT NOT NULL DEFAULT 'complete'
             );
 
             CREATE TABLE IF NOT EXISTS unified_daily_summary (
@@ -356,6 +357,20 @@ impl LocalUsageDatabase {
                 ON local_sessions(project_key);
             CREATE INDEX IF NOT EXISTS idx_local_sessions_end_time
                 ON local_sessions(end_time);
+
+            CREATE TABLE IF NOT EXISTS local_session_tombstones (
+                session_id TEXT PRIMARY KEY,
+                tool TEXT NOT NULL,
+                project_key TEXT,
+                project_name TEXT,
+                scope TEXT,
+                start_time INTEGER NOT NULL DEFAULT 0,
+                end_time INTEGER NOT NULL DEFAULT 0,
+                deleted_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_local_session_tombstones_updated_at
+                ON local_session_tombstones(updated_at);
 
             CREATE TABLE IF NOT EXISTS local_request_facts (
                 request_id TEXT PRIMARY KEY,
@@ -503,7 +518,9 @@ impl LocalUsageDatabase {
                 event_version INTEGER NOT NULL,
                 queued_at INTEGER NOT NULL,
                 batched_seq INTEGER,
-                uploaded_at INTEGER
+                uploaded_at INTEGER,
+                discarded_at INTEGER,
+                discard_reason TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_sync_outbox_request_events_uploaded_at
                 ON sync_outbox_request_events(uploaded_at, queued_at);
@@ -516,7 +533,9 @@ impl LocalUsageDatabase {
                 session_version INTEGER NOT NULL,
                 queued_at INTEGER NOT NULL,
                 batched_seq INTEGER,
-                uploaded_at INTEGER
+                uploaded_at INTEGER,
+                discarded_at INTEGER,
+                discard_reason TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_sync_outbox_session_events_uploaded_at
                 ON sync_outbox_session_events(uploaded_at, queued_at);

@@ -372,6 +372,53 @@ impl LocalUsageDatabase {
         .map_err(|e| format!("Failed to load unified materialization state: {}", e))
     }
 
+    /// Returns whether the durable state still has request-level materialized facts.
+    /// A finalized day may deliberately keep only daily/model summaries after retention eviction.
+    pub fn is_unified_day_fact_cache_complete(&self, local_date: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COALESCE(fact_cache_status, 'complete') FROM unified_daily_materialization_state WHERE local_date = ?1",
+            [local_date],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map(|status| status.as_deref().unwrap_or("complete") == "complete")
+        .map_err(|e| format!("Failed to read fact cache status: {e}"))
+    }
+
+    /// Evicts finalized request-level facts while preserving durable daily/model summaries.
+    /// The operation is bounded to a single transaction and is safe to run repeatedly.
+    pub fn evict_materialized_facts_before(&self, cutoff_date: &str) -> Result<u64, String> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let conn = self.conn.lock().unwrap();
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to start materialized fact eviction: {e}"))?;
+        let affected = tx
+            .execute(
+                "DELETE FROM unified_daily_materialized_facts
+                 WHERE local_date < ?1
+                   AND local_date IN (
+                       SELECT local_date FROM unified_daily_materialization_state
+                       WHERE local_date < ?1 AND is_finalized = 1
+                   )",
+                [cutoff_date],
+            )
+            .map_err(|e| format!("Failed to delete materialized facts during eviction: {e}"))?;
+        tx.execute(
+            "UPDATE unified_daily_materialization_state
+             SET fact_cache_status = 'evicted', materialized_at = ?2
+             WHERE local_date < ?1 AND is_finalized = 1
+               AND fact_cache_status = 'complete'",
+            rusqlite::params![cutoff_date, now],
+        )
+        .map_err(|e| format!("Failed to mark evicted materialization state: {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit materialized fact eviction: {e}"))?;
+        crate::unified_usage::clear_runtime_caches();
+        Ok(affected as u64)
+    }
+
     pub fn get_unified_days_materialization_states(
         &self,
         local_dates: &[String],
@@ -591,12 +638,12 @@ impl LocalUsageDatabase {
                 remote_request_count, remote_max_export_seq, remote_max_timestamp,
                 proxy_record_count, proxy_all_record_count, proxy_max_timestamp_ms, proxy_max_updated_at,
                 max_fact_timestamp_ms,
-                pricing_fingerprint, is_finalized, finalized_at, materialized_at
+                pricing_fingerprint, is_finalized, finalized_at, materialized_at, fact_cache_status
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6,
                 ?7, ?8, ?9,
                 ?10, ?11, ?12, ?13,
-                ?14, ?15, ?16, ?17, ?18
+                ?14, ?15, ?16, ?17, ?18, 'complete'
             )
             ON CONFLICT(local_date) DO UPDATE SET
                 day_boundary_mode = excluded.day_boundary_mode,
@@ -615,7 +662,8 @@ impl LocalUsageDatabase {
                 pricing_fingerprint = excluded.pricing_fingerprint,
                 is_finalized = excluded.is_finalized,
                 finalized_at = excluded.finalized_at,
-                materialized_at = excluded.materialized_at
+                materialized_at = excluded.materialized_at,
+                fact_cache_status = 'complete'
             "#,
             params![
                 state.local_date,

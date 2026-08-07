@@ -459,11 +459,121 @@ impl LocalUsageDatabase {
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| format!("Failed to start local usage transaction: {}", e))?;
+        // Scanner failures must not abort local fact ingestion. A missing settings
+        // snapshot disables outbox generation for this pass; startup reconciliation
+        // will retry once the authoritative configuration is readable.
         let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let sync_enabled = settings.sync.enabled;
         let today = Self::today_local_date_with_settings(&settings);
         let mut touched_history_dates: HashSet<String> = HashSet::new();
 
         for session_id in &removed_ids {
+            let session_context: Option<(
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                i64,
+                i64,
+            )> = tx
+                .query_row(
+                    "SELECT tool, project_key, project_name, scope, start_time, end_time
+                     FROM local_sessions WHERE session_id = ?1",
+                    params![session_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|e| format!("Failed to read removed session metadata: {e}"))?;
+            let session_context = match session_context {
+                Some(context) => Some(context),
+                None => tx
+                    .query_row(
+                        "SELECT tool, project_key, NULL, NULL, 0, 0
+                         FROM local_source_files
+                         WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
+                        params![session_id],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|e| format!("Failed to read removed session source metadata: {e}"))?,
+            };
+            if let Some((tool, project_key, project_name, scope, start_time, end_time)) =
+                session_context
+            {
+                tx.execute(
+                    "INSERT INTO local_session_tombstones (
+                        session_id, tool, project_key, project_name, scope,
+                        start_time, end_time, deleted_at, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+                     ON CONFLICT(session_id) DO UPDATE SET
+                        tool = excluded.tool,
+                        project_key = excluded.project_key,
+                        project_name = excluded.project_name,
+                        scope = excluded.scope,
+                        start_time = excluded.start_time,
+                        end_time = excluded.end_time,
+                        deleted_at = excluded.deleted_at,
+                        updated_at = excluded.updated_at",
+                    params![
+                        session_id,
+                        tool.as_str(),
+                        project_key.as_deref(),
+                        project_name.as_deref(),
+                        scope.as_deref(),
+                        start_time,
+                        end_time,
+                        now,
+                    ],
+                )
+                .map_err(|e| format!("Failed to persist removed session tombstone: {e}"))?;
+                if sync_enabled {
+                    outbox::enqueue_session_export_tx(
+                        &tx,
+                        &origin_device_id,
+                        &SyncExportSession {
+                            deleted: true,
+                            session_id: session_id.clone(),
+                            tool,
+                            project_key,
+                            project_name,
+                            scope,
+                            start_time,
+                            end_time,
+                            request_count: 0,
+                            total_input_tokens: 0,
+                            total_output_tokens: 0,
+                            total_cache_create_tokens: 0,
+                            total_cache_read_tokens: 0,
+                            total_tokens: 0,
+                            total_reasoning_tokens: 0,
+                            total_elapsed_ms: 0,
+                            explicit_cost: None,
+                            explicit_cost_currency: None,
+                            usage_sources: Default::default(),
+                            model_list: Vec::new(),
+                        },
+                        now,
+                    )?;
+                }
+            }
             if let Some(telemetry_ts) = Self::reasonix_session_timestamp_tx(&tx, session_id)? {
                 let date = crate::utils::business_time::business_date_for_timestamp(
                     telemetry_ts,
@@ -477,6 +587,39 @@ impl LocalUsageDatabase {
             touched_history_dates.extend(Self::collect_history_dates_for_session_tx(
                 &tx, session_id, &settings, &today,
             )?);
+            let removed_facts: Vec<(
+                String,
+                String,
+                Option<String>,
+                i64,
+                Option<String>,
+                String,
+                String,
+            )> = {
+                let mut stmt = tx
+                    .prepare(
+                        "SELECT tool, session_id, request_key, timestamp, message_id,
+                                dedupe_key, model
+                         FROM local_request_facts
+                         WHERE session_id = ?1 AND source_file_present != 0",
+                    )
+                    .map_err(|e| format!("Failed to prepare removed fact tombstones: {e}"))?;
+                let rows = stmt
+                    .query_map(params![session_id], |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                        ))
+                    })
+                    .map_err(|e| format!("Failed to query removed fact tombstones: {e}"))?;
+                rows.collect::<Result<_, _>>()
+                    .map_err(|e| format!("Failed to read removed fact tombstone: {e}"))?
+            };
             // 软删同时 bump sync_version 让物化/导出侧感知；守卫避免对已软删行重复 bump
             tx.execute(
                 "UPDATE local_request_facts
@@ -486,6 +629,46 @@ impl LocalUsageDatabase {
                 params![session_id],
             )
             .map_err(|e| format!("Failed to soft-delete local request facts: {}", e))?;
+            if sync_enabled {
+                for (
+                    tool,
+                    fact_session_id,
+                    request_key,
+                    timestamp,
+                    message_id,
+                    dedupe_key,
+                    model,
+                ) in removed_facts
+                {
+                    outbox::enqueue_request_export_tx(
+                        &tx,
+                        &origin_device_id,
+                        &SyncExportRequest {
+                            deleted: true,
+                            request_key: request_key.unwrap_or_else(|| {
+                                format!("{}:{}", tool.as_str(), dedupe_key.as_str())
+                            }),
+                            session_id: fact_session_id,
+                            tool,
+                            project_key: None,
+                            timestamp,
+                            message_id,
+                            dedupe_key,
+                            model,
+                            input_tokens: 0,
+                            output_tokens: 0,
+                            cache_create_tokens: 0,
+                            cache_read_tokens: 0,
+                            total_tokens: 0,
+                            request_count: 0,
+                            explicit_estimated_cost: None,
+                            is_subagent: false,
+                            source_kind: "local_usage_tombstone".to_string(),
+                        },
+                        now,
+                    )?;
+                }
+            }
             tx.execute(
                 "UPDATE local_source_files
                  SET deleted_at = ?2,
@@ -517,6 +700,12 @@ impl LocalUsageDatabase {
                 requests,
                 project_key,
             } = dirty_session;
+
+            tx.execute(
+                "DELETE FROM local_session_tombstones WHERE session_id = ?1",
+                params![session_id.as_str()],
+            )
+            .map_err(|e| format!("Failed to clear restored session tombstone: {e}"))?;
 
             // dedupe_key → 旧 timestamp：
             // 既用于软删差集，也用于变更行的"日期迁移"检测（旧时间戳所在历史日同样需要失效）
@@ -657,6 +846,7 @@ impl LocalUsageDatabase {
             )
             .map_err(|e| format!("Failed to insert local session row: {}", e))?;
             let session_export = SyncExportSession {
+                deleted: false,
                 session_id: meta.session_id.clone(),
                 tool: meta.tool.clone(),
                 project_key: Some(project_key.clone()),
@@ -677,7 +867,9 @@ impl LocalUsageDatabase {
                 usage_sources: meta.usage_sources.clone(),
                 model_list: meta.models.clone(),
             };
-            outbox::enqueue_session_export_tx(&tx, &origin_device_id, &session_export, now)?;
+            if sync_enabled {
+                outbox::enqueue_session_export_tx(&tx, &origin_device_id, &session_export, now)?;
+            }
 
             let mut seen_dedupe_keys: HashSet<String> = HashSet::new();
             for (idx, request) in requests.iter().enumerate() {
@@ -818,6 +1010,7 @@ impl LocalUsageDatabase {
                 }
 
                 let request_export = SyncExportRequest {
+                    deleted: false,
                     request_key: request_key.clone(),
                     session_id: request.session_id.clone(),
                     tool: request.tool.clone(),
@@ -840,7 +1033,14 @@ impl LocalUsageDatabase {
                     is_subagent: request.is_subagent,
                     source_kind: "local_usage".to_string(),
                 };
-                outbox::enqueue_request_export_tx(&tx, &origin_device_id, &request_export, now)?;
+                if sync_enabled {
+                    outbox::enqueue_request_export_tx(
+                        &tx,
+                        &origin_device_id,
+                        &request_export,
+                        now,
+                    )?;
+                }
             }
 
             for (stale_key, old_timestamp) in existing_facts
@@ -865,6 +1065,53 @@ impl LocalUsageDatabase {
                     );
                     if old_date < today {
                         touched_history_dates.insert(old_date);
+                    }
+                    if sync_enabled {
+                        let tombstone = tx
+                            .query_row(
+                                "SELECT session_id, request_key, message_id, model, project_key
+                                 FROM local_request_facts
+                                 WHERE tool = ?1 AND dedupe_key = ?2",
+                                params![tool.as_str(), stale_key.as_str()],
+                                |row| {
+                                    Ok((
+                                        row.get::<_, String>(0)?,
+                                        row.get::<_, Option<String>>(1)?,
+                                        row.get::<_, Option<String>>(2)?,
+                                        row.get::<_, String>(3)?,
+                                        row.get::<_, Option<String>>(4)?,
+                                    ))
+                                },
+                            )
+                            .map_err(|e| format!("Failed to load stale fact tombstone: {e}"))?;
+                        let request_key = tombstone
+                            .1
+                            .unwrap_or_else(|| format!("{}:{}", tool.as_str(), stale_key.as_str()));
+                        outbox::enqueue_request_export_tx(
+                            &tx,
+                            &origin_device_id,
+                            &SyncExportRequest {
+                                deleted: true,
+                                request_key,
+                                session_id: tombstone.0,
+                                tool: tool.clone(),
+                                project_key: tombstone.4,
+                                timestamp: *old_timestamp,
+                                message_id: tombstone.2,
+                                dedupe_key: stale_key.clone(),
+                                model: tombstone.3,
+                                input_tokens: 0,
+                                output_tokens: 0,
+                                cache_create_tokens: 0,
+                                cache_read_tokens: 0,
+                                total_tokens: 0,
+                                request_count: 0,
+                                explicit_estimated_cost: None,
+                                is_subagent: false,
+                                source_kind: "local_usage_tombstone".to_string(),
+                            },
+                            now,
+                        )?;
                     }
                 }
             }

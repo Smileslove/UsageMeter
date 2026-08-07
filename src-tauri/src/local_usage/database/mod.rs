@@ -81,7 +81,9 @@ impl LocalUsageDatabase {
 
     pub fn new() -> Result<Self, String> {
         let db_path = Self::db_path()?;
-        Self::new_with_path(&db_path)
+        let db = Self::new_with_path(&db_path)?;
+        db.run_startup_maintenance();
+        Ok(db)
     }
 
     fn new_with_path(path: &PathBuf) -> Result<Self, String> {
@@ -94,6 +96,10 @@ impl LocalUsageDatabase {
             Connection::open(path).map_err(|e| format!("Failed to open local usage DB: {}", e))?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| format!("Failed to enable WAL on local usage DB: {}", e))?;
+        conn.pragma_update(None, "wal_autocheckpoint", 1000_i64)
+            .map_err(|e| format!("Failed to configure local usage WAL autocheckpoint: {}", e))?;
+        conn.pragma_update(None, "journal_size_limit", 8_i64 * 1024 * 1024)
+            .map_err(|e| format!("Failed to configure local usage WAL size limit: {}", e))?;
         conn.busy_timeout(Duration::from_secs(30))
             .map_err(|e| format!("Failed to set local usage DB busy timeout: {}", e))?;
 
@@ -101,11 +107,41 @@ impl LocalUsageDatabase {
         Self::migrate_schema(&conn)?;
         Self::create_merge_cache_generation_tracking(&conn)?;
 
-        Ok(Self {
+        let db = Self {
             conn: Arc::new(Mutex::new(conn)),
             db_path: path.clone(),
             sync_gate: Arc::new((Mutex::new(SyncGateState::default()), Condvar::new())),
-        })
+        };
+        if let Err(error) = db.prune_uploaded_outbox() {
+            eprintln!("[database] Startup outbox cleanup skipped: {error}");
+        }
+        db.checkpoint_wal_passive();
+        Ok(db)
+    }
+
+    pub(crate) fn checkpoint_wal_passive(&self) {
+        let Ok(conn) = self.conn.lock() else { return };
+        if let Err(error) = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE)") {
+            eprintln!("[database] Passive local usage WAL checkpoint skipped: {error}");
+        }
+    }
+
+    pub(crate) fn compact_after_large_delete(&self, removed_rows: u64) {
+        if removed_rows < 1_000 {
+            self.checkpoint_wal_passive();
+            return;
+        }
+        let path = self.db_path.clone();
+        std::thread::spawn(move || {
+            let Ok(conn) = Connection::open(path) else {
+                eprintln!("[database] Local usage background compaction could not open database");
+                return;
+            };
+            let _ = conn.busy_timeout(Duration::from_secs(30));
+            if let Err(error) = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE); VACUUM;") {
+                eprintln!("[database] Local usage background compaction skipped: {error}");
+            }
+        });
     }
 
     fn db_path() -> Result<PathBuf, String> {

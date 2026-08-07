@@ -20,7 +20,7 @@ impl LocalUsageDatabase {
 
     pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 21 {
+        if schema_version >= 24 {
             return Ok(());
         }
         let mut cleared_runtime_caches = false;
@@ -688,6 +688,90 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to update v21 schema version: {}", e))?;
             tx.commit()
                 .map_err(|e| format!("Failed to commit v21 schema migration: {}", e))?;
+        }
+
+        if schema_version < 22 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v22 schema migration: {}", e))?;
+            Self::add_column_if_missing(
+                &tx,
+                "unified_daily_materialization_state",
+                "fact_cache_status",
+                "TEXT NOT NULL DEFAULT 'complete'",
+            )?;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '22', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v22 schema version: {}", e))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v22 schema migration: {}", e))?;
+        }
+
+        if schema_version < 23 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v23 schema migration: {}", e))?;
+            for table in ["sync_outbox_request_events", "sync_outbox_session_events"] {
+                Self::add_column_if_missing(&tx, table, "discarded_at", "INTEGER")?;
+                Self::add_column_if_missing(&tx, table, "discard_reason", "TEXT")?;
+            }
+            tx.execute_batch(
+                "CREATE INDEX IF NOT EXISTS idx_sync_outbox_request_events_active
+                 ON sync_outbox_request_events(origin_device_id, uploaded_at, discarded_at, queued_at);
+                 CREATE INDEX IF NOT EXISTS idx_sync_outbox_session_events_active
+                 ON sync_outbox_session_events(origin_device_id, uploaded_at, discarded_at, queued_at);",
+            )
+            .map_err(|e| format!("Failed to create v23 outbox indexes: {}", e))?;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '23', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v23 schema version: {}", e))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v23 schema migration: {}", e))?;
+        }
+
+        if schema_version < 24 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v24 schema migration: {}", e))?;
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS local_session_tombstones (
+                    session_id TEXT PRIMARY KEY,
+                    tool TEXT NOT NULL,
+                    project_key TEXT,
+                    project_name TEXT,
+                    scope TEXT,
+                    start_time INTEGER NOT NULL DEFAULT 0,
+                    end_time INTEGER NOT NULL DEFAULT 0,
+                    deleted_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_local_session_tombstones_updated_at
+                    ON local_session_tombstones(updated_at);",
+            )
+            .map_err(|e| format!("Failed to create v24 session tombstones: {}", e))?;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '24', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v24 schema version: {}", e))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v24 schema migration: {}", e))?;
         }
 
         if cleared_runtime_caches {

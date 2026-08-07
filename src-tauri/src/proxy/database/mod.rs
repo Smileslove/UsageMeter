@@ -129,6 +129,10 @@ impl ProxyDatabase {
             .map_err(|e| format!("Failed to open pricing database: {}", e))?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| format!("Failed to enable pricing WAL mode: {}", e))?;
+        conn.pragma_update(None, "wal_autocheckpoint", 1000_i64)
+            .map_err(|e| format!("Failed to configure pricing WAL autocheckpoint: {}", e))?;
+        conn.pragma_update(None, "journal_size_limit", 8_i64 * 1024 * 1024)
+            .map_err(|e| format!("Failed to configure pricing WAL size limit: {}", e))?;
         conn.busy_timeout(Duration::from_secs(30))
             .map_err(|e| format!("Failed to set pricing database busy timeout: {}", e))?;
         Self::create_model_pricing_table_static(&conn)?;
@@ -151,6 +155,10 @@ impl ProxyDatabase {
         // 启用 WAL 模式以获得更好的并发性
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| format!("Failed to enable WAL mode: {}", e))?;
+        conn.pragma_update(None, "wal_autocheckpoint", 1000_i64)
+            .map_err(|e| format!("Failed to configure WAL autocheckpoint: {}", e))?;
+        conn.pragma_update(None, "journal_size_limit", 8_i64 * 1024 * 1024)
+            .map_err(|e| format!("Failed to configure WAL size limit: {}", e))?;
         conn.busy_timeout(Duration::from_secs(30))
             .map_err(|e| format!("Failed to set SQLite busy timeout: {}", e))?;
 
@@ -160,20 +168,31 @@ impl ProxyDatabase {
         // 迁移旧表结构（添加新字段）。若迁移规范化了历史 Proxy 记录，
         // 在 Proxy 事务完成后使对应 Local 物化日期失效。
         let normalized_history_dates = Self::migrate_schema(&conn)?;
+        conn.execute("DROP INDEX IF EXISTS idx_usage_storage_key", [])
+            .map_err(|e| format!("Failed to drop redundant storage key index: {e}"))?;
         Self::invalidate_local_materialization_after_proxy_commit(&normalized_history_dates)?;
         Self::create_merge_cache_generation_tracking(&conn)?;
 
         // 创建模型价格表
         Self::create_model_pricing_table_static(&conn)?;
 
-        Ok(Self {
+        let db = Self {
             conn: Arc::new(std::sync::Mutex::new(conn)),
-        })
+        };
+        db.checkpoint_wal_passive();
+        Ok(db)
     }
 
     /// 获取数据库路径
     fn get_db_path() -> Result<PathBuf, String> {
         Ok(crate::utils::usagemeter_dir()?.join("proxy_data.db"))
+    }
+
+    pub(super) fn checkpoint_wal_passive(&self) {
+        let Ok(conn) = self.conn.lock() else { return };
+        if let Err(error) = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE)") {
+            eprintln!("[database] Passive proxy WAL checkpoint skipped: {error}");
+        }
     }
 
     /// 安全地将 i64 转换为 u64，负值返回 0

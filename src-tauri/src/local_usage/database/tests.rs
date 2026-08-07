@@ -880,7 +880,7 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
     }
     drop(db);
 
-    let reopened = LocalUsageDatabase::new_with_path(&path).expect("migrate v20 database to v21");
+    let reopened = LocalUsageDatabase::new_with_path(&path).expect("migrate v20 database to v24");
     let conn = reopened.conn.lock().unwrap();
     let schema_version: String = conn
         .query_row(
@@ -889,7 +889,7 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
             |row| row.get(0),
         )
         .expect("read schema version");
-    assert_eq!(schema_version, "21");
+    assert_eq!(schema_version, "24");
     for table in ["local_sessions", "remote_sessions"] {
         let columns: Vec<String> = conn
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -1187,6 +1187,566 @@ fn local_request_query_saturates_negative_token_values() {
     assert_eq!(records[0].cache_read_tokens, 0);
     assert_eq!(records[0].total_tokens, 0);
     assert_eq!(records[0].request_count, 1);
+}
+
+#[test]
+fn maintenance_repairs_outbox_keys_and_evicts_facts_without_losing_summary() {
+    let (_tmp, db) = temp_db();
+    insert_request_fact(
+        &db,
+        "session-maint",
+        "message-maint",
+        "/tmp/a.jsonl",
+        true,
+        100,
+    );
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE local_request_facts SET request_key = 'canonical:message-maint' WHERE request_id = 'claude_code:session-maint:message-maint'",
+            [],
+        )
+        .unwrap();
+        let payload = serde_json::json!({
+            "requestKey": "legacy:message-maint",
+            "sessionId": "session-maint",
+            "tool": "claude_code",
+            "projectKey": "p",
+            "timestamp": 100,
+            "messageId": "message-maint",
+            "dedupeKey": "session-maint:message-maint",
+            "model": "claude-3",
+            "inputTokens": 10,
+            "outputTokens": 20,
+            "cacheCreateTokens": 0,
+            "cacheReadTokens": 0,
+            "totalTokens": 30,
+            "requestCount": 1,
+            "explicitEstimatedCost": null,
+            "isSubagent": false,
+            "sourceKind": "local_usage"
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO sync_outbox_request_events (event_id, origin_device_id, request_key, payload_json, event_version, queued_at) VALUES ('device-a:legacy:message-maint', 'device-a', 'legacy:message-maint', ?1, 1, 1)",
+            [payload],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO unified_daily_materialization_state (local_date, fact_count, is_finalized, materialized_at) VALUES ('1970-01-01', 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO unified_daily_materialized_facts (local_date, request_key, session_id, tool, timestamp_sec, timestamp_ms, model, coverage_origin) VALUES ('1970-01-01', 'canonical:message-maint', 'session-maint', 'claude_code', 100, 100000, 'claude-3', 'local_only')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO unified_daily_summary (local_date, materialized_at) VALUES ('1970-01-01', 1)",
+            [],
+        )
+        .unwrap();
+    }
+
+    assert_eq!(db.repair_pending_request_keys("device-a").unwrap(), 1);
+    let conn = db.conn.lock().unwrap();
+    let repaired_key: String = conn
+        .query_row(
+            "SELECT request_key FROM sync_outbox_request_events",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(repaired_key, "canonical:message-maint");
+    drop(conn);
+
+    assert_eq!(db.evict_materialized_facts_before("1970-01-02").unwrap(), 1);
+    assert!(!db.is_unified_day_fact_cache_complete("1970-01-01").unwrap());
+    assert_eq!(
+        db.get_unified_daily_summaries_between("1970-01-01", "1970-01-02")
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn disabled_sync_reconciles_outbox_without_deleting_local_facts() {
+    let (_tmp, db) = temp_db();
+    insert_request_fact(
+        &db,
+        "session-policy",
+        "message-policy",
+        "/tmp/policy.jsonl",
+        true,
+        100,
+    );
+    let payload = serde_json::to_string(&SyncExportRequest {
+        deleted: false,
+        request_key: "claude_code:message-policy".to_string(),
+        session_id: "session-policy".to_string(),
+        tool: "claude_code".to_string(),
+        project_key: Some("p".to_string()),
+        timestamp: 100,
+        message_id: Some("message-policy".to_string()),
+        dedupe_key: "session-policy:message-policy".to_string(),
+        model: "claude-3".to_string(),
+        input_tokens: 10,
+        output_tokens: 20,
+        cache_create_tokens: 0,
+        cache_read_tokens: 0,
+        total_tokens: 30,
+        request_count: 1,
+        explicit_estimated_cost: None,
+        is_subagent: false,
+        source_kind: "local_usage".to_string(),
+    })
+    .unwrap();
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sync_outbox_request_events
+             (event_id, origin_device_id, request_key, payload_json, event_version, queued_at)
+             VALUES ('device-policy:key', 'device-policy', 'key', ?1, 1, 1)",
+            [payload],
+        )
+        .unwrap();
+    }
+
+    assert_eq!(db.reconcile_sync_policy(false).unwrap(), 1);
+    let conn = db.conn.lock().unwrap();
+    let pending: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sync_outbox_request_events WHERE uploaded_at IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let facts: i64 = conn
+        .query_row("SELECT COUNT(*) FROM local_request_facts", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(pending, 0);
+    assert_eq!(facts, 1);
+}
+
+#[test]
+fn reenable_sync_requests_a_new_generation_snapshot() {
+    let (_tmp, db) = temp_db();
+    insert_request_fact(
+        &db,
+        "session-generation",
+        "message-generation",
+        "/tmp/generation.jsonl",
+        true,
+        100,
+    );
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sync_batch_history
+             (batch_seq, request_event_count, session_event_count, exported_at, remote_path, status)
+             VALUES (7, 1, 0, 1, 'remote/7', 'uploaded')",
+            [],
+        )
+        .unwrap();
+    }
+    db.reconcile_sync_policy(false).unwrap();
+    assert_eq!(db.reconcile_sync_policy(true).unwrap(), 0);
+    assert_eq!(
+        db.get_local_sync_state("sync_snapshot_required")
+            .unwrap()
+            .as_deref(),
+        Some("1")
+    );
+    assert_eq!(
+        db.get_local_sync_state("sync_generation")
+            .unwrap()
+            .as_deref(),
+        Some("1")
+    );
+
+    db.seed_sync_outbox_from_local("device-generation").unwrap();
+    let conn = db.conn.lock().unwrap();
+    let pending: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sync_outbox_request_events
+             WHERE origin_device_id = 'device-generation' AND uploaded_at IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 1);
+    drop(conn);
+    assert_eq!(
+        db.get_local_sync_state("sync_snapshot_required")
+            .unwrap()
+            .as_deref(),
+        Some("0")
+    );
+}
+
+#[test]
+fn invalid_outbox_payload_is_quarantined_without_blocking_batch() {
+    let (_tmp, db) = temp_db();
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sync_outbox_request_events
+             (event_id, origin_device_id, request_key, payload_json, event_version, queued_at)
+             VALUES ('device-invalid:key', 'device-invalid', 'key', '{not-json}', 1, 1)",
+            [],
+        )
+        .unwrap();
+    }
+    let batch = db
+        .reserve_sync_outbox_batch("device-invalid", 1, 10, 10)
+        .unwrap();
+    assert!(batch.request_events.is_empty());
+    let conn = db.conn.lock().unwrap();
+    let discarded: Option<String> = conn
+        .query_row(
+            "SELECT discard_reason FROM sync_outbox_request_events
+             WHERE event_id = 'device-invalid:key'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(discarded.is_some());
+}
+
+#[test]
+fn remote_request_tombstone_removes_prior_fact() {
+    let (_tmp, db) = temp_db();
+    let request = SyncExportRequest {
+        deleted: false,
+        request_key: "device-a:req-1".to_string(),
+        session_id: "session-a".to_string(),
+        tool: "claude_code".to_string(),
+        project_key: Some("p".to_string()),
+        timestamp: 100,
+        message_id: Some("req-1".to_string()),
+        dedupe_key: "session-a:req-1".to_string(),
+        model: "claude-3".to_string(),
+        input_tokens: 10,
+        output_tokens: 20,
+        cache_create_tokens: 0,
+        cache_read_tokens: 0,
+        total_tokens: 30,
+        request_count: 1,
+        explicit_estimated_cost: None,
+        is_subagent: false,
+        source_kind: "local_usage".to_string(),
+    };
+    db.import_remote_sync_data(
+        "device-a",
+        1,
+        &SyncExportData {
+            sessions: vec![],
+            requests: vec![request.clone()],
+        },
+    )
+    .unwrap();
+    assert_eq!(db.count_remote_request_facts().unwrap(), 1);
+    db.import_remote_sync_data(
+        "device-a",
+        2,
+        &SyncExportData {
+            sessions: vec![],
+            requests: vec![SyncExportRequest {
+                deleted: true,
+                ..request
+            }],
+        },
+    )
+    .unwrap();
+    assert_eq!(db.count_remote_request_facts().unwrap(), 0);
+}
+
+#[test]
+fn authoritative_snapshot_removes_remote_rows_absent_from_snapshot() {
+    let (_tmp, db) = temp_db();
+    let request = SyncExportRequest {
+        deleted: false,
+        request_key: "device-a:req-snapshot".to_string(),
+        session_id: "session-snapshot".to_string(),
+        tool: "claude_code".to_string(),
+        project_key: None,
+        timestamp: 100,
+        message_id: Some("req-snapshot".to_string()),
+        dedupe_key: "session-snapshot:req-snapshot".to_string(),
+        model: "claude-3".to_string(),
+        input_tokens: 1,
+        output_tokens: 2,
+        cache_create_tokens: 0,
+        cache_read_tokens: 0,
+        total_tokens: 3,
+        request_count: 1,
+        explicit_estimated_cost: None,
+        is_subagent: false,
+        source_kind: "local_usage".to_string(),
+    };
+    db.import_remote_sync_data(
+        "device-a",
+        1,
+        &SyncExportData {
+            sessions: vec![],
+            requests: vec![request],
+        },
+    )
+    .unwrap();
+    assert_eq!(db.count_remote_request_facts().unwrap(), 1);
+
+    db.import_remote_sync_snapshot_data(
+        "device-a",
+        2,
+        &SyncExportData {
+            sessions: vec![],
+            requests: vec![],
+        },
+    )
+    .unwrap();
+    assert_eq!(db.count_remote_request_facts().unwrap(), 0);
+}
+
+#[test]
+fn remote_session_tombstone_removes_prior_summary() {
+    let (_tmp, db) = temp_db();
+    let session = SyncExportSession {
+        deleted: false,
+        session_id: "session-tombstone".to_string(),
+        tool: "claude_code".to_string(),
+        project_key: None,
+        project_name: None,
+        scope: None,
+        start_time: 100,
+        end_time: 200,
+        request_count: 1,
+        total_input_tokens: 1,
+        total_output_tokens: 1,
+        total_cache_create_tokens: 0,
+        total_cache_read_tokens: 0,
+        total_tokens: 2,
+        total_reasoning_tokens: 0,
+        total_elapsed_ms: 0,
+        explicit_cost: None,
+        explicit_cost_currency: None,
+        usage_sources: Default::default(),
+        model_list: vec!["model".to_string()],
+    };
+    db.import_remote_sync_data(
+        "device-a",
+        1,
+        &SyncExportData {
+            sessions: vec![session.clone()],
+            requests: vec![],
+        },
+    )
+    .unwrap();
+    assert_eq!(db.get_remote_sessions(&ToolFilter::All).unwrap().len(), 1);
+    db.import_remote_sync_data(
+        "device-a",
+        2,
+        &SyncExportData {
+            sessions: vec![SyncExportSession {
+                deleted: true,
+                ..session
+            }],
+            requests: vec![],
+        },
+    )
+    .unwrap();
+    assert!(db.get_remote_sessions(&ToolFilter::All).unwrap().is_empty());
+}
+
+#[test]
+fn local_session_tombstone_is_included_in_snapshot_export() {
+    let (_tmp, db) = temp_db();
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO local_session_tombstones (
+                session_id, tool, project_key, project_name, scope,
+                start_time, end_time, deleted_at, updated_at
+             ) VALUES ('session-local-deleted', 'claude_code', 'project', NULL,
+                       NULL, 10, 20, 30, 30)",
+            [],
+        )
+        .unwrap();
+    }
+    let export = db.get_sync_export_data().unwrap();
+    assert_eq!(export.sessions.len(), 1);
+    assert!(export.sessions[0].deleted);
+    assert_eq!(export.sessions[0].session_id, "session-local-deleted");
+}
+
+#[test]
+fn changing_sync_device_id_forces_snapshot_generation() {
+    let (_tmp, db) = temp_db();
+    db.prepare_sync_generation_for_enabled("device-a").unwrap();
+    db.seed_sync_outbox_from_local("device-a").unwrap();
+    db.prepare_sync_generation_for_enabled("device-b").unwrap();
+    assert_eq!(
+        db.get_local_sync_state("sync_snapshot_required")
+            .unwrap()
+            .as_deref(),
+        Some("1")
+    );
+    assert_eq!(
+        db.get_local_sync_state("sync_origin_device_id")
+            .unwrap()
+            .as_deref(),
+        Some("device-b")
+    );
+}
+
+#[test]
+fn stale_inflight_outbox_reservations_are_released_after_restart() {
+    let (_tmp, db) = temp_db();
+    insert_request_fact(
+        &db,
+        "session-crash",
+        "message-crash",
+        "/tmp/crash.jsonl",
+        true,
+        100,
+    );
+    let request_payload =
+        serde_json::to_string(&db.get_sync_export_data().unwrap().requests[0]).unwrap();
+    let old_timestamp =
+        chrono::Utc::now().timestamp() - super::outbox::SYNC_OUTBOX_RESERVATION_TIMEOUT_SECONDS - 1;
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sync_outbox_request_events
+             (event_id, origin_device_id, request_key, payload_json, event_version, queued_at, batched_seq)
+             VALUES ('device-crash:req', 'device-crash', 'req', ?1, 1, 1, 42)",
+            [request_payload],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sync_outbox_session_events
+             (session_event_id, origin_device_id, session_id, payload_json, session_version, queued_at, batched_seq)
+             VALUES ('device-crash:sess', 'device-crash', 'sess', '{}', 1, 1, 42)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+             VALUES ('last_sync_outbox_reserved_at', ?1, ?1)",
+            [old_timestamp],
+        )
+        .unwrap();
+    }
+
+    assert_eq!(db.recover_stale_sync_outbox_reservations().unwrap(), 2);
+    let conn = db.conn.lock().unwrap();
+    let pending: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sync_outbox_request_events
+             WHERE batched_seq IS NOT NULL AND uploaded_at IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let marker: String = conn
+        .query_row(
+            "SELECT state_value FROM local_sync_state WHERE state_key = 'last_sync_outbox_reserved_at'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 0);
+    assert_eq!(marker, "0");
+    drop(conn);
+    let recovered_batch = db
+        .reserve_sync_outbox_batch("device-crash", 43, 10, 10)
+        .unwrap();
+    assert_eq!(recovered_batch.request_events.len(), 1);
+}
+
+#[test]
+fn changing_sync_device_id_clears_old_origin_outbox_only() {
+    let (_tmp, db) = temp_db();
+    insert_request_fact(
+        &db,
+        "session-device-switch",
+        "message-device-switch",
+        "/tmp/device-switch.jsonl",
+        true,
+        100,
+    );
+    db.prepare_sync_generation_for_enabled("device-old")
+        .unwrap();
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sync_outbox_request_events
+             (event_id, origin_device_id, request_key, payload_json, event_version, queued_at, batched_seq)
+             VALUES ('device-old:req', 'device-old', 'req', '{}', 1, 1, 7)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sync_outbox_request_events
+             (event_id, origin_device_id, request_key, payload_json, event_version, queued_at)
+             VALUES ('device-new:req', 'device-new', 'req', '{}', 1, 1)",
+            [],
+        )
+        .unwrap();
+    }
+
+    db.prepare_sync_generation_for_enabled("device-new")
+        .unwrap();
+    let conn = db.conn.lock().unwrap();
+    let old_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sync_outbox_request_events WHERE origin_device_id = 'device-old'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let new_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sync_outbox_request_events WHERE origin_device_id = 'device-new'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let cleanup_count: String = conn
+        .query_row(
+            "SELECT state_value FROM local_sync_state WHERE state_key = 'last_sync_origin_cleanup_count'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let fact_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM local_request_facts", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(old_count, 0);
+    assert_eq!(new_count, 1);
+    assert_eq!(cleanup_count, "1");
+    assert_eq!(fact_count, 1);
+}
+
+#[test]
+fn sync_export_marks_soft_deleted_fact_as_tombstone() {
+    let (_tmp, db) = temp_db();
+    insert_request_fact(
+        &db,
+        "session-tombstone",
+        "message-tombstone",
+        "/tmp/tombstone.jsonl",
+        false,
+        100,
+    );
+    let export = db.get_sync_export_data().unwrap();
+    assert_eq!(export.requests.len(), 1);
+    assert!(export.requests[0].deleted);
 }
 
 #[test]
@@ -2124,7 +2684,7 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
             .get_local_sync_state("schema_version")
             .unwrap()
             .as_deref(),
-        Some("21")
+        Some("24")
     );
     assert!(
         reopened
@@ -2952,6 +3512,7 @@ fn remote_reasonix_telemetry_only_import_invalidates_history_date() {
     seed_materialization_state(&db, &history_date);
     let data = SyncExportData {
         sessions: vec![SyncExportSession {
+            deleted: false,
             session_id: "reasonix::remote-only".to_string(),
             tool: "reasonix".to_string(),
             project_key: Some("reasonix-project".to_string()),
@@ -3058,7 +3619,8 @@ fn append_only_resync_leaves_history_facts_and_materialization_untouched() {
         .is_some());
     assert_eq!(invalidation_version(&db), invalidation_before);
 
-    // 未变更的行不应重新入队 outbox（uploaded_at 不被重置）；仅新行处于待上传状态
+    // 同步开启时，未变更的行不应重新入队（仅新行处于待上传状态）。同步关闭时
+    // 不产生任何 outbox，这是用户可见同步策略的核心约束。
     {
         let conn = db.conn.lock().unwrap();
         let pending: i64 = conn
@@ -3068,10 +3630,7 @@ fn append_only_resync_leaves_history_facts_and_materialization_untouched() {
                 |row| row.get(0),
             )
             .expect("count pending outbox events");
-        assert_eq!(
-            pending, 1,
-            "only the newly appended request should be re-queued"
-        );
+        assert_eq!(pending, if settings.sync.enabled { 1 } else { 0 });
     }
 
     // 新追加的今天行被正确插入

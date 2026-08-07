@@ -66,8 +66,6 @@ pub(super) async fn load_day_activity_from_summary_with_hot_overlay(
     include_errors: bool,
     settings: &AppSettings,
 ) -> Result<HashMap<String, DayActivity>, String> {
-    crate::unified_usage::ensure_materialized_history_no_sync(settings, start_epoch, end_epoch)
-        .await?;
     let local_db = crate::local_usage::get_local_usage_db()?;
     let start_date =
         crate::utils::business_time::business_date_for_timestamp(start_epoch, settings);
@@ -85,7 +83,21 @@ pub(super) async fn load_day_activity_from_summary_with_hot_overlay(
         } else {
             today_date.clone()
         };
-        let rows = local_db.get_unified_daily_summaries_between(&start_date, &summary_end)?;
+        let mut rows = local_db.get_unified_daily_summaries_between(&start_date, &summary_end)?;
+        let expected = chrono::NaiveDate::parse_from_str(&summary_end, "%Y-%m-%d")
+            .ok()
+            .zip(chrono::NaiveDate::parse_from_str(&start_date, "%Y-%m-%d").ok())
+            .map(|(end, start)| (end - start).num_days().max(0) as usize)
+            .unwrap_or(rows.len());
+        if rows.len() < expected {
+            crate::unified_usage::ensure_materialized_history_no_sync(
+                settings,
+                start_epoch,
+                end_epoch,
+            )
+            .await?;
+            rows = local_db.get_unified_daily_summaries_between(&start_date, &summary_end)?;
+        }
         for row in rows {
             by_date.insert(
                 row.local_date.clone(),
@@ -289,8 +301,6 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
     let (start_epoch, end_epoch) = normalize_range(query);
     let include_errors = settings.proxy.include_error_requests;
     let local_db = crate::local_usage::get_local_usage_db()?;
-    crate::unified_usage::ensure_materialized_history_no_sync(settings, start_epoch, end_epoch)
-        .await?;
     let start_date =
         crate::utils::business_time::business_date_for_timestamp(start_epoch, settings);
     let end_date = crate::utils::business_time::business_date_for_timestamp(
@@ -299,6 +309,31 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
     );
     let today_date =
         crate::local_usage::LocalUsageDatabase::today_local_date_with_settings(settings);
+
+    // Daily/model summaries are durable and can outlive request-level fact cache retention.
+    // Only materialize missing historical summaries; this keeps normal daily/monthly reads
+    // from rebuilding evicted request details.
+    if start_date < today_date {
+        let history_end = if end_date < today_date {
+            next_business_date(&end_date, settings)?
+        } else {
+            today_date.clone()
+        };
+        let existing = local_db.get_unified_daily_summaries_between(&start_date, &history_end)?;
+        let expected = chrono::NaiveDate::parse_from_str(&history_end, "%Y-%m-%d")
+            .ok()
+            .zip(chrono::NaiveDate::parse_from_str(&start_date, "%Y-%m-%d").ok())
+            .map(|(end, start)| (end - start).num_days().max(0) as usize)
+            .unwrap_or(existing.len());
+        if existing.len() < expected {
+            crate::unified_usage::ensure_materialized_history_no_sync(
+                settings,
+                start_epoch,
+                end_epoch,
+            )
+            .await?;
+        }
+    }
 
     let mut daily_rows = Vec::new();
     let mut model_rows = Vec::new();

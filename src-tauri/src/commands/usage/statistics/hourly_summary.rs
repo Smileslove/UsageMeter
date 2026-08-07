@@ -150,6 +150,9 @@ fn try_load_ready_historical_day(
     let Some(state) = state else {
         return Ok(None);
     };
+    if !local_db.is_unified_day_fact_cache_complete(local_date)? {
+        return Ok(None);
+    }
     let pricings = crate::proxy::ProxyDatabase::get_global()
         .and_then(|db| db.get_all_model_pricings().ok())
         .unwrap_or_default();

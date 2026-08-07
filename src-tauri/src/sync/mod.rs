@@ -243,7 +243,9 @@ pub async fn sync_now(
 ) -> Result<SyncStatus, String> {
     let _guard = sync_job_lock().lock().await;
     if let Err(err) = sync_now_inner(settings.clone(), credentials).await {
-        persist_failure(&err);
+        if err != "ERR_SYNC_DISABLED" {
+            persist_failure(&err);
+        }
         return Err(err);
     }
     get_status(&settings)
@@ -379,6 +381,9 @@ async fn sync_now_inner(
     settings: SyncSettings,
     credentials: WebDavCredentials,
 ) -> Result<(), String> {
+    if !settings.enabled {
+        return Err("ERR_SYNC_DISABLED".to_string());
+    }
     validate_config(&settings, &credentials)?;
     let db = ensure_local_usage_synced()?;
     let previous_device_id = db
@@ -397,6 +402,7 @@ async fn sync_now_inner(
         previous_device_id.as_deref(),
     )
     .await?;
+    db.prepare_sync_generation_for_enabled(&device_id)?;
     db.seed_sync_outbox_from_local(&device_id)?;
     let dek = ensure_dek(&client, &mut keyring_state, &credentials.sync_password).await?;
     let dek_version = keyring_state
@@ -535,8 +541,12 @@ async fn sync_now_inner(
         &total_exported_request_count.to_string(),
     )?;
     db.upsert_webdav_sync_state("last_imported_requests", &imported_requests.to_string())?;
-    // 清理已上传的 outbox 行，防止表无限增长
-    let _ = db.prune_uploaded_outbox();
+    // 清理已上传的 outbox 行，防止表无限增长；清理失败不应伪装成同步失败，
+    // 但必须记录，便于后续启动维护重试。
+    if let Err(error) = db.prune_uploaded_outbox() {
+        eprintln!("[database] Uploaded outbox cleanup failed after sync: {error}");
+    }
+    db.checkpoint_wal_passive();
     Ok(())
 }
 
@@ -641,7 +651,7 @@ async fn import_device_batches(
         match import_device_snapshot(client, manifest, sync_password, keyring_state).await? {
             Some(snapshot) => {
                 imported_requests += snapshot.requests.len() as u64;
-                db.import_remote_sync_data(
+                db.import_remote_sync_snapshot_data(
                     &manifest.device_id,
                     manifest.latest_snapshot_seq,
                     &snapshot,

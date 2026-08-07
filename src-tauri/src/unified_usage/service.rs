@@ -2287,7 +2287,9 @@ async fn ensure_materialized_history_for_range(
                     proxy_snapshot,
                     pricing_fingerprint,
                     settings,
-                )
+                ) || !local_db
+                    .is_unified_day_fact_cache_complete(&local_date)
+                    .unwrap_or(false)
             })
             .unwrap_or(true);
 
@@ -2315,7 +2317,9 @@ async fn ensure_materialized_history_for_range(
                         latest_proxy_snapshot,
                         pricing_fingerprint,
                         settings,
-                    )
+                    ) || !local_db
+                        .is_unified_day_fact_cache_complete(&local_date)
+                        .unwrap_or(false)
                 })
                 .unwrap_or(true);
             let materialize_result = async {
@@ -2531,7 +2535,17 @@ async fn get_merged_request_facts_with_db(
     end_epoch: Option<i64>,
     include_errors: bool,
 ) -> Result<(Arc<Vec<MergedRequestFact>>, MergedCoverage), String> {
-    let (range_start, raw_range_end) = normalize_range_bounds(start_epoch, end_epoch);
+    // Unbounded list/prewarm callers use the request-level cache retention window.
+    // Explicit historical statistics ranges remain exact and can materialize older days on demand.
+    let effective_start_epoch = match start_epoch {
+        Some(value) => Some(value),
+        None => Some(
+            crate::local_usage::LocalUsageDatabase::materialized_fact_retention_cutoff_epoch(
+                settings,
+            )?,
+        ),
+    };
+    let (range_start, raw_range_end) = normalize_range_bounds(effective_start_epoch, end_epoch);
     // 对开放式 range_end 做整分钟归一化（详见 normalize_open_ended_range_end），
     // 归一化后的 end 同时作为缓存 key 与事实过滤上界；再 max(range_start) 保持
     // end >= start 的不变量（未来起点的空区间仍返回空结果）。

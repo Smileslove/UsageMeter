@@ -60,12 +60,19 @@ impl AppConfigDatabase {
         let conn = Connection::open(path).map_err(|e| format!("ERR_OPEN_CONFIG_DB: {e}"))?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| format!("ERR_CONFIG_DB_WAL: {e}"))?;
+        conn.pragma_update(None, "wal_autocheckpoint", 1000_i64)
+            .map_err(|e| format!("ERR_CONFIG_DB_WAL_AUTOCHECKPOINT: {e}"))?;
+        conn.pragma_update(None, "journal_size_limit", 1_i64 * 1024 * 1024)
+            .map_err(|e| format!("ERR_CONFIG_DB_JOURNAL_SIZE_LIMIT: {e}"))?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .map_err(|e| format!("ERR_CONFIG_DB_FOREIGN_KEYS: {e}"))?;
         conn.busy_timeout(Duration::from_secs(30))
             .map_err(|e| format!("ERR_CONFIG_DB_BUSY_TIMEOUT: {e}"))?;
 
         Self::create_schema(&conn)?;
+        if let Err(error) = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE)") {
+            eprintln!("[database] Passive config WAL checkpoint skipped: {error}");
+        }
         set_sqlite_private_permissions(path);
         Ok(Self {
             conn,
