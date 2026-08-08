@@ -585,12 +585,12 @@ export const useMonitorStore = defineStore('monitor', {
           const result = await queryConfiguredSourceQuotas()
           // 仅最新请求可落地结果，避免初始化/旧刷新覆盖更新后的来源状态。
           if (activeSeq === this.configuredSourceRequestSeq) {
-            Object.assign(this, applyConfiguredSourceQuotaResult(this, result))
+            this.$patch(applyConfiguredSourceQuotaResult(this, result))
           }
         } catch (e) {
           console.error('Failed to fetch configured source quotas:', e)
           if (activeSeq === this.configuredSourceRequestSeq) {
-            Object.assign(this, applyConfiguredSourceQuotaFailure(this, e, Date.now()))
+            this.$patch(applyConfiguredSourceQuotaFailure(this, e, Date.now()))
           }
         }
       }
