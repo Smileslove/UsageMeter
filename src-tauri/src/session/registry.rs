@@ -12,7 +12,7 @@ use super::qoder_cli_reader::QoderCliSource;
 use super::qoder_ide_reader::QoderIdeSource;
 use super::qoder_work_reader::QoderWorkSource;
 use super::reasonix_reader::ReasonixSource;
-use super::source::{ParsedSessionData, SessionSource};
+use super::source::{ParsedSessionData, SessionSource, UsageSource};
 
 static CLAUDE_SOURCE: ClaudeSource = ClaudeSource;
 static COPILOT_CLI_SOURCE: CopilotCliSource = CopilotCliSource;
@@ -67,7 +67,9 @@ pub fn file_backed_sources() -> [&'static dyn SessionSource; 7] {
 pub fn scan_file_backed_session_files() -> Vec<SessionFile> {
     let mut sessions = Vec::new();
     for source in file_backed_sources() {
-        sessions.extend(source.scan().sessions);
+        if let Ok(snapshot) = source.collect() {
+            sessions.extend(snapshot.sessions);
+        }
     }
 
     sessions.sort_by_key(|session| std::cmp::Reverse(session.last_modified));

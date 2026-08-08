@@ -4,6 +4,7 @@ mod derived_support;
 mod inflight_support;
 mod match_support;
 mod materialization_support;
+mod merge_engine;
 mod query_support;
 mod reasonix_support;
 mod service;
@@ -12,10 +13,10 @@ mod types;
 #[cfg(all(test, feature = "performance-tests"))]
 mod performance_tests;
 
+pub(crate) use merge_engine::build_coverage;
 pub(crate) use service::{
-    build_coverage, clear_runtime_caches, ensure_materialized_history_no_sync,
-    get_merged_project_stats_no_sync, get_merged_request_facts_no_sync, get_merged_session_detail,
-    get_merged_sessions_no_sync,
+    clear_runtime_caches, ensure_materialized_history_no_sync, get_merged_project_stats_no_sync,
+    get_merged_request_facts_no_sync, get_merged_session_detail, get_merged_sessions_no_sync,
 };
 #[cfg(test)]
 pub(crate) use service::{

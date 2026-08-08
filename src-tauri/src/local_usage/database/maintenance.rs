@@ -39,7 +39,7 @@ impl LocalUsageDatabase {
             Ok(_) => {}
             Err(error) => eprintln!("[database] Stale sync outbox recovery skipped: {error}"),
         }
-        let settings = match crate::commands::load_settings_blocking() {
+        let settings = match crate::settings::load_settings_blocking() {
             Ok(settings) => settings,
             Err(error) => {
                 // Unknown policy must never be treated as "disabled": deleting
@@ -158,7 +158,7 @@ impl LocalUsageDatabase {
         let tx = conn
             .unchecked_transaction()
             .map_err(|e| format!("Failed to start orphan purge transaction: {}", e))?;
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
         let today = Self::today_local_date_with_settings(&settings);
         let date_expr =
             Self::business_date_sql_expr_for_timestamp(&settings, TimestampSqlColumn::Timestamp);

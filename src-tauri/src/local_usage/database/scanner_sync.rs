@@ -480,7 +480,7 @@ impl LocalUsageDatabase {
         // Scanner failures must not abort local fact ingestion. A missing settings
         // snapshot disables outbox generation for this pass; startup reconciliation
         // will retry once the authoritative configuration is readable.
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
         let sync_enabled = settings.sync.enabled;
         let today = Self::today_local_date_with_settings(&settings);
         let mut touched_history_dates: HashSet<String> = HashSet::new();

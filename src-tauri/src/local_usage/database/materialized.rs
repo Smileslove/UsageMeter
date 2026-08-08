@@ -267,7 +267,7 @@ impl LocalUsageDatabase {
         &self,
         local_date: &str,
     ) -> Result<UnifiedDayLocalSnapshot, String> {
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
         self.get_unified_day_local_snapshot_with_settings(local_date, &settings)
     }
 

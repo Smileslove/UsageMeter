@@ -1,6 +1,7 @@
 //! 使用量收集器，用于聚合 API 使用数据
 
 use super::database::{ProxyDatabase, WindowRateStats};
+use super::reconciliation::ProxySessionReconciliationService;
 use super::types::{SessionStats, UsageRecord, WindowStats};
 use crate::models::ModelPricingConfig;
 use std::sync::Arc;
@@ -14,6 +15,8 @@ pub struct UsageCollector {
     recent_records: Arc<tokio::sync::RwLock<Vec<UsageRecord>>>,
     /// 内存缓存中保留的最大最近记录数
     max_recent: usize,
+    /// 将已写入的代理事实投影到会话统计的应用服务。
+    session_reconciliation: ProxySessionReconciliationService,
 }
 
 impl UsageCollector {
@@ -64,6 +67,7 @@ impl UsageCollector {
             database: Arc::new(ProxyDatabase::new().expect("Failed to initialize database")),
             recent_records: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             max_recent: 1000,
+            session_reconciliation: ProxySessionReconciliationService::default(),
         }
     }
 
@@ -74,6 +78,7 @@ impl UsageCollector {
             database,
             recent_records: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             max_recent: 1000,
+            session_reconciliation: ProxySessionReconciliationService::default(),
         }
     }
 
@@ -118,14 +123,13 @@ impl UsageCollector {
             eprintln!("Failed to save record to database: {}", e);
         }
 
-        // 增量更新 session_stats 表
-        // 即使 session_id 为空，也会尝试通过 message_id 从 JSONL 查找对应的 session_id
-        if let Err(e) = self
-            .database
-            .update_session_stats_incremental(&record)
-            .await
+        // 会话归属解析是独立于代理持久化的应用服务：数据库只接收已解析的
+        // session_id，OpenCode 等需要模糊匹配的来源会在后续扫描阶段再对账。
+        if let Err(error) = self
+            .session_reconciliation
+            .reconcile_after_ingest(&self.database, &record)
         {
-            eprintln!("[collector] Failed to update session stats: {}", e);
+            eprintln!("[collector] Failed to reconcile session stats: {error}");
         }
     }
 
@@ -198,7 +202,7 @@ impl UsageCollector {
     ///
     /// 返回窗口开始时间的 Unix 时间戳（毫秒）
     pub fn calculate_window_cutoff_public(window: &str) -> i64 {
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
         crate::utils::business_time::business_window_cutoff_epoch(window, &settings)
             .saturating_mul(1000)
     }
@@ -363,7 +367,7 @@ mod tests {
     fn test_window_cutoff_calculation() {
         // 测试窗口截止时间计算是否正确
         let now = Local::now();
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
 
         // 5h 滑动窗口：应该约为 5 小时前
         let cutoff_5h = UsageCollector::calculate_window_cutoff("5h");

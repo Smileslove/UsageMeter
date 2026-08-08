@@ -146,7 +146,7 @@ impl ProxyDatabase {
         let mut unmatched = 0;
         let mut record_updates: Vec<(String, i64, Option<String>)> = Vec::new();
         let mut unmatched_record_ids: Vec<(i64, Option<String>)> = Vec::new();
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
         let today = Self::today_local_date_with_settings(&settings);
         let mut touched_history_dates = std::collections::HashSet::new();
 

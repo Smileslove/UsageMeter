@@ -1,7 +1,7 @@
 //! API 来源管理相关 Tauri 命令
 
-use crate::commands::{load_settings_blocking as load_settings, save_settings_internal};
 use crate::models::ApiSource;
+use crate::settings::{load_settings_blocking as load_settings, save_settings_internal};
 
 /// 重命名 API 来源
 #[tauri::command]

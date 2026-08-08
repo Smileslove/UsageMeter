@@ -1,5 +1,20 @@
 use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    Transcript,
+    ReadonlyDatabase,
+    CliLog,
+    Telemetry,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceDescriptor {
+    pub tool_id: &'static str,
+    pub kind: SourceKind,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourceUpdateMode {
     PerSession,
@@ -24,4 +39,28 @@ pub trait SessionSource: Sync {
     fn tool_id(&self) -> &'static str;
     fn scan(&self) -> SourceSnapshot;
     fn parse(&self, session: &SessionFile) -> Result<ParsedSessionData, String>;
+
+    fn source_kind(&self) -> SourceKind {
+        SourceKind::Transcript
+    }
 }
+
+/// Extension contract for sources that may not be backed by transcript files.
+///
+/// Existing adapters use the default bridge to `SessionSource::scan`; a future
+/// database, CLI-log, or telemetry adapter can expose its descriptor first and
+/// replace the collection payload without changing the session registry API.
+pub trait UsageSource: SessionSource {
+    fn descriptor(&self) -> SourceDescriptor {
+        SourceDescriptor {
+            tool_id: self.tool_id(),
+            kind: self.source_kind(),
+        }
+    }
+
+    fn collect(&self) -> Result<SourceSnapshot, String> {
+        Ok(self.scan())
+    }
+}
+
+impl<T: SessionSource + ?Sized> UsageSource for T {}

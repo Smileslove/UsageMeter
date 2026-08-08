@@ -56,6 +56,7 @@ pub(crate) async fn handle_reasonix_request(
     let source_id = client_route
         .source_id
         .clone()
+        .map(String::from)
         .or_else(|| ReasonixConfigManager::new().active_source_id());
 
     let source_handle = match resolve_registry_source_handle(

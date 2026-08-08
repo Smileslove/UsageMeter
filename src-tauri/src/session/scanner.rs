@@ -6,7 +6,7 @@
 
 use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
 use super::registry::all_sources;
-use super::source::{ParsedSessionData, SourceSnapshot, SourceUpdateMode};
+use super::source::{ParsedSessionData, SourceSnapshot, SourceUpdateMode, UsageSource};
 use crate::models::ToolFilter;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -74,7 +74,15 @@ fn full_scan_and_cache() -> CacheSnapshot {
     let mut source_session_ids = HashMap::new();
 
     for source in all_sources() {
-        let snapshot = source.scan();
+        let descriptor = source.descriptor();
+        let snapshot = match source.collect() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                eprintln!("[session] source collection failed: {error}");
+                continue;
+            }
+        };
+        debug_assert_eq!(descriptor.tool_id, snapshot.source_id);
         let source_id = snapshot.source_id.to_string();
         source_scan_fingerprints.insert(source_id.clone(), snapshot.scan_fingerprint);
 
@@ -123,7 +131,7 @@ fn incremental_update_cache() -> CacheSnapshot {
     let cache = get_cache();
     let snapshots: Vec<SourceSnapshot> = all_sources()
         .into_iter()
-        .map(|source| source.scan())
+        .filter_map(|source| source.collect().ok())
         .collect();
 
     let mut cache_guard = cache.lock().unwrap_or_else(|err| err.into_inner());

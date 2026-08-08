@@ -5,8 +5,9 @@ use super::source_detector::{
 };
 use super::source_registry::{ProxySourceHandle, ProxySourceRegistry};
 use super::types::{ProxyState, RequestContext};
-use crate::commands::{load_settings_blocking as load_settings, save_settings_internal};
+use crate::domain::{ProviderId, SourceId, ToolId};
 use crate::models::AppSettings;
+use crate::settings::{load_settings_blocking as load_settings, save_settings_internal};
 use http_body_util::BodyExt;
 use hyper::{Request, Response, StatusCode};
 use std::fs;
@@ -22,12 +23,12 @@ pub type HandlerResult = Result<Response<BoxBody>, hyper::Error>;
 #[derive(Debug, Clone)]
 pub(crate) struct ClientRoute {
     pub normalized_path: String,
-    pub client_tool: String,
+    pub client_tool: ToolId,
     pub proxy_profile_id: Option<String>,
     pub detection_method: String,
     pub target_base_url: Option<String>,
-    pub provider_id: Option<String>,
-    pub source_id: Option<String>,
+    pub provider_id: Option<ProviderId>,
+    pub source_id: Option<SourceId>,
 }
 
 fn trim_path_prefix(prefix: &str) -> String {
@@ -102,12 +103,12 @@ pub(crate) fn detect_client_route(path: &str, settings: &AppSettings) -> ClientR
                 .find(|profile| profile.enabled && profile.tool == client_tool);
             return ClientRoute {
                 normalized_path,
-                client_tool: client_tool.to_string(),
+                client_tool: ToolId::from(client_tool),
                 proxy_profile_id: profile.map(|profile| profile.id.clone()),
                 detection_method,
                 target_base_url: profile.and_then(|profile| profile.target_base_url.clone()),
-                provider_id,
-                source_id,
+                provider_id: provider_id.map(ProviderId::from),
+                source_id: source_id.map(SourceId::from),
             };
         }
     }
@@ -142,19 +143,19 @@ pub(crate) fn detect_client_route(path: &str, settings: &AppSettings) -> ClientR
                 };
             return ClientRoute {
                 normalized_path,
-                client_tool: profile.tool.clone(),
+                client_tool: ToolId::from(profile.tool.clone()),
                 proxy_profile_id: Some(profile.id.clone()),
                 detection_method,
                 target_base_url: profile.target_base_url.clone(),
-                provider_id,
-                source_id,
+                provider_id: provider_id.map(ProviderId::from),
+                source_id: source_id.map(SourceId::from),
             };
         }
     }
 
     ClientRoute {
         normalized_path: path.to_string(),
-        client_tool: "unknown".to_string(),
+        client_tool: ToolId::from("unknown"),
         proxy_profile_id: None,
         detection_method: "unmatched_path".to_string(),
         target_base_url: None,
@@ -437,7 +438,7 @@ pub(crate) fn apply_request_identity(
         Some(api_key_prefix)
     };
     context.request_base_url = request_base_url;
-    context.client_tool = client_route.client_tool.clone();
+    context.client_tool = client_route.client_tool.as_str().to_string();
     context.proxy_profile_id = client_route.proxy_profile_id.clone();
     context.client_detection_method = client_route.detection_method.clone();
     context.target_base_url = Some(target_base_url);

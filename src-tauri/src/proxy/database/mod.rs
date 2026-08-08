@@ -10,7 +10,7 @@ use std::time::Duration;
 /// 全局数据库实例（用于查询操作，避免重复打开连接）
 static GLOBAL_DB: OnceLock<Arc<ProxyDatabase>> = OnceLock::new();
 
-const LEGACY_UNMATCHED_SESSION_ID: &str = "__legacy_unmatched__";
+pub(crate) const LEGACY_UNMATCHED_SESSION_ID: &str = "__legacy_unmatched__";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProxyMergeCacheSignature {
@@ -34,6 +34,7 @@ mod session;
 mod stats;
 
 pub use pricing::{PreviewPricingApplyResult, PricingMatchFilter};
+pub(crate) use session::computed_session_resolution_state;
 
 /// 数据库管理器，用于代理使用数据
 /// 使用线程安全的 SQLite 连接包装器

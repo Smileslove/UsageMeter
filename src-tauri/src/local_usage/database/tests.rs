@@ -3427,7 +3427,7 @@ fn reasonix_telemetry_only_session_contributes_to_time_bounds() {
 fn reasonix_telemetry_update_invalidates_old_and_new_history_dates() {
     let _guard = opencode_test_guard();
     let (_tmp, db) = temp_db();
-    let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+    let settings = crate::settings::load_settings_blocking().unwrap_or_default();
     let old_ts = chrono::Utc::now().timestamp() - 5 * 86_400;
     let new_ts = old_ts + 2 * 86_400;
     let old_date = crate::utils::business_time::business_date_for_timestamp(old_ts, &settings);
@@ -3471,7 +3471,7 @@ fn reasonix_telemetry_update_invalidates_old_and_new_history_dates() {
 fn removing_reasonix_session_deletes_telemetry_summary_and_invalidates_history() {
     let _guard = opencode_test_guard();
     let (_tmp, db) = temp_db();
-    let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+    let settings = crate::settings::load_settings_blocking().unwrap_or_default();
     let history_ts = chrono::Utc::now().timestamp() - 3 * 86_400;
     let history_date =
         crate::utils::business_time::business_date_for_timestamp(history_ts, &settings);
@@ -3505,7 +3505,7 @@ fn removing_reasonix_session_deletes_telemetry_summary_and_invalidates_history()
 fn remote_reasonix_telemetry_only_import_invalidates_history_date() {
     let _guard = opencode_test_guard();
     let (_tmp, db) = temp_db();
-    let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+    let settings = crate::settings::load_settings_blocking().unwrap_or_default();
     let history_ts = chrono::Utc::now().timestamp() - 3 * 86_400;
     let history_date =
         crate::utils::business_time::business_date_for_timestamp(history_ts, &settings);
@@ -3554,7 +3554,7 @@ fn append_only_resync_leaves_history_facts_and_materialization_untouched() {
     // 持有环境锁：sync 内部会读取 settings（依赖 HOME），避免与修改 HOME 的测试并发
     let _guard = opencode_test_guard();
     let (_tmp, db) = temp_db();
-    let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+    let settings = crate::settings::load_settings_blocking().unwrap_or_default();
     let now = chrono::Utc::now().timestamp();
     // 取 3 天前，任何业务日边界模式下都严格早于 today
     let history_ts = now - 3 * 86_400;
@@ -3643,7 +3643,7 @@ fn append_only_resync_leaves_history_facts_and_materialization_untouched() {
 fn history_row_content_change_bumps_version_and_invalidates_history_date() {
     let _guard = opencode_test_guard();
     let (_tmp, db) = temp_db();
-    let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+    let settings = crate::settings::load_settings_blocking().unwrap_or_default();
     let now = chrono::Utc::now().timestamp();
     let history_ts = now - 3 * 86_400;
     let history_date =
@@ -3696,7 +3696,7 @@ fn history_row_content_change_bumps_version_and_invalidates_history_date() {
 fn history_row_removal_soft_deletes_and_invalidates_history_date() {
     let _guard = opencode_test_guard();
     let (_tmp, db) = temp_db();
-    let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+    let settings = crate::settings::load_settings_blocking().unwrap_or_default();
     let now = chrono::Utc::now().timestamp();
     let history_ts = now - 3 * 86_400;
     let history_date =

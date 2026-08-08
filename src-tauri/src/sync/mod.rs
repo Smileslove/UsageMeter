@@ -257,7 +257,7 @@ pub fn spawn_background_sync_loop() {
         let mut prev_auto_sync_active = false;
         loop {
             let iteration_start = tokio::time::Instant::now();
-            let settings = match crate::commands::load_settings_blocking() {
+            let settings = match crate::settings::load_settings_blocking() {
                 Ok(app_settings) => app_settings.sync,
                 Err(err) => {
                     eprintln!("[UsageMeter] Failed to load settings for background sync: {err}");
@@ -922,7 +922,7 @@ async fn sync_shared_settings(
     _instance_id: &str,
     credentials: &WebDavCredentials,
 ) -> Result<(), String> {
-    let mut app_settings = crate::commands::load_settings_blocking()?;
+    let mut app_settings = crate::settings::load_settings_blocking()?;
     let db = ensure_local_usage_synced()?;
     let now = chrono::Utc::now().timestamp();
 
@@ -975,7 +975,7 @@ async fn sync_shared_settings(
                 }
             }
             if changed {
-                crate::commands::save_settings_internal(app_settings.clone())
+                crate::settings::save_settings_internal(app_settings.clone())
                     .map_err(String::from)?;
                 // 持久化本地字段时间戳
                 for (field, ts) in &local_field_timestamps {

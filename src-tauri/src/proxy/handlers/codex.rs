@@ -51,6 +51,7 @@ pub(crate) async fn handle_codex_request(
     let source_id = client_route
         .source_id
         .clone()
+        .map(String::from)
         .or_else(|| CodexConfigManager::new().active_source_id());
     let source_handle = match resolve_registry_source_handle(
         source_id.as_deref(),

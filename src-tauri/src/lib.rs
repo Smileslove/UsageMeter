@@ -5,6 +5,7 @@
 mod app_config;
 mod commands;
 mod copilot;
+mod domain;
 mod gateway;
 mod local_usage;
 mod models;

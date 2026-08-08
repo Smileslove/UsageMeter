@@ -26,7 +26,7 @@ const COLD_TARGET: Duration = Duration::from_secs(2);
 const WARM_TARGET: Duration = Duration::from_millis(200);
 
 fn load_settings() -> AppSettings {
-    crate::commands::load_settings_blocking().unwrap_or_default()
+    crate::settings::load_settings_blocking().unwrap_or_default()
 }
 
 fn report(label: &str, phase: &str, elapsed: Duration, result_size: usize) {

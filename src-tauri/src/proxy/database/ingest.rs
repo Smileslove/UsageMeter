@@ -6,7 +6,7 @@ use rusqlite::Connection;
 
 impl ProxyDatabase {
     fn current_pricing_context(&self) -> (Vec<ModelPricingConfig>, String, String) {
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
         let pricings = self.get_all_model_pricings().unwrap_or_default();
         let match_mode = settings.model_pricing.match_mode;
         let snapshot_id = Self::pricing_snapshot_id(&pricings, &match_mode);
@@ -145,7 +145,7 @@ impl ProxyDatabase {
         conn: &Connection,
         date: &str,
     ) -> Result<(), String> {
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
         let current_mode =
             crate::utils::business_time::normalize_day_boundary_mode(&settings.day_boundary_mode);
         let stored_mode = Self::stored_day_boundary_mode_conn(conn)?;

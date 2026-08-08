@@ -193,13 +193,13 @@ impl LocalUsageDatabase {
     }
 
     pub fn today_local_date() -> String {
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
         Self::today_local_date_with_settings(&settings)
     }
 
     #[allow(dead_code)]
     pub fn local_date_epoch_bounds(local_date: &str) -> Result<(i64, i64), String> {
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
         Self::local_date_epoch_bounds_with_settings(local_date, &settings)
     }
 

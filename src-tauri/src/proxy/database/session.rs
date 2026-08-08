@@ -2,7 +2,7 @@ use rusqlite::{Connection, Row};
 use std::collections::HashSet;
 
 use super::super::types::{SessionStats, UsageRecord};
-use super::{ProxyDatabase, LEGACY_UNMATCHED_SESSION_ID};
+use super::ProxyDatabase;
 use crate::models::ModelPricingConfig;
 use crate::session::{LocalRequestRecord, SessionMeta};
 
@@ -265,7 +265,7 @@ pub(super) fn computed_canonical_request_key(record: &UsageRecord) -> String {
     }
 }
 
-pub(super) fn computed_session_resolution_state(record: &UsageRecord) -> String {
+pub(crate) fn computed_session_resolution_state(record: &UsageRecord) -> String {
     if let Some(state) = record.session_resolution_state.as_ref() {
         let trimmed = state.trim();
         if !trimmed.is_empty() {
@@ -508,44 +508,20 @@ impl ProxyDatabase {
         Ok(())
     }
 
-    /// 增量更新会话统计（新请求产生时调用）
+    /// 更新已完成归属解析的会话统计。
     ///
-    /// 如果会话不存在则创建新记录，否则增量更新
-    pub async fn update_session_stats_incremental(
+    /// 会话定位属于 reconciliation application service；此数据库方法不读取本地
+    /// 会话缓存，也不决定未匹配请求应如何处理。
+    pub(crate) fn update_session_stats_for_resolved_session(
         &self,
         record: &UsageRecord,
+        session_id: &str,
     ) -> Result<(), String> {
-        if record.client_tool == "opencode" && computed_session_resolution_state(record) != "known"
-        {
-            return Ok(());
-        }
-
-        // 如果没有 session_id，尝试从 JSONL 获取；无匹配时使用请求时间窗口作为回退
-        let session_id = match &record.session_id {
-            Some(id) if !id.is_empty() => id.clone(),
-            _ => {
-                match self.find_session_id_by_message_id(&record.message_id).await {
-                    Some(id) => id,
-                    None => {
-                        // 无法匹配 JSONL 的请求也保留在 session_stats 中，
-                        // 后续 JSONL 重新扫描时可通过 message_id 回填正确值
-                        LEGACY_UNMATCHED_SESSION_ID.to_string()
-                    }
-                }
-            }
-        };
-
         let conn = self
             .conn
             .lock()
             .map_err(|e| format!("Failed to lock connection: {}", e))?;
-        Self::upsert_session_stats_for_record(&conn, &session_id, record)
-    }
-
-    /// 通过 message_id 查找对应的 session_id（从 JSONL 文件）
-    async fn find_session_id_by_message_id(&self, message_id: &str) -> Option<String> {
-        // 使用 session 模块的缓存索引查找（O(1) 时间复杂度）
-        crate::session::find_session_id_by_message_id(message_id)
+        Self::upsert_session_stats_for_record(&conn, session_id, record)
     }
 
     pub fn reconcile_opencode_records(
@@ -597,7 +573,7 @@ impl ProxyDatabase {
             return Ok(0);
         }
 
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
         let today = Self::today_local_date_with_settings(&settings);
         let tx = conn
             .transaction()
@@ -760,7 +736,7 @@ impl ProxyDatabase {
             return Ok(0);
         }
 
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
         let today = Self::today_local_date_with_settings(&settings);
         let tx = conn
             .transaction()

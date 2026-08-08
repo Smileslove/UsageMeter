@@ -23,7 +23,7 @@ mod tests {
     async fn test_sessions_query_performance() {
         println!("\n=== 最近会话查询性能测试 ===\n");
 
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
 
         // 1. 首次查询最近会话（冷启动）
         let t = Instant::now();
@@ -77,7 +77,7 @@ mod tests {
     async fn test_recent_requests_query_performance() {
         println!("\n=== 最近请求查询性能测试 ===\n");
 
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
         let include_errors = settings.proxy.include_error_requests;
 
         // 1. 冷启动查询最近请求（完整链路：merge + sort + page）
@@ -148,7 +148,7 @@ mod tests {
     async fn test_project_stats_query_performance() {
         println!("\n=== 项目统计查询性能测试 ===\n");
 
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
 
         // 1. 冷启动查询项目统计
         let t = Instant::now();
@@ -200,7 +200,7 @@ mod tests {
     async fn test_full_panel_load_sequence() {
         println!("\n=== 模拟用户打开会话面板的完整加载流程 ===\n");
 
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
         let include_errors = settings.proxy.include_error_requests;
 
         // 模拟前端依次发起三个查询
@@ -328,7 +328,7 @@ mod tests {
     async fn test_detailed_breakdown() {
         println!("\n=== 查询链路详细分解 ===\n");
 
-        let settings = crate::commands::load_settings_blocking().unwrap_or_default();
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
         let include_errors = settings.proxy.include_error_requests;
 
         // 1. 同步开销

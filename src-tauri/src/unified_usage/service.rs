@@ -13,35 +13,35 @@ use super::derived_support::{
 };
 use super::inflight_support::acquire_inflight_key;
 use super::match_support::{
-    attach_proxy_session_ids, build_local_meta_index, build_message_to_session_index,
-    compute_local_request_cost_cached, local_tool_matches, request_key_for_local,
-    request_key_for_proxy, session_meta_matches,
+    build_local_meta_index, build_message_to_session_index, local_tool_matches,
+    request_key_for_local, session_meta_matches,
 };
 use super::materialization_support::{
     build_materialization_state, materialization_state_matches, MaterializationStateBuildContext,
+};
+use super::merge_engine::{
+    build_coverage, merge_realtime_facts, request_key_for_fact, RealtimeMergeInput,
 };
 use super::query_support::{
     cache_key_for_source_filter, cache_key_for_tool_filter, fingerprint_pricings,
     normalize_open_ended_range_end, normalize_range_bounds, normalized_day_boundary_mode,
 };
 #[cfg(test)]
-use super::reasonix_support::reasonix_explicit_cost_usd;
 use super::reasonix_support::{
     build_reasonix_proxy_coverage_by_session, build_reasonix_telemetry_residual,
+    reasonix_explicit_cost_usd,
+};
+use super::reasonix_support::{
     count_unresolved_reasonix_requests_by_session, reasonix_coverage_query_bounds,
 };
-use super::types::{
-    codex_orphan_pools, find_codex_fuzzy_matches, has_partial_coverage,
-    session_meta_lookup_key_for_proxy, CodexFuzzyOutcome, CoverageOrigin, MergedCoverage,
-    MergedRequestFact,
-};
+use super::types::{has_partial_coverage, CoverageOrigin, MergedCoverage, MergedRequestFact};
 use crate::models::{AppSettings, ToolFilter, UsageQueryFilter};
 use crate::proxy::ProxyMergeCacheSignature;
 use crate::proxy::{
     CodexConfigManager, CodexSourceRegistry, ProjectStats, ProjectToolStats, ProxyDatabase,
     SessionStats, UsageRecord,
 };
-use crate::session::{wsl_distro_from_path, LocalRequestRecord, SessionMeta};
+use crate::session::{wsl_distro_from_path, SessionMeta};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -591,24 +591,6 @@ fn store_projects_cache(key: ProjectDerivedCacheKey, projects: &[ProjectStats]) 
     }
 }
 
-fn build_local_request_index(
-    local_records: &[LocalRequestRecord],
-) -> HashMap<String, LocalRequestRecord> {
-    let mut map = HashMap::new();
-    for record in local_records {
-        map.insert(request_key_for_local(record), record.clone());
-    }
-    map
-}
-
-fn build_proxy_request_index(proxy_records: &[UsageRecord]) -> HashMap<String, UsageRecord> {
-    let mut map = HashMap::new();
-    for record in proxy_records {
-        map.insert(request_key_for_proxy(record), record.clone());
-    }
-    map
-}
-
 fn enumerate_local_dates(start_epoch: i64, end_epoch: i64, settings: &AppSettings) -> Vec<String> {
     crate::utils::business_time::enumerate_business_dates(start_epoch, end_epoch, settings)
 }
@@ -748,28 +730,6 @@ fn canonical_history_settings(settings: &AppSettings) -> AppSettings {
     canonical
 }
 
-pub(crate) fn build_coverage(facts: &[MergedRequestFact]) -> MergedCoverage {
-    let mut coverage = MergedCoverage::default();
-
-    for fact in facts {
-        match fact.coverage_origin {
-            CoverageOrigin::ProxyOnly => coverage.proxy_backed_requests += 1,
-            CoverageOrigin::LocalOnly => coverage.local_only_requests += 1,
-            CoverageOrigin::MergedProxyPreferred | CoverageOrigin::MergedFuzzyMatched => {
-                coverage.proxy_backed_requests += 1;
-                coverage.merged_overlap_requests += 1;
-            }
-        }
-    }
-
-    let has_partial =
-        has_partial_coverage(coverage.proxy_backed_requests, coverage.local_only_requests);
-    // Local-only requests carry a synthetic Some(200); status suppression is no longer needed.
-    coverage.has_partial_status_coverage = false;
-    coverage.has_partial_performance_coverage = has_partial;
-    coverage
-}
-
 async fn merge_realtime_range(
     local_db: Arc<crate::local_usage::LocalUsageDatabase>,
     params: MergeRealtimeParams<'_>,
@@ -803,7 +763,7 @@ async fn merge_realtime_range(
     // 前置同步段：本地/远端会话与请求记录的 SQLite 全行读取、去重与索引构建
     // 是合并路径上的同步重活，移入阻塞线程池，避免占住 tauri async runtime 的
     // 工作线程。
-    let (local_records, session_meta_by_id, message_to_session) =
+    let (local_records, session_meta_by_id, message_to_session, codex_fallback_base_url) =
         tauri::async_runtime::spawn_blocking(move || {
             let mut local_sessions_all = local_db.get_all_sessions(&tool_filter)?;
             local_sessions_all.extend(local_db.get_remote_sessions(&tool_filter)?);
@@ -828,7 +788,21 @@ async fn merge_realtime_range(
             local_records.retain(|record| seen_local_keys.insert(request_key_for_local(record)));
             let session_meta_by_id = build_local_meta_index(&local_sessions);
             let message_to_session = build_message_to_session_index(&local_records);
-            Ok::<_, String>((local_records, session_meta_by_id, message_to_session))
+            let codex_fallback_base_url =
+                if local_records.iter().any(|record| record.tool == "codex") {
+                    CodexConfigManager::new()
+                        .active_source_id()
+                        .and_then(|id| CodexSourceRegistry::new().get(&id))
+                        .map(|handle| handle.real_base_url)
+                } else {
+                    None
+                };
+            Ok::<_, String>((
+                local_records,
+                session_meta_by_id,
+                message_to_session,
+                codex_fallback_base_url,
+            ))
         })
         .await
         .map_err(|e| format!("Task error: {}", e))??;
@@ -875,10 +849,8 @@ async fn merge_realtime_range(
             (Vec::new(), None, Vec::new())
         };
 
-    // 后置同步合并段：索引构建、模糊匹配、合并主循环与排序都是大向量上的纯
-    // CPU 工作（codex 回退 base_url 还含一次阻塞的 config.toml 读取），整体移
-    // 入阻塞线程池。
-    let inputs = RealtimeMergeComputeInputs {
+    // 后置同步合并段只操作内存快照，在阻塞线程池完成索引、去重与排序。
+    let input = RealtimeMergeInput {
         local_records,
         session_meta_by_id,
         message_to_session,
@@ -892,239 +864,12 @@ async fn merge_realtime_range(
         include_errors,
         pricings: pricings.to_vec(),
         pricing_match_mode: pricing_match_mode.to_string(),
+        codex_fallback_base_url,
     };
-    tauri::async_runtime::spawn_blocking(move || merge_realtime_compute_sync(inputs))
+    let facts = tauri::async_runtime::spawn_blocking(move || merge_realtime_facts(input))
         .await
-        .map_err(|e| format!("Task error: {}", e))?
-}
-
-/// merge_realtime_range 后置同步合并段的输入（跨线程移交所需的全部所有权数据）。
-struct RealtimeMergeComputeInputs {
-    local_records: Vec<LocalRequestRecord>,
-    session_meta_by_id: HashMap<String, SessionMeta>,
-    message_to_session: HashMap<String, String>,
-    raw_proxy_records: Vec<UsageRecord>,
-    raw_unfiltered_proxy_records: Option<Vec<UsageRecord>>,
-    raw_reasonix_coverage_proxy_records: Vec<UsageRecord>,
-    source_filter: crate::models::SourceFilter,
-    currency_settings: crate::models::CurrencySettings,
-    range_start: i64,
-    range_end: i64,
-    include_errors: bool,
-    pricings: Vec<crate::models::ModelPricingConfig>,
-    pricing_match_mode: String,
-}
-
-/// merge_realtime_range 的后置同步合并段，经 spawn_blocking 在阻塞线程池执行。
-fn merge_realtime_compute_sync(
-    inputs: RealtimeMergeComputeInputs,
-) -> Result<Vec<MergedRequestFact>, String> {
-    let RealtimeMergeComputeInputs {
-        local_records,
-        session_meta_by_id,
-        message_to_session,
-        raw_proxy_records,
-        raw_unfiltered_proxy_records,
-        raw_reasonix_coverage_proxy_records,
-        source_filter,
-        currency_settings,
-        range_start,
-        range_end,
-        include_errors,
-        pricings,
-        pricing_match_mode,
-    } = inputs;
-    let pricings: &[crate::models::ModelPricingConfig] = &pricings;
-    let pricing_match_mode: &str = &pricing_match_mode;
-    let mut attached_proxy_records = raw_proxy_records;
-    attach_proxy_session_ids(&mut attached_proxy_records, &message_to_session);
-    let proxy_records: Vec<UsageRecord> = attached_proxy_records
-        .iter()
-        .filter(|record| include_errors || (200..300).contains(&record.status_code))
-        .cloned()
-        .collect();
-    let all_proxy_records: Vec<UsageRecord> =
-        if let Some(mut unfiltered) = raw_unfiltered_proxy_records {
-            attach_proxy_session_ids(&mut unfiltered, &message_to_session);
-            unfiltered
-        } else {
-            attached_proxy_records
-        };
-
-    let all_proxy_index = build_proxy_request_index(&all_proxy_records);
-    let proxy_index = build_proxy_request_index(&proxy_records);
-    let local_index = build_local_request_index(&local_records);
-
-    // Codex's local JSONL scanner fabricates a per-request message_id (see codex_reader.rs),
-    // so it can never exact-key-match its real proxy counterpart. Reconcile the leftover
-    // Codex-only orphans on both sides via a bounded fuzzy match (same session/model/
-    // total_tokens, close timestamp) before the exact-match loop runs, so the same physical
-    // request doesn't surface twice (once unattributed via from_local, once via from_proxy).
-    let (codex_local_orphans, codex_proxy_orphans_visible, codex_proxy_orphans_all_extra) =
-        codex_orphan_pools(&local_index, &proxy_index, &all_proxy_index);
-    let codex_fuzzy_outcomes = find_codex_fuzzy_matches(
-        &codex_local_orphans,
-        &codex_proxy_orphans_visible,
-        &codex_proxy_orphans_all_extra,
-    );
-
-    let mut fuzzy_consumed_local_keys: HashSet<String> = HashSet::new();
-    let mut fuzzy_consumed_proxy_keys: HashSet<String> = HashSet::new();
-    let mut fuzzy_suppressed_local_keys: HashSet<String> = HashSet::new();
-
-    let mut pricing_cache: HashMap<String, crate::models::ModelPricing> = HashMap::new();
-    let mut merged = Vec::new();
-
-    for outcome in codex_fuzzy_outcomes {
-        match outcome {
-            CodexFuzzyOutcome::MatchedVisible {
-                local_key,
-                proxy_key,
-            } => {
-                if let (Some(local), Some(proxy)) =
-                    (local_index.get(&local_key), proxy_index.get(&proxy_key))
-                {
-                    let meta = session_meta_by_id.get(&local.session_id);
-                    let fallback_cost = compute_local_request_cost_cached(
-                        local,
-                        pricings,
-                        pricing_match_mode,
-                        &mut pricing_cache,
-                    );
-                    let mut fact =
-                        MergedRequestFact::merge_proxy_preferred(proxy, local, meta, fallback_cost);
-                    fact.coverage_origin = CoverageOrigin::MergedFuzzyMatched;
-                    merged.push(fact);
-                    fuzzy_consumed_local_keys.insert(local_key);
-                    fuzzy_consumed_proxy_keys.insert(proxy_key);
-                }
-            }
-            CodexFuzzyOutcome::SuppressedByFilteredProxy { local_key } => {
-                fuzzy_suppressed_local_keys.insert(local_key);
-            }
-        }
-    }
-
-    // Fix B: best-effort attribution for local Codex records that remain genuinely
-    // local-only after fuzzy matching (proxy wasn't running for that request). Resolved once
-    // per merge call — this is a blocking config.toml read — and only when there's any Codex
-    // local material in range, to avoid the FS read for non-Codex users.
-    let codex_fallback_base_url: Option<String> = if local_records.iter().any(|r| r.tool == "codex")
-    {
-        CodexConfigManager::new()
-            .active_source_id()
-            .and_then(|id| CodexSourceRegistry::new().get(&id))
-            .map(|handle| handle.real_base_url)
-    } else {
-        None
-    };
-
-    let mut keys = HashSet::new();
-    keys.extend(proxy_index.keys().cloned());
-    keys.extend(local_index.keys().cloned());
-
-    for key in keys {
-        match (proxy_index.get(&key), local_index.get(&key)) {
-            (Some(proxy), Some(local)) => {
-                let meta = session_meta_by_id.get(&local.session_id);
-                let fallback_cost = compute_local_request_cost_cached(
-                    local,
-                    pricings,
-                    pricing_match_mode,
-                    &mut pricing_cache,
-                );
-                merged.push(MergedRequestFact::merge_proxy_preferred(
-                    proxy,
-                    local,
-                    meta,
-                    fallback_cost,
-                ));
-            }
-            (Some(proxy), None) => {
-                if fuzzy_consumed_proxy_keys.contains(&key) {
-                    // Already emitted as a fuzzy-merged fact above — avoid double counting.
-                    continue;
-                }
-                let meta = proxy.session_id.as_deref().and_then(|session_id| {
-                    session_meta_by_id.get(&session_meta_lookup_key_for_proxy(
-                        &proxy.client_tool,
-                        session_id,
-                    ))
-                });
-                merged.push(MergedRequestFact::from_proxy(proxy, meta));
-            }
-            (None, Some(local)) => {
-                if all_proxy_index.contains_key(&key) {
-                    continue;
-                }
-                if fuzzy_consumed_local_keys.contains(&key)
-                    || fuzzy_suppressed_local_keys.contains(&key)
-                {
-                    // Either already emitted as a fuzzy-merged fact, or intentionally dropped
-                    // because its only candidate was filtered out on the proxy side.
-                    continue;
-                }
-                let meta = session_meta_by_id.get(&local.session_id);
-                let cost = compute_local_request_cost_cached(
-                    local,
-                    pricings,
-                    pricing_match_mode,
-                    &mut pricing_cache,
-                );
-                let fallback_base_url = if local.tool == "codex" {
-                    codex_fallback_base_url.as_deref()
-                } else {
-                    None
-                };
-                merged.push(MergedRequestFact::from_local(
-                    local,
-                    meta,
-                    cost,
-                    fallback_base_url,
-                ));
-            }
-            (None, None) => {}
-        }
-    }
-
-    let mut reasonix_coverage_records = raw_reasonix_coverage_proxy_records;
-    attach_proxy_session_ids(&mut reasonix_coverage_records, &message_to_session);
-    let (reasonix_coverage_by_session, blocked_reasonix_sessions) =
-        build_reasonix_proxy_coverage_by_session(&reasonix_coverage_records, &session_meta_by_id);
-    for meta in session_meta_by_id.values() {
-        if let Some(residual) = build_reasonix_telemetry_residual(
-            meta,
-            reasonix_coverage_by_session.get(&meta.session_id),
-            blocked_reasonix_sessions.contains(&meta.session_id),
-            &source_filter,
-            &currency_settings,
-            range_start,
-            range_end,
-        ) {
-            merged.push(residual);
-        }
-    }
-
-    merged.sort_by_key(|fact| fact.timestamp_ms);
-    Ok(merged)
-}
-
-fn request_key_for_fact(fact: &MergedRequestFact) -> String {
-    if !fact.canonical_request_key.trim().is_empty() {
-        return fact.canonical_request_key.clone();
-    }
-    format!(
-        "{}:{}:{}:{}:{}:{}:{}:{}:{}",
-        fact.tool,
-        fact.session_id,
-        fact.timestamp_ms,
-        fact.model,
-        fact.input_tokens,
-        fact.output_tokens,
-        fact.cache_create_tokens,
-        fact.cache_read_tokens,
-        fact.total_tokens
-    )
+        .map_err(|e| format!("Task error: {}", e))?;
+    Ok(facts)
 }
 
 #[allow(clippy::too_many_arguments)]
