@@ -9,6 +9,18 @@ use super::database::{
 };
 use super::types::UsageRecord;
 use std::sync::Arc;
+use tokio::sync::mpsc;
+
+const RECONCILIATION_QUEUE_CAPACITY: usize = 256;
+
+struct ReconciliationJob {
+    database: Arc<ProxyDatabase>,
+    record: UsageRecord,
+}
+
+struct WorkerState {
+    sender: std::sync::Mutex<Option<mpsc::Sender<ReconciliationJob>>>,
+}
 
 /// Resolves a locally scanned session from a proxy request identifier.
 ///
@@ -35,6 +47,7 @@ enum SessionStatsTarget {
 /// Application service for deriving the legacy session-statistics projection from a proxy fact.
 pub(crate) struct ProxySessionReconciliationService {
     session_id_resolver: Arc<dyn SessionIdResolver>,
+    worker: Arc<WorkerState>,
 }
 
 impl Default for ProxySessionReconciliationService {
@@ -47,6 +60,77 @@ impl ProxySessionReconciliationService {
     pub(crate) fn new(session_id_resolver: Arc<dyn SessionIdResolver>) -> Self {
         Self {
             session_id_resolver,
+            worker: Arc::new(WorkerState {
+                sender: std::sync::Mutex::new(None),
+            }),
+        }
+    }
+
+    fn ensure_worker(&self) -> Result<mpsc::Sender<ReconciliationJob>, String> {
+        let mut sender = self
+            .worker
+            .sender
+            .lock()
+            .map_err(|_| "reconciliation worker state poisoned".to_string())?;
+        if let Some(sender) = sender.as_ref() {
+            return Ok(sender.clone());
+        }
+
+        let handle = tokio::runtime::Handle::try_current()
+            .map_err(|_| "reconciliation worker requires a Tokio runtime".to_string())?;
+        let (tx, mut rx) = mpsc::channel::<ReconciliationJob>(RECONCILIATION_QUEUE_CAPACITY);
+        let resolver = self.session_id_resolver.clone();
+        handle.spawn(async move {
+            while let Some(job) = rx.recv().await {
+                let resolver = resolver.clone();
+                match tokio::task::spawn_blocking(move || {
+                    Self::reconcile_after_ingest_with_resolver(
+                        resolver.as_ref(),
+                        &job.database,
+                        &job.record,
+                    )
+                })
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        eprintln!("[collector] Failed to reconcile session stats: {error}");
+                    }
+                    Err(error) => {
+                        eprintln!("[collector] Reconciliation worker task failed: {error}");
+                    }
+                }
+            }
+        });
+        *sender = Some(tx.clone());
+        Ok(tx)
+    }
+
+    /// Enqueue a persisted proxy fact for background session-statistics projection.
+    ///
+    /// The bounded queue applies backpressure without running the synchronous database work on
+    /// the ingestion task. A direct fallback is retained for callers created outside a Tokio
+    /// runtime, which keeps construction and existing synchronous tests compatible.
+    pub(crate) async fn enqueue_after_ingest(
+        &self,
+        database: Arc<ProxyDatabase>,
+        record: UsageRecord,
+    ) -> Result<(), String> {
+        let sender = match self.ensure_worker() {
+            Ok(sender) => sender,
+            Err(error) if error.contains("requires a Tokio runtime") => {
+                return self.reconcile_after_ingest(&database, &record);
+            }
+            Err(error) => return Err(error),
+        };
+
+        match sender.send(ReconciliationJob { database, record }).await {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::SendError(job)) => {
+                // A runtime shutdown can close the worker between `ensure_worker` and send.
+                // Preserve the old projection guarantee for that rare boundary case.
+                self.reconcile_after_ingest(&job.database, &job.record)
+            }
         }
     }
 
@@ -59,7 +143,19 @@ impl ProxySessionReconciliationService {
         database: &ProxyDatabase,
         record: &UsageRecord,
     ) -> Result<(), String> {
-        match self.session_stats_target(record) {
+        Self::reconcile_after_ingest_with_resolver(
+            self.session_id_resolver.as_ref(),
+            database,
+            record,
+        )
+    }
+
+    fn reconcile_after_ingest_with_resolver(
+        session_id_resolver: &dyn SessionIdResolver,
+        database: &ProxyDatabase,
+        record: &UsageRecord,
+    ) -> Result<(), String> {
+        match Self::session_stats_target_with_resolver(session_id_resolver, record) {
             SessionStatsTarget::Resolved(session_id) => {
                 database.update_session_stats_for_resolved_session(record, &session_id)
             }
@@ -69,7 +165,15 @@ impl ProxySessionReconciliationService {
         }
     }
 
+    #[cfg(test)]
     fn session_stats_target(&self, record: &UsageRecord) -> SessionStatsTarget {
+        Self::session_stats_target_with_resolver(self.session_id_resolver.as_ref(), record)
+    }
+
+    fn session_stats_target_with_resolver(
+        session_id_resolver: &dyn SessionIdResolver,
+        record: &UsageRecord,
+    ) -> SessionStatsTarget {
         if let Some(session_id) = record
             .session_id
             .as_deref()
@@ -84,7 +188,7 @@ impl ProxySessionReconciliationService {
             return SessionStatsTarget::Deferred;
         }
 
-        self.session_id_resolver
+        session_id_resolver
             .find_session_id_by_message_id(&record.message_id)
             .filter(|session_id| !session_id.trim().is_empty())
             .map(SessionStatsTarget::Resolved)

@@ -2,34 +2,37 @@ import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
 import { setNumberFormatMode } from '../utils/format'
 import type { AppSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SubscriptionQueryResult, SubscriptionQuota, LimitSurvivalSnapshot, SourceQuotaBindingConfig, CopilotAuthStatus, SourceQuotaBindingRuntimeState, SourceQuotaProfileDescriptor } from '../types'
+import { createDefaultSettings } from './monitorDefaults'
 import {
-  CONFIGURED_SOURCE_FAILURE_BASE_MS,
-  CONFIGURED_SOURCE_FAILURE_MAX_MS,
-  CONFIGURED_SOURCE_SUCCESS_REFRESH_MS,
-  createDefaultSettings
-} from './monitorDefaults'
+  applyConfiguredSourceQuotaResult,
+  applyConfiguredSourceQuotaFailure,
+  createEmptyRateSummary,
+  mergeDeferredOverviewSnapshot,
+  normalizeSettings
+} from './monitorActionHelpers'
 import {
-  queryProjectStats,
-  queryRecentRequestRecords,
-  querySessionDetail,
-  querySessions
-} from './sessionQueries'
-import {
-  queryMonthActivity,
-  queryOverviewBreakdown,
-  queryOverviewDeferredBundle,
-  queryStatisticsSummary,
-  queryYearActivity
-} from './statisticsQueries'
+  checkOAuthAction,
+  fetchMonthActivityAction,
+  fetchOverviewBreakdownAction,
+  fetchProjectStatsAction,
+  fetchRecentRequestRecordsAction,
+  fetchSessionDetailAction,
+  fetchSessionsAction,
+  fetchStatisticsSummaryAction,
+  fetchYearActivityAction,
+  getProxyStatusAction,
+  prepareExitAction,
+  refreshCopilotAuthStatusAction,
+  runProviderQuotaAction,
+  startProxyOnlyAction
+} from './monitorDomains'
+import { queryOverviewDeferredBundle } from './statisticsQueries'
 import {
   probeSourceQuotaBinding,
-  queryBoolean,
   queryConfiguredSourceQuotas,
   queryCopilotAccounts,
-  queryCopilotAuthStatus,
   querySourceQuotaBindingStates,
   querySourceQuotaProfiles,
-  querySubscriptionQuota,
   testSourceQuotaBinding
 } from './subscriptionQueries'
 import {
@@ -39,7 +42,6 @@ import {
   renameSource,
   updateSourceKeyNote
 } from './sourceQueries'
-import { failedSubscriptionQuery } from './subscriptionErrors'
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
@@ -177,9 +179,7 @@ export const useMonitorStore = defineStore('monitor', {
         this.error = ''
         this.settings = await invoke<AppSettings>('load_settings')
         // 后端按 String 持久化，手改配置文件可能出现未知值，归一化避免设置页下拉框空白
-        if (this.settings.numberFormat !== 'chinese') {
-          this.settings.numberFormat = 'international'
-        }
+        this.settings = normalizeSettings(this.settings)
       } catch (e) {
         this.error = errorMessage(e)
       } finally {
@@ -239,97 +239,16 @@ export const useMonitorStore = defineStore('monitor', {
       this.sessionViewsRevision += 1
     },
     async fetchStatisticsSummary(query: StatisticsQuery) {
-      const requestKey = JSON.stringify(query)
-      if (this.statisticsLoading && this.statisticsRequestKey === requestKey) {
-        return
-      }
-
-      const requestSeq = ++this.statisticsRequestSeq
-      this.statisticsRequestKey = requestKey
-      this.statisticsLoading = true
-      try {
-        this.statisticsError = ''
-        const summary = await queryStatisticsSummary(this.settings, query)
-        if (requestSeq === this.statisticsRequestSeq) {
-          this.statisticsSummary = summary
-        }
-      } catch (e) {
-        if (requestSeq === this.statisticsRequestSeq) {
-          this.statisticsError = errorMessage(e)
-        }
-      } finally {
-        if (requestSeq === this.statisticsRequestSeq) {
-          this.statisticsLoading = false
-        }
-      }
+      return fetchStatisticsSummaryAction(this, query)
     },
     async fetchMonthActivity(year: number, month: number, metric: StatisticsMetric) {
-      const requestKey = JSON.stringify({ year, month, metric, settings: this.settings })
-      if (this.monthActivityLoading && this.monthActivityRequestKey === requestKey) {
-        return
-      }
-      const requestSeq = ++this.monthActivityRequestSeq
-      this.monthActivityRequestKey = requestKey
-      this.monthActivityLoading = true
-      try {
-        this.statisticsError = ''
-        const activity = await queryMonthActivity(this.settings, year, month, metric)
-        if (requestSeq === this.monthActivityRequestSeq) {
-          this.monthActivity = activity
-        }
-      } catch (e) {
-        if (requestSeq === this.monthActivityRequestSeq) {
-          this.statisticsError = errorMessage(e)
-        }
-      } finally {
-        if (requestSeq === this.monthActivityRequestSeq) {
-          this.monthActivityLoading = false
-        }
-      }
+      return fetchMonthActivityAction(this, year, month, metric)
     },
     async fetchYearActivity(year: number, metric: StatisticsMetric) {
-      const requestKey = JSON.stringify({ year, metric, settings: this.settings })
-      if (this.yearActivityLoading && this.yearActivityRequestKey === requestKey) {
-        return
-      }
-      const requestSeq = ++this.yearActivityRequestSeq
-      this.yearActivityRequestKey = requestKey
-      this.yearActivityLoading = true
-      try {
-        this.statisticsError = ''
-        const activity = await queryYearActivity(this.settings, year, metric)
-        if (requestSeq === this.yearActivityRequestSeq) {
-          this.yearActivity = activity
-        }
-      } catch (e) {
-        if (requestSeq === this.yearActivityRequestSeq) {
-          this.statisticsError = errorMessage(e)
-        }
-      } finally {
-        if (requestSeq === this.yearActivityRequestSeq) {
-          this.yearActivityLoading = false
-        }
-      }
+      return fetchYearActivityAction(this, year, metric)
     },
     async fetchOverviewBreakdown(window: string) {
-      const requestSeq = ++this.overviewBreakdownRequestSeq
-      this.overviewBreakdownLoading = true
-      try {
-        this.overviewBreakdownError = ''
-        const breakdown = await queryOverviewBreakdown(this.settings, window)
-        if (requestSeq === this.overviewBreakdownRequestSeq) {
-          this.overviewBreakdown = breakdown
-        }
-      } catch (e) {
-        if (requestSeq === this.overviewBreakdownRequestSeq) {
-          this.overviewBreakdownError = errorMessage(e)
-          this.overviewBreakdown = null
-        }
-      } finally {
-        if (requestSeq === this.overviewBreakdownRequestSeq) {
-          this.overviewBreakdownLoading = false
-        }
-      }
+      return fetchOverviewBreakdownAction(this, window)
     },
     async fetchOverviewDeferredBundle(window: string) {
       const requestSeq = ++this.overviewDeferredRequestSeq
@@ -340,15 +259,7 @@ export const useMonitorStore = defineStore('monitor', {
         this.overviewBreakdownError = ''
         const bundle = await queryOverviewDeferredBundle(this.settings, window)
         if (requestSeq === this.overviewDeferredRequestSeq) {
-          if (this.snapshot) {
-            const existingWindows = this.snapshot.windows.filter(item => item.window !== bundle.windowUsage.window)
-            this.snapshot = {
-              ...this.snapshot,
-              windows: [...existingWindows, bundle.windowUsage],
-              summary: bundle.usageSummary,
-              modelDistribution: bundle.modelDistribution
-            }
-          }
+          this.snapshot = mergeDeferredOverviewSnapshot(this.snapshot, bundle)
         }
         if (rateSummaryRequestSeq === this.rateSummaryRequestSeq) {
           this.rateSummary = bundle.rateSummary
@@ -362,23 +273,7 @@ export const useMonitorStore = defineStore('monitor', {
           this.overviewBreakdown = null
         }
         if (rateSummaryRequestSeq === this.rateSummaryRequestSeq) {
-          this.rateSummary = {
-            window,
-            overall: {
-              requestCount: 0,
-              totalOutputTokens: 0,
-              totalDurationMs: 0,
-              avgTokensPerSecond: 0
-            },
-            byModel: [],
-            ttft: {
-              requestCount: 0,
-              avgTtftMs: 0,
-              minTtftMs: 0,
-              maxTtftMs: 0
-            },
-            ttftByModel: []
-          }
+          this.rateSummary = createEmptyRateSummary(window)
         }
       } finally {
         if (overviewBreakdownRequestSeq === this.overviewBreakdownRequestSeq) {
@@ -392,38 +287,10 @@ export const useMonitorStore = defineStore('monitor', {
      * 用于初始化时恢复代理状态
      */
     async startProxyOnly(port: number) {
-      this.proxyLoading = true
-      try {
-        this.error = ''
-        await invoke('start_proxy', { port })
-        await this.getProxyStatus()
-      } catch (e) {
-        this.error = errorMessage(e)
-        throw e
-      } finally {
-        this.proxyLoading = false
-      }
+      return startProxyOnlyAction(this, port)
     },
     async getProxyStatus() {
-      try {
-        this.proxyStatus = await invoke<ProxyStatus>('get_proxy_status')
-      } catch (e) {
-        console.error('Failed to get proxy status:', e)
-        this.proxyStatus = {
-          running: false,
-          port: 0,
-          uptimeSeconds: 0,
-          totalRequests: 0,
-          successRequests: 0,
-          failedRequests: 0,
-          activeConnections: 0,
-          configTakenOver: false,
-          recordCount: 0,
-          status2xx: 0,
-          status4xx: 0,
-          status5xx: 0
-        }
-      }
+      return getProxyStatusAction(this)
     },
     startAutoRefresh() {
       this.stopAutoRefresh()
@@ -454,15 +321,7 @@ export const useMonitorStore = defineStore('monitor', {
      * 在应用退出前调用，确保用户可以正常使用 Claude
      */
     async prepareExit() {
-      // 如果代理正在运行，先停止并恢复配置
-      if (this.isProxyRunning) {
-        try {
-          await invoke('stop_proxy_runtime_only')
-        } catch (e) {
-          console.error('Failed to stop proxy on exit:', e)
-          // 即使失败也继续退出，下次启动时会通过孤立状态恢复
-        }
-      }
+      return prepareExitAction(this)
     },
     // 会话相关操作
     /**
@@ -470,59 +329,16 @@ export const useMonitorStore = defineStore('monitor', {
      * 支持分页：每次加载 limit 个，offset 为偏移量
      */
     async fetchSessions(limit: number = 50, offset: number = 0, append: boolean = false) {
-      if (offset === 0) {
-        this.sessionsLoading = true
-      }
-      try {
-        const newSessions = await querySessions(this.settings, limit, offset)
-        if (append) {
-          this.sessions = [...this.sessions, ...newSessions]
-        } else {
-          this.sessions = newSessions
-        }
-        return newSessions.length
-      } catch (e) {
-        console.error('Failed to fetch sessions:', e)
-        if (!append) {
-          this.sessions = []
-        }
-        return 0
-      } finally {
-        this.sessionsLoading = false
-      }
+      return fetchSessionsAction(this, limit, offset, append)
     },
     async fetchSessionsForTool(toolFilter: string | null, limit: number = 50, offset: number = 0, append: boolean = false) {
-      if (offset === 0) {
-        this.sessionsLoading = true
-      }
-      try {
-        const newSessions = await querySessions(this.settings, limit, offset, toolFilter)
-        if (append) {
-          this.sessions = [...this.sessions, ...newSessions]
-        } else {
-          this.sessions = newSessions
-        }
-        return newSessions.length
-      } catch (e) {
-        console.error('Failed to fetch sessions:', e)
-        if (!append) {
-          this.sessions = []
-        }
-        return 0
-      } finally {
-        this.sessionsLoading = false
-      }
+      return fetchSessionsAction(this, limit, offset, append, toolFilter)
     },
     /**
      * 获取会话详情
      */
     async fetchSessionDetail(sessionId: string) {
-      try {
-        this.selectedSession = await querySessionDetail(this.settings, sessionId)
-      } catch (e) {
-        console.error('Failed to fetch session detail:', e)
-        this.selectedSession = null
-      }
+      return fetchSessionDetailAction(this, sessionId)
     },
     /**
      * 清除选中会话
@@ -531,51 +347,16 @@ export const useMonitorStore = defineStore('monitor', {
       this.selectedSession = null
     },
     async fetchRecentRequestRecordsForTool(toolFilter: string | null, limit: number = 30, offset: number = 0, append: boolean = false) {
-      if (offset === 0) {
-        this.requestRecordsLoading = true
-      }
-      try {
-        const records = await queryRecentRequestRecords(this.settings, toolFilter, limit, offset)
-        if (append) {
-          this.requestRecords = [...this.requestRecords, ...records]
-        } else {
-          this.requestRecords = records
-        }
-        return records.length
-      } catch (e) {
-        console.error('Failed to fetch request records:', e)
-        if (!append) {
-          this.requestRecords = []
-        }
-        return 0
-      } finally {
-        this.requestRecordsLoading = false
-      }
+      return fetchRecentRequestRecordsAction(this, toolFilter, limit, offset, append)
     },
     /**
      * 获取项目统计（基于所有会话聚合，不受分页影响）
      */
     async fetchProjectStats() {
-      this.projectStatsLoading = true
-      try {
-        this.projectStats = await queryProjectStats(this.settings)
-      } catch (e) {
-        console.error('Failed to fetch project stats:', e)
-        this.projectStats = []
-      } finally {
-        this.projectStatsLoading = false
-      }
+      return fetchProjectStatsAction(this)
     },
     async fetchProjectStatsForTool(toolFilter: string | null) {
-      this.projectStatsLoading = true
-      try {
-        this.projectStats = await queryProjectStats(this.settings, toolFilter)
-      } catch (e) {
-        console.error('Failed to fetch project stats:', e)
-        this.projectStats = []
-      } finally {
-        this.projectStatsLoading = false
-      }
+      return fetchProjectStatsAction(this, toolFilter)
     },
     async refreshFilteredViews() {
       await this.refreshUsage()
@@ -694,161 +475,68 @@ export const useMonitorStore = defineStore('monitor', {
      * 检查是否有 ChatGPT OAuth 配置
      */
     async checkChatGptOAuth() {
-      try {
-        this.hasChatGptOAuth = await queryBoolean('has_chatgpt_oauth')
-      } catch (e) {
-        console.error('Failed to check ChatGPT OAuth:', e)
-        this.hasChatGptOAuth = false
-      }
+      return checkOAuthAction(this, 'has_chatgpt_oauth', 'hasChatGptOAuth')
     },
     /**
      * 获取订阅配额
      */
     async fetchSubscriptionQuota() {
-      this.subscriptionLoading = true
-      try {
-        this.subscriptionQuota = await querySubscriptionQuota('gpt')
-      } catch (e) {
-        console.error('Failed to fetch subscription quota:', e)
-        // 设置错误状态，避免显示旧数据
-        this.subscriptionQuota = failedSubscriptionQuery(e)
-      } finally {
-        this.subscriptionLoading = false
-      }
+      return runProviderQuotaAction(this, 'gpt', false)
     },
     /**
      * 刷新订阅配额（强制刷新）
      */
     async refreshSubscriptionQuota() {
-      this.subscriptionLoading = true
-      try {
-        this.subscriptionQuota = await querySubscriptionQuota('gpt', true)
-      } catch (e) {
-        console.error('Failed to refresh subscription quota:', e)
-        // 设置错误状态，避免显示旧数据
-        this.subscriptionQuota = failedSubscriptionQuery(e)
-      } finally {
-        this.subscriptionLoading = false
-      }
+      return runProviderQuotaAction(this, 'gpt', true)
     },
     /**
      * 检查是否有 Claude OAuth 凭据
      */
     async checkClaudeOAuth() {
-      try {
-        this.hasClaudeOAuth = await queryBoolean('has_claude_oauth')
-      } catch (e) {
-        console.error('Failed to check Claude OAuth:', e)
-        this.hasClaudeOAuth = false
-      }
+      return checkOAuthAction(this, 'has_claude_oauth', 'hasClaudeOAuth')
     },
     /**
      * 获取 Claude 官方配额
      */
     async fetchClaudeQuota() {
-      this.claudeLoading = true
-      try {
-        this.claudeQuota = await querySubscriptionQuota('claude')
-      } catch (e) {
-        console.error('Failed to fetch Claude quota:', e)
-        this.claudeQuota = failedSubscriptionQuery(e)
-      } finally {
-        this.claudeLoading = false
-      }
+      return runProviderQuotaAction(this, 'claude', false)
     },
     /**
      * 刷新 Claude 官方配额（强制刷新）
      */
     async refreshClaudeQuota() {
-      this.claudeLoading = true
-      try {
-        this.claudeQuota = await querySubscriptionQuota('claude', true)
-      } catch (e) {
-        console.error('Failed to refresh Claude quota:', e)
-        this.claudeQuota = failedSubscriptionQuery(e)
-      } finally {
-        this.claudeLoading = false
-      }
+      return runProviderQuotaAction(this, 'claude', true)
     },
     // === Gemini 额度查询 ===
     /**
      * 检查是否有 Gemini CLI OAuth 凭据
      */
     async checkGeminiOAuth() {
-      try {
-        this.hasGeminiOAuth = await queryBoolean('has_gemini_oauth')
-      } catch (e) {
-        console.error('Failed to check Gemini OAuth:', e)
-        this.hasGeminiOAuth = false
-      }
+      return checkOAuthAction(this, 'has_gemini_oauth', 'hasGeminiOAuth')
     },
     /**
      * 获取 Gemini 额度
      */
     async fetchGeminiQuota() {
-      this.geminiQuotaLoading = true
-      try {
-        this.geminiQuota = await querySubscriptionQuota('gemini')
-      } catch (e) {
-        console.error('Failed to fetch Gemini quota:', e)
-        this.geminiQuota = failedSubscriptionQuery(e)
-      } finally {
-        this.geminiQuotaLoading = false
-      }
+      return runProviderQuotaAction(this, 'gemini', false)
     },
     /**
      * 刷新 Gemini 额度（强制刷新）
      */
     async refreshGeminiQuota() {
-      this.geminiQuotaLoading = true
-      try {
-        this.geminiQuota = await querySubscriptionQuota('gemini', true)
-      } catch (e) {
-        console.error('Failed to refresh Gemini quota:', e)
-        this.geminiQuota = failedSubscriptionQuery(e)
-      } finally {
-        this.geminiQuotaLoading = false
-      }
+      return runProviderQuotaAction(this, 'gemini', true)
     },
     async refreshCopilotAuthStatus() {
-      try {
-        this.copilotAuthStatus = await queryCopilotAuthStatus()
-        this.hasCopilotAuth = !!this.copilotAuthStatus?.authenticated
-      } catch (e) {
-        console.error('Failed to fetch Copilot auth status:', e)
-        this.copilotAuthStatus = null
-        this.hasCopilotAuth = false
-      }
+      return refreshCopilotAuthStatusAction(this)
     },
     async checkCopilotAuth() {
-      try {
-        this.hasCopilotAuth = await queryBoolean('copilot_is_authenticated')
-      } catch (e) {
-        console.error('Failed to check Copilot auth:', e)
-        this.hasCopilotAuth = false
-      }
+      return checkOAuthAction(this, 'copilot_is_authenticated', 'hasCopilotAuth')
     },
     async fetchCopilotQuota() {
-      this.copilotQuotaLoading = true
-      try {
-        this.copilotQuota = await querySubscriptionQuota('copilot')
-      } catch (e) {
-        console.error('Failed to fetch Copilot quota:', e)
-        this.copilotQuota = failedSubscriptionQuery(e)
-      } finally {
-        this.copilotQuotaLoading = false
-      }
+      return runProviderQuotaAction(this, 'copilot', false)
     },
     async refreshCopilotQuota() {
-      this.copilotQuotaLoading = true
-      try {
-        this.copilotQuota = await querySubscriptionQuota('copilot', true)
-      } catch (e) {
-        console.error('Failed to refresh Copilot quota:', e)
-        this.copilotQuota = failedSubscriptionQuery(e)
-      } finally {
-        this.copilotQuotaLoading = false
-      }
+      return runProviderQuotaAction(this, 'copilot', true)
     },
     async copilotListAccounts() {
       return queryCopilotAccounts()
@@ -897,45 +585,12 @@ export const useMonitorStore = defineStore('monitor', {
           const result = await queryConfiguredSourceQuotas()
           // 仅最新请求可落地结果，避免初始化/旧刷新覆盖更新后的来源状态。
           if (activeSeq === this.configuredSourceRequestSeq) {
-            if (result.attemptedCount === 0) {
-              this.configuredSourceQuotas = []
-              this.configuredSourceLastSuccessAt = result.queriedAt
-              this.configuredSourceLastError = null
-              this.configuredSourceConsecutiveFailures = 0
-              this.configuredSourceLastFailureAt = null
-              this.configuredSourceNextEligibleAt = result.queriedAt + CONFIGURED_SOURCE_SUCCESS_REFRESH_MS
-            } else if (result.successCount > 0) {
-              this.configuredSourceQuotas = result.quotas
-              this.configuredSourceLastSuccessAt = result.queriedAt
-              this.configuredSourceConsecutiveFailures = 0
-              this.configuredSourceLastFailureAt = null
-              this.configuredSourceLastError = result.failedCount > 0
-                ? result.errors.join(' | ')
-                : null
-              this.configuredSourceNextEligibleAt = result.queriedAt + CONFIGURED_SOURCE_SUCCESS_REFRESH_MS
-            } else {
-              this.configuredSourceConsecutiveFailures += 1
-              this.configuredSourceLastFailureAt = result.queriedAt
-              // Store only carries stable backend codes; UI resolves them through i18n.
-              this.configuredSourceLastError = result.errors.join(' | ') || 'ERR_CONFIGURED_SOURCE_QUOTA_FAILED'
-              const backoffMs = Math.min(
-                CONFIGURED_SOURCE_FAILURE_BASE_MS * (2 ** (this.configuredSourceConsecutiveFailures - 1)),
-                CONFIGURED_SOURCE_FAILURE_MAX_MS
-              )
-              this.configuredSourceNextEligibleAt = result.queriedAt + backoffMs
-            }
+            Object.assign(this, applyConfiguredSourceQuotaResult(this, result))
           }
         } catch (e) {
           console.error('Failed to fetch configured source quotas:', e)
           if (activeSeq === this.configuredSourceRequestSeq) {
-            this.configuredSourceConsecutiveFailures += 1
-            this.configuredSourceLastFailureAt = Date.now()
-            this.configuredSourceLastError = String(e)
-            const backoffMs = Math.min(
-              CONFIGURED_SOURCE_FAILURE_BASE_MS * (2 ** (this.configuredSourceConsecutiveFailures - 1)),
-              CONFIGURED_SOURCE_FAILURE_MAX_MS
-            )
-            this.configuredSourceNextEligibleAt = Date.now() + backoffMs
+            Object.assign(this, applyConfiguredSourceQuotaFailure(this, e, Date.now()))
           }
         }
       }

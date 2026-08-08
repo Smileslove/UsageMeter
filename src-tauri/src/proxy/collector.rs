@@ -127,7 +127,8 @@ impl UsageCollector {
         // session_id，OpenCode 等需要模糊匹配的来源会在后续扫描阶段再对账。
         if let Err(error) = self
             .session_reconciliation
-            .reconcile_after_ingest(&self.database, &record)
+            .enqueue_after_ingest(self.database.clone(), record)
+            .await
         {
             eprintln!("[collector] Failed to reconcile session stats: {error}");
         }
