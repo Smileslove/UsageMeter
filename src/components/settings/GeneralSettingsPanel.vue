@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { disableAutoStart, enableAutoStart, isAutoStartEnabled } from '../../api/appApi'
 import { useMonitorStore } from '../../stores/monitor'
 import { useUpdaterStore } from '../../stores/updater'
 import { t } from '../../i18n'
@@ -64,10 +64,10 @@ const toggleDayBoundaryMode = async () => {
 const toggleAutoStart = async () => {
   try {
     if (autoStartEnabled.value) {
-      await invoke('disable_autostart')
+      await disableAutoStart()
       autoStartEnabled.value = false
     } else {
-      await invoke('enable_autostart')
+      await enableAutoStart()
       autoStartEnabled.value = true
     }
 
@@ -75,7 +75,7 @@ const toggleAutoStart = async () => {
     await store.saveSettings()
   } catch {
     try {
-      autoStartEnabled.value = await invoke('is_autostart_enabled')
+      autoStartEnabled.value = await isAutoStartEnabled()
     } catch {
       autoStartEnabled.value = store.settings.autoStart
     }
@@ -111,7 +111,7 @@ const handleCheckUpdate = async () => {
 
 onMounted(async () => {
   try {
-    const systemState = await invoke<boolean>('is_autostart_enabled')
+    const systemState = await isAutoStartEnabled()
     autoStartEnabled.value = systemState
     if (store.settings.autoStart !== systemState) {
       store.settings.autoStart = systemState

@@ -1,24 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { getOpenCodeSchemaStatus, type OpenCodeSchemaStatus } from '../../api/usageApi'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
 import LobeIcon from '../LobeIcon.vue'
 import { TOOL_LOBE_ICONS } from '../../iconConfig'
-
-interface OpenCodeSchemaStatus {
-  dbFound: boolean
-  dbPath: string | null
-  schemaCompatible: boolean
-  compatibilityMode?: 'full' | 'message_only' | 'incompatible'
-  persistedCompatibilityMode?: 'full' | 'message_only' | 'incompatible' | 'unknown' | null
-  incompatibilityReason: string | null
-  messageIdConflict?: {
-    hasConflict: boolean
-    conflictCount: number
-    sampleIds: string[]
-  }
-}
 
 const store = useMonitorStore()
 const opencodeSchema = ref<OpenCodeSchemaStatus | null>(null)
@@ -34,7 +20,7 @@ const qoderSources = [
 
 const loadOpenCodeSchemaStatus = async () => {
   try {
-    opencodeSchema.value = await invoke<OpenCodeSchemaStatus>('get_opencode_schema_status')
+    opencodeSchema.value = await getOpenCodeSchemaStatus()
   } catch {
     // 静默失败
   }

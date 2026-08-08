@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { listWslDistros } from '../../api/appApi'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
 import SettingsSwitch from './SettingsSwitch.vue'
@@ -36,7 +36,7 @@ const anyDistroOff = computed(() =>
 async function refreshDistros() {
   distroLoading.value = true
   try {
-    availableDistros.value = await invoke<string[]>('list_wsl_distros')
+    availableDistros.value = await listWslDistros()
   } catch {
     availableDistros.value = []
   } finally {

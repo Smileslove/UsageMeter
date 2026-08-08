@@ -1,7 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
 import { Check, Copy, Eye, KeyRound, Link2, Pencil, Plus, RadioTower, Save, Trash2, X } from 'lucide-vue-next'
+import {
+  createGatewayLocalKey,
+  createGatewayProfile,
+  createGatewayUpstreamKey,
+  deleteGatewayProfile,
+  deleteGatewayUpstreamKey,
+  getGatewayStatus,
+  listGatewayProfiles,
+  revealGatewayLocalKey,
+  revokeGatewayLocalKey,
+  updateGatewayProfile,
+  updateGatewayUpstreamKey
+} from '../api/gatewayApi'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import type { GatewayCredentialRecovery, GatewayDispatchStrategy, GatewayProfile, GatewayProtocol, GatewayStatus, GatewayUpstreamKey } from '../types'
@@ -121,8 +133,8 @@ function cancelEditing() {
 async function load() {
   loading.value = true
   try {
-    profiles.value = await invoke<GatewayProfile[]>('list_gateway_profiles')
-    status.value = await invoke<GatewayStatus>('get_gateway_status')
+    profiles.value = await listGatewayProfiles()
+    status.value = await getGatewayStatus()
     await store.getProxyStatus()
     if (!selectedId.value && profiles.value.length > 0) selectedId.value = profiles.value[0].id
   } catch (error) {
@@ -199,8 +211,8 @@ async function saveProfile() {
   }
   try {
     const saved = draft.value.id
-      ? await invoke<GatewayProfile>('update_gateway_profile', { id: draft.value.id, input })
-      : await invoke<GatewayProfile>('create_gateway_profile', { input })
+      ? await updateGatewayProfile(draft.value.id, input)
+      : await createGatewayProfile(input)
     profiles.value = draft.value.id
       ? profiles.value.map(profile => profile.id === saved.id ? saved : profile)
       : [...profiles.value, saved]
@@ -209,7 +221,7 @@ async function saveProfile() {
     editing.value = false
     feedback.value = 'saved'
     await store.loadSettings()
-    status.value = await invoke<GatewayStatus>('get_gateway_status')
+    status.value = await getGatewayStatus()
   } catch (error) {
     errorCode.value = String(error)
     feedback.value = 'error'
@@ -227,9 +239,8 @@ async function addUpstreamKey() {
   if (!draft.value.id || !upstreamSecret.value.trim()) return
   saving.value = true
   try {
-    const profile = await invoke<GatewayProfile>('create_gateway_upstream_key', {
-      profileId: draft.value.id,
-      input: { remark: upstreamRemark.value.trim(), secret: upstreamSecret.value.trim(), enabled: true, weight: 1, priority: 0 }
+    const profile = await createGatewayUpstreamKey(draft.value.id, {
+      remark: upstreamRemark.value.trim(), secret: upstreamSecret.value.trim(), enabled: true, weight: 1, priority: 0
     })
     applyProfile(profile)
     upstreamRemark.value = ''
@@ -244,7 +255,7 @@ async function addUpstreamKey() {
 async function deleteUpstreamKey(keyId: string) {
   if (!draft.value.id) return
   try {
-    applyProfile(await invoke<GatewayProfile>('delete_gateway_upstream_key', { profileId: draft.value.id, keyId }))
+    applyProfile(await deleteGatewayUpstreamKey(draft.value.id, keyId))
   } catch (error) { errorCode.value = String(error); feedback.value = 'error' }
 }
 
@@ -256,10 +267,8 @@ async function updateUpstreamKey(key: GatewayUpstreamKey) {
   }
   saving.value = true
   try {
-    applyProfile(await invoke<GatewayProfile>('update_gateway_upstream_key', {
-      profileId: draft.value.id,
-      keyId: key.id,
-      input: { enabled: key.enabled, weight: key.weight, priority: key.priority }
+    applyProfile(await updateGatewayUpstreamKey(draft.value.id, key.id, {
+      enabled: key.enabled, weight: key.weight, priority: key.priority
     }))
     feedback.value = 'saved'
   } catch (error) {
@@ -271,7 +280,7 @@ async function updateUpstreamKey(key: GatewayUpstreamKey) {
 async function revokeLocalKey(keyId: string) {
   if (!draft.value.id) return
   try {
-    applyProfile(await invoke<GatewayProfile>('revoke_gateway_local_key', { profileId: draft.value.id, keyId }))
+    applyProfile(await revokeGatewayLocalKey(draft.value.id, keyId))
   } catch (error) { errorCode.value = String(error); feedback.value = 'error' }
 }
 
@@ -279,12 +288,9 @@ async function createReplacementLocalKey() {
   if (!draft.value.id) return
   saving.value = true
   try {
-    const generated = await invoke<{ key: string }>('create_gateway_local_key', {
-      profileId: draft.value.id,
-      input: { remark: localRemark.value.trim() }
-    })
+    const generated = await createGatewayLocalKey(draft.value.id, { remark: localRemark.value.trim() })
     generatedLocalKey.value = generated.key
-    const updated = (await invoke<GatewayProfile[]>('list_gateway_profiles')).find(profile => profile.id === draft.value.id)
+    const updated = (await listGatewayProfiles()).find(profile => profile.id === draft.value.id)
     if (updated) applyProfile(updated)
     localRemark.value = ''
     feedback.value = 'saved'
@@ -297,7 +303,7 @@ async function createReplacementLocalKey() {
 async function revealLocalKey(keyId: string) {
   if (!draft.value.id) return
   try {
-    revealedLocalKeys.value[keyId] = await invoke<string>('reveal_gateway_local_key', { profileId: draft.value.id, keyId })
+    revealedLocalKeys.value[keyId] = await revealGatewayLocalKey(draft.value.id, keyId)
   } catch (error) { errorCode.value = String(error); feedback.value = 'error' }
 }
 
@@ -311,13 +317,10 @@ async function copyStoredLocalKey(keyId: string) {
 
 async function toggleProfile(profile: GatewayProfile) {
   try {
-    const updated = await invoke<GatewayProfile>('update_gateway_profile', {
-      id: profile.id,
-      input: { ...profile, enabled: !profile.enabled }
-    })
+    const updated = await updateGatewayProfile(profile.id, { ...profile, enabled: !profile.enabled })
     profiles.value = profiles.value.map(item => item.id === updated.id ? updated : item)
     if (selectedId.value === updated.id) draft.value = { ...updated }
-    status.value = await invoke<GatewayStatus>('get_gateway_status')
+    status.value = await getGatewayStatus()
   } catch (error) {
     errorCode.value = String(error)
     feedback.value = 'error'
@@ -327,10 +330,10 @@ async function toggleProfile(profile: GatewayProfile) {
 async function deleteProfile(profile: GatewayProfile) {
   if (!window.confirm(t(locale.value, 'gateway.deleteConfirm'))) return
   try {
-    await invoke('delete_gateway_profile', { id: profile.id })
+    await deleteGatewayProfile(profile.id)
     profiles.value = profiles.value.filter(item => item.id !== profile.id)
     if (selectedId.value === profile.id) cancelEditing()
-    status.value = await invoke<GatewayStatus>('get_gateway_status')
+    status.value = await getGatewayStatus()
   } catch (error) {
     errorCode.value = String(error)
     feedback.value = 'error'
@@ -361,7 +364,7 @@ async function copyProfileBaseUrl(profile: GatewayProfile) {
 async function copyProfileApiKey(profile: GatewayProfile) {
   const keyMeta = profile.localKeys[0]
   if (!keyMeta) return
-  const key = await invoke<string>('reveal_gateway_local_key', { profileId: profile.id, keyId: keyMeta.id })
+  const key = await revealGatewayLocalKey(profile.id, keyMeta.id)
   await navigator.clipboard.writeText(key)
   feedback.value = 'copied'
 }

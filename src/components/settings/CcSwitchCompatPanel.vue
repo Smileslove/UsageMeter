@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { resolveTakeoverConflict } from '../../api/proxyApi'
 import { useMonitorStore } from '../../stores/monitor'
 import { useCcSwitchCompatStore } from '../../stores/ccswitchCompat'
 import { t } from '../../i18n'
@@ -65,7 +65,7 @@ const lastReportText = computed(() => {
 async function forceReclaim(tool: string) {
   reclaimErrorCode.value = null
   try {
-    await invoke('resolve_takeover_conflict', { tool, action: 'force_reclaim' })
+    await resolveTakeoverConflict(tool, 'force_reclaim')
   } catch (e) {
     reclaimErrorCode.value = String(e)
     console.error('Failed to force reclaim takeover:', e)

@@ -1,7 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
 import { Eye, EyeOff, RefreshCw, TestTube2 } from 'lucide-vue-next'
+import {
+  clearImportedSyncData as clearImportedSyncDataRequest,
+  getActiveSyncDeviceId,
+  getSyncStatus,
+  listSyncDevices,
+  removeSyncDevice as removeSyncDeviceRequest,
+  rotateSyncPassword as rotateSyncPasswordRequest,
+  syncNow,
+  testWebDavConnection
+} from '../../api/syncApi'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
 import type { RemoteSyncDevice, SyncStatus } from '../../types'
@@ -162,7 +171,7 @@ const syncErrorMessage = (error: unknown) => {
 
 const loadSyncStatus = async () => {
   try {
-    syncStatus.value = await invoke<SyncStatus>('get_sync_status', { settings: store.settings })
+    syncStatus.value = await getSyncStatus(store.settings)
   } catch {
     syncStatus.value = null
   }
@@ -170,7 +179,7 @@ const loadSyncStatus = async () => {
 
 const loadSyncDevices = async () => {
   try {
-    syncDevices.value = await invoke<RemoteSyncDevice[]>('list_sync_devices')
+    syncDevices.value = await listSyncDevices()
   } catch {
     syncDevices.value = []
   }
@@ -179,7 +188,7 @@ const loadSyncDevices = async () => {
 const refreshActiveDeviceId = async () => {
   if (localSyncDeviceId.value) return
   try {
-    const activeId = await invoke<string | null>('get_active_sync_device_id')
+    const activeId = await getActiveSyncDeviceId()
     if (activeId && !localSyncDeviceId.value) {
       localSyncDeviceId.value = activeId
       store.settings.sync.deviceId = activeId
@@ -213,7 +222,7 @@ const testWebdav = async () => {
   syncBusy.value = true
   syncMessage.value = ''
   try {
-    await invoke('test_webdav_connection', { settings: store.settings, credentials: syncCredentials() })
+    await testWebDavConnection(store.settings, syncCredentials())
     syncMessage.value = t(store.settings.locale, 'settings.syncTestSuccess')
     await loadSyncStatus()
   } catch (error) {
@@ -231,7 +240,7 @@ const runWebdavSync = async () => {
   syncBusy.value = true
   syncMessage.value = ''
   try {
-    syncStatus.value = await invoke<SyncStatus>('sync_now', { settings: store.settings, credentials: syncCredentials() })
+    syncStatus.value = await syncNow(store.settings, syncCredentials())
     syncMessage.value = t(store.settings.locale, 'settings.syncSuccess')
     await loadSyncDevices()
     await refreshActiveDeviceId()
@@ -262,10 +271,10 @@ const confirmSyncDanger = async () => {
   syncMessage.value = ''
   try {
     if (syncConfirmMode.value === 'remove-device') {
-      await invoke('remove_sync_device', { deviceId: syncConfirmDeviceId.value })
+      await removeSyncDeviceRequest(syncConfirmDeviceId.value)
       syncMessage.value = t(store.settings.locale, 'settings.syncDeviceRemoved')
     } else if (syncConfirmMode.value === 'clear-imported') {
-      await invoke('clear_imported_sync_data')
+      await clearImportedSyncDataRequest()
       syncMessage.value = t(store.settings.locale, 'settings.syncImportedCleared')
     }
     await loadSyncDevices()
@@ -297,16 +306,12 @@ const rotateSyncPassword = async () => {
   rotatePasswordBusy.value = true
   syncMessage.value = ''
   try {
-    await invoke('rotate_sync_password', {
-      settings: store.settings,
-      credentials: {
-        password: webdavPassword.value,
-        syncPassword: ''
-      },
-      payload: {
-        currentSyncPassword: rotateCurrentSyncPassword.value,
-        newSyncPassword: rotateNewSyncPassword.value
-      }
+    await rotateSyncPasswordRequest(store.settings, {
+      password: webdavPassword.value,
+      syncPassword: ''
+    }, {
+      currentSyncPassword: rotateCurrentSyncPassword.value,
+      newSyncPassword: rotateNewSyncPassword.value
     })
     syncPassword.value = rotateNewSyncPassword.value
     store.settings.sync.syncPassword = rotateNewSyncPassword.value

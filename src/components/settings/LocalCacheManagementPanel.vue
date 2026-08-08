@@ -1,14 +1,9 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { getLocalCacheStats, purgeOrphanLocalFacts, rebuildLocalUsageCache, type LocalCacheStats } from '../../api/usageApi'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
 import ConfirmDialog from './ConfirmDialog.vue'
-
-interface LocalCacheStats {
-  totalLocalFacts: number
-  orphanLocalFacts: number
-}
 
 const store = useMonitorStore()
 
@@ -21,7 +16,7 @@ const localCacheConfirmMode = ref<'purge-orphan' | 'rebuild-cache' | null>(null)
 
 const loadLocalCacheStats = async () => {
   try {
-    localCacheStats.value = await invoke<LocalCacheStats>('get_local_usage_maintenance_stats')
+    localCacheStats.value = await getLocalCacheStats()
   } catch (error) {
     localCacheMessage.value = `${t(store.settings.locale, 'settings.localCacheLoadFailed')}: ${error}`
     localCacheMessageIsError.value = true
@@ -52,13 +47,11 @@ const confirmLocalCacheAction = async () => {
 
   try {
     if (mode === 'purge-orphan') {
-      const removed = await invoke<number>('purge_orphan_local_facts', {
-        olderThanDays: localCachePurgeDays.value,
-      })
+      const removed = await purgeOrphanLocalFacts(localCachePurgeDays.value)
       localCacheMessage.value = t(store.settings.locale, 'settings.localCachePurgeSuccess')
         .replace('{count}', String(removed))
     } else {
-      await invoke('rebuild_local_usage_cache')
+      await rebuildLocalUsageCache()
       localCacheMessage.value = t(store.settings.locale, 'settings.localCacheRebuildSuccess')
     }
 

@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import {
+  applyModelPricingToRecords,
+  previewModelPricingApply,
+  type ModelPricingPreviewResult
+} from '../api/modelPricingApi'
 import { t } from '../i18n'
 import type { ModelPricingConfig, ClientToolProfile, ApiSource } from '../types'
 import { useMonitorStore } from '../stores/monitor'
@@ -40,16 +44,7 @@ const apiSources = computed<ApiSource[]>(() =>
 // 预览结果
 const previewLoading = ref(false)
 const previewError = ref('')
-interface ModelMatchCount {
-  model: string
-  count: number
-}
-interface PreviewResult {
-  matchedCount: number
-  totalCurrentCost: number
-  modelCounts: ModelMatchCount[]
-}
-const previewResult = ref<PreviewResult | null>(null)
+const previewResult = ref<ModelPricingPreviewResult | null>(null)
 
 // 应用状态
 const applyLoading = ref(false)
@@ -93,8 +88,7 @@ const doPreview = async () => {
   previewLoading.value = true
   previewError.value = ''
   try {
-    const result = await invoke<PreviewResult>('preview_pricing_apply', {
-      modelId: props.pricing.modelId,
+    const result = await previewModelPricingApply(props.pricing.modelId, {
       matchMode: matchMode.value,
       timeRangeStart: timeRangeStartMs.value,
       timeRangeEnd: timeRangeEndMs.value,
@@ -137,9 +131,7 @@ const doApply = async () => {
   applyLoading.value = true
   applyError.value = ''
   try {
-    const count = await invoke<number>('apply_pricing_to_records', {
-      modelId: props.pricing.modelId,
-      pricing: props.pricing,
+    const count = await applyModelPricingToRecords(props.pricing.modelId, props.pricing, {
       matchMode: matchMode.value,
       timeRangeStart: timeRangeStartMs.value,
       timeRangeEnd: timeRangeEndMs.value,
@@ -152,8 +144,7 @@ const doApply = async () => {
 
     // 重新查询以获取更新后的费用
     try {
-      const updated = await invoke<PreviewResult>('preview_pricing_apply', {
-        modelId: props.pricing.modelId,
+      const updated = await previewModelPricingApply(props.pricing.modelId, {
         matchMode: matchMode.value,
         timeRangeStart: timeRangeStartMs.value,
         timeRangeEnd: timeRangeEndMs.value,

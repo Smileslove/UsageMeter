@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, onUnmounted } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
 import {
   AlertCircle,
   BadgeDollarSign,
@@ -13,6 +12,7 @@ import {
   Trash2
 } from 'lucide-vue-next'
 import { useMonitorStore } from '../stores/monitor'
+import { getExchangeRates } from '../api/currencyApi'
 import { t } from '../i18n'
 import { getCurrencyName, getAllCurrencyCodes, getCurrencySymbol } from '../utils/format'
 import type { CurrencySettings as CurrencySettingsType } from '../types'
@@ -97,7 +97,7 @@ async function syncRates() {
   syncSuccess.value = false
   try {
     const currencies = localCurrency.value.trackedCurrencies.filter(c => c !== 'USD')
-    const rates = await invoke<Record<string, number>>('get_exchange_rates', { currencies })
+    const rates = await getExchangeRates(currencies)
     for (const [code, rate] of Object.entries(rates)) {
       localCurrency.value.exchangeRates[code] = rate
     }

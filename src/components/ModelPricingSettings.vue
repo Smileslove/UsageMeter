@@ -1,6 +1,15 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, computed } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import {
+  addCustomModelPricing,
+  clearSyncedModelPricings,
+  countSyncedModelPricings,
+  deleteModelPricing,
+  getCustomModelPricings,
+  searchModelPricing,
+  syncModelPricingFromApi,
+  updateCustomModelPricing
+} from '../api/modelPricingApi'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import type { ModelPricingConfig } from '../types'
@@ -13,12 +22,6 @@ const emit = defineEmits<{
 }>()
 
 const store = useMonitorStore()
-
-// 搜索结果类型
-interface ModelPricingSearchResult {
-  pricings: ModelPricingConfig[]
-  total: number
-}
 
 // 本地状态
 const syncedSearchQuery = ref('')
@@ -94,10 +97,7 @@ const hideTooltip = () => {
 const loadCustomPricings = async () => {
   customLoading.value = true
   try {
-    const jsonString = await invoke<string>('get_custom_model_pricings', {
-      query: customSearchQuery.value || null
-    })
-    customPricingList.value = JSON.parse(jsonString) || []
+    customPricingList.value = await getCustomModelPricings(customSearchQuery.value || null)
   } catch (e) {
     console.error('[ModelPricingSettings] Failed to load custom pricings:', e)
     customPricingList.value = []
@@ -109,9 +109,7 @@ const loadCustomPricings = async () => {
 // 加载同步模型总数
 const loadSyncedCount = async () => {
   try {
-    syncedTotalCount.value = await invoke<number>('count_synced_model_pricings', {
-      query: null
-    })
+    syncedTotalCount.value = await countSyncedModelPricings(null)
   } catch (e) {
     console.error('[ModelPricingSettings] Failed to load synced count:', e)
     syncedTotalCount.value = 0
@@ -124,13 +122,7 @@ const loadSyncedPricings = async () => {
   loadError.value = ''
 
   try {
-    const jsonString = await invoke<string>('search_model_pricing', {
-      query: syncedSearchQuery.value || null,
-      limit: 100,
-      offset: 0
-    })
-
-    const result = JSON.parse(jsonString) as ModelPricingSearchResult
+    const result = await searchModelPricing(syncedSearchQuery.value || null, 100, 0)
     syncedPricingList.value = result.pricings || []
     syncedTotalCount.value = result.total || 0
   } catch (e) {
@@ -200,7 +192,7 @@ const syncPricing = async () => {
   syncError.value = ''
 
   try {
-    await invoke('sync_model_pricing_from_api')
+    await syncModelPricingFromApi()
 
     // 更新同步时间
     if (store.settings.modelPricing) {
@@ -229,7 +221,7 @@ const clearSyncedPricings = async () => {
   syncError.value = ''
 
   try {
-    await invoke('clear_synced_model_pricings')
+    await clearSyncedModelPricings()
 
     // 清除同步时间
     if (store.settings.modelPricing) {
@@ -302,7 +294,7 @@ const deletePricing = async () => {
   if (!deletingModelId.value) return
 
   try {
-    await invoke('delete_model_pricing', { modelId: deletingModelId.value })
+    await deleteModelPricing(deletingModelId.value)
     await loadCustomPricings()
     showDeleteConfirm.value = false
     deletingModelId.value = null
@@ -319,12 +311,12 @@ const savePricing = async (pricing: ModelPricingConfig) => {
   saveError.value = ''
   try {
     // 确保 source 为 custom
-    const customPricing = { ...pricing, source: 'custom' }
+    const customPricing: ModelPricingConfig = { ...pricing, source: 'custom' }
 
     if (editingPricing.value) {
-      await invoke('update_custom_model_pricing', { pricing: customPricing })
+      await updateCustomModelPricing(customPricing)
     } else {
-      await invoke('add_custom_model_pricing', { pricing: customPricing })
+      await addCustomModelPricing(customPricing)
     }
 
     await loadCustomPricings()

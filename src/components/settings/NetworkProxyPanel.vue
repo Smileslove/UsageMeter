@@ -1,20 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { testNetworkProxy } from '../../api/proxyApi'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
 import SettingsSwitch from './SettingsSwitch.vue'
 
 type NetworkProxyScheme = 'http' | 'https' | 'socks5'
-
-interface NetworkProxyTestResult {
-  ok: boolean
-  reachable: boolean
-  latencyMs?: number
-  status?: number
-  errorKind?: string
-  errorDetail?: string
-}
 
 type TestState = {
   status: 'idle' | 'testing' | 'success' | 'error'
@@ -176,10 +167,7 @@ const saveNetworkProxy = async () => {
 async function testTarget(target: string) {
   npTests.value[target] = { status: 'testing' }
   try {
-    const result = await invoke<NetworkProxyTestResult>('test_network_proxy', {
-      config: currentProxyPayload(),
-      target,
-    })
+    const result = await testNetworkProxy(currentProxyPayload(), target)
     if (result.reachable) {
       npTests.value[target] = {
         status: 'success',

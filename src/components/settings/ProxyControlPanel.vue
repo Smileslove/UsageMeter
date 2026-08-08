@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { getTakeoverStatuses, resolveTakeoverConflict as resolveTakeoverConflictRequest, setTakeoverForApp } from '../../api/proxyApi'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
 import { type ClientToolProfile, type ToolTakeoverStatus } from '../../types'
@@ -76,7 +76,7 @@ const handleIncludeErrorRequestsChange = async () => {
 
 const loadTakeoverStatuses = async () => {
   try {
-    takeoverStatuses.value = await invoke<ToolTakeoverStatus[]>('get_takeover_statuses')
+    takeoverStatuses.value = await getTakeoverStatuses()
   } catch {
     takeoverStatuses.value = []
   }
@@ -117,7 +117,7 @@ const closeOfficialApiWarning = () => {
 const applyToolTakeover = async (tool: string, nextEnabled: boolean) => {
   takeoverLoading.value = { ...takeoverLoading.value, [tool]: true }
   try {
-    await invoke('set_takeover_for_app', { app: tool, enabled: nextEnabled })
+    await setTakeoverForApp(tool, nextEnabled)
     takeoverActionErrors.value = { ...takeoverActionErrors.value, [tool]: '' }
     await store.loadSettings()
     await store.getProxyStatus()
@@ -138,7 +138,7 @@ const applyToolTakeover = async (tool: string, nextEnabled: boolean) => {
 const resolveTakeoverConflict = async (tool: string, action: 'force_reclaim' | 'pause' | 'disable_takeover') => {
   takeoverLoading.value = { ...takeoverLoading.value, [tool]: true }
   try {
-    await invoke('resolve_takeover_conflict', { tool, action })
+    await resolveTakeoverConflictRequest(tool, action)
     takeoverActionErrors.value = { ...takeoverActionErrors.value, [tool]: '' }
     await store.loadSettings()
     await store.getProxyStatus()

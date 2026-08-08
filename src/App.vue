@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { invoke } from '@tauri-apps/api/core'
+import { openShareWindow } from './api/appApi'
+import { resolveTakeoverConflict as resolveTakeoverConflictRequest } from './api/proxyApi'
 import { useMonitorStore } from './stores/monitor'
 import { useUpdaterStore } from './stores/updater'
 import type { UpdateInfo } from './stores/updater'
@@ -128,7 +129,7 @@ async function forceReclaimFromExternalManager() {
   }
   externalManagerReclaimErrorCode.value = null
   try {
-    await invoke('resolve_takeover_conflict', { tool: notification.tool, action: 'force_reclaim' })
+    await resolveTakeoverConflictRequest(notification.tool, 'force_reclaim')
   } catch (error) {
     console.error('[App] Failed to force reclaim from external manager:', error)
     // 夺回失败（如 cc-switch 代理仍在运行）：保留 toast 并在其中提示原因
@@ -142,7 +143,7 @@ async function forceReclaimFromExternalManager() {
 }
 
 async function openSharePanel() {
-  await invoke('open_share_window')
+  await openShareWindow()
 }
 
 async function resolveTakeoverConflict(action: 'force_reclaim' | 'pause' | 'disable_takeover') {
@@ -150,7 +151,7 @@ async function resolveTakeoverConflict(action: 'force_reclaim' | 'pause' | 'disa
   if (!notification) {
     return
   }
-  await invoke('resolve_takeover_conflict', { tool: notification.tool, action })
+  await resolveTakeoverConflictRequest(notification.tool, action)
   await store.loadSettings()
   await store.getProxyStatus()
   dismissTakeoverConflictNotification()

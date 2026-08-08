@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { toBlob, toPng } from 'html-to-image'
 import { Check, Copy, Download, Loader2, Sparkles, X } from 'lucide-vue-next'
@@ -10,6 +9,7 @@ import type { AppLocale, StatisticsBucket, StatisticsRangePreset, StatisticsSumm
 import ShareUsageCard from './components/statistics/ShareUsageCard.vue'
 import { SHARE_THEMES } from './components/statistics/shareThemes'
 import { formatToolDisplayName } from './utils/toolDisplay'
+import { getStatisticsSummary } from './api/usageApi'
 
 type SharePreset = Exclude<StatisticsRangePreset, 'custom'> | '1y'
 
@@ -185,16 +185,13 @@ const statusLabel = computed(() => {
 async function fetchSummary() {
   loading.value = true
   try {
-    summary.value = await invoke<StatisticsSummary>('get_statistics_summary', {
-      query: {
-        startEpoch: range.value.start,
-        endEpoch: range.value.end,
-        timezone: store.settings.timezone,
-        bucket: bucket.value,
-        metric: 'tokens'
-      },
-      settings: store.settings
-    })
+    summary.value = await getStatisticsSummary({
+      startEpoch: range.value.start,
+      endEpoch: range.value.end,
+      timezone: store.settings.timezone,
+      bucket: bucket.value,
+      metric: 'tokens'
+    }, store.settings)
   } finally {
     loading.value = false
   }
