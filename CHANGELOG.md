@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.1] - 2026-08-08
+
+### Added
+
+- **Tool Capability Catalog**: Added a shared tool catalog and capability metadata model for consistent source and tool handling across the application
+
+### Changed
+
+- **Service Boundaries**: Reorganized monitoring, unified usage aggregation, proxy reconciliation, settings, synchronization, and frontend API calls into focused service boundaries
+
+### Fixed
+
+- **Quota Refresh**: Fixed configuration-source quota refreshes attempting to write through a read-only getter
+
+---
+
+### 新增
+
+- **工具能力目录**：新增统一的工具目录与能力元数据模型，确保应用内来源和工具处理保持一致
+
+### 变更
+
+- **服务边界**：重组监控、统一用量聚合、代理对账、设置、同步以及前端 API 调用，拆分为职责更清晰的服务边界
+
+### 修复
+
+- **额度刷新**：修复配置来源额度刷新通过只读 getter 写入的问题
+
+---
+
 ## [0.11.0] - 2026-08-07
 
 ### Added
@@ -895,6 +925,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.11.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.1
 [0.11.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.0
 [0.10.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.10.0
 [0.9.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.9.1
