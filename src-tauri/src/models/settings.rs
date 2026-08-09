@@ -192,7 +192,7 @@ pub fn default_proxy_request_timeout_seconds() -> u64 {
 }
 
 pub fn default_proxy_streaming_idle_timeout_seconds() -> u64 {
-    0
+    300
 }
 
 impl ProxyConfig {

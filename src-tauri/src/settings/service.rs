@@ -301,10 +301,9 @@ fn migrate_proxy_config(settings: &mut AppSettings) {
         settings.proxy.request_timeout_seconds =
             crate::models::default_proxy_request_timeout_seconds();
     }
-    if settings.proxy.streaming_idle_timeout_seconds == 0 {
-        settings.proxy.streaming_idle_timeout_seconds =
-            crate::models::default_proxy_streaming_idle_timeout_seconds();
-    }
+    // streaming_idle_timeout_seconds 不参与修复：0 是合法的“关闭流式空闲超时”
+    // 语义；字段缺省时 serde 反序列化已按 default_proxy_streaming_idle_timeout_seconds()
+    // 填充（首次创建默认 300）。迁移若把 0 覆盖为默认值，用户将无法显式关闭该功能。
 }
 
 /// 确保模型价格配置存在
@@ -506,6 +505,7 @@ mod tests {
         let mut settings = AppSettings::default();
         settings.proxy.port = 0;
         settings.proxy.request_timeout_seconds = 0;
+        // 显式写 0 表示“关闭流式空闲超时”，迁移不得覆盖
         settings.proxy.streaming_idle_timeout_seconds = 0;
 
         migrate_proxy_config(&mut settings);
@@ -515,10 +515,42 @@ mod tests {
             settings.proxy.request_timeout_seconds,
             crate::models::default_proxy_request_timeout_seconds()
         );
+        // 用户显式关闭的 0 必须保持，迁移不再把它归一化为默认值
+        assert_eq!(settings.proxy.streaming_idle_timeout_seconds, 0);
+    }
+
+    #[test]
+    fn fresh_settings_default_streaming_idle_timeout_to_300() {
+        // 首次创建（无设置文件）走 Default / default_config，应为 300 秒
+        let settings = AppSettings::default();
         assert_eq!(
             settings.proxy.streaming_idle_timeout_seconds,
             crate::models::default_proxy_streaming_idle_timeout_seconds()
         );
+        assert_eq!(settings.proxy.streaming_idle_timeout_seconds, 300);
+
+        let proxy = crate::models::ProxyConfig::default_config();
+        assert_eq!(proxy.streaming_idle_timeout_seconds, 300);
+    }
+
+    #[test]
+    fn deserialize_missing_field_uses_default_but_explicit_zero_stays_zero() {
+        // 字段缺省（首次未设置）→ 反序列化按 serde default 填 300
+        let settings: AppSettings =
+            serde_json::from_value(serde_json::json!({ "proxy": {} })).unwrap();
+        assert_eq!(settings.proxy.streaming_idle_timeout_seconds, 300);
+
+        // 用户显式写 0 → 反序列化保持 0（关闭）
+        let settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "proxy": { "streamingIdleTimeoutSeconds": 0 }
+        }))
+        .unwrap();
+        assert_eq!(settings.proxy.streaming_idle_timeout_seconds, 0);
+
+        // 迁移后仍保持显式 0
+        let mut settings = settings;
+        normalize_settings(&mut settings).unwrap();
+        assert_eq!(settings.proxy.streaming_idle_timeout_seconds, 0);
     }
 
     #[test]
