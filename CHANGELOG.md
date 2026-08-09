@@ -7,31 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.12.0] - 2026-08-09
+## [0.11.2] - 2026-08-09
+
+### Added
+
+- **Upstream Model Probe**: Gateway profiles now support model-list discovery and single-model availability probes against the upstream (persisted, capped at 200 models); probe requests bypass the forwarder so they never count toward usage or trip the circuit breaker
+
+### Changed
+
+- **Gateway & Proxy URL Shortening**: Gateway profile ids use short random ids (`p` + 6 hex), handle ids are unified to 8-hex, and proxy URLs use the `/umg/<tool>/s/<id>` format — old `gateway-<hex>-<hex>` and legacy URL formats remain parseable and route correctly
+- **SSE Parser Consolidation**: The three duplicated SSE streaming loops now share one `SseEventReader` driver in `sse.rs`
+- **Reasoning Token Semantics**: opencode / hermes token accounting now uniformly folds reasoning into output tokens with a single merge point
 
 ### Fixed
 
 - **Gateway Double-Counting**: Gateway records now reconcile with local session scans by message id, so the same physical request no longer produces two usage facts
+- **Codex Proxy Double-Counting**: Gateway Codex records now join the fuzzy-matching pool, eliminating duplicate usage facts when the same request appears both via the gateway and in local Codex scans
 - **Streaming Idle Timeout**: Streaming responses are now reaped after 300s of upstream silence (configurable, explicit 0 still disables), preventing leaked connections
+- **Legacy Idle Timeout Migration**: Existing users whose settings defaulted to a 0s idle timeout are migrated to 300s (settingsVersion 3, persisted so the migration applies once across all load paths)
+- **Request Body Stall Timeout**: `read_body_limited` now enforces a 60s per-chunk idle timeout (408), preventing requests that stall after declaring a Content-Length from hanging the upstream
 - **Gateway Protocol Mismatch**: Requests whose body does not match the profile's protocol now get a clear 400 instead of an opaque upstream error
-
-### Changed
-
-- **SSE Parser Consolidation**: The three duplicated SSE streaming loops now share one `SseEventReader` driver in `sse.rs`
-- **Reasoning Token Semantics**: opencode / hermes token accounting now uniformly folds reasoning into output tokens with a single merge point
+- **Startup DB Concurrency**: Proxy startup database initialization is serialized to avoid concurrent-init races
 
 ---
+
+### 新增
+
+- **上游模型探测**：网关 profile 支持对上游做模型列表发现与单模型可用性探测（持久化保存，上限 200 个模型）；探测请求不经过转发器，因此不计入用量、不触发熔断
+
+### 变更
+
+- **网关与代理 URL 精简**：Gateway profile id 改为短随机 id（`p` + 6 位 hex），handle id 统一为 8 位 hex，代理 URL 采用 `/umg/<tool>/s/<id>` 新格式——旧 `gateway-<hex>-<hex>` 与历史 URL 格式仍可解析并正确路由
+- **SSE 解析收敛**：三套重复的 SSE 流式循环统一为 `sse.rs` 中的 `SseEventReader` 公共驱动
+- **Reasoning Token 口径**：opencode / hermes 的 token 统计统一将 reasoning 并入 output tokens，仅保留单一合并点
 
 ### 修复
 
 - **网关重复计数**：网关记录按 message id 与本地会话扫描对账，同一物理请求不再产生两条用量事实
+- **Codex 代理重复计数**：网关 Codex 记录纳入模糊匹配池，消除同一请求同时出现在网关与本地 Codex 扫描时的重复用量事实
 - **流式空闲超时**：流式响应在上游静默 300 秒后被回收（可配置，显式 0 仍可关闭），避免连接泄漏
+- **旧版空闲超时迁移**：存量用户默认 0 秒空闲超时的设置自动迁移为 300 秒（settingsVersion 3，写盘固化使迁移在所有加载路径上一次生效）
+- **请求体停滞超时**：`read_body_limited` 逐 chunk 增加 60 秒空闲超时（408），防止声明 Content-Length 后断流的请求挂起上游
 - **网关协议不匹配**：请求体与 profile 协议不符时返回明确的 400 错误，而非晦涩的上游报错
-
-### 变更
-
-- **SSE 解析收敛**：三套重复的 SSE 流式循环统一为 `sse.rs` 中的 `SseEventReader` 公共驱动
-- **Reasoning Token 口径**：opencode / hermes 的 token 统计统一将 reasoning 并入 output tokens，仅保留单一合并点
+- **启动期数据库并发**：代理启动期数据库初始化改为串行执行，避免并发初始化竞态
 
 ---
 
@@ -953,7 +971,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[0.12.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.12.0
+[0.11.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.2
 [0.11.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.1
 [0.11.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.0
 [0.10.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.10.0
