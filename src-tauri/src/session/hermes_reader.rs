@@ -223,9 +223,13 @@ fn build_hermes_session(
     canonical_session_id: &str,
     row: HermesSessionRow,
 ) -> Option<HermesSessionData> {
+    // Hermes state.db 的 output_tokens 列不含 reasoning（reasoning 单列在 reasoning_tokens），
+    // 与 meta.rs 口径保持一致：output_tokens 含 reasoning，
+    // total = input + cache_read + cache_write + output（不把 reasoning 单列成 total 的加项）。
+    // 注意：若上游将来在 output_tokens 列并入 reasoning，此处的相加必须移除，否则会双计。
+    let output_tokens = row.output_tokens + row.reasoning_tokens;
     let total_tokens =
-        row.input_tokens + row.output_tokens + row.cache_read_tokens + row.cache_write_tokens;
-    let total_tokens = total_tokens.max(row.input_tokens + row.output_tokens);
+        row.input_tokens + row.cache_read_tokens + row.cache_write_tokens + output_tokens;
     let request_count = row.message_count.max(1);
     if total_tokens == 0
         && row.reasoning_tokens == 0
@@ -248,6 +252,8 @@ fn build_hermes_session(
         resolve_hermes_activity_time(row.started_at, row.ended_at, db_meta.last_modified);
     let last_modified = activity_time.max(db_meta.last_modified);
     let explicit_cost = effective_hermes_cost(row.actual_cost_usd, row.estimated_cost_usd);
+    // request_key 与 record.total_tokens 使用同一口径（total_tokens 已含 reasoning），
+    // 保证持久化的 request_key 与事实表的 total_tokens 一致。
     let request_key = Some(format!(
         "{}:{}:{}:{}",
         super::constants::TOOL_HERMES,
@@ -262,11 +268,12 @@ fn build_hermes_session(
         timestamp: activity_time.max(0),
         message_id: format!("session:{}", row.raw_session_id),
         input_tokens: row.input_tokens,
-        output_tokens: row.output_tokens + row.reasoning_tokens,
+        // raw output_tokens 不含 reasoning，已合并（见 build_hermes_session 上方注释）。
+        output_tokens,
         reasoning_tokens: row.reasoning_tokens,
         cache_create_tokens: row.cache_write_tokens,
         cache_read_tokens: row.cache_read_tokens,
-        total_tokens: total_tokens + row.reasoning_tokens,
+        total_tokens,
         request_count,
         model: model.clone(),
         is_subagent: false,
@@ -287,7 +294,8 @@ fn build_hermes_session(
         file_size: db_meta.file_size,
         last_modified,
         total_input_tokens: row.input_tokens,
-        total_output_tokens: row.output_tokens + row.reasoning_tokens,
+        // output_tokens 已含 reasoning（见上方注释），与 record.output_tokens 同口径。
+        total_output_tokens: output_tokens,
         total_cache_create_tokens: row.cache_write_tokens,
         total_cache_read_tokens: row.cache_read_tokens,
         models: vec![model.clone()],

@@ -155,7 +155,9 @@ fn build_single_session_data(
         }
 
         total_input += snapshot.input_tokens;
-        total_output += snapshot.output_tokens + snapshot.reasoning_tokens;
+        // snapshot.output_tokens 已在 parse 层合并 reasoning（见 message.rs），
+        // 这里不再重复相加，避免双计；snapshot.reasoning_tokens 仅作细分项保留。
+        total_output += snapshot.output_tokens;
         total_cache_create += snapshot.cache_create_tokens;
         total_cache_read += snapshot.cache_read_tokens;
         message_ids.push(snapshot.raw_message_id.clone());
@@ -179,7 +181,8 @@ fn build_single_session_data(
             timestamp: snapshot.timestamp_sec,
             message_id: snapshot.raw_message_id.clone(),
             input_tokens: snapshot.input_tokens,
-            output_tokens: snapshot.output_tokens + snapshot.reasoning_tokens,
+            // output_tokens 已含 reasoning（parse 层合并），此处不重复相加。
+            output_tokens: snapshot.output_tokens,
             reasoning_tokens: snapshot.reasoning_tokens,
             cache_create_tokens: snapshot.cache_create_tokens,
             cache_read_tokens: snapshot.cache_read_tokens,

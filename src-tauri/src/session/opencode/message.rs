@@ -37,11 +37,17 @@ pub(in crate::session) fn parse_message_snapshot(
 
     let tokens = data.get("tokens")?.as_object()?;
     let input_tokens = tokens.get("input").map(to_non_negative_u64).unwrap_or(0);
-    let output_tokens = tokens.get("output").map(to_non_negative_u64).unwrap_or(0);
     let reasoning_tokens = tokens
         .get("reasoning")
         .map(to_non_negative_u64)
         .unwrap_or(0);
+    // 上游 opencode 的 raw tokens.output 不含 reasoning（reasoning 单列在 tokens.reasoning），
+    // 因此这里把 reasoning 并入 output_tokens，使字段口径与 meta.rs 一致：
+    // output_tokens 含 reasoning，total_tokens = input + cache_read + cache_write + output
+    // （不把 reasoning 单列成 total 的加项）。
+    // 注意：若上游将来把 reasoning 并入 output 字段，此处的相加必须移除，否则会双计。
+    let output_tokens =
+        tokens.get("output").map(to_non_negative_u64).unwrap_or(0) + reasoning_tokens;
     let cache_read_tokens = tokens
         .get("cache")
         .and_then(|cache| cache.get("read"))
@@ -52,8 +58,7 @@ pub(in crate::session) fn parse_message_snapshot(
         .and_then(|cache| cache.get("write"))
         .map(to_non_negative_u64)
         .unwrap_or(0);
-    let total_tokens =
-        input_tokens + output_tokens + reasoning_tokens + cache_read_tokens + cache_create_tokens;
+    let total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_create_tokens;
     if total_tokens == 0 {
         return None;
     }
