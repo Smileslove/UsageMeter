@@ -212,15 +212,24 @@ impl OpenCodeSourceRegistry {
 
     fn read_data(&self) -> Result<OpenCodeSourceRegistryData, String> {
         #[cfg(test)]
-        return self.read_legacy_data();
+        {
+            let mut data = self.read_legacy_data()?;
+            normalize_handle_ids(&mut data);
+            return Ok(data);
+        }
+
         #[cfg(not(test))]
         {
             if let Some(value) = crate::app_config::load_runtime_document(RUNTIME_DOCUMENT_KEY)? {
-                return serde_json::from_value(value).map_err(|e| {
-                    format!("Failed to parse OpenCode source registry from database: {e}")
-                });
+                let mut data: OpenCodeSourceRegistryData =
+                    serde_json::from_value(value).map_err(|e| {
+                        format!("Failed to parse OpenCode source registry from database: {e}")
+                    })?;
+                normalize_handle_ids(&mut data);
+                return Ok(data);
             }
-            let data = self.read_legacy_data()?;
+            let mut data = self.read_legacy_data()?;
+            normalize_handle_ids(&mut data);
             if self.path.exists() {
                 self.write_data(&data)?;
                 crate::utils::remove_usagemeter_state_file(
@@ -232,6 +241,7 @@ impl OpenCodeSourceRegistry {
             Ok(data)
         }
     }
+
     fn read_legacy_data(&self) -> Result<OpenCodeSourceRegistryData, String> {
         if !self.path.exists() {
             return Ok(OpenCodeSourceRegistryData::default());
@@ -779,10 +789,10 @@ impl OpenCodeConfigManager {
             .split('/')
             .filter(|segment| !segment.is_empty())
             .collect();
-        let offset = if segments.first().copied() == Some("usagemeter") {
-            1
-        } else {
-            0
+        // 新旧前缀：/usagemeter/ 与 /umg/
+        let offset = match segments.first().copied() {
+            Some("usagemeter") | Some("umg") => 1,
+            _ => 0,
         };
         if segments.get(offset).copied() != Some("opencode") {
             return None;
@@ -797,15 +807,22 @@ impl OpenCodeConfigManager {
             if provider_id.is_empty() || source_id.is_empty() {
                 return None;
             }
-            return Some((Some(provider_id.to_string()), source_id.to_string()));
+            return Some((
+                Some(provider_id.to_string()),
+                // 旧格式 provider 路径中的 source_id 可能是十进制旧 handle id。
+                crate::proxy::normalize_handle_id(source_id),
+            ));
         }
 
-        if segments.len() >= offset + 3 && segments[offset + 1] == "source" {
+        // 新旧标记：/source/ 与 /s/
+        if segments.len() >= offset + 3
+            && (segments[offset + 1] == "source" || segments[offset + 1] == "s")
+        {
             let source_id = segments[offset + 2].trim();
             if source_id.is_empty() {
                 return None;
             }
-            return Some((None, source_id.to_string()));
+            return Some((None, crate::proxy::normalize_handle_id(source_id)));
         }
 
         None
@@ -1427,9 +1444,16 @@ fn compute_handle_id(provider_id: &str, real_base_url: &str) -> Result<String, S
     hasher.update(real_base_url.as_bytes());
     let hash = hasher.finalize();
     Ok(format!(
-        "oc_{}",
-        u64::from_be_bytes(hash[..8].try_into().unwrap())
+        "oc_{:08x}",
+        u32::from_be_bytes(hash[..4].try_into().unwrap())
     ))
+}
+
+/// 将注册表中所有 handle id 归一为 8 位十六进制新格式（旧 1..=16 位兼容）。
+fn normalize_handle_ids(data: &mut OpenCodeSourceRegistryData) {
+    for handle in &mut data.handles {
+        handle.id = crate::proxy::normalize_handle_id(&handle.id);
+    }
 }
 
 fn now_ms() -> i64 {
@@ -1730,11 +1754,25 @@ mod tests {
 
     #[test]
     fn proxy_url_parser_supports_provider_scoped_paths() {
+        // 旧十进制 handle id 提取后归一为 8 位 hex。
         assert_eq!(
             OpenCodeConfigManager::extract_provider_and_source_from_proxy_url(
                 "http://127.0.0.1:18765/opencode/provider/xiaomi/source/oc_123"
             ),
-            Some((Some("xiaomi".to_string()), "oc_123".to_string()))
+            Some((Some("xiaomi".to_string()), "oc_00000000".to_string()))
+        );
+        assert_eq!(
+            OpenCodeConfigManager::extract_provider_and_source_from_proxy_url(
+                "http://127.0.0.1:18765/opencode/provider/xiaomi/source/oc_a3b4c5d6"
+            ),
+            Some((Some("xiaomi".to_string()), "oc_a3b4c5d6".to_string()))
+        );
+        // 新格式 /umg/opencode/s/<id>
+        assert_eq!(
+            OpenCodeConfigManager::extract_provider_and_source_from_proxy_url(
+                "http://127.0.0.1:18765/umg/opencode/s/oc_a3b4c5d6/v1"
+            ),
+            Some((None, "oc_a3b4c5d6".to_string()))
         );
         assert_eq!(
             OpenCodeConfigManager::extract_source_id_from_proxy_url(
@@ -1843,16 +1881,16 @@ mod tests {
 
         let content = fs::read_to_string(&config_path).unwrap();
         let json: serde_json::Value = serde_json::from_str(&content).unwrap();
-        // 接管统一写入新版 /usagemeter/<tool>/source/<id> 地址（provider 由 source 句柄反查）。
+        // 接管统一写入新版 /umg/<tool>/s/<id> 地址（provider 由 source 句柄反查）。
         assert_eq!(
             json.pointer("/provider/anthropic/options/baseURL")
                 .and_then(|value| value.as_str()),
-            Some("http://127.0.0.1:18765/usagemeter/opencode/source/oc_ant")
+            Some("http://127.0.0.1:18765/umg/opencode/s/oc_ant")
         );
         assert_eq!(
             json.pointer("/provider/xiaomi/options/baseURL")
                 .and_then(|value| value.as_str()),
-            Some("http://127.0.0.1:18765/usagemeter/opencode/source/oc_xm")
+            Some("http://127.0.0.1:18765/umg/opencode/s/oc_xm")
         );
     }
 
@@ -1941,10 +1979,8 @@ mod tests {
             let json_content = fs::read_to_string(&json_path).unwrap();
             assert!(jsonc_content.contains("// anthropic comment"));
             assert!(jsonc_content.contains("https://api.anthropic.com/v1"));
-            // 接管统一写入新版 /usagemeter/<tool>/source/<id> 地址。
-            assert!(
-                json_content.contains("http://127.0.0.1:18765/usagemeter/opencode/source/oc_ant")
-            );
+            // 接管统一写入新版 /umg/<tool>/s/<id> 地址。
+            assert!(json_content.contains("http://127.0.0.1:18765/umg/opencode/s/oc_ant"));
             assert!(!json_content.contains("// anthropic comment"));
         });
     }

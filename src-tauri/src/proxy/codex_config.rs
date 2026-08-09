@@ -155,16 +155,24 @@ impl CodexSourceRegistry {
 
     fn read_data(&self) -> Result<CodexSourceRegistryData, String> {
         #[cfg(test)]
-        return self.read_legacy_data();
+        {
+            let mut data = self.read_legacy_data()?;
+            normalize_handle_ids(&mut data);
+            return Ok(data);
+        }
 
         #[cfg(not(test))]
         {
             if let Some(value) = crate::app_config::load_runtime_document(RUNTIME_DOCUMENT_KEY)? {
-                return serde_json::from_value(value).map_err(|e| {
-                    format!("Failed to parse Codex source registry from database: {e}")
-                });
+                let mut data: CodexSourceRegistryData =
+                    serde_json::from_value(value).map_err(|e| {
+                        format!("Failed to parse Codex source registry from database: {e}")
+                    })?;
+                normalize_handle_ids(&mut data);
+                return Ok(data);
             }
-            let data = self.read_legacy_data()?;
+            let mut data = self.read_legacy_data()?;
+            normalize_handle_ids(&mut data);
             if self.path.exists() {
                 self.write_data(&data)?;
                 crate::utils::remove_usagemeter_state_file(
@@ -611,9 +619,16 @@ fn compute_handle_id(snapshot: &CodexRouteState) -> Result<String, String> {
     hasher.update(payload);
     let hash = hasher.finalize();
     Ok(format!(
-        "h_{}",
-        u64::from_be_bytes(hash[..8].try_into().unwrap())
+        "h_{:08x}",
+        u32::from_be_bytes(hash[..4].try_into().unwrap())
     ))
+}
+
+/// 将注册表中所有 handle id 归一为 8 位十六进制新格式（旧 1..=16 位兼容）。
+fn normalize_handle_ids(data: &mut CodexSourceRegistryData) {
+    for handle in &mut data.handles {
+        handle.id = crate::proxy::normalize_handle_id(&handle.id);
+    }
 }
 
 fn now_ms() -> i64 {
@@ -793,12 +808,20 @@ codex_hooks = true
 
     #[test]
     fn extracts_codex_source_id() {
+        // 旧格式 URL 中的短 id（u64 无前导零）提取后归一为 8 位新格式。
         assert_eq!(
             CodexConfigManager::extract_source_id_from_proxy_url(
                 "http://127.0.0.1:18765/codex/source/h_123/v1"
             )
             .as_deref(),
-            Some("h_123")
+            Some("h_00000000")
+        );
+        assert_eq!(
+            CodexConfigManager::extract_source_id_from_proxy_url(
+                "http://127.0.0.1:18765/umg/codex/s/h_a3b4c5d6/v1"
+            )
+            .as_deref(),
+            Some("h_a3b4c5d6")
         );
     }
 

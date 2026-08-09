@@ -130,15 +130,24 @@ impl GeminiSourceRegistry {
 
     fn read_data(&self) -> Result<GeminiSourceRegistryData, String> {
         #[cfg(test)]
-        return self.read_legacy_data();
+        {
+            let mut data = self.read_legacy_data()?;
+            normalize_handle_ids(&mut data);
+            return Ok(data);
+        }
+
         #[cfg(not(test))]
         {
             if let Some(value) = crate::app_config::load_runtime_document(RUNTIME_DOCUMENT_KEY)? {
-                return serde_json::from_value(value).map_err(|e| {
-                    format!("Failed to parse Gemini source registry from database: {e}")
-                });
+                let mut data: GeminiSourceRegistryData =
+                    serde_json::from_value(value).map_err(|e| {
+                        format!("Failed to parse Gemini source registry from database: {e}")
+                    })?;
+                normalize_handle_ids(&mut data);
+                return Ok(data);
             }
-            let data = self.read_legacy_data()?;
+            let mut data = self.read_legacy_data()?;
+            normalize_handle_ids(&mut data);
             if self.path.exists() {
                 self.write_data(&data)?;
                 crate::utils::remove_usagemeter_state_file(
@@ -363,9 +372,16 @@ fn compute_handle_id(real_base_url: &str) -> Result<String, String> {
     hasher.update(real_base_url.as_bytes());
     let hash = hasher.finalize();
     Ok(format!(
-        "gm_{}",
-        u64::from_be_bytes(hash[..8].try_into().unwrap())
+        "gm_{:08x}",
+        u32::from_be_bytes(hash[..4].try_into().unwrap())
     ))
+}
+
+/// 将注册表中所有 handle id 归一为 8 位十六进制新格式（旧 1..=16 位兼容）。
+fn normalize_handle_ids(data: &mut GeminiSourceRegistryData) {
+    for handle in &mut data.handles {
+        handle.id = crate::proxy::normalize_handle_id(&handle.id);
+    }
 }
 
 fn now_ms() -> i64 {
@@ -438,9 +454,9 @@ mod tests {
         assert!(snapshot.had_base_url);
         assert_eq!(snapshot.real_base_url, "https://custom.example");
 
-        manager.takeover_with_source(18765, "gm_1").unwrap();
+        manager.takeover_with_source(18765, "gm_a3b4c5d6").unwrap();
         assert!(manager.is_takeover_active(18765).unwrap());
-        assert_eq!(manager.active_source_id().as_deref(), Some("gm_1"));
+        assert_eq!(manager.active_source_id().as_deref(), Some("gm_a3b4c5d6"));
 
         // 直接构造一次恢复（绕过 registry 文件）。
         let content = fs::read_to_string(&env_path).unwrap();
@@ -481,12 +497,20 @@ mod tests {
 
     #[test]
     fn extracts_gemini_source_id() {
+        // 旧格式 URL 中的短 id（u64 无前导零）提取后归一为 8 位新格式。
         assert_eq!(
             GeminiConfigManager::extract_source_id_from_proxy_url(
                 "http://127.0.0.1:18765/usagemeter/gemini/source/gm_123"
             )
             .as_deref(),
-            Some("gm_123")
+            Some("gm_00000000")
+        );
+        assert_eq!(
+            GeminiConfigManager::extract_source_id_from_proxy_url(
+                "http://127.0.0.1:18765/umg/gemini/s/gm_a3b4c5d6/v1"
+            )
+            .as_deref(),
+            Some("gm_a3b4c5d6")
         );
         assert_eq!(
             GeminiConfigManager::extract_source_id_from_proxy_url(

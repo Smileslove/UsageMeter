@@ -49,6 +49,15 @@ fn strip_prefix_path(path: &str, prefix: &str) -> Option<String> {
 }
 
 fn strip_known_usagemeter_tool_prefix(path: &str, tool: &str) -> Option<String> {
+    // 新版短前缀 `/umg/{tool}`
+    let short_prefix = format!("/umg/{tool}");
+    if path == short_prefix {
+        return Some("/".to_string());
+    }
+    if let Some(rest) = path.strip_prefix(&(short_prefix + "/")) {
+        return Some(format!("/{rest}"));
+    }
+
     let new_prefix = format!("/usagemeter/{tool}");
     if path == new_prefix {
         return Some("/".to_string());
@@ -230,9 +239,15 @@ pub(crate) async fn register_source_for_runtime(
 
 pub(crate) fn strip_source_handle_path(path: &str) -> (String, Option<String>) {
     let clean_path = path.trim();
-    let Some(rest) = clean_path.strip_prefix("/source/") else {
+    // 新版短标记 `/s/{id}`，旧版 `/source/{id}`
+    let marker = if clean_path.starts_with("/s/") {
+        "/s/"
+    } else if clean_path.starts_with("/source/") {
+        "/source/"
+    } else {
         return (path.to_string(), None);
     };
+    let rest = &clean_path[marker.len()..];
 
     let mut parts = rest.splitn(2, '/');
     let source_id = parts.next().unwrap_or_default().trim();
@@ -244,7 +259,12 @@ pub(crate) fn strip_source_handle_path(path: &str) -> (String, Option<String>) {
         .next()
         .map(|tail| format!("/{tail}"))
         .unwrap_or_else(|| "/".to_string());
-    (normalized_path, Some(source_id.to_string()))
+    // 旧格式 URL 中可能是十进制旧 handle id，归一为 8 位新格式，保证与
+    // 注册表（读取时已归一）等值匹配；非 handle 前缀（src_* 等）原样返回。
+    (
+        normalized_path,
+        Some(crate::proxy::normalize_handle_id(source_id)),
+    )
 }
 
 pub(crate) fn strip_opencode_provider_source_path(
@@ -266,7 +286,9 @@ pub(crate) fn strip_opencode_provider_source_path(
         return (
             normalized_path,
             Some(provider_id.to_string()),
-            Some(source_id.to_string()),
+            // 旧格式 provider 路径中的 source_id 也可能是十进制旧 handle id，
+            // 归一为 8 位新格式以匹配注册表。
+            Some(crate::proxy::normalize_handle_id(source_id)),
         );
     }
 

@@ -211,6 +211,23 @@ pub fn hydrate_settings(settings: &mut AppSettings) -> Result<(), String> {
     Ok(())
 }
 
+/// 当 source id 从旧格式（16 位 hex）归一为 8 位后，把已持久化的配额密钥
+/// 从旧键迁移到新键，避免后续 hydrate 按新 id 查不到旧密钥。
+///
+/// 只迁移确实存在的旧密钥；`old_id == new_id` 时为无操作。
+pub fn migrate_secret_keys(old_id: &str, new_id: &str) -> Result<(), String> {
+    if old_id == new_id {
+        return Ok(());
+    }
+    for kind in [SecretKind::ManualApiKey, SecretKind::ManualAccessToken] {
+        if let Some(secret) = load_secret(old_id, kind)? {
+            store_secret(new_id, kind, &secret)?;
+            delete_secret(old_id, kind)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn persist_settings(
     settings: &mut AppSettings,
     previous_settings: &AppSettings,

@@ -164,15 +164,24 @@ impl ReasonixSourceRegistry {
 
     fn read_data(&self) -> Result<ReasonixSourceRegistryData, String> {
         #[cfg(test)]
-        return self.read_legacy_data();
+        {
+            let mut data = self.read_legacy_data()?;
+            normalize_handle_ids(&mut data);
+            return Ok(data);
+        }
+
         #[cfg(not(test))]
         {
             if let Some(value) = crate::app_config::load_runtime_document(RUNTIME_DOCUMENT_KEY)? {
-                return serde_json::from_value(value).map_err(|e| {
-                    format!("Failed to parse Reasonix source registry from database: {e}")
-                });
+                let mut data: ReasonixSourceRegistryData =
+                    serde_json::from_value(value).map_err(|e| {
+                        format!("Failed to parse Reasonix source registry from database: {e}")
+                    })?;
+                normalize_handle_ids(&mut data);
+                return Ok(data);
             }
-            let data = self.read_legacy_data()?;
+            let mut data = self.read_legacy_data()?;
+            normalize_handle_ids(&mut data);
             if self.path.exists() {
                 self.write_data(&data)?;
                 crate::utils::remove_usagemeter_state_file(
@@ -184,6 +193,7 @@ impl ReasonixSourceRegistry {
             Ok(data)
         }
     }
+
     fn read_legacy_data(&self) -> Result<ReasonixSourceRegistryData, String> {
         if !self.path.exists() {
             return Ok(ReasonixSourceRegistryData::default());
@@ -487,9 +497,16 @@ fn compute_handle_id(provider_name: &str, real_base_url: &str) -> Result<String,
     hasher.update(real_base_url.as_bytes());
     let hash = hasher.finalize();
     Ok(format!(
-        "rx_{}",
-        u64::from_be_bytes(hash[..8].try_into().unwrap())
+        "rx_{:08x}",
+        u32::from_be_bytes(hash[..4].try_into().unwrap())
     ))
+}
+
+/// 将注册表中所有 handle id 归一为 8 位十六进制新格式（旧 1..=16 位兼容）。
+fn normalize_handle_ids(data: &mut ReasonixSourceRegistryData) {
+    for handle in &mut data.handles {
+        handle.id = crate::proxy::normalize_handle_id(&handle.id);
+    }
 }
 
 fn now_ms() -> i64 {
@@ -604,12 +621,20 @@ api_key_env = "ANTHROPIC_API_KEY"
 
     #[test]
     fn extracts_reasonix_source_id() {
+        // 旧格式 URL 中的短 id（u64 无前导零）提取后归一为 8 位新格式。
         assert_eq!(
             ReasonixConfigManager::extract_source_id_from_proxy_url(
                 "http://127.0.0.1:18765/reasonix/source/rx_123"
             )
             .as_deref(),
-            Some("rx_123")
+            Some("rx_00000000")
+        );
+        assert_eq!(
+            ReasonixConfigManager::extract_source_id_from_proxy_url(
+                "http://127.0.0.1:18765/umg/reasonix/s/rx_a3b4c5d6/v1"
+            )
+            .as_deref(),
+            Some("rx_a3b4c5d6")
         );
         assert_eq!(
             ReasonixConfigManager::extract_source_id_from_proxy_url("https://api.deepseek.com"),
@@ -690,10 +715,7 @@ api_key_env = "DEEPSEEK_API_KEY"
             .unwrap();
         let mut content = fs::read_to_string(&config_path).unwrap();
         content = content.replace(
-            &format!(
-                "http://127.0.0.1:18765/usagemeter/reasonix/source/{}",
-                mimo_handle.id
-            ),
+            &format!("http://127.0.0.1:18765/umg/reasonix/s/{}", mimo_handle.id),
             "https://custom.example/v1",
         );
         fs::write(&config_path, content).unwrap();

@@ -1507,6 +1507,17 @@ mod tests {
         assert_eq!(path, "/v1/messages");
         assert_eq!(source_id.as_deref(), Some("src_abc"));
 
+        // 旧格式十进制 handle id 提取后归一为 8 位 hex（与注册表匹配）。
+        let (path, source_id) =
+            strip_source_handle_path("/source/h_183789673287381192/v1/messages");
+        assert_eq!(path, "/v1/messages");
+        assert_eq!(source_id.as_deref(), Some("h_028cf3bb"));
+
+        // 新格式短标记 /s/。
+        let (path, source_id) = strip_source_handle_path("/s/h_028cf3bb/v1/messages");
+        assert_eq!(path, "/v1/messages");
+        assert_eq!(source_id.as_deref(), Some("h_028cf3bb"));
+
         let (path, source_id) = strip_source_handle_path("/v1/messages");
         assert_eq!(path, "/v1/messages");
         assert_eq!(source_id, None);
@@ -1527,11 +1538,12 @@ mod tests {
         assert_eq!(route.client_tool, "opencode");
         assert_eq!(route.normalized_path, "/messages");
         assert_eq!(route.detection_method, "path_prefix_source");
-        assert_eq!(route.source_id.as_deref(), Some("oc_123"));
+        // 旧十进制 handle id 提取后归一为 8 位 hex。
+        assert_eq!(route.source_id.as_deref(), Some("oc_00000000"));
 
         let route = detect_client_route("/opencode/source/oc_123/v1/messages", &settings);
         assert_eq!(route.normalized_path, "/v1/messages");
-        assert_eq!(route.source_id.as_deref(), Some("oc_123"));
+        assert_eq!(route.source_id.as_deref(), Some("oc_00000000"));
     }
 
     #[test]

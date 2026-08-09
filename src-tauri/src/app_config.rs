@@ -304,7 +304,7 @@ mod tests {
             .gateway
             .profiles
             .push(crate::models::GatewayProfile {
-                id: "gateway-1".to_string(),
+                id: "pa3x9k".to_string(),
                 name: "Test gateway".to_string(),
                 protocol: crate::models::GatewayProtocol::OpenAiChatCompletions,
                 base_url: "https://example.com".to_string(),
@@ -321,7 +321,7 @@ mod tests {
         let loaded = db.load_settings().unwrap().unwrap();
 
         assert_eq!(loaded.locale, crate::models::default_locale());
-        assert_eq!(loaded.gateway.profiles[0].id, "gateway-1");
+        assert_eq!(loaded.gateway.profiles[0].id, "pa3x9k");
     }
 
     #[test]

@@ -152,16 +152,24 @@ impl ProxySourceRegistry {
 
     fn read_data(&self) -> Result<ProxySourceRegistryData, String> {
         #[cfg(test)]
-        return self.read_legacy_data();
+        {
+            let mut data = self.read_legacy_data()?;
+            normalize_handle_ids(&mut data);
+            return Ok(data);
+        }
 
         #[cfg(not(test))]
         {
             if let Some(value) = crate::app_config::load_runtime_document(RUNTIME_DOCUMENT_KEY)? {
-                return serde_json::from_value(value).map_err(|e| {
-                    format!("Failed to parse proxy source registry from database: {e}")
-                });
+                let mut data: ProxySourceRegistryData =
+                    serde_json::from_value(value).map_err(|e| {
+                        format!("Failed to parse proxy source registry from database: {e}")
+                    })?;
+                normalize_handle_ids(&mut data);
+                return Ok(data);
             }
-            let data = self.read_legacy_data()?;
+            let mut data = self.read_legacy_data()?;
+            normalize_handle_ids(&mut data);
             if self.path.exists() {
                 self.write_data(&data)?;
                 crate::utils::remove_usagemeter_state_file(&self.path, "proxy_source_handles.json")
@@ -216,6 +224,13 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+/// 将注册表中所有 handle id 归一为 8 位十六进制新格式（旧 1..=16 位兼容）。
+fn normalize_handle_ids(data: &mut ProxySourceRegistryData) {
+    for handle in &mut data.handles {
+        handle.id = crate::proxy::normalize_handle_id(&handle.id);
+    }
+}
+
 fn compute_handle_id(settings: &ClaudeSettings) -> Result<String, String> {
     let snapshot = serde_json::to_vec(settings)
         .map_err(|e| format!("Failed to serialize proxy source handle snapshot: {}", e))?;
@@ -223,8 +238,8 @@ fn compute_handle_id(settings: &ClaudeSettings) -> Result<String, String> {
     hasher.update(&snapshot);
     let hash = hasher.finalize();
     Ok(format!(
-        "h_{}",
-        u64::from_be_bytes(hash[..8].try_into().unwrap())
+        "h_{:08x}",
+        u32::from_be_bytes(hash[..4].try_into().unwrap())
     ))
 }
 

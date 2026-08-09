@@ -272,7 +272,7 @@ fn normalize_settings(settings: &mut AppSettings) -> Result<(), String> {
     migrate_model_pricing(settings);
     migrate_currency(settings);
     migrate_client_tools(settings);
-    migrate_api_sources(settings);
+    migrate_api_sources(settings)?;
     migrate_sync(settings)?;
     migrate_day_boundary(settings);
     migrate_gateway(settings);
@@ -368,8 +368,31 @@ fn migrate_client_tools(settings: &mut AppSettings) {
     }
 }
 
-fn migrate_api_sources(settings: &mut AppSettings) {
+fn migrate_api_sources(settings: &mut AppSettings) -> Result<(), String> {
+    // 旧版 16 位十六进制 source id 归一为 8 位新格式，避免与新建来源的
+    // 短 id 失配（来源筛选、配额绑定、动态归因都按 id 等值匹配）。
+    let old_filter = settings.source_aware.active_source_filter.clone();
+    if let Some(filter) = &old_filter {
+        let normalized = crate::proxy::normalize_source_id(filter);
+        settings.source_aware.active_source_filter = Some(normalized);
+    }
+    let mut migration_failed = false;
     for source in &mut settings.source_aware.sources {
+        let old_id = source.id.clone();
+        let new_id = crate::proxy::normalize_source_id(&source.id);
+        if old_id != new_id {
+            match crate::subscription::source_quota_secrets::migrate_secret_keys(&old_id, &new_id) {
+                Ok(()) => source.id = new_id,
+                Err(e) => {
+                    // 迁移失败：保留旧 id（旧键仍可读），下次保存时 old != new
+                    // 会再次触发迁移；不因本地密钥存储异常把配置切到无密钥的新 id。
+                    migration_failed = true;
+                    eprintln!(
+                        "[usagemeter] failed to migrate quota secret keys from {old_id}: {e}; keeping old id"
+                    );
+                }
+            }
+        }
         if let Some(quota_query) = &mut source.quota_query {
             if quota_query.manual_api_key.is_none() {
                 quota_query.manual_api_key = source
@@ -381,6 +404,12 @@ fn migrate_api_sources(settings: &mut AppSettings) {
             quota_query.normalize();
         }
     }
+    // 任一来源迁移失败时，回退筛选器归一，避免 filter(8hex) 与
+    // source.id(16hex) 失配导致来源不可见。
+    if migration_failed {
+        settings.source_aware.active_source_filter = old_filter;
+    }
+    Ok(())
 }
 
 fn migrate_sync(settings: &mut AppSettings) -> Result<(), String> {

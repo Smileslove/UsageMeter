@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-static NEXT_PROFILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+static NEXT_PROFILE_SEQUENCE: AtomicU64 = AtomicU64::new(1); // used by next_key_id
 const KEYRING_SERVICE: &str = "com.usagemeter.gateway";
 const CIRCUIT_FAILURE_THRESHOLD: u32 = 3;
 const CIRCUIT_AUTH_FAILURE_THRESHOLD: u32 = 2;
@@ -730,9 +730,19 @@ pub fn listener_address(port: u16) -> String {
 }
 
 fn next_profile_id() -> String {
-    let timestamp = chrono::Utc::now().timestamp_millis();
-    let sequence = NEXT_PROFILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("gateway-{timestamp:x}-{sequence:x}")
+    // Compact, unguessable routing id: `p` + 6 random lowercase alphanumerics
+    // (36^6 ≈ 2.2e9 space). It is an opaque string used only for routing and
+    // statistics attribution; nothing parses its internal structure, so this
+    // format may evolve without migrating existing profiles.
+    const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut bytes = [0u8; 6];
+    OsRng.fill_bytes(&mut bytes);
+    let mut id = String::with_capacity(7);
+    id.push('p');
+    for byte in bytes {
+        id.push(ALPHABET[(byte as usize) % ALPHABET.len()] as char);
+    }
+    id
 }
 
 fn next_key_id(kind: &str) -> String {
@@ -771,7 +781,12 @@ mod tests {
     #[test]
     fn creates_normalized_non_secret_profile() {
         let profile = create_profile(input("  https://api.deepseek.com/  ")).expect("profile");
-        assert!(profile.id.starts_with("gateway-"));
+        assert_eq!(profile.id.len(), 7);
+        assert!(profile.id.starts_with('p'));
+        assert!(profile
+            .id
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit()));
         assert_eq!(profile.name, "DeepSeek");
         assert_eq!(profile.base_url, "https://api.deepseek.com");
         assert_eq!(profile.client_label, "Cursor");

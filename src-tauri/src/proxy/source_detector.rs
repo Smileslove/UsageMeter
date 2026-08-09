@@ -14,7 +14,7 @@ pub struct SourceRegistrationResult {
 
 /// 计算来源的稳定 ID（基于 key 前缀 + base_url）
 ///
-/// 返回 SHA256 哈希的前 16 位十六进制字符串
+/// 返回 SHA256 哈希的前 4 字节十六进制字符串（8 位）。
 pub fn compute_source_id(key_prefix: &str, base_url: Option<&str>) -> String {
     let mut hasher = Sha256::new();
     hasher.update(key_prefix.as_bytes());
@@ -23,7 +23,49 @@ pub fn compute_source_id(key_prefix: &str, base_url: Option<&str>) -> String {
         hasher.update(url.as_bytes());
     }
     let hash = hasher.finalize();
-    format!("{:016x}", u64::from_be_bytes(hash[..8].try_into().unwrap()))
+    format!("{:08x}", u32::from_be_bytes(hash[..4].try_into().unwrap()))
+}
+
+/// 将旧版 16 位十六进制 source id 归一为 8 位新格式。
+///
+/// 新 id 恰好是旧 id 的前 8 位（同一哈希的截断），因此只需截断即可映射。
+/// 仅当输入恰好是 16 个十六进制字符时才截断；其他格式（如 `live:xxx`、
+/// 人工命名、测试用 id）原样返回，避免误伤。
+pub fn normalize_source_id(id: &str) -> String {
+    if id.len() == 16 && id.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        id[..8].to_string()
+    } else {
+        id.to_string()
+    }
+}
+
+/// 将旧版 handle id（`h_`/`oc_`/`rx_`/`gm_` + 十进制 u64，1..=20 位）归一为
+/// 8 位十六进制新格式。
+///
+/// 旧格式由 `format!("{}", u64::from_be_bytes(hash[..8]))` 生成（十进制），
+/// 归一规则为：解析为 `u64` 后取高 32 位（即 `hash[..4]`）输出固定 8 位 hex，
+/// 与新建 `compute_handle_id` 完全一致。恰好 8 位的 hex 视为已是新格式，原样
+/// 保留（旧 id 恰好 8 位十进制 ⇔ hash 前 38 位全零，概率 2⁻³⁸，可忽略）。
+/// 未知前缀或非数字/非 hex 内容原样返回。
+pub fn normalize_handle_id(id: &str) -> String {
+    for prefix in ["h_", "oc_", "rx_", "gm_"] {
+        if let Some(rest) = id.strip_prefix(prefix) {
+            if !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_hexdigit()) {
+                // 新格式：恰好 8 位 hex → 原样（幂等）。
+                if rest.len() == 8 {
+                    return id.to_string();
+                }
+                // 旧格式：纯十进制（无 a-f）→ 高 32 位转 8 位 hex。
+                if rest.chars().all(|ch| ch.is_ascii_digit()) {
+                    if let Ok(value) = rest.parse::<u64>() {
+                        return format!("{prefix}{:08x}", (value >> 32) as u32);
+                    }
+                }
+            }
+            return id.to_string();
+        }
+    }
+    id.to_string()
 }
 
 /// 标准化 base_url：官方 Anthropic 地址返回 None
@@ -192,8 +234,53 @@ mod tests {
         // 不同输入产生不同 ID
         assert_ne!(id1, id2);
         assert_ne!(id1, id3);
-        // ID 长度为 16
-        assert_eq!(id1.len(), 16);
+        // ID 长度为 8（新版缩短格式）
+        assert_eq!(id1.len(), 8);
+        // 新 id 是旧 16 位 id 的前 8 位：归一函数可将旧 id 映射回新 id
+        let legacy = format!("{:016x}", u64::from_be_bytes([0; 8]));
+        assert_eq!(normalize_source_id(&legacy), "00000000");
+        // 非 16 hex 格式不受归一影响
+        assert_eq!(
+            normalize_source_id("live:https://example.com"),
+            "live:https://example.com"
+        );
+        assert_eq!(normalize_source_id("test-id"), "test-id");
+        assert_eq!(normalize_source_id("12345678"), "12345678");
+    }
+
+    #[test]
+    fn test_normalize_handle_id() {
+        // 旧格式为十进制 u64（format!("{}", u64)），取高 32 位转 8 位 hex。
+        // u64 = 1 → 高 32 位 = 0
+        assert_eq!(normalize_handle_id("h_1"), "h_00000000");
+        // u64 = 2^32 → 高 32 位 = 1
+        assert_eq!(normalize_handle_id("h_4294967296"), "h_00000001");
+        // u64::MAX → 高 32 位全 1
+        assert_eq!(normalize_handle_id("h_18446744073709551615"), "h_ffffffff");
+        // 真实规模旧 id（19-20 位十进制）
+        assert_eq!(normalize_handle_id("h_183789673287381192"), "h_028cf3bb");
+        // 各前缀
+        assert_eq!(normalize_handle_id("oc_4294967296"), "oc_00000001");
+        assert_eq!(normalize_handle_id("rx_4294967296"), "rx_00000001");
+        assert_eq!(normalize_handle_id("gm_4294967296"), "gm_00000001");
+        // 已是 8 位 hex（新格式，含全数字 8 位）→ 原样，且幂等
+        assert_eq!(normalize_handle_id("h_028cfc5c"), "h_028cfc5c");
+        assert_eq!(normalize_handle_id("h_12345678"), "h_12345678");
+        assert_eq!(
+            normalize_handle_id(&normalize_handle_id("h_183789673287381192")),
+            "h_028cf3bb"
+        );
+        // 非数字 / 非 hex / 未知前缀 → 原样
+        assert_eq!(normalize_handle_id("h_zzzz"), "h_zzzz");
+        assert_eq!(
+            normalize_handle_id("h_a3b4c5d6e7f8091a"),
+            "h_a3b4c5d6e7f8091a"
+        );
+        assert_eq!(
+            normalize_handle_id("live:https://example.com"),
+            "live:https://example.com"
+        );
+        assert_eq!(normalize_handle_id("custom"), "custom");
     }
 
     #[test]
