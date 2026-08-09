@@ -157,6 +157,26 @@ impl HttpClientFactory {
             .map_err(|e| format!("ERR_HTTP_CLIENT_STREAMING: {}", e))
     }
 
+    /// 构造一次性流式 client（HTTP/1.1 变体），并强制走 HTTP/1.1、
+    /// 首字母大写请求头、禁用压缩与连接复用。
+    ///
+    /// OpenAI / Gemini 的 SSE 上游对 HTTP/1.1 与大写请求头有依赖
+    /// （如 `Content-Type: application/json`），同时关闭 gzip/brotli
+    /// 可确保字节级透传不被压缩层改写。代理配置注入与本工厂其它
+    /// 一次性 client 一致（启用时强制走代理，非法配置拒绝构建）。
+    pub fn build_streaming_http1(
+        &self,
+        connect_timeout_secs: u64,
+        read_idle_timeout_secs: u64,
+    ) -> Result<Client, String> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| "ERR_HTTP_CLIENT_LOCK".to_string())?;
+        build_streaming_one_http1(&guard.config, connect_timeout_secs, read_idle_timeout_secs)
+            .map_err(|e| format!("ERR_HTTP_CLIENT_STREAMING_HTTP1: {}", e))
+    }
+
     /// 将当前生效的代理配置应用到外部传入的 `ClientBuilder`。
     ///
     /// 用于需要自定义 builder 链（如 OpenAI 流式响应所需的 http1_only、no_gzip 等）
@@ -258,6 +278,36 @@ fn build_streaming_one(
         .map_err(|e| format!("ERR_HTTP_CLIENT_BUILD: {}", e))
 }
 
+/// `build_streaming_one` 的 HTTP/1.1 变体，另加首字母大写请求头、
+/// 禁用连接复用与压缩，供 OpenAI / Gemini 的 SSE 上游使用。
+fn build_streaming_one_http1(
+    config: &NetworkProxyConfig,
+    connect_timeout_secs: u64,
+    read_idle_timeout_secs: u64,
+) -> Result<Client, String> {
+    let mut builder = Client::builder()
+        .user_agent(APP_USER_AGENT)
+        .redirect(reqwest::redirect::Policy::none())
+        .http1_only()
+        .http1_title_case_headers()
+        .pool_max_idle_per_host(0)
+        .no_gzip()
+        .no_brotli()
+        .no_deflate();
+
+    if connect_timeout_secs > 0 {
+        builder = builder.connect_timeout(Duration::from_secs(connect_timeout_secs));
+    }
+    if read_idle_timeout_secs > 0 {
+        builder = builder.read_timeout(Duration::from_secs(read_idle_timeout_secs));
+    }
+
+    builder = apply_proxy(builder, config)?;
+    builder
+        .build()
+        .map_err(|e| format!("ERR_HTTP_CLIENT_BUILD: {}", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +316,16 @@ mod tests {
     fn build_streaming_allows_disabling_read_idle_timeout() {
         let config = NetworkProxyConfig::default();
         let client = build_streaming_one(&config, 120, 0);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn build_streaming_http1_variant_builds() {
+        let config = NetworkProxyConfig::default();
+        let client = build_streaming_one_http1(&config, 120, 300);
+        assert!(client.is_ok());
+        // 0 空闲超时表示关闭，也应能构建
+        let client = build_streaming_one_http1(&config, 120, 0);
         assert!(client.is_ok());
     }
 }

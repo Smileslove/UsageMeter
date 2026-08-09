@@ -5,7 +5,7 @@ use super::request_body::ForwardRequestBody;
 use super::stream_processor::{
     create_database_collector, create_passthrough_stream, StreamContext,
 };
-use super::types::{RequestContext, SseEvent, UsageRecord};
+use super::types::{RequestContext, UsageRecord};
 use crate::net::HttpClientFactory;
 use bytes::Bytes;
 use futures::TryStreamExt;
@@ -14,6 +14,7 @@ use hyper::body::Frame;
 use hyper::Method;
 use reqwest::Client;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// UnsyncBoxBody 类型别名，用于响应体（不需要 Sync）
 /// 错误类型为 std::io::Error，实现了 Into<Box<dyn StdError + Send + Sync>>
@@ -30,6 +31,8 @@ pub struct RequestForwarder {
     usage_collector: Arc<UsageCollector>,
     /// 目标基础 URL
     target_base_url: String,
+    /// 流式空闲超时：`None` 表示关闭（不设超时）
+    streaming_idle_timeout: Option<Duration>,
 }
 
 /// 转发请求的结果
@@ -65,12 +68,18 @@ impl RequestForwarder {
         let client = HttpClientFactory::global().long();
         let streaming_client = HttpClientFactory::global()
             .build_streaming(request_timeout_secs, streaming_idle_timeout_secs)?;
+        let streaming_idle_timeout = if streaming_idle_timeout_secs > 0 {
+            Some(Duration::from_secs(streaming_idle_timeout_secs))
+        } else {
+            None
+        };
 
         Ok(Self {
             client,
             streaming_client,
             usage_collector,
             target_base_url,
+            streaming_idle_timeout,
         })
     }
 
@@ -254,7 +263,8 @@ impl RequestForwarder {
         let stream = response.bytes_stream();
 
         // 创建透传流，实时转发
-        let passthrough_stream = create_passthrough_stream(stream, collector);
+        let passthrough_stream =
+            create_passthrough_stream(stream, collector, self.streaming_idle_timeout);
 
         // 转换为 StreamBody 然后转为 UnsyncBoxBody
         // 保持 std::io::Error 作为错误类型（hyper 接受任何实现了
@@ -563,75 +573,6 @@ fn is_hop_by_hop_response_header(name: &str) -> bool {
     )
 }
 
-/// 从文本解析 SSE 事件
-#[allow(dead_code)]
-fn parse_sse_event(text: &str) -> Option<SseEvent> {
-    for line in text.lines() {
-        if let Some(json_str) = line.strip_prefix("data: ") {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str) {
-                let event_type = json.get("type")?.as_str()?;
-
-                match event_type {
-                    "message_start" => {
-                        let message = json.get("message")?;
-                        let message_id = message.get("id")?.as_str()?.to_string();
-                        let model = message.get("model")?.as_str()?.to_string();
-                        let usage = message.get("usage")?;
-                        let input_tokens = usage.get("input_tokens")?.as_u64()?;
-
-                        return Some(SseEvent::MessageStart {
-                            message_id,
-                            model,
-                            input_tokens,
-                        });
-                    }
-                    "message_delta" => {
-                        let usage = json.get("usage")?;
-                        let output_tokens = usage.get("output_tokens")?.as_u64()?;
-
-                        return Some(SseEvent::MessageDelta { output_tokens });
-                    }
-                    "message_stop" => {
-                        // message_stop 事件本身没有 message_id
-                        // 我们使用之前收集的 message_id
-                        return Some(SseEvent::MessageStop {
-                            message_id: String::new(),
-                        });
-                    }
-                    "content_block_delta" => {
-                        let delta = json.get("delta")?;
-                        let delta_text = delta
-                            .get("text")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        return Some(SseEvent::ContentBlockDelta { delta_text });
-                    }
-                    "error" => {
-                        let error = json.get("error")?;
-                        let error_type = error
-                            .get("type")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        let message = error
-                            .get("message")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("Unknown error")
-                            .to_string();
-                        return Some(SseEvent::Error {
-                            error_type,
-                            message,
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -700,23 +641,6 @@ mod tests {
         assert_eq!(parsed.cache_create_tokens, 3);
         assert_eq!(parsed.cache_read_tokens, 4);
         assert_eq!(parsed.total_tokens, 37);
-    }
-
-    #[test]
-    fn test_parse_sse_message_start() {
-        let event = r#"data: {"type":"message_start","message":{"id":"msg_123","model":"claude-sonnet-4","usage":{"input_tokens":100}}}"#;
-        let result = parse_sse_event(event);
-        assert!(matches!(result, Some(SseEvent::MessageStart { .. })));
-    }
-
-    #[test]
-    fn test_parse_sse_message_delta() {
-        let event = r#"data: {"type":"message_delta","usage":{"output_tokens":50}}"#;
-        let result = parse_sse_event(event);
-        assert!(matches!(
-            result,
-            Some(SseEvent::MessageDelta { output_tokens: 50 })
-        ));
     }
 
     #[test]

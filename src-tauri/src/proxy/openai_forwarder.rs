@@ -2,7 +2,7 @@
 
 use super::collector::UsageCollector;
 use super::request_body::ForwardRequestBody;
-use super::sse::{append_utf8_safe, strip_sse_field, take_sse_block};
+use super::sse::SseEventReader;
 use super::types::{RequestContext, UsageRecord};
 use crate::net::HttpClientFactory;
 use async_stream::stream;
@@ -44,6 +44,8 @@ pub struct OpenAiForwarder {
     client: Client,
     streaming_client: Client,
     usage_collector: Arc<UsageCollector>,
+    /// 流式空闲超时：`None` 表示关闭（不设超时）
+    streaming_idle_timeout: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -76,28 +78,18 @@ impl OpenAiForwarder {
             .apply_proxy_to_builder(builder)
             .build()
             .map_err(|e| format!("Failed to create OpenAI HTTP client: {}", e))?;
-        let streaming_builder = Client::builder()
-            .connect_timeout(Duration::from_secs(request_timeout_secs))
-            .redirect(reqwest::redirect::Policy::none())
-            .http1_only()
-            .http1_title_case_headers()
-            .pool_max_idle_per_host(0)
-            .no_gzip()
-            .no_brotli()
-            .no_deflate();
-        let streaming_builder = if streaming_idle_timeout_secs > 0 {
-            streaming_builder.read_timeout(Duration::from_secs(streaming_idle_timeout_secs))
-        } else {
-            streaming_builder
-        };
         let streaming_client = HttpClientFactory::global()
-            .apply_proxy_to_builder(streaming_builder)
-            .build()
-            .map_err(|e| format!("Failed to create OpenAI streaming HTTP client: {}", e))?;
+            .build_streaming_http1(request_timeout_secs, streaming_idle_timeout_secs)?;
+        let streaming_idle_timeout = if streaming_idle_timeout_secs > 0 {
+            Some(Duration::from_secs(streaming_idle_timeout_secs))
+        } else {
+            None
+        };
         Ok(Self {
             client,
             streaming_client,
             usage_collector,
+            streaming_idle_timeout,
         })
     }
 
@@ -310,35 +302,52 @@ impl OpenAiForwarder {
         let ttft_start = std::time::Instant::now();
         let context_for_finish = context.clone();
         let stream = response.bytes_stream();
+        // 在 stream! 宏外复制超时配置，避免 &self 逃逸
+        let idle_timeout = self.streaming_idle_timeout;
 
         let passthrough = stream! {
-            let mut buffer = String::new();
-            let mut utf8_remainder = Vec::new();
+            let mut reader = SseEventReader::new();
             let mut stream = std::pin::pin!(stream);
+            let idle_timeout = idle_timeout;
 
-            while let Some(chunk_result) = stream.next().await {
+            loop {
+                let chunk_result = match idle_timeout {
+                    Some(timeout) => match tokio::time::timeout(timeout, stream.next()).await {
+                        Ok(Some(next)) => next,
+                        Ok(None) => break,
+                        Err(_) => {
+                            yield Err(std::io::Error::other(
+                                "SSE stream idle timeout: no data from upstream",
+                            ));
+                            break;
+                        }
+                    },
+                    None => match stream.next().await {
+                        Some(next) => next,
+                        None => break,
+                    },
+                };
+
                 match chunk_result {
                     Ok(bytes) => {
-                        append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
-                        while let Some(event_text) = take_sse_block(&mut buffer) {
-                            for line in event_text.lines() {
-                                if let Some(data) = strip_sse_field(line, "data") {
-                                    if data.trim() != "[DONE]" {
-                                        if let Ok(value) = serde_json::from_str::<Value>(data) {
-                                            if first_token_candidate(&value) {
-                                                let mut first = first_token_time.lock().await;
-                                                if first.is_none() {
-                                                    *first = Some(Instant::now());
-                                                }
-                                            }
-                                            if let Some(usage) = parse_openai_stream_usage_event(&value) {
-                                                *usage_candidate.lock().await = Some(usage);
-                                            }
+                        // 驱动公共 SSE 解析骨架，仅保留消费回调
+                        reader
+                            .push_bytes(&bytes, |value| {
+                                let first_token_time = first_token_time.clone();
+                                let usage_candidate = usage_candidate.clone();
+                                async move {
+                                    if first_token_candidate(&value) {
+                                        let mut first = first_token_time.lock().await;
+                                        if first.is_none() {
+                                            *first = Some(Instant::now());
                                         }
                                     }
+                                    if let Some(usage) = parse_openai_stream_usage_event(&value) {
+                                        *usage_candidate.lock().await = Some(usage);
+                                    }
                                 }
-                            }
-                        }
+                            })
+                            .await;
                         yield Ok(Frame::data(bytes));
                     }
                     Err(e) => {
@@ -347,6 +356,25 @@ impl OpenAiForwarder {
                     }
                 }
             }
+
+            // 流尾未以空行结束的最后一个事件（[DONE] 过滤在公共层完成）
+            reader
+                .finish(|value| {
+                    let first_token_time = first_token_time.clone();
+                    let usage_candidate = usage_candidate.clone();
+                    async move {
+                        if first_token_candidate(&value) {
+                            let mut first = first_token_time.lock().await;
+                            if first.is_none() {
+                                *first = Some(Instant::now());
+                            }
+                        }
+                        if let Some(usage) = parse_openai_stream_usage_event(&value) {
+                            *usage_candidate.lock().await = Some(usage);
+                        }
+                    }
+                })
+                .await;
 
             let usage = usage_candidate.lock().await.take();
             let ttft_ms = first_token_time.lock().await.map(|instant| {

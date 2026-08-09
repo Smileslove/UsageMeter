@@ -3,7 +3,7 @@
 //! 提供流式响应处理，在实时转发数据的同时在后台收集使用量统计
 
 use super::collector::UsageCollector;
-use super::sse::{strip_sse_field, take_sse_block};
+use super::sse::SseEventReader;
 use super::types::UsageRecord;
 use async_stream::stream;
 use bytes::Bytes;
@@ -11,7 +11,7 @@ use futures::{Stream, StreamExt};
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 // ============================================================================
@@ -226,36 +226,49 @@ fn parse_usage_from_events(events: &[Value]) -> Option<UsageData> {
 ///
 /// 这是真正流式传输的核心函数：立即 yield 字节，
 /// 同时在后台解析 SSE 事件以收集使用量。
+///
+/// `streaming_idle_timeout` 控制上游 SSE 静默断流后的回收：
+/// `None` 表示关闭（不设空闲超时）；`Some(d)` 表示两次数据块之间
+/// 超过 `d` 没有新数据时，yield `Err` 并结束流。该超时不依赖
+/// reqwest 客户端的 `read_timeout` 配置，对半开连接同样有效。
 pub fn create_passthrough_stream(
     stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + Sync + 'static,
     collector: SseUsageCollector,
+    streaming_idle_timeout: Option<Duration>,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send + Sync {
     stream! {
-        let mut buffer = String::new();
-        let mut utf8_remainder: Vec<u8> = Vec::new();
-
+        let mut reader = SseEventReader::new();
         let mut stream = std::pin::pin!(stream);
 
-        while let Some(chunk_result) = stream.next().await {
+        loop {
+            let chunk_result = match streaming_idle_timeout {
+                Some(timeout) => match tokio::time::timeout(timeout, stream.next()).await {
+                    Ok(Some(next)) => next,
+                    Ok(None) => break,
+                    Err(_) => {
+                        yield Err(std::io::Error::other(
+                            "SSE stream idle timeout: no data from upstream",
+                        ));
+                        break;
+                    }
+                },
+                None => match stream.next().await {
+                    Some(next) => next,
+                    None => break,
+                },
+            };
+
             match chunk_result {
                 Ok(bytes) => {
-                    // 安全处理 UTF-8 边界（仅用于 SSE 解析）
-                    append_utf8_safe(&mut buffer, &mut utf8_remainder, &bytes);
-
-                    // 解析完整的 SSE 事件以收集使用量
-                    while let Some(event_text) = take_sse_block(&mut buffer) {
-
-                        // 提取并解析 SSE 数据
-                        for line in event_text.lines() {
-                            if let Some(data) = strip_sse_field(line, "data") {
-                                if data.trim() != "[DONE]" {
-                                    if let Ok(json_value) = serde_json::from_str::<Value>(data) {
-                                        collector.push(json_value).await;
-                                    }
-                                }
+                    // 解析完整的 SSE 事件以收集使用量（驱动公共实现）
+                    reader
+                        .push_bytes(&bytes, |json_value| {
+                            let collector = collector.clone();
+                            async move {
+                                collector.push(json_value).await;
                             }
-                        }
-                    }
+                        })
+                        .await;
 
                     // 立即转发原始字节（实时透传）
                     yield Ok(bytes);
@@ -268,15 +281,19 @@ pub fn create_passthrough_stream(
             }
         }
 
+        // 流尾未以空行结束的最后一个事件
+        reader
+            .finish(|json_value| {
+                let collector = collector.clone();
+                async move {
+                    collector.push(json_value).await;
+                }
+            })
+            .await;
+
         // 流结束，完成使用量收集
         collector.finish().await;
     }
-}
-
-/// 安全追加 UTF-8 字节，处理多字节字符边界
-fn append_utf8_safe(buffer: &mut String, remainder: &mut Vec<u8>, new_bytes: &[u8]) {
-    // 使用 sse 模块的实现
-    super::sse::append_utf8_safe(buffer, remainder, new_bytes);
 }
 
 // ============================================================================
