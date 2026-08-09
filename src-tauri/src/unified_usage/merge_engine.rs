@@ -381,4 +381,103 @@ mod tests {
         assert!(coverage.has_partial_performance_coverage);
         assert!(!coverage.has_partial_status_coverage);
     }
+
+    #[test]
+    fn gateway_record_merges_with_same_message_id_local_record() {
+        // 回归用例：网关记录（ingress_kind=gateway、存储键 gateway:profile:gw-xxx）与
+        // 本地 claude_code 扫描记录共享同一上游响应 message_id → 必须归一化为
+        // `claude_code:{message_id}` 键并合并为单条 proxy_preferred fact，token/费用不再双计。
+        let local = local("claude_code", "chatcmpl-abc123", 1_700_000_000);
+        let mut input = input(vec![local]);
+        let mut gateway = proxy("api_gateway", "chatcmpl-abc123", 1_700_000_000_250);
+        gateway.ingress_kind = "gateway".to_string();
+        gateway.gateway_profile_id = Some("profile-1".to_string());
+        gateway.gateway_caller_label = Some("Claude Code".to_string());
+        gateway.canonical_request_key = Some("gateway:profile-1:gw-123-0".to_string());
+        input.raw_proxy_records = vec![gateway];
+
+        let facts = merge_realtime_facts(input);
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(
+            facts[0].coverage_origin,
+            CoverageOrigin::MergedProxyPreferred
+        );
+        assert_eq!(facts[0].tool, "claude_code");
+        assert_eq!(
+            facts[0].canonical_request_key,
+            "claude_code:chatcmpl-abc123"
+        );
+        let coverage = build_coverage(&facts);
+        assert_eq!(coverage.proxy_backed_requests, 1);
+        assert_eq!(coverage.merged_overlap_requests, 1);
+        assert_eq!(coverage.local_only_requests, 0);
+    }
+
+    #[test]
+    fn gateway_record_unrecognized_label_stays_isolated() {
+        // label 归一化失败（Cursor 不在白名单）→ 网关记录回退存储层键，与本地记录
+        // 各自独立成 fact，绝不误合并。
+        let local = local("claude_code", "chatcmpl-abc123", 1_700_000_000);
+        let mut input = input(vec![local]);
+        let mut gateway = proxy("api_gateway", "chatcmpl-abc123", 1_700_000_000_250);
+        gateway.ingress_kind = "gateway".to_string();
+        gateway.gateway_profile_id = Some("profile-1".to_string());
+        gateway.gateway_caller_label = Some("Cursor".to_string());
+        gateway.canonical_request_key = Some("gateway:profile-1:gw-123-0".to_string());
+        input.raw_proxy_records = vec![gateway];
+
+        let facts = merge_realtime_facts(input);
+
+        assert_eq!(facts.len(), 2);
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|f| f.coverage_origin == CoverageOrigin::LocalOnly)
+                .count(),
+            1
+        );
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|f| f.coverage_origin == CoverageOrigin::ProxyOnly)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn gateway_record_with_fallback_message_id_stays_isolated() {
+        // fallback 合成 message_id → 不参与归一化合并，保持 api_gateway 孤立显示。
+        let local = local("claude_code", "chatcmpl-abc123", 1_700_000_000);
+        let mut input = input(vec![local]);
+        let mut gateway = proxy(
+            "api_gateway",
+            "claude_usage_missing_1700000000_200",
+            1_700_000_000_250,
+        );
+        gateway.ingress_kind = "gateway".to_string();
+        gateway.gateway_profile_id = Some("profile-1".to_string());
+        gateway.gateway_caller_label = Some("Claude Code".to_string());
+        gateway.canonical_request_key = Some("gateway:profile-1:gw-123-0".to_string());
+        input.raw_proxy_records = vec![gateway];
+
+        let facts = merge_realtime_facts(input);
+
+        assert_eq!(facts.len(), 2);
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|f| f.coverage_origin == CoverageOrigin::ProxyOnly)
+                .count(),
+            1
+        );
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|f| f.coverage_origin == CoverageOrigin::LocalOnly)
+                .count(),
+            1
+        );
+    }
 }

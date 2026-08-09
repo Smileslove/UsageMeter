@@ -2,6 +2,11 @@ use std::collections::HashMap;
 
 use crate::models::SourceFilter;
 use crate::proxy::UsageRecord;
+use crate::session::constants::{
+    TOOL_CLAUDE_CODE, TOOL_CODEX, TOOL_COPILOT, TOOL_GEMINI, TOOL_HERMES, TOOL_OPENCLAW,
+    TOOL_OPENCODE, TOOL_QODER_CLI, TOOL_QODER_IDE, TOOL_QODER_IDE_CN, TOOL_QODER_WORK,
+    TOOL_QODER_WORK_CN, TOOL_REASONIX,
+};
 use crate::session::{LocalRequestRecord, SessionMeta};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,7 +94,90 @@ pub(crate) fn canonical_request_key_for_local(record: &LocalRequestRecord) -> St
     }
 }
 
+/// 网关（api_gateway）记录在转发器无法从上游响应提取真实 id 时合成的 fallback
+/// message_id 标记（如 `claude_usage_missing_{ts}_{status}`、`gemini_usage_missing_*`、
+/// `codex_usage_missing_*`、`anthropic_usage_missing_*`、`codex_{ts}_{n}`）。
+/// 这类 id 与本地扫描的 message_id 不匹配同一物理请求，绝不能参与 gateway → 本地键的
+/// 归一化合并。
+const GATEWAY_FALLBACK_ID_MARKERS: [&str; 4] = [
+    "usage_missing",
+    "fallback",
+    "missing",
+    // OpenAI 转发器 `next_openai_fallback_message_id` 生成的 `codex_{ts}_{n}`
+    // 不含上述任何子串；本地 Codex 扫描的 message_id 是 `codex:{session}:{index}`
+    // （冒号分隔），因此 `codex_` 下划线前缀不会误伤真实 id。
+    "codex_",
+];
+
+/// 判断网关记录 message_id 是否为 fallback 合成 id（含 `usage_missing` / `fallback` /
+/// `missing` 子串）。命中 → true（不允许参与归一化合并）。
+fn is_gateway_fallback_message_id(message_id: &str) -> bool {
+    let lower = message_id.to_ascii_lowercase();
+    GATEWAY_FALLBACK_ID_MARKERS
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+/// 将网关调用者 label（`X-UsageMeter-Client` 头、profile client_label 或 managed-key
+/// remark）归一化为本地扫描工具白名单（session/constants.rs）内的 tool_id。
+///
+/// 归一化策略：label 转小写、去除非字母数字字符后，与白名单工具 id 的紧凑形式比对，
+/// 并兼容少量常见展示名变体（如 "Claude"、"Codex CLI"、"Gemini CLI"、"Qoder"、
+/// "GitHub Copilot"）。label 是用户自定义展示名，可能匹配不到任何白名单工具
+/// （例如 Cursor）——此时返回 None，调用方回退网关孤立键，避免误合并。
+fn normalize_gateway_caller_label(label: &str) -> Option<&'static str> {
+    let compact: String = label
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    match compact.as_str() {
+        "claudecode" | "claude" => Some(TOOL_CLAUDE_CODE),
+        "codex" | "codexcli" => Some(TOOL_CODEX),
+        "openclaw" => Some(TOOL_OPENCLAW),
+        "opencode" | "opencodeai" => Some(TOOL_OPENCODE),
+        "reasonix" => Some(TOOL_REASONIX),
+        "gemini" | "geminicli" => Some(TOOL_GEMINI),
+        "hermes" => Some(TOOL_HERMES),
+        "qoder" | "qoderide" => Some(TOOL_QODER_IDE),
+        "qoderidecn" => Some(TOOL_QODER_IDE_CN),
+        "qodercli" => Some(TOOL_QODER_CLI),
+        "qoderwork" => Some(TOOL_QODER_WORK),
+        "qoderworkcn" => Some(TOOL_QODER_WORK_CN),
+        "copilot" | "githubcopilot" => Some(TOOL_COPILOT),
+        _ => None,
+    }
+}
+
 pub(crate) fn canonical_request_key_for_proxy(record: &UsageRecord) -> String {
+    // 网关记录（ingress_kind == "gateway"）的存储层键固定为
+    // `gateway:{profile_id}:{gateway_request_id}`（见 proxy/database/session.rs 与
+    // ingest.rs），与本地扫描键 `{tool}:{message_id}` 永不相等，导致同一物理请求在
+    // unified_usage 合并时生成两条 fact，token/费用双计。
+    //
+    // 网关记录的 message_id 来自上游真实响应 id（OpenAI chatcmpl-*/resp_*、
+    // Anthropic msg_*、Gemini responseId），与 Claude Code 本地扫描的 message_id
+    // 同源相等（match_support.rs 的 attach_proxy_session_ids 正是用本地
+    // message_id → session_id 回填网关记录的 session_id）。因此当 message_id 可靠
+    // （非空、非 fallback 合成 id）且 caller label 能归一化为白名单 tool_id 时，
+    // 直接返回 `{tool_id}:{message_id}` 对齐本地键，触发 merge_engine 的
+    // proxy_preferred 合并分支。
+    //
+    // 归一化失败 / message_id 为空 / fallback id → 回退现有逻辑（存储层
+    // canonical_request_key 优先），保持 api_gateway 孤立显示，避免误合并。
+    if record.ingress_kind == "gateway" {
+        let message_id = record.message_id.trim();
+        if !message_id.is_empty() && !is_gateway_fallback_message_id(message_id) {
+            if let Some(tool_id) = record
+                .gateway_caller_label
+                .as_deref()
+                .and_then(normalize_gateway_caller_label)
+            {
+                return format!("{tool_id}:{message_id}");
+            }
+        }
+    }
     if let Some(key) = record.canonical_request_key.as_ref() {
         let trimmed = key.trim();
         if !trimmed.is_empty() {
@@ -1362,5 +1450,153 @@ mod tests {
             session_meta_lookup_key_for_proxy("claude_code", "sess-1"),
             "sess-1"
         );
+    }
+
+    fn gateway_proxy_with(
+        message_id: &str,
+        caller_label: Option<&str>,
+        canonical_key: Option<&str>,
+    ) -> UsageRecord {
+        UsageRecord {
+            timestamp: 1_700_000_000_500,
+            message_id: message_id.to_string(),
+            canonical_request_key: canonical_key.map(str::to_string),
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_create_tokens: 0,
+            cache_read_tokens: 0,
+            total_tokens: 150,
+            model: "claude-3-5-sonnet".to_string(),
+            session_id: Some("proxy-session".to_string()),
+            status_code: 200,
+            duration_ms: 5_000,
+            estimated_cost: 0.01,
+            client_tool: "api_gateway".to_string(),
+            ingress_kind: "gateway".to_string(),
+            gateway_profile_id: Some("profile-1".to_string()),
+            gateway_caller_label: caller_label.map(str::to_string),
+            gateway_request_id: Some("gw-123-0".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn gateway_label_hit_returns_tool_message_key() {
+        // 网关 message_id（上游真实响应 id）+ 可归一化的 caller label → 返回
+        // `{tool_id}:{message_id}`，与本地扫描键对齐，从而触发 proxy_preferred 合并。
+        let record = gateway_proxy_with(
+            "chatcmpl-abc123",
+            Some("Claude Code"),
+            Some("gateway:profile-1:gw-123-0"),
+        );
+        assert_eq!(
+            canonical_request_key_for_proxy(&record),
+            "claude_code:chatcmpl-abc123"
+        );
+    }
+
+    #[test]
+    fn gateway_label_miss_falls_back_to_storage_key() {
+        // label 归一化失败（非白名单工具，如 Cursor）→ 回退存储层
+        // `gateway:{profile_id}:{request_id}` 现状，保持 api_gateway 孤立显示。
+        let record = gateway_proxy_with(
+            "chatcmpl-abc123",
+            Some("Cursor"),
+            Some("gateway:profile-1:gw-123-0"),
+        );
+        assert_eq!(
+            canonical_request_key_for_proxy(&record),
+            "gateway:profile-1:gw-123-0"
+        );
+    }
+
+    #[test]
+    fn gateway_empty_message_id_falls_back() {
+        // message_id 为空 → 不参与归一化合并，回退存储层键。
+        let record =
+            gateway_proxy_with("", Some("Claude Code"), Some("gateway:profile-1:gw-123-0"));
+        assert_eq!(
+            canonical_request_key_for_proxy(&record),
+            "gateway:profile-1:gw-123-0"
+        );
+    }
+
+    #[test]
+    fn gateway_fallback_message_id_falls_back() {
+        // fallback 合成 id（转发器无法提取真实响应 id 时生成）→ 回退存储层键，
+        // 避免与本地扫描记录误合并。
+        for message_id in [
+            "claude_usage_missing_1700000000_200",
+            "gemini_usage_missing_1700000000_429",
+            "codex_usage_missing_1700000000_200",
+            "anthropic_usage_missing_1700000000_200",
+        ] {
+            let record = gateway_proxy_with(
+                message_id,
+                Some("Claude Code"),
+                Some("gateway:profile-1:gw-123-0"),
+            );
+            assert_eq!(
+                canonical_request_key_for_proxy(&record),
+                "gateway:profile-1:gw-123-0",
+                "message_id: {message_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn gateway_caller_label_matches_whitelisted_tools() {
+        let cases = [
+            ("claude_code", TOOL_CLAUDE_CODE),
+            ("Claude Code", TOOL_CLAUDE_CODE),
+            ("claude", TOOL_CLAUDE_CODE),
+            ("codex", TOOL_CODEX),
+            ("Codex CLI", TOOL_CODEX),
+            ("openclaw", TOOL_OPENCLAW),
+            ("opencode", TOOL_OPENCODE),
+            ("OpenCode", TOOL_OPENCODE),
+            ("reasonix", TOOL_REASONIX),
+            ("gemini", TOOL_GEMINI),
+            ("Gemini CLI", TOOL_GEMINI),
+            ("hermes", TOOL_HERMES),
+            ("qoder_ide", TOOL_QODER_IDE),
+            ("Qoder", TOOL_QODER_IDE),
+            ("qoder_ide_cn", TOOL_QODER_IDE_CN),
+            ("qoder_cli", TOOL_QODER_CLI),
+            ("qoder_work", TOOL_QODER_WORK),
+            ("qoder_work_cn", TOOL_QODER_WORK_CN),
+            ("copilot", TOOL_COPILOT),
+            ("GitHub Copilot", TOOL_COPILOT),
+        ];
+        for (label, expected) in cases {
+            assert_eq!(
+                normalize_gateway_caller_label(label),
+                Some(expected),
+                "label: {label}"
+            );
+        }
+        // 非白名单 label 一律回退，绝不误合并。
+        for label in ["Cursor", "", "Trae", "Windsurf", "unknown"] {
+            assert_eq!(
+                normalize_gateway_caller_label(label),
+                None,
+                "label: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn gateway_fallback_id_detection_covers_all_synthetic_markers() {
+        assert!(is_gateway_fallback_message_id("claude_usage_missing_1_200"));
+        assert!(is_gateway_fallback_message_id("codex_fallback_abc"));
+        assert!(is_gateway_fallback_message_id(
+            "anthropic_usage_missing_1_500"
+        ));
+        // OpenAI 转发器合成的 `codex_{ts}_{n}`（无 usage_missing 子串）必须被拦截
+        assert!(is_gateway_fallback_message_id("codex_1700000000100_3"));
+        assert!(!is_gateway_fallback_message_id("chatcmpl-abc123"));
+        assert!(!is_gateway_fallback_message_id("msg_01AbCdef"));
+        // 本地 Codex 扫描的 message_id 是 `codex:{session}:{index}`（冒号分隔），不得误伤
+        assert!(!is_gateway_fallback_message_id("codex:rollout-abc-123:42"));
     }
 }
