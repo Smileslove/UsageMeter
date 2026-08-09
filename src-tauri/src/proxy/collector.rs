@@ -62,9 +62,15 @@ impl UsageCollector {
     }
 
     /// 创建新的使用量收集器（带数据库持久化）
+    ///
+    /// 复用进程级全局数据库实例：启动期多个 tokio worker 可能并发构造
+    /// 收集器（如被动代理监控与代理服务器启动），若各自 `ProxyDatabase::new()`
+    /// 打开独立连接并并发跑 schema 迁移，SQLite 单写者会报 `database is locked`。
+    /// 全局单例 + 初始化互斥（见 `ProxyDatabase::get_or_create_global`）保证
+    /// 迁移只执行一次且串行化。
     pub fn new() -> Self {
         Self {
-            database: Arc::new(ProxyDatabase::new().expect("Failed to initialize database")),
+            database: ProxyDatabase::get_or_create_global().expect("Failed to initialize database"),
             recent_records: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             max_recent: 1000,
             session_reconciliation: ProxySessionReconciliationService::default(),

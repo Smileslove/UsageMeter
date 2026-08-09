@@ -10,6 +10,14 @@ use std::time::Duration;
 /// 全局数据库实例（用于查询操作，避免重复打开连接）
 static GLOBAL_DB: OnceLock<Arc<ProxyDatabase>> = OnceLock::new();
 
+/// 进程级初始化互斥：SQLite 是单写者模型，多个线程并发打开连接并执行
+/// schema 迁移（写事务）时，在“都已读后升级写锁”等场景下 busy handler
+/// 不会等待，会直接报 `database is locked`。用这把锁将 pragma / 建表 /
+/// 迁移等初始化写段串行化，从根上消除启动期并发初始化的锁竞争。
+/// 同时兼任全局单例创建的互斥：`get_or_create_global` 的“检查-创建-
+/// 缓存”整体在锁内完成，保证全局实例只初始化一次、迁移只执行一次。
+static INIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub(crate) const LEGACY_UNMATCHED_SESSION_ID: &str = "__legacy_unmatched__";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -98,17 +106,28 @@ impl ProxyDatabase {
     /// 如果不存在，返回 None
     pub fn get_global() -> Option<Arc<ProxyDatabase>> {
         GLOBAL_DB.get().cloned().or_else(|| {
-            // 尝试初始化全局实例
             let db_path = Self::get_db_path().ok()?;
-            if db_path.exists() {
-                if let Ok(db) = Self::new_with_path(&db_path) {
-                    let db = Arc::new(db);
-                    let _ = GLOBAL_DB.set(db.clone());
-                    return Some(db);
-                }
+            if !db_path.exists() {
+                return None;
             }
-            None
+            Self::get_or_create_global().ok()
         })
+    }
+
+    /// 获取全局数据库实例；尚未初始化时创建并缓存（文件不存在也会创建）。
+    /// 并发安全：整个“检查-创建-缓存”在 `INIT_LOCK` 内原子完成，严格
+    /// 保证全局单例只初始化一次、schema 迁移只执行一次。
+    pub fn get_or_create_global() -> Result<Arc<ProxyDatabase>, String> {
+        let _init_guard = INIT_LOCK
+            .lock()
+            .map_err(|e| format!("Failed to lock database initialization: {e}"))?;
+        if let Some(db) = GLOBAL_DB.get() {
+            return Ok(db.clone());
+        }
+        let db_path = Self::get_db_path()?;
+        let db = Arc::new(Self::new_with_path_unlocked(&db_path)?);
+        let _ = GLOBAL_DB.set(db.clone());
+        Ok(db)
     }
 
     /// 创建新的数据库连接
@@ -128,6 +147,9 @@ impl ProxyDatabase {
         }
         let conn = Connection::open(&db_path)
             .map_err(|e| format!("Failed to open pricing database: {}", e))?;
+        let _init_guard = INIT_LOCK
+            .lock()
+            .map_err(|e| format!("Failed to lock pricing database initialization: {e}"))?;
         conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| format!("Failed to enable pricing WAL mode: {}", e))?;
         conn.pragma_update(None, "wal_autocheckpoint", 1000_i64)
@@ -142,8 +164,17 @@ impl ProxyDatabase {
         })
     }
 
-    /// 使用指定路径创建数据库连接（用于独立查询）
+    /// 使用指定路径创建数据库连接（用于独立查询）。初始化写段由
+    /// `INIT_LOCK` 串行化，避免并发打开连接时互相撞写锁。
     pub fn new_with_path(db_path: &PathBuf) -> Result<Self, String> {
+        let _init_guard = INIT_LOCK
+            .lock()
+            .map_err(|e| format!("Failed to lock database initialization: {e}"))?;
+        Self::new_with_path_unlocked(db_path)
+    }
+
+    /// 初始化主体：调用方必须已持有 `INIT_LOCK`（见 `new_with_path`）。
+    fn new_with_path_unlocked(db_path: &PathBuf) -> Result<Self, String> {
         // 确保父目录存在
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)
@@ -282,4 +313,36 @@ pub struct StatusCodeDistribution {
     pub status_code: i64,
     pub count: i64,
     pub category: String, // "success", "client_error", "server_error" 成功、客户端错误、服务端错误
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归测试：多个线程并发初始化同一个数据库文件时，不得因
+    /// `database is locked` 失败。此前 UsageCollector 在启动期被多个
+    /// tokio worker 并发构造，各自打开独立连接并并发跑 schema 迁移
+    /// （写事务），SQLite 单写者锁竞争导致 panic。
+    #[test]
+    fn concurrent_new_with_path_initialization_succeeds() {
+        // tempdir 随 drop 自动清理，测试不残留临时数据。
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = dir.path().join("proxy_data.db");
+
+        let threads: Vec<_> = (0..6)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || ProxyDatabase::new_with_path(&path))
+            })
+            .collect();
+
+        for thread in threads {
+            let result = thread.join().expect("init thread panicked");
+            assert!(
+                result.is_ok(),
+                "concurrent database initialization failed: {:?}",
+                result.err()
+            );
+        }
+    }
 }
