@@ -152,23 +152,68 @@ mod tests {
         };
 
         let json = serde_json::to_string(&event).unwrap();
-        assert!(json.contains("profile_created"));
-        assert!(json.contains("gateway-test"));
+        // 解析回对象逐字段断言，验证 camelCase 序列化与字段齐全（而非 contains 弱断言）。
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["eventType"], "profile_created");
+        assert_eq!(value["profileId"], "gateway-test");
+        assert_eq!(value["actor"], "admin");
+        assert_eq!(value["result"], "success");
+        assert_eq!(value["details"]["name"], "Test Profile");
+        assert!(value["timestampMs"].is_number());
     }
 
     #[test]
-    fn auditor_logs_without_panic() {
-        let auditor = GatewayAuditor::new();
+    fn auditor_writes_structured_json_to_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("audit.log");
+        let auditor = GatewayAuditor::with_file(log_path.clone()).expect("auditor with file");
         let event = GatewayAuditEvent {
-            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            timestamp_ms: 1_234_567_890,
+            event_type: GatewayAuditEventType::UpstreamKeyAdded,
+            profile_id: "profile-1".to_string(),
+            actor: Some("admin".to_string()),
+            details: serde_json::json!({ "key_id": "k1" }),
+            result: AuditResult::Failure {
+                reason: "bad key".to_string(),
+            },
+        };
+
+        auditor.log(event);
+        drop(auditor); // 关闭文件句柄确保内容落盘
+
+        let content = std::fs::read_to_string(&log_path).expect("audit file written");
+        let parsed: serde_json::Value =
+            serde_json::from_str(content.trim()).expect("audit line is valid JSON");
+        assert_eq!(parsed["eventType"].as_str(), Some("upstream_key_added"));
+        assert_eq!(parsed["profileId"].as_str(), Some("profile-1"));
+        assert_eq!(parsed["actor"].as_str(), Some("admin"));
+        assert_eq!(parsed["timestampMs"].as_i64(), Some(1_234_567_890));
+        assert_eq!(parsed["details"]["key_id"].as_str(), Some("k1"));
+        assert_eq!(
+            parsed["result"],
+            serde_json::json!({ "failure": { "reason": "bad key" } })
+        );
+    }
+
+    #[test]
+    fn auditor_disabled_does_not_write_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("audit-disabled.log");
+        let mut auditor = GatewayAuditor::with_file(log_path.clone()).expect("auditor with file");
+        auditor.disable();
+        auditor.log(GatewayAuditEvent {
+            timestamp_ms: 1,
             event_type: GatewayAuditEventType::RequestForwarded,
             profile_id: "test".to_string(),
             actor: None,
             details: serde_json::json!({}),
             result: AuditResult::Success,
-        };
+        });
+        drop(auditor);
 
-        auditor.log(event);
-        // Should not panic
+        assert_eq!(
+            std::fs::read_to_string(&log_path).expect("audit file exists"),
+            ""
+        );
     }
 }

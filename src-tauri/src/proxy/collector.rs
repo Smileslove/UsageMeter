@@ -368,83 +368,111 @@ impl Default for UsageCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Duration, Local};
 
     #[test]
-    fn test_window_cutoff_calculation() {
-        // 测试窗口截止时间计算是否正确
-        let now = Local::now();
-        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
+    fn window_cutoff_sliding_windows_are_now_minus_duration() {
+        // 注入显式 now 与显式 settings：不读真实 ~/.usagemeter/settings.json，
+        // 不依赖墙钟，滑动窗口截止时间可精确断言（而非 ±1s 容差）。
+        let settings = crate::models::AppSettings::default();
+        let now = 1_700_000_000i64; // 固定参照点（2023-11-14 左右）
 
-        // 5h 滑动窗口：应该约为 5 小时前
-        let cutoff_5h = UsageCollector::calculate_window_cutoff("5h");
-        let expected_5h = (now - Duration::hours(5)).timestamp_millis();
-        // 允许 1 秒误差
-        assert!((cutoff_5h - expected_5h).abs() < 1000);
-
-        // 24h 滑动窗口：应该约为 24 小时前
-        let cutoff_24h = UsageCollector::calculate_window_cutoff("24h");
-        let expected_24h = (now - Duration::hours(24)).timestamp_millis();
-        assert!((cutoff_24h - expected_24h).abs() < 1000);
-
-        // today 业务日：应该与业务日边界一致
-        let cutoff_today = UsageCollector::calculate_window_cutoff("today");
-        let expected_today =
-            crate::utils::business_time::business_window_cutoff_epoch("today", &settings) * 1000;
-        assert_eq!(cutoff_today, expected_today);
-
-        // 7d 滑动窗口：应该约为 7 天前
-        let cutoff_7d = UsageCollector::calculate_window_cutoff("7d");
-        let expected_7d = (now - Duration::days(7)).timestamp_millis();
-        assert!((cutoff_7d - expected_7d).abs() < 1000);
-
-        // 30d 滑动窗口：应该约为 30 天前
-        let cutoff_30d = UsageCollector::calculate_window_cutoff("30d");
-        let expected_30d = (now - Duration::days(30)).timestamp_millis();
-        assert!((cutoff_30d - expected_30d).abs() < 1000);
-
-        // current_month 业务月：应该与业务月边界一致
-        let cutoff_current_month = UsageCollector::calculate_window_cutoff("current_month");
-        let expected_current_month =
-            crate::utils::business_time::business_window_cutoff_epoch("current_month", &settings)
-                * 1000;
-        assert_eq!(cutoff_current_month, expected_current_month);
+        for (window, hours) in [("5h", 5), ("24h", 24), ("7d", 7 * 24), ("30d", 30 * 24)] {
+            let cutoff = crate::utils::business_time::business_window_cutoff_epoch_at(
+                window, &settings, now,
+            );
+            assert_eq!(
+                cutoff,
+                now - hours * 3600,
+                "{window} cutoff must be exactly now - {hours}h"
+            );
+        }
     }
 
     #[test]
-    fn test_window_ordering() {
-        // 验证窗口截止时间的逻辑正确性
-        let cutoff_5h = UsageCollector::calculate_window_cutoff("5h");
-        let cutoff_24h = UsageCollector::calculate_window_cutoff("24h");
-        let cutoff_today = UsageCollector::calculate_window_cutoff("today");
-        let cutoff_7d = UsageCollector::calculate_window_cutoff("7d");
-        let cutoff_30d = UsageCollector::calculate_window_cutoff("30d");
-        let cutoff_current_month = UsageCollector::calculate_window_cutoff("current_month");
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as i64;
+    fn window_cutoff_business_windows_align_with_business_day_boundaries() {
+        // today / current_month 依赖本地时区，但与业务日边界计算自洽：
+        // 同一注入 now 下，截止时间必须等于业务日/业务月起点。
+        let settings = crate::models::AppSettings::default();
+        let now = 1_700_000_000i64;
 
-        // current_month 是本月第一天，30d 是30天前
-        // 如果当前是月中之后，current_month 会晚于 30d
-        // 如果当前是月初，两者可能接近或 current_month 更早
-        // 这里只验证它们都是合理的时间戳
-        assert!(cutoff_current_month > 0);
-        assert!(cutoff_30d > 0);
+        let today_cutoff =
+            crate::utils::business_time::business_window_cutoff_epoch_at("today", &settings, now);
+        let today_label = crate::utils::business_time::business_date_for_timestamp(now, &settings);
+        let (today_start, _) =
+            crate::utils::business_time::business_date_epoch_bounds(&today_label, &settings)
+                .expect("today bounds");
+        assert_eq!(
+            today_cutoff, today_start,
+            "today cutoff = business day start"
+        );
 
-        // 验证滑动窗口的顺序：30d <= 7d（30天前早于或等于7天前）
-        assert!(cutoff_30d <= cutoff_7d);
-        // 所有截止时间都应该在过去
-        assert!(cutoff_5h < now);
-        assert!(cutoff_24h < now);
-        assert!(cutoff_today < now);
-        assert!(cutoff_7d < now);
-        assert!(cutoff_30d < now);
-        assert!(cutoff_current_month < now);
+        let month_cutoff = crate::utils::business_time::business_window_cutoff_epoch_at(
+            "current_month",
+            &settings,
+            now,
+        );
+        // current_month 应等于"当前业务月 1 号的业务日边界"。
+        let month_label = crate::utils::business_time::business_date_for_timestamp(now, &settings);
+        let first_of_month = {
+            let mut parts = month_label.split('-');
+            let year: i32 = parts.next().unwrap().parse().unwrap();
+            let month: u32 = parts.next().unwrap().parse().unwrap();
+            format!("{year:04}-{month:02}-01")
+        };
+        let (month_start, _) =
+            crate::utils::business_time::business_date_epoch_bounds(&first_of_month, &settings)
+                .expect("month bounds");
+        assert_eq!(
+            month_cutoff, month_start,
+            "current_month cutoff = month start"
+        );
+    }
+
+    #[test]
+    fn window_cutoff_ordering_holds_for_injected_now() {
+        // 用注入 now 验证窗口顺序，不依赖墙钟与真实 settings。
+        let settings = crate::models::AppSettings::default();
+        let now = 1_700_000_000i64;
+
+        let cutoff_5h =
+            crate::utils::business_time::business_window_cutoff_epoch_at("5h", &settings, now);
+        let cutoff_24h =
+            crate::utils::business_time::business_window_cutoff_epoch_at("24h", &settings, now);
+        let cutoff_7d =
+            crate::utils::business_time::business_window_cutoff_epoch_at("7d", &settings, now);
+        let cutoff_30d =
+            crate::utils::business_time::business_window_cutoff_epoch_at("30d", &settings, now);
+        let cutoff_today =
+            crate::utils::business_time::business_window_cutoff_epoch_at("today", &settings, now);
+        let cutoff_current_month = crate::utils::business_time::business_window_cutoff_epoch_at(
+            "current_month",
+            &settings,
+            now,
+        );
+
+        // 滑动窗口严格递增：30d 最早，5h 最晚。
+        assert!(cutoff_30d < cutoff_7d);
+        assert!(cutoff_7d < cutoff_24h);
+        assert!(cutoff_24h < cutoff_5h);
+        // 所有截止时间都在注入 now 之前。
+        for cutoff in [
+            cutoff_5h,
+            cutoff_24h,
+            cutoff_today,
+            cutoff_7d,
+            cutoff_30d,
+            cutoff_current_month,
+        ] {
+            assert!(cutoff < now, "cutoff {cutoff} must be in the past");
+        }
     }
 
     #[tokio::test]
-    async fn test_record_creation() {
+    async fn record_persists_full_fields_into_recent_cache() {
+        let path = tempfile::tempdir().unwrap().path().join("collector.db");
+        let collector = UsageCollector::with_database(Arc::new(
+            ProxyDatabase::new_with_path(&path).expect("open temp db"),
+        ));
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -478,10 +506,19 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(record.message_id, "test-msg");
-        assert_eq!(record.total_tokens, 330); // input(100) + cache_create(10) + cache_read(20) + output(200)
-        assert_eq!(record.duration_ms, 5000);
-        assert_eq!(record.output_tokens_per_second, Some(40.0));
+        collector.record(record.clone()).await;
+
+        let recent = collector.recent_records.read().await;
+        let stored = recent
+            .iter()
+            .find(|r| r.message_id == "test-msg")
+            .expect("recorded record must be visible in recent cache");
+        assert_eq!(stored.message_id, "test-msg");
+        assert_eq!(stored.total_tokens, 330); // input(100) + cache_create(10) + cache_read(20) + output(200)
+        assert_eq!(stored.duration_ms, 5000);
+        assert_eq!(stored.output_tokens_per_second, Some(40.0));
+        assert_eq!(stored.model, "claude-sonnet-4");
+        assert_eq!(stored.session_id.as_deref(), Some("session-123"));
     }
 
     #[tokio::test]

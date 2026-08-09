@@ -293,6 +293,15 @@ fn migrate_legacy_registry_data(
 mod tests {
     use super::*;
 
+    /// 唯一测试目录（纳秒时间戳），避免固定 temp 文件名在多进程/残留文件间互相干扰。
+    fn unique_test_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("usagemeter_{label}_{nanos}"))
+    }
+
     fn settings_with_hook(command: &str) -> ClaudeSettings {
         let mut settings = ClaudeSettings::default();
         settings.env.insert(
@@ -336,7 +345,7 @@ mod tests {
         );
 
         let registry = ProxySourceRegistry {
-            path: std::env::temp_dir().join("usagemeter_upsert_placeholder_test.json"),
+            path: unique_test_dir("upsert_placeholder").join("registry.json"),
         };
         let err = registry.upsert_from_settings(&settings).unwrap_err();
         assert!(err.contains("placeholder"));
@@ -364,8 +373,7 @@ mod tests {
             );
 
             let registry = ProxySourceRegistry {
-                path: std::env::temp_dir()
-                    .join(format!("usagemeter_upsert_placeholder_{key}_test.json")),
+                path: unique_test_dir(&format!("upsert_placeholder_{key}")).join("registry.json"),
             };
             let err = registry.upsert_from_settings(&settings).unwrap_err();
             assert!(err.contains("placeholder"), "{key} should be rejected");

@@ -328,20 +328,26 @@ fn env_get(content: &str, key: &str) -> Option<String> {
 }
 
 fn env_set(content: &str, key: &str, value: &str) -> String {
-    let new_line = format!("{key}={value}");
     let mut replaced = false;
     let mut out: Vec<String> = content
         .lines()
         .map(|line| match parse_env_line(line) {
             Some((k, _)) if k == key => {
                 replaced = true;
-                new_line.clone()
+                // 保留原行的 export 前缀：Gemini CLI 需要 `export KEY=...` 形式的行，
+                // 直接改写为 `KEY=...` 会导致读取不到。
+                let export_prefix = if line.trim_start().starts_with("export ") {
+                    "export "
+                } else {
+                    ""
+                };
+                format!("{export_prefix}{key}={value}")
             }
             _ => line.to_string(),
         })
         .collect();
     if !replaced {
-        out.push(new_line);
+        out.push(format!("{key}={value}"));
     }
     finalize_env(out)
 }
@@ -393,19 +399,40 @@ mod tests {
     use super::*;
 
     #[test]
-    fn env_set_replaces_existing_key_only() {
+    fn env_line_editing_round_trip_preserves_other_keys() {
+        // 单文件内行编辑往返（set → get → remove）：其他键与注释始终保留。
         let content =
             "GEMINI_API_KEY=secret\nGOOGLE_GEMINI_BASE_URL=https://old.example\n# comment\n";
+        let proxy_url = "http://127.0.0.1:18765/usagemeter/gemini/source/gm_1";
+
+        let updated = env_set(content, ENV_KEY, proxy_url);
+        assert!(updated.contains("GEMINI_API_KEY=secret"));
+        assert!(updated.contains("# comment"));
+        assert!(updated.contains(&format!("GOOGLE_GEMINI_BASE_URL={proxy_url}")));
+        assert!(!updated.contains("https://old.example"));
+        assert_eq!(env_get(&updated, ENV_KEY).as_deref(), Some(proxy_url));
+
+        let removed = env_remove(&updated, ENV_KEY);
+        assert!(removed.contains("GEMINI_API_KEY=secret"));
+        assert!(!removed.contains("GOOGLE_GEMINI_BASE_URL"));
+        assert_eq!(env_get(&removed, ENV_KEY), None);
+    }
+
+    #[test]
+    fn env_set_preserves_export_prefix_on_replacement() {
+        // 回归：env_set 改写 `export KEY=...` 行时不得丢失 export 前缀，
+        // 否则 Gemini CLI 读取不到。
+        let content =
+            "GEMINI_API_KEY=secret\nexport GOOGLE_GEMINI_BASE_URL=\"https://old.example\"\n";
         let updated = env_set(
             content,
             ENV_KEY,
             "http://127.0.0.1:18765/usagemeter/gemini/source/gm_1",
         );
-        assert!(updated.contains("GEMINI_API_KEY=secret"));
-        assert!(updated.contains("# comment"));
-        assert!(updated.contains(
-            "GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:18765/usagemeter/gemini/source/gm_1"
-        ));
+        assert!(updated.lines().any(|line| {
+            line
+            == "export GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:18765/usagemeter/gemini/source/gm_1"
+        }));
         assert!(!updated.contains("https://old.example"));
     }
 
@@ -415,14 +442,6 @@ mod tests {
         let updated = env_set(content, ENV_KEY, "http://proxy");
         assert!(updated.contains("GEMINI_API_KEY=secret"));
         assert!(updated.contains("GOOGLE_GEMINI_BASE_URL=http://proxy"));
-    }
-
-    #[test]
-    fn env_remove_drops_only_target_key() {
-        let content = "GEMINI_API_KEY=secret\nGOOGLE_GEMINI_BASE_URL=http://proxy\n";
-        let updated = env_remove(content, ENV_KEY);
-        assert!(updated.contains("GEMINI_API_KEY=secret"));
-        assert!(!updated.contains("GOOGLE_GEMINI_BASE_URL"));
     }
 
     #[test]

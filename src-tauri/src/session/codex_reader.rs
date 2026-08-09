@@ -909,11 +909,21 @@ mod tests {
         // rollout-a: event1 uses last (100-20=80 input, 10 out), event2 uses delta (50-10=40 input, 10 out)
         // rollout-b: event1 uses last (50-10=40 input, 5 out)
         assert_eq!(data.requests.len(), 3);
-        let total_input: u64 = data.requests.iter().map(|r| r.input_tokens).sum();
-        let total_output: u64 = data.requests.iter().map(|r| r.output_tokens).sum();
-        // Each rollout resets prev_total, so they're independent
-        assert!(total_input > 0);
-        assert!(total_output > 0);
+        // Each rollout resets prev_total, so they're independent — assert exact per-request values.
+        assert_eq!(data.requests[0].input_tokens, 80);
+        assert_eq!(data.requests[0].cache_read_tokens, 20);
+        assert_eq!(data.requests[0].output_tokens, 10);
+        assert_eq!(data.requests[0].total_tokens, 110);
+
+        assert_eq!(data.requests[1].input_tokens, 40);
+        assert_eq!(data.requests[1].cache_read_tokens, 10);
+        assert_eq!(data.requests[1].output_tokens, 10);
+        assert_eq!(data.requests[1].total_tokens, 60);
+
+        assert_eq!(data.requests[2].input_tokens, 40);
+        assert_eq!(data.requests[2].cache_read_tokens, 10);
+        assert_eq!(data.requests[2].output_tokens, 5);
+        assert_eq!(data.requests[2].total_tokens, 55);
     }
 
     #[test]

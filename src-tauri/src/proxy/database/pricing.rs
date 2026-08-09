@@ -458,10 +458,16 @@ impl ProxyDatabase {
             source: String::new(),
             last_updated: 0,
         };
-        let normalized = crate::models::normalize_model_id(filter.model_id);
         let matched_models: Vec<String> = all_models
             .into_iter()
-            .filter(|m| crate::models::fuzzy_match_score(m, &normalized, &pricing_config).is_some())
+            .filter(|m| {
+                // 注意：normalized_model 必须是候选 model 自身的归一化，而不是
+                // filter.model_id 的归一化——否则 fuzzy_match_score 第 4 级
+                // normalized_model.contains(normalized_pricing) 会因两值相同而
+                // 恒真，导致所有模型都被匹配。
+                let normalized_model = crate::models::normalize_model_id(m);
+                crate::models::fuzzy_match_score(m, &normalized_model, &pricing_config).is_some()
+            })
             .collect();
 
         if matched_models.is_empty() {
@@ -690,5 +696,374 @@ impl ProxyDatabase {
             }
         }
         Ok(total_updated)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::ModelPricingConfig;
+
+    fn temp_db() -> (tempfile::TempDir, ProxyDatabase) {
+        let tmpdir = tempfile::tempdir().expect("create temp dir");
+        let path = tmpdir.path().join("proxy_data.db");
+        let db = ProxyDatabase::new_with_path(&path).expect("open temp db");
+        (tmpdir, db)
+    }
+
+    fn insert_usage_record(
+        db: &ProxyDatabase,
+        timestamp: i64,
+        message_id: &str,
+        model: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        estimated_cost: f64,
+        cost_locked: bool,
+    ) {
+        let conn = db.conn.lock().expect("lock conn");
+        conn.execute(
+            r#"
+            INSERT INTO usage_records (
+                timestamp, message_id, storage_dedupe_key, model, input_tokens,
+                output_tokens, estimated_cost, cost_locked, client_tool,
+                session_resolution_state
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'claude_code', 'known')
+            "#,
+            rusqlite::params![
+                timestamp,
+                message_id,
+                format!("{model}:{message_id}"),
+                model,
+                input_tokens,
+                output_tokens,
+                estimated_cost,
+                cost_locked,
+            ],
+        )
+        .expect("insert usage record");
+    }
+
+    fn insert_pricing(db: &ProxyDatabase, pricing: &ModelPricingConfig) {
+        db.upsert_model_pricings(&[pricing.clone()])
+            .expect("upsert pricing");
+    }
+
+    fn pricing(
+        model_id: &str,
+        source: &str,
+        input_price: f64,
+        output_price: f64,
+    ) -> ModelPricingConfig {
+        ModelPricingConfig {
+            model_id: model_id.to_string(),
+            display_name: Some(model_id.to_string()),
+            input_price,
+            output_price,
+            cache_write_price: None,
+            cache_read_price: None,
+            source: source.to_string(),
+            last_updated: 1,
+        }
+    }
+
+    fn exact_filter(model_id: &str) -> PricingMatchFilter<'_> {
+        PricingMatchFilter {
+            model_id,
+            match_mode: "exact",
+            time_range_start: None,
+            time_range_end: None,
+            client_tool_filter: None,
+            api_source_key_prefixes: None,
+        }
+    }
+
+    #[test]
+    fn search_model_pricings_matches_substring_case_insensitive() {
+        let (_tmp, db) = temp_db();
+        insert_pricing(&db, &pricing("gpt-4o", "api", 5.0, 15.0));
+        insert_pricing(&db, &pricing("gpt-4o-mini", "api", 1.0, 2.0));
+        insert_pricing(&db, &pricing("claude-sonnet-4", "api", 3.0, 15.0));
+        insert_pricing(&db, &pricing("custom-local", "custom", 9.0, 9.0));
+
+        // 子串匹配 + 大小写不敏感；custom 源被排除。
+        let results = db
+            .search_model_pricings(Some("GPT-4O"), 100, 0)
+            .expect("search pricings");
+        let ids: Vec<&str> = results.iter().map(|p| p.model_id.as_str()).collect();
+        assert_eq!(ids, vec!["gpt-4o", "gpt-4o-mini"]);
+
+        // 无关键词返回全部同步模型（不含 custom），按 model_id 排序。
+        let all = db
+            .search_model_pricings(None, 100, 0)
+            .expect("list all synced");
+        let ids: Vec<&str> = all.iter().map(|p| p.model_id.as_str()).collect();
+        assert_eq!(ids, vec!["claude-sonnet-4", "gpt-4o", "gpt-4o-mini"]);
+    }
+
+    #[test]
+    fn search_model_pricings_respects_pagination_and_empty_results() {
+        let (_tmp, db) = temp_db();
+        insert_pricing(&db, &pricing("gpt-4o", "api", 5.0, 15.0));
+        insert_pricing(&db, &pricing("gpt-4o-mini", "api", 1.0, 2.0));
+        insert_pricing(&db, &pricing("claude-sonnet-4", "api", 3.0, 15.0));
+
+        let page = db.search_model_pricings(None, 2, 1).expect("paged search");
+        let ids: Vec<&str> = page.iter().map(|p| p.model_id.as_str()).collect();
+        assert_eq!(ids, vec!["gpt-4o", "gpt-4o-mini"]);
+
+        let none = db
+            .search_model_pricings(Some("zzz-not-exists"), 100, 0)
+            .expect("empty search");
+        assert!(none.is_empty());
+
+        assert_eq!(
+            db.count_synced_model_pricings(Some("gpt-4o"))
+                .expect("count synced"),
+            2
+        );
+    }
+
+    #[test]
+    fn get_custom_model_pricings_returns_only_custom_sources() {
+        let (_tmp, db) = temp_db();
+        insert_pricing(&db, &pricing("gpt-4o", "api", 5.0, 15.0));
+        insert_pricing(&db, &pricing("my-rag-model", "custom", 9.0, 9.0));
+
+        let customs = db.get_custom_model_pricings(None).expect("custom pricings");
+        let ids: Vec<&str> = customs.iter().map(|p| p.model_id.as_str()).collect();
+        assert_eq!(ids, vec!["my-rag-model"]);
+    }
+
+    #[tokio::test]
+    async fn preview_pricing_apply_exact_match_aggregates_unlocked_records() {
+        let (_tmp, db) = temp_db();
+        let now_ms = 1_800_000_000_000i64; // 固定时间戳，避免依赖当前时钟与跨天副作用
+        insert_usage_record(&db, now_ms, "m1", "gpt-4o", 1000, 500, 0.5, false);
+        insert_usage_record(&db, now_ms, "m2", "gpt-4o", 1000, 500, 1.5, true); // cost_locked 排除
+        insert_usage_record(&db, now_ms, "m3", "gpt-4o-mini", 1000, 500, 2.0, false);
+
+        let result = db
+            .preview_pricing_apply(&exact_filter("gpt-4o"))
+            .await
+            .expect("preview pricing apply");
+        assert_eq!(result.matched_count, 1);
+        assert!((result.total_current_cost - 0.5).abs() < f64::EPSILON);
+        assert_eq!(result.model_counts.len(), 1);
+        assert_eq!(result.model_counts[0].model, "gpt-4o");
+        assert_eq!(result.model_counts[0].count, 1);
+    }
+
+    #[tokio::test]
+    async fn preview_pricing_apply_fuzzy_match_finds_normalized_model_names() {
+        let (_tmp, db) = temp_db();
+        let now_ms = 1_800_000_000_000i64; // 固定时间戳，避免依赖当前时钟与跨天副作用
+        insert_usage_record(
+            &db,
+            now_ms,
+            "m1",
+            "gpt-4o-2024-05-13",
+            1000,
+            500,
+            0.5,
+            false,
+        );
+        insert_usage_record(
+            &db,
+            now_ms,
+            "m2",
+            "claude-sonnet-4-20250514",
+            1000,
+            500,
+            0.8,
+            false,
+        );
+
+        let filter = PricingMatchFilter {
+            model_id: "GPT-4O",
+            match_mode: "fuzzy",
+            time_range_start: None,
+            time_range_end: None,
+            client_tool_filter: None,
+            api_source_key_prefixes: None,
+        };
+        let result = db
+            .preview_pricing_apply(&filter)
+            .await
+            .expect("fuzzy preview");
+        assert_eq!(result.matched_count, 1);
+        assert_eq!(result.model_counts[0].model, "gpt-4o-2024-05-13");
+        assert!((result.total_current_cost - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn preview_pricing_apply_no_match_returns_empty_result() {
+        let (_tmp, db) = temp_db();
+        let now_ms = 1_800_000_000_000i64; // 固定时间戳，避免依赖当前时钟与跨天副作用
+        insert_usage_record(&db, now_ms, "m1", "gpt-4o", 1000, 500, 0.5, false);
+
+        let result = db
+            .preview_pricing_apply(&exact_filter("no-such-model"))
+            .await
+            .expect("preview no match");
+        assert_eq!(result.matched_count, 0);
+        assert_eq!(result.total_current_cost, 0.0);
+        assert!(result.model_counts.is_empty());
+
+        // 空库 fuzzy：matched_models 为空，同样返回空结果。
+        let (_tmp2, empty_db) = temp_db();
+        let fuzzy = PricingMatchFilter {
+            model_id: "gpt-4o",
+            match_mode: "fuzzy",
+            time_range_start: None,
+            time_range_end: None,
+            client_tool_filter: None,
+            api_source_key_prefixes: None,
+        };
+        let result = empty_db
+            .preview_pricing_apply(&fuzzy)
+            .await
+            .expect("fuzzy preview empty db");
+        assert_eq!(result.matched_count, 0);
+        assert!(result.model_counts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn preview_pricing_apply_respects_time_range_and_prefix_filters() {
+        let (_tmp, db) = temp_db();
+        insert_usage_record(&db, 1_000, "early", "gpt-4o", 1000, 500, 1.0, false);
+        insert_usage_record(&db, 2_000, "late", "gpt-4o", 1000, 500, 2.0, false);
+
+        let filter = PricingMatchFilter {
+            model_id: "gpt-4o",
+            match_mode: "exact",
+            time_range_start: Some(2_000),
+            time_range_end: None,
+            client_tool_filter: None,
+            api_source_key_prefixes: None,
+        };
+        let result = db
+            .preview_pricing_apply(&filter)
+            .await
+            .expect("preview time filtered");
+        assert_eq!(result.matched_count, 1);
+        assert!((result.total_current_cost - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn apply_pricing_to_records_backfills_cost_and_locks_records() {
+        let (_tmp, db) = temp_db();
+        let now_ms = 1_800_000_000_000i64; // 固定时间戳，避免依赖当前时钟与跨天副作用
+        insert_usage_record(&db, now_ms, "m1", "gpt-4o", 1_000_000, 500_000, 0.0, false);
+
+        let pricing_cfg = pricing("gpt-4o", "api", 5.0, 15.0);
+        let updated = db
+            .apply_pricing_to_records(&pricing_cfg, &exact_filter("gpt-4o"))
+            .await
+            .expect("apply pricing");
+        assert_eq!(updated, 1);
+
+        let conn = db.conn.lock().expect("lock conn");
+        let (cost_locked, estimated_cost, snapshot_id): (i64, f64, String) = conn
+            .query_row(
+                "SELECT cost_locked, estimated_cost, pricing_snapshot_id
+                 FROM usage_records WHERE message_id = 'm1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read backfilled record");
+        assert_eq!(cost_locked, 1);
+        // 1M input @ $5/M + 0.5M output @ $15/M = 5 + 7.5 = 12.5
+        assert!((estimated_cost - 12.5).abs() < 1e-9);
+        assert!(!snapshot_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn apply_pricing_to_records_no_match_returns_zero() {
+        let (_tmp, db) = temp_db();
+        let now_ms = 1_800_000_000_000i64; // 固定时间戳，避免依赖当前时钟与跨天副作用
+        insert_usage_record(&db, now_ms, "m1", "gpt-4o", 1000, 500, 0.0, false);
+
+        let updated = db
+            .apply_pricing_to_records(
+                &pricing("gpt-4o", "api", 5.0, 15.0),
+                &exact_filter("other-model"),
+            )
+            .await
+            .expect("apply pricing no match");
+        assert_eq!(updated, 0);
+    }
+
+    #[tokio::test]
+    async fn apply_pricing_to_records_skips_already_locked_records() {
+        let (_tmp, db) = temp_db();
+        let now_ms = 1_800_000_000_000i64; // 固定时间戳，避免依赖当前时钟与跨天副作用
+        insert_usage_record(&db, now_ms, "locked", "gpt-4o", 1000, 500, 0.3, true);
+        insert_usage_record(&db, now_ms, "unlocked", "gpt-4o", 1000, 500, 0.0, false);
+
+        let updated = db
+            .apply_pricing_to_records(
+                &pricing("gpt-4o", "api", 5.0, 15.0),
+                &exact_filter("gpt-4o"),
+            )
+            .await
+            .expect("apply pricing with locked record");
+        assert_eq!(updated, 1);
+
+        let conn = db.conn.lock().expect("lock conn");
+        let locked_cost: f64 = conn
+            .query_row(
+                "SELECT estimated_cost FROM usage_records WHERE message_id = 'locked'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read locked cost");
+        assert!((locked_cost - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn apply_pricing_to_records_time_range_filter_limits_backfill() {
+        let (_tmp, db) = temp_db();
+        // 两个时间戳都在“今天”内，避免历史日期触发 local DB 物化失效副作用。
+        let now_ms = 1_800_000_000_000i64; // 固定时间戳，避免依赖当前时钟与跨天副作用
+        let later_ms = now_ms + 60_000;
+        insert_usage_record(
+            &db, now_ms, "early", "gpt-4o", 1_000_000, 500_000, 0.0, false,
+        );
+        insert_usage_record(
+            &db, later_ms, "late", "gpt-4o", 1_000_000, 500_000, 0.0, false,
+        );
+
+        let filter = PricingMatchFilter {
+            model_id: "gpt-4o",
+            match_mode: "exact",
+            time_range_start: Some(now_ms + 30_000),
+            time_range_end: None,
+            client_tool_filter: None,
+            api_source_key_prefixes: None,
+        };
+        let updated = db
+            .apply_pricing_to_records(&pricing("gpt-4o", "api", 5.0, 15.0), &filter)
+            .await
+            .expect("apply pricing time filtered");
+        assert_eq!(updated, 1);
+
+        let conn = db.conn.lock().expect("lock conn");
+        let early_locked: i64 = conn
+            .query_row(
+                "SELECT cost_locked FROM usage_records WHERE message_id = 'early'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read early lock state");
+        assert_eq!(early_locked, 0);
+        let late_locked: i64 = conn
+            .query_row(
+                "SELECT cost_locked FROM usage_records WHERE message_id = 'late'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read late lock state");
+        assert_eq!(late_locked, 1);
     }
 }

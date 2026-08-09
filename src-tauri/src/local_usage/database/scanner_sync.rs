@@ -1194,3 +1194,189 @@ fn sessions_to_dirty_map<T>(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::env_lock;
+    use std::fs;
+    use std::io::Write;
+    use std::path::Path;
+
+    fn temp_db() -> (tempfile::TempDir, LocalUsageDatabase) {
+        let tmpdir = tempfile::tempdir().expect("create temp dir");
+        let path = tmpdir.path().join("local_usage.db");
+        let db = LocalUsageDatabase::new_with_path(&path).expect("open temp db");
+        (tmpdir, db)
+    }
+
+    /// 写入可被 Claude source 解析的 transcript（assistant 消息 JSONL）。
+    fn write_claude_transcript(path: &Path, msgs: &[(&str, u64)]) {
+        let mut file = fs::File::create(path).unwrap();
+        for (index, (msg_id, tokens)) in msgs.iter().enumerate() {
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "type": "assistant",
+                    "timestamp": 1_700_000_000 + index as i64,
+                    "message": {
+                        "id": msg_id,
+                        "model": "claude-3-7-sonnet",
+                        "usage": { "input_tokens": tokens, "output_tokens": tokens }
+                    }
+                })
+            )
+            .unwrap();
+        }
+        file.flush().unwrap();
+    }
+
+    fn make_file_backed_session(
+        id: &str,
+        path: &Path,
+        last_modified: i64,
+        fingerprint: u64,
+    ) -> SessionFile {
+        let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        SessionFile {
+            session_id: id.to_string(),
+            tool: "claude_code".to_string(),
+            project_path: "project".to_string(),
+            file_path: path.to_string_lossy().to_string(),
+            transcript_paths: vec![path.to_string_lossy().to_string()],
+            file_size: size,
+            last_modified,
+            fingerprint,
+        }
+    }
+
+    fn claude_facts(db: &LocalUsageDatabase) -> Vec<LocalRequestRecord> {
+        db.get_request_records_in_range(0, i64::MAX, &ToolFilter::Tool("claude_code".to_string()))
+            .expect("load claude facts")
+    }
+
+    #[test]
+    fn sync_file_backed_sessions_skips_unchanged_fingerprint_without_reparse() {
+        let _guard = env_lock();
+        let (_tmp, db) = temp_db();
+        let transcript = _tmp.path().join("s1.jsonl");
+        write_claude_transcript(&transcript, &[("m1", 10), ("m2", 20)]);
+
+        db.sync_file_backed_sessions(vec![make_file_backed_session(
+            "proj::s1",
+            &transcript,
+            100,
+            111,
+        )])
+        .expect("first sync");
+        assert_eq!(claude_facts(&db).len(), 2);
+
+        // 磁盘内容已完全变化（新消息 m9），但 fingerprint 字段相同 → 必须跳过解析
+        write_claude_transcript(&transcript, &[("m9", 90)]);
+        db.sync_file_backed_sessions(vec![make_file_backed_session(
+            "proj::s1",
+            &transcript,
+            100,
+            111,
+        )])
+        .expect("second sync with unchanged fingerprint");
+
+        let facts = claude_facts(&db);
+        assert_eq!(facts.len(), 2, "unchanged fingerprint must not re-parse");
+        assert!(facts.iter().any(|r| r.message_id == "m1"));
+        assert!(
+            facts.iter().all(|r| r.message_id != "m9"),
+            "unchanged fingerprint must not re-read disk content"
+        );
+    }
+
+    #[test]
+    fn sync_file_backed_sessions_reparses_when_fingerprint_changes() {
+        let _guard = env_lock();
+        let (_tmp, db) = temp_db();
+        let transcript = _tmp.path().join("s1.jsonl");
+        write_claude_transcript(&transcript, &[("m1", 10), ("m2", 20)]);
+
+        db.sync_file_backed_sessions(vec![make_file_backed_session(
+            "proj::s1",
+            &transcript,
+            100,
+            111,
+        )])
+        .expect("first sync");
+        assert_eq!(claude_facts(&db).len(), 2);
+
+        // 追加一条消息 + fingerprint 变化 → 触发重新解析（upsert，不重复写行）
+        write_claude_transcript(&transcript, &[("m1", 10), ("m2", 20), ("m3", 30)]);
+        db.sync_file_backed_sessions(vec![make_file_backed_session(
+            "proj::s1",
+            &transcript,
+            100,
+            222,
+        )])
+        .expect("second sync with changed fingerprint");
+
+        let facts = claude_facts(&db);
+        assert_eq!(facts.len(), 3, "re-parse must upsert, not duplicate rows");
+        assert!(facts.iter().any(|r| r.message_id == "m3"));
+
+        // local_source_files 中 fingerprint 已推进
+        let conn = db.conn.lock().unwrap();
+        let stored: String = conn
+            .query_row(
+                "SELECT fingerprint FROM local_source_files WHERE session_id = 'proj::s1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "222");
+    }
+
+    #[test]
+    fn sync_file_backed_sessions_detects_removed_ids_and_soft_deletes() {
+        let _guard = env_lock();
+        let (_tmp, db) = temp_db();
+        let transcript = _tmp.path().join("s1.jsonl");
+        write_claude_transcript(&transcript, &[("m1", 10)]);
+
+        db.sync_file_backed_sessions(vec![make_file_backed_session(
+            "proj::s1",
+            &transcript,
+            100,
+            111,
+        )])
+        .expect("first sync");
+        assert_eq!(claude_facts(&db).len(), 1);
+
+        // 扫描结果不再包含该会话 → removed_ids 走软删路径
+        db.sync_file_backed_sessions(vec![])
+            .expect("sync without session");
+
+        let conn = db.conn.lock().unwrap();
+        let present: i64 = conn
+            .query_row(
+                "SELECT source_file_present FROM local_request_facts WHERE message_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(present, 0, "removed session facts must be soft-deleted");
+        let tombstoned: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM local_session_tombstones WHERE session_id = 'proj::s1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tombstoned, 1);
+        let marked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM local_source_files WHERE session_id = 'proj::s1' AND deleted_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(marked, 1);
+    }
+}

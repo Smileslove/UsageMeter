@@ -248,6 +248,15 @@ pub fn update_profile(id: &str, input: GatewayProfileInput) -> Result<GatewayPro
 }
 
 pub fn validate_profile(profile: &GatewayProfile) -> Result<(), String> {
+    validate_profile_with_resolver(profile, &DefaultHostResolver)
+}
+
+/// 校验 profile，主机名 → IP 的解析通过 `resolver` 注入，使测试可以提供
+/// fake 解析结果而无需触发真实 DNS 查询。
+fn validate_profile_with_resolver(
+    profile: &GatewayProfile,
+    resolver: &dyn HostResolver,
+) -> Result<(), String> {
     if !is_valid_profile_id(&profile.id) {
         return Err("ERR_GATEWAY_PROFILE_ID_INVALID".to_string());
     }
@@ -276,23 +285,39 @@ pub fn validate_profile(profile: &GatewayProfile) -> Result<(), String> {
     // Additional DNS rebinding protection: resolve the hostname and check if any
     // resolved IP addresses point to private networks. This prevents attacks where
     // a public domain resolves to a private IP.
-    if let Ok(socket_addrs) = format!("{}:443", host).to_socket_addrs() {
-        for addr in socket_addrs {
-            if is_disallowed_upstream_ip(addr.ip()) {
-                log::warn!(
-                    "Gateway upstream {} resolves to disallowed IP: {}",
-                    host,
-                    addr.ip()
-                );
-                return Err("ERR_GATEWAY_BASE_URL_RESOLVES_TO_PRIVATE".to_string());
-            }
+    for addr in resolver.resolve(host) {
+        if is_disallowed_upstream_ip(addr) {
+            log::warn!(
+                "Gateway upstream {} resolves to disallowed IP: {}",
+                host,
+                addr
+            );
+            return Err("ERR_GATEWAY_BASE_URL_RESOLVES_TO_PRIVATE".to_string());
         }
     }
-    // If DNS resolution fails, we allow it to proceed - the actual HTTPS request
-    // will fail later with a proper network error. This avoids rejecting valid
-    // configurations due to temporary DNS issues during profile creation.
+    // If DNS resolution fails (resolver returns no addresses), we allow it to
+    // proceed - the actual HTTPS request will fail later with a proper network
+    // error. This avoids rejecting valid configurations due to temporary DNS
+    // issues during profile creation.
 
     Ok(())
+}
+
+/// 主机名 → IP 地址解析抽象，用于 DNS rebinding 保护检查。
+trait HostResolver {
+    fn resolve(&self, host: &str) -> Vec<IpAddr>;
+}
+
+/// 默认解析：使用系统 `to_socket_addrs`。解析失败返回空列表（= 放行）。
+struct DefaultHostResolver;
+
+impl HostResolver for DefaultHostResolver {
+    fn resolve(&self, host: &str) -> Vec<IpAddr> {
+        format!("{}:443", host)
+            .to_socket_addrs()
+            .map(|addrs| addrs.map(|addr| addr.ip()).collect())
+            .unwrap_or_default()
+    }
 }
 
 /// Gateway profiles forward client-supplied credentials. They must never be
@@ -780,7 +805,8 @@ mod tests {
 
     #[test]
     fn creates_normalized_non_secret_profile() {
-        let profile = create_profile(input("  https://api.deepseek.com/  ")).expect("profile");
+        // 使用公网 IP 字面量，避免测试触发真实 DNS 解析。
+        let profile = create_profile(input("  https://8.8.8.8/  ")).expect("profile");
         assert_eq!(profile.id.len(), 7);
         assert!(profile.id.starts_with('p'));
         assert!(profile
@@ -788,7 +814,7 @@ mod tests {
             .chars()
             .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit()));
         assert_eq!(profile.name, "DeepSeek");
-        assert_eq!(profile.base_url, "https://api.deepseek.com");
+        assert_eq!(profile.base_url, "https://8.8.8.8");
         assert_eq!(profile.client_label, "Cursor");
     }
 
@@ -862,15 +888,97 @@ mod tests {
 
     #[test]
     fn accepts_public_https_upstream() {
-        let profile = create_profile(input("https://api.deepseek.com/v1")).expect("profile");
-        assert_eq!(profile.base_url, "https://api.deepseek.com/v1");
+        // 公网 IP 字面量，不走真实 DNS。
+        let profile = create_profile(input("https://8.8.8.8/v1")).expect("profile");
+        assert_eq!(profile.base_url, "https://8.8.8.8/v1");
+    }
+
+    struct FakeResolver(Vec<IpAddr>);
+    impl HostResolver for FakeResolver {
+        fn resolve(&self, _host: &str) -> Vec<IpAddr> {
+            self.0.clone()
+        }
+    }
+
+    fn profile_with_base_url(base_url: &str) -> GatewayProfile {
+        GatewayProfile {
+            id: "gateway-test".to_string(),
+            name: "Test Profile".to_string(),
+            protocol: GatewayProtocol::OpenAiChatCompletions,
+            base_url: base_url.to_string(),
+            enabled: true,
+            client_label: String::new(),
+            auth_mode: GatewayAuthMode::ClientPassthrough,
+            dispatch_strategy: GatewayDispatchStrategy::RoundRobin,
+            upstream_keys: Vec::new(),
+            local_keys: Vec::new(),
+            upstream_models: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn rejects_profile_resolving_to_private_ip() {
+        let profile = profile_with_base_url("https://public.example.com/v1");
+        for ip in [
+            "127.0.0.1".parse::<IpAddr>().unwrap(),
+            "10.1.2.3".parse::<IpAddr>().unwrap(),
+            "192.168.1.1".parse::<IpAddr>().unwrap(),
+            "169.254.10.20".parse::<IpAddr>().unwrap(),
+            "::1".parse::<IpAddr>().unwrap(),
+            "fc00::1".parse::<IpAddr>().unwrap(),
+            "::ffff:127.0.0.1".parse::<IpAddr>().unwrap(),
+        ] {
+            assert_eq!(
+                validate_profile_with_resolver(&profile, &FakeResolver(vec![ip])),
+                Err("ERR_GATEWAY_BASE_URL_RESOLVES_TO_PRIVATE".to_string()),
+                "resolved {ip} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_profile_resolving_to_public_ip() {
+        let profile = profile_with_base_url("https://public.example.com/v1");
+        assert_eq!(
+            validate_profile_with_resolver(
+                &profile,
+                &FakeResolver(vec!["8.8.8.8".parse::<IpAddr>().unwrap()]),
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn accepts_profile_when_resolution_fails() {
+        // 解析失败（空结果）应放行，与生产行为一致：由实际 HTTPS 请求报错。
+        let profile = profile_with_base_url("https://public.example.com/v1");
+        assert_eq!(
+            validate_profile_with_resolver(&profile, &FakeResolver(vec![])),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn rejects_profile_when_any_resolved_ip_is_private() {
+        // 一个私网 IP 混在公网解析结果中也要拒绝。
+        let profile = profile_with_base_url("https://public.example.com/v1");
+        assert_eq!(
+            validate_profile_with_resolver(
+                &profile,
+                &FakeResolver(vec![
+                    "8.8.8.8".parse::<IpAddr>().unwrap(),
+                    "10.0.0.5".parse::<IpAddr>().unwrap(),
+                ]),
+            ),
+            Err("ERR_GATEWAY_BASE_URL_RESOLVES_TO_PRIVATE".to_string())
+        );
     }
 
     #[test]
     fn preserves_protocol_without_conversion() {
         let profile = create_profile(GatewayProfileInput {
             protocol: GatewayProtocol::AnthropicMessages,
-            ..input("https://api.anthropic.com")
+            ..input("https://8.8.8.8")
         })
         .expect("profile");
         assert_eq!(profile.protocol, GatewayProtocol::AnthropicMessages);
@@ -920,7 +1028,7 @@ mod tests {
 
     #[test]
     fn profile_view_marks_legacy_credentials_that_need_manual_recovery() {
-        let mut profile = create_profile(input("https://api.deepseek.com")).expect("profile");
+        let mut profile = create_profile(input("https://8.8.8.8")).expect("profile");
         profile.id = "gateway-legacy".to_string();
         profile.upstream_keys = vec![GatewayUpstreamKey {
             id: "upstream-legacy".to_string(),
@@ -968,7 +1076,7 @@ mod tests {
     }
 
     fn health_test_profile(profile_id: &str, key_id: &str) -> GatewayProfile {
-        let mut profile = create_profile(input("https://api.deepseek.com")).unwrap();
+        let mut profile = create_profile(input("https://8.8.8.8")).unwrap();
         profile.id = profile_id.to_string();
         profile.upstream_keys = vec![GatewayUpstreamKey {
             id: key_id.to_string(),
@@ -1019,7 +1127,7 @@ mod tests {
 
     #[test]
     fn legacy_multiple_keys_use_the_first_enabled_key() {
-        let mut profile = create_profile(input("https://api.deepseek.com")).unwrap();
+        let mut profile = create_profile(input("https://8.8.8.8")).unwrap();
         profile.dispatch_strategy = GatewayDispatchStrategy::PriorityFailover;
         profile.upstream_keys = vec![
             GatewayUpstreamKey {

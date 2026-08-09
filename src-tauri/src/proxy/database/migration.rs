@@ -468,3 +468,164 @@ impl ProxyDatabase {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_db() -> (tempfile::TempDir, ProxyDatabase) {
+        let tmpdir = tempfile::tempdir().expect("create temp dir");
+        let path = tmpdir.path().join("proxy_data.db");
+        let db = ProxyDatabase::new_with_path(&path).expect("open temp db");
+        (tmpdir, db)
+    }
+
+    fn insert_record(
+        db: &ProxyDatabase,
+        timestamp: i64,
+        message_id: &str,
+        session_id: Option<&str>,
+        api_key_prefix: Option<&str>,
+        request_base_url: Option<&str>,
+    ) {
+        let conn = db.conn.lock().expect("lock conn");
+        conn.execute(
+            r#"
+            INSERT INTO usage_records (
+                timestamp, message_id, storage_dedupe_key, model, session_id,
+                api_key_prefix, request_base_url, client_tool, session_resolution_state
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'claude_code', 'known')
+            "#,
+            rusqlite::params![
+                timestamp,
+                message_id,
+                format!("key-{message_id}"),
+                "gpt-4o",
+                session_id,
+                api_key_prefix,
+                request_base_url,
+            ],
+        )
+        .expect("insert usage record");
+    }
+
+    #[tokio::test]
+    async fn migrate_to_session_stats_empty_db_returns_zero() {
+        let (_tmp, db) = temp_db();
+        let migrated = db
+            .migrate_to_session_stats()
+            .await
+            .expect("migrate empty db");
+        assert_eq!(migrated, 0);
+
+        // 不产生任何 session_stats 行。
+        let conn = db.conn.lock().expect("lock conn");
+        let stats_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_stats", [], |row| row.get(0))
+            .expect("count session stats");
+        assert_eq!(stats_count, 0);
+    }
+
+    #[tokio::test]
+    async fn migrate_to_session_stats_all_records_resolved_is_noop() {
+        let (_tmp, db) = temp_db();
+        insert_record(&db, 1_000, "m1", Some("sess-1"), None, None);
+        insert_record(&db, 2_000, "m2", Some("sess-2"), None, None);
+
+        // 所有记录都有 session_id → needs_migration == 0，直接返回 0，
+        // 不触发真实会话目录扫描（保持测试环境隔离）。
+        let migrated = db
+            .migrate_to_session_stats()
+            .await
+            .expect("migrate resolved db");
+        assert_eq!(migrated, 0);
+
+        let conn = db.conn.lock().expect("lock conn");
+        let stats_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_stats", [], |row| row.get(0))
+            .expect("count session stats");
+        assert_eq!(stats_count, 0);
+    }
+
+    #[tokio::test]
+    async fn delete_records_by_source_deletes_only_matching_source() {
+        let (_tmp, db) = temp_db();
+        insert_record(
+            &db,
+            1_000,
+            "m1",
+            Some("sess-1"),
+            Some("sk-a"),
+            Some("https://api.a.com"),
+        );
+        insert_record(
+            &db,
+            2_000,
+            "m2",
+            Some("sess-2"),
+            Some("sk-a"),
+            Some("https://api.a.com"),
+        );
+        insert_record(
+            &db,
+            3_000,
+            "m3",
+            Some("sess-3"),
+            Some("sk-b"),
+            Some("https://api.b.com"),
+        );
+        insert_record(
+            &db,
+            4_000,
+            "m4",
+            Some("sess-4"),
+            Some("sk-a"),
+            Some("https://other.com"),
+        );
+
+        db.delete_records_by_source(&["sk-a".to_string()], Some("https://api.a.com"))
+            .await
+            .expect("delete by source");
+
+        let remaining = db.get_records_since(0).await.expect("query remaining");
+        let ids: Vec<&str> = remaining.iter().map(|r| r.message_id.as_str()).collect();
+        // get_records_since 按时间戳 DESC 排序（新→旧）。
+        assert_eq!(ids, vec!["m4", "m3"]);
+        assert_eq!(db.get_record_count().await.expect("count"), 2);
+    }
+
+    #[tokio::test]
+    async fn delete_records_by_source_matches_multiple_prefixes() {
+        let (_tmp, db) = temp_db();
+        insert_record(&db, 1_000, "m1", Some("sess-1"), Some("sk-a"), None);
+        insert_record(
+            &db,
+            2_000,
+            "m2",
+            Some("sess-2"),
+            Some("sk-b"),
+            Some("https://api.b.com"),
+        );
+        insert_record(&db, 3_000, "m3", Some("sess-3"), Some("sk-c"), None);
+
+        // base_url=None → 匹配空 base_url 的记录；m1/m3 命中（前缀匹配且 base_url 为空）。
+        db.delete_records_by_source(&["sk-a".to_string(), "sk-c".to_string()], None)
+            .await
+            .expect("delete multiple prefixes");
+
+        let remaining = db.get_records_since(0).await.expect("query remaining");
+        let ids: Vec<&str> = remaining.iter().map(|r| r.message_id.as_str()).collect();
+        assert_eq!(ids, vec!["m2"]);
+    }
+
+    #[tokio::test]
+    async fn delete_records_by_source_empty_prefixes_is_noop() {
+        let (_tmp, db) = temp_db();
+        insert_record(&db, 1_000, "m1", Some("sess-1"), Some("sk-a"), None);
+
+        db.delete_records_by_source(&[], None)
+            .await
+            .expect("noop delete");
+        assert_eq!(db.get_record_count().await.expect("count"), 1);
+    }
+}

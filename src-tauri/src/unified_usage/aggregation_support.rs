@@ -185,3 +185,312 @@ pub(super) fn merge_metadata_only_project<'a>(
         .last_active
         .max(meta.end_time.max(meta.last_modified));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::SessionMeta;
+
+    fn reasonix_meta(message_count: u64, last_activity_sec: i64) -> SessionMeta {
+        SessionMeta {
+            session_id: "reasonix-sess".to_string(),
+            tool: "reasonix".to_string(),
+            message_count,
+            end_time: last_activity_sec,
+            last_modified: last_activity_sec,
+            file_path: "reasonix-sess.jsonl".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn session_usage_fully_covered_non_reasonix_tool_always_covered() {
+        // 非 reasonix 工具直接判定覆盖，无 meta 也覆盖。
+        assert!(session_usage_fully_covered(None, "codex", 0, 0, 1_000));
+        assert!(session_usage_fully_covered(
+            None,
+            "claude_code",
+            0,
+            99,
+            1_000
+        ));
+    }
+
+    #[test]
+    fn session_usage_fully_covered_missing_meta_or_zero_messages_is_uncovered() {
+        assert!(!session_usage_fully_covered(None, "reasonix", 5, 0, 1_000));
+
+        let meta = reasonix_meta(0, 100);
+        assert!(!session_usage_fully_covered(
+            Some(&meta),
+            "reasonix",
+            0,
+            0,
+            1_000
+        ));
+    }
+
+    #[test]
+    fn session_usage_fully_covered_within_grace_window_is_uncovered() {
+        // 30s 宽限：last_activity 与 now 相距 <= 30s 时视为仍在写入，不算覆盖。
+        let meta = reasonix_meta(5, 1_000);
+        assert!(!session_usage_fully_covered(
+            Some(&meta),
+            "reasonix",
+            5,
+            0,
+            1_030
+        ));
+        assert!(session_usage_fully_covered(
+            Some(&meta),
+            "reasonix",
+            5,
+            0,
+            1_031
+        ));
+
+        // last_activity <= 0 视为无时间信息，不算覆盖。
+        let no_time = reasonix_meta(5, 0);
+        assert!(!session_usage_fully_covered(
+            Some(&no_time),
+            "reasonix",
+            5,
+            0,
+            1_000
+        ));
+    }
+
+    #[test]
+    fn session_usage_fully_covered_requires_zero_unresolved_and_matching_count() {
+        let meta = reasonix_meta(5, 1_000);
+        // unresolved > 0 → 不覆盖
+        assert!(!session_usage_fully_covered(
+            Some(&meta),
+            "reasonix",
+            5,
+            1,
+            1_031
+        ));
+        // proxy_backed != message_count → 不覆盖
+        assert!(!session_usage_fully_covered(
+            Some(&meta),
+            "reasonix",
+            4,
+            0,
+            1_031
+        ));
+        // 完全覆盖
+        assert!(session_usage_fully_covered(
+            Some(&meta),
+            "reasonix",
+            5,
+            0,
+            1_031
+        ));
+    }
+
+    #[test]
+    fn merge_metadata_only_project_merges_multiple_sessions() {
+        let mut map: HashMap<String, ProjectAggregate<'_>> = HashMap::new();
+        let meta1 = SessionMeta {
+            session_id: "sess-1".to_string(),
+            tool: "claude_code".to_string(),
+            cwd: Some("/proj".to_string()),
+            project_name: Some("proj".to_string()),
+            message_count: 10,
+            total_input_tokens: 100,
+            total_output_tokens: 200,
+            total_cache_create_tokens: 5,
+            total_cache_read_tokens: 20,
+            end_time: 500,
+            last_modified: 400,
+            ..Default::default()
+        };
+        let meta2 = SessionMeta {
+            session_id: "sess-2".to_string(),
+            tool: "claude_code".to_string(),
+            cwd: Some("/proj".to_string()),
+            project_name: Some("proj".to_string()),
+            message_count: 5,
+            total_input_tokens: 50,
+            total_output_tokens: 60,
+            total_cache_create_tokens: 0,
+            total_cache_read_tokens: 10,
+            end_time: 700,
+            last_modified: 600,
+            ..Default::default()
+        };
+
+        merge_metadata_only_project(&mut map, &meta1);
+        merge_metadata_only_project(&mut map, &meta2);
+
+        let entry = map.get("/proj").expect("project entry");
+        assert_eq!(entry.stats.name, "proj");
+        assert_eq!(entry.stats.request_count, 15);
+        assert_eq!(entry.stats.uncovered_requests, 15);
+        assert_eq!(entry.stats.total_input_tokens, 150);
+        assert_eq!(entry.stats.total_output_tokens, 260);
+        assert_eq!(entry.stats.total_cache_create_tokens, 5);
+        assert_eq!(entry.stats.total_cache_read_tokens, 30);
+        assert_eq!(entry.stats.last_active, 700); // 取 max(end_time, last_modified)
+        assert_eq!(entry.sessions.len(), 2);
+        assert_eq!(entry.stats.tool_breakdown.len(), 1);
+        assert_eq!(entry.stats.tool_breakdown[0].tool, "claude_code");
+        assert_eq!(entry.stats.tool_breakdown[0].request_count, 15);
+    }
+
+    #[test]
+    fn merge_metadata_only_project_empty_session_id_records_tool_only() {
+        let mut map: HashMap<String, ProjectAggregate<'_>> = HashMap::new();
+        let meta = SessionMeta {
+            session_id: "".to_string(),
+            tool: "opencode".to_string(),
+            cwd: Some("/proj".to_string()),
+            message_count: 3,
+            end_time: 100,
+            ..Default::default()
+        };
+
+        merge_metadata_only_project(&mut map, &meta);
+
+        let entry = map.get("/proj").expect("project entry");
+        assert!(entry.sessions.is_empty());
+        // 空 session_id 只登记 tool 维度的桶，不产生 session 集合成员。
+        assert!(entry.tool_sessions.contains_key("opencode"));
+        assert_eq!(entry.tool_sessions["opencode"].len(), 0);
+    }
+
+    #[test]
+    fn merge_metadata_only_project_fills_project_path_on_first_seen() {
+        let mut map: HashMap<String, ProjectAggregate<'_>> = HashMap::new();
+        let meta = SessionMeta {
+            session_id: "sess-1".to_string(),
+            tool: "codex".to_string(),
+            cwd: Some("/work/proj".to_string()),
+            message_count: 1,
+            end_time: 100,
+            ..Default::default()
+        };
+        merge_metadata_only_project(&mut map, &meta);
+
+        let entry = map.get("/work/proj").expect("project entry");
+        assert_eq!(entry.stats.project_path.as_deref(), Some("/work/proj"));
+        assert_eq!(entry.stats.project_identity.as_deref(), Some("project"));
+    }
+
+    #[test]
+    fn merge_metadata_only_project_tool_breakdown_appears_on_first_tool() {
+        let mut map: HashMap<String, ProjectAggregate<'_>> = HashMap::new();
+        let meta1 = SessionMeta {
+            session_id: "s1".to_string(),
+            tool: "codex".to_string(),
+            cwd: Some("/proj".to_string()),
+            message_count: 4,
+            end_time: 100,
+            ..Default::default()
+        };
+        let meta2 = SessionMeta {
+            session_id: "s2".to_string(),
+            tool: "claude_code".to_string(),
+            cwd: Some("/proj".to_string()),
+            message_count: 2,
+            end_time: 200,
+            ..Default::default()
+        };
+        merge_metadata_only_project(&mut map, &meta1);
+        merge_metadata_only_project(&mut map, &meta2);
+
+        let entry = map.get("/proj").expect("project entry");
+        assert_eq!(entry.stats.tool_breakdown.len(), 2);
+        let codex = &entry.stats.tool_breakdown[0];
+        assert_eq!(codex.tool, "codex");
+        assert_eq!(codex.request_count, 4);
+        assert_eq!(entry.stats.tool_breakdown[1].request_count, 2);
+    }
+
+    #[test]
+    fn build_metadata_only_session_stats_maps_meta_fields() {
+        let meta = SessionMeta {
+            session_id: "sess-map".to_string(),
+            tool: "claude_code".to_string(),
+            cwd: Some("/proj".to_string()),
+            project_name: Some("proj".to_string()),
+            message_count: 7,
+            total_input_tokens: 111,
+            total_output_tokens: 222,
+            total_cache_create_tokens: 11,
+            total_cache_read_tokens: 22,
+            total_elapsed_ms: 5_000,
+            start_time: 100,
+            end_time: 200,
+            last_modified: 150,
+            models: vec!["gpt-4o".to_string()],
+            ..Default::default()
+        };
+        let currency = CurrencySettings::default();
+        let stats = build_metadata_only_session_stats(&meta, &currency, 1_000);
+
+        assert_eq!(stats.session_id, "sess-map");
+        assert_eq!(stats.tool, "claude_code");
+        assert_eq!(stats.total_requests, 7);
+        assert_eq!(stats.total_input_tokens, 111);
+        assert_eq!(stats.total_output_tokens, 222);
+        assert_eq!(stats.total_cache_create_tokens, 11);
+        assert_eq!(stats.total_cache_read_tokens, 22);
+        assert_eq!(stats.total_duration_ms, 5_000);
+        assert_eq!(stats.first_request_time, 100);
+        assert_eq!(stats.last_request_time, 200); // max(end_time, last_modified)
+        assert_eq!(stats.models, vec!["gpt-4o"]);
+        // 无显式费用 → 估算为 0 且标记 estimated。
+        assert_eq!(stats.estimated_cost, 0.0);
+        assert!(stats.is_cost_estimated);
+        // 非 reasonix 工具 → 完整覆盖。
+        assert!(stats.usage_fully_covered);
+        assert_eq!(stats.covered_requests, 0);
+        assert_eq!(stats.uncovered_requests, 7);
+        assert_eq!(stats.project_identity.as_deref(), Some("project"));
+        assert_eq!(stats.project_name.as_deref(), Some("proj"));
+    }
+
+    #[test]
+    fn build_metadata_only_session_stats_uses_explicit_cost_usd_for_reasonix() {
+        let meta = SessionMeta {
+            session_id: "rx-sess".to_string(),
+            tool: "reasonix".to_string(),
+            message_count: 5,
+            end_time: 1_000,
+            last_modified: 1_000,
+            explicit_cost: Some(10.0),
+            explicit_cost_currency: Some("USD".to_string()),
+            ..Default::default()
+        };
+        let currency = CurrencySettings::default();
+        let stats = build_metadata_only_session_stats(&meta, &currency, 1_100);
+
+        assert_eq!(stats.estimated_cost, 10.0);
+        assert!(!stats.is_cost_estimated);
+        // 宽限期外且代理 0 请求 → reasonix 会话不被视为完全覆盖。
+        assert!(!stats.usage_fully_covered);
+        assert_eq!(stats.uncovered_requests, 5);
+    }
+
+    #[test]
+    fn build_metadata_only_session_stats_converts_non_usd_explicit_cost() {
+        let meta = SessionMeta {
+            session_id: "rx-sess-cny".to_string(),
+            tool: "reasonix".to_string(),
+            message_count: 2,
+            end_time: 1_000,
+            last_modified: 1_000,
+            explicit_cost: Some(700.0),
+            explicit_cost_currency: Some("CNY".to_string()),
+            ..Default::default()
+        };
+        let mut currency = CurrencySettings::default();
+        currency.exchange_rates.insert("CNY".to_string(), 7.0);
+        let stats = build_metadata_only_session_stats(&meta, &currency, 1_100);
+        // 700 CNY / 7 = 100 USD
+        assert_eq!(stats.estimated_cost, 100.0);
+        assert!(!stats.is_cost_estimated);
+    }
+}

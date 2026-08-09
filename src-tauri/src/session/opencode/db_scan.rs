@@ -363,3 +363,249 @@ fn compute_schema_fingerprint(conn: &Connection) -> u64 {
     }
     hasher.finish()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::{params, Connection};
+    use std::fs;
+    use tempfile::tempdir;
+
+    fn create_message_schema(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE message (
+               id TEXT,
+               session_id TEXT,
+               time_updated INTEGER,
+               data TEXT
+             );",
+        )
+        .unwrap();
+    }
+
+    fn insert_message(
+        conn: &Connection,
+        id: &str,
+        session_id: &str,
+        time_updated_ms: i64,
+        input_tokens: u64,
+        output_tokens: u64,
+    ) {
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_updated, data) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                id,
+                session_id,
+                time_updated_ms,
+                serde_json::json!({
+                    "id": id,
+                    "sessionID": session_id,
+                    "modelID": "gpt-4o",
+                    "path": { "cwd": "/tmp/project" },
+                    "role": "assistant",
+                    "time": { "created": time_updated_ms - 5000, "completed": time_updated_ms },
+                    "tokens": { "input": input_tokens, "output": output_tokens, "reasoning": 0, "cache": { "read": 0, "write": 0 } }
+                })
+                .to_string()
+            ],
+        )
+        .unwrap();
+    }
+
+    fn make_root(db_path: &Path) -> OpenCodeStorageRoot {
+        let home = db_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        OpenCodeStorageRoot {
+            id: "test".to_string(),
+            home: home.clone(),
+            message_root: home.join("storage").join("message"),
+            db_path: db_path.to_path_buf(),
+        }
+    }
+
+    fn message_keys(messages: &HashMap<String, OpenCodeMessageSnapshot>) -> Vec<String> {
+        let mut keys: Vec<String> = messages.keys().cloned().collect();
+        keys.sort();
+        keys
+    }
+
+    fn ghost_snapshot(source_path: &str) -> OpenCodeMessageSnapshot {
+        OpenCodeMessageSnapshot {
+            source_path: source_path.to_string(),
+            canonical_session_id: "opencode::test::ghost_sess".to_string(),
+            raw_message_id: "ghost_msg".to_string(),
+            timestamp_sec: 1,
+            model: "gpt-4o".to_string(),
+            cwd: None,
+            title: None,
+            input_tokens: 1,
+            output_tokens: 1,
+            reasoning_tokens: 0,
+            cache_create_tokens: 0,
+            cache_read_tokens: 0,
+            total_tokens: 2,
+            source_kind: "test",
+        }
+    }
+
+    #[test]
+    fn refresh_db_checkpoint_unchanged_returns_cached_messages_without_requery() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("opencode.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            create_message_schema(&conn);
+            insert_message(&conn, "m1", "sess_1", 1_700_000_000_000, 10, 2);
+        }
+        let root = make_root(&db_path);
+        let mut state = OpenCodeDbCacheState::default();
+
+        let first = refresh_db_messages_for_path(&mut state, &root);
+        assert_eq!(first.len(), 1);
+        assert_eq!(state.assistant_row_count, 1);
+        assert_eq!(state.last_rowid, 1);
+
+        // 注入仅存在于缓存中的幽灵消息：若 checkpoint 未变直接复用缓存，它会保留
+        let ghost = ghost_snapshot(&db_path.to_string_lossy());
+        state.messages.insert(ghost.message_identity_key(), ghost);
+
+        let second = refresh_db_messages_for_path(&mut state, &root);
+        assert!(
+            second.contains_key("opencode::test::ghost_sess|ghost_msg"),
+            "unchanged checkpoint must return cached messages without re-query"
+        );
+        assert_eq!(second.len(), 2);
+        assert!(second.contains_key("opencode::test::sess_1|m1"));
+    }
+
+    #[test]
+    fn refresh_db_rewound_checkpoint_triggers_full_reconcile() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("opencode.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            create_message_schema(&conn);
+            insert_message(&conn, "m1", "sess_1", 1_700_000_000_000, 10, 2);
+            insert_message(&conn, "m2", "sess_1", 1_700_000_001_000, 10, 2);
+            insert_message(&conn, "m3", "sess_1", 1_700_000_002_000, 10, 2);
+        }
+        let root = make_root(&db_path);
+        let mut state = OpenCodeDbCacheState::default();
+
+        let first = refresh_db_messages_for_path(&mut state, &root);
+        assert_eq!(first.len(), 3);
+        assert_eq!(state.assistant_row_count, 3);
+        assert_eq!(state.last_rowid, 3);
+
+        // 删除中间行：count 变小但 max_rowid / max_time 保持不变 → 仍判定为回滚
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute("DELETE FROM message WHERE id = 'm2'", [])
+                .unwrap();
+        }
+
+        let second = refresh_db_messages_for_path(&mut state, &root);
+        assert_eq!(
+            message_keys(&second),
+            vec![
+                "opencode::test::sess_1|m1".to_string(),
+                "opencode::test::sess_1|m3".to_string(),
+            ]
+        );
+        assert_eq!(state.assistant_row_count, 2);
+        assert_eq!(state.last_rowid, 3);
+    }
+
+    #[test]
+    fn refresh_db_schema_fingerprint_change_triggers_full_reconcile() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("opencode.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            create_message_schema(&conn);
+            insert_message(&conn, "m1", "sess_1", 1_700_000_000_000, 10, 2);
+        }
+        let root = make_root(&db_path);
+        let mut state = OpenCodeDbCacheState::default();
+
+        refresh_db_messages_for_path(&mut state, &root);
+        let schema_before = state.schema_fingerprint;
+        assert_ne!(schema_before, 0);
+
+        // 修改 schema（加列）→ schema fingerprint 变化 → 全量 reconcile
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch("ALTER TABLE message ADD COLUMN extra INTEGER;")
+                .unwrap();
+        }
+
+        let second = refresh_db_messages_for_path(&mut state, &root);
+        assert_eq!(second.len(), 1);
+        assert!(second.contains_key("opencode::test::sess_1|m1"));
+        assert_ne!(state.schema_fingerprint, schema_before);
+        // 全量 reconcile 后刷新了上次全量时间
+        assert!(state.last_full_reconcile_at_ms > 0);
+    }
+
+    #[test]
+    fn refresh_db_missing_db_clears_cached_state() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("opencode.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            create_message_schema(&conn);
+            insert_message(&conn, "m1", "sess_1", 1_700_000_000_000, 10, 2);
+        }
+        let root = make_root(&db_path);
+        let mut state = OpenCodeDbCacheState::default();
+
+        let first = refresh_db_messages_for_path(&mut state, &root);
+        assert_eq!(first.len(), 1);
+
+        fs::remove_file(&db_path).unwrap();
+        let _ = fs::remove_file(db_path.with_extension("db-wal"));
+        let _ = fs::remove_file(db_path.with_extension("db-shm"));
+
+        let second = refresh_db_messages_for_path(&mut state, &root);
+        assert!(second.is_empty());
+        assert!(state.messages.is_empty());
+        assert_eq!(state.storage_signature_hash, 0);
+        assert_eq!(state.schema_fingerprint, 0);
+        assert_eq!(state.assistant_row_count, 0);
+        assert_eq!(state.last_time_updated_ms, 0);
+        assert_eq!(state.last_rowid, 0);
+        assert_eq!(state.schema_mode, OpenCodeSchemaMode::Incompatible);
+    }
+
+    #[test]
+    fn refresh_db_incremental_cursor_picks_same_time_higher_rowid() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("opencode.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            create_message_schema(&conn);
+            insert_message(&conn, "m1", "sess_1", 1_700_000_000_000, 10, 2);
+        }
+        let root = make_root(&db_path);
+        let mut state = OpenCodeDbCacheState::default();
+
+        let first = refresh_db_messages_for_path(&mut state, &root);
+        assert_eq!(first.len(), 1);
+        assert_eq!(state.last_time_updated_ms, 1_700_000_000_000);
+        assert_eq!(state.last_rowid, 1);
+
+        // 追加一条 time_updated 相同但 rowid 更大的消息 → 增量游标必须取到
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            insert_message(&conn, "m2", "sess_1", 1_700_000_000_000, 5, 3);
+        }
+
+        let second = refresh_db_messages_for_path(&mut state, &root);
+        assert!(
+            second.contains_key("opencode::test::sess_1|m2"),
+            "incremental cursor must include equal time_updated with larger rowid"
+        );
+        assert!(second.contains_key("opencode::test::sess_1|m1"));
+        assert_eq!(state.last_rowid, 2);
+        assert_eq!(state.assistant_row_count, 2);
+    }
+}

@@ -595,23 +595,6 @@ mod tests {
     }
 
     #[test]
-    fn passthrough_streaming_detection_uses_accept_header() {
-        let mut headers = hyper::HeaderMap::new();
-        assert!(!headers
-            .get(hyper::header::ACCEPT)
-            .and_then(|value| value.to_str().ok())
-            .map(|value| value.contains("text/event-stream"))
-            .unwrap_or(false));
-
-        headers.insert(hyper::header::ACCEPT, "text/event-stream".parse().unwrap());
-        assert!(headers
-            .get(hyper::header::ACCEPT)
-            .and_then(|value| value.to_str().ok())
-            .map(|value| value.contains("text/event-stream"))
-            .unwrap_or(false));
-    }
-
-    #[test]
     fn parse_anthropic_non_stream_usage_requires_usage_fields() {
         let parsed = parse_anthropic_non_stream_usage(serde_json::json!({
             "id": "msg_123",

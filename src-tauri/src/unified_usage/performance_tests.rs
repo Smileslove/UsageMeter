@@ -10,9 +10,10 @@
 //! - 最近请求查询 (get_merged_request_facts_no_sync)
 //! - 项目统计查询 (get_merged_project_stats_no_sync)
 //!
-//! 性能阈值：
+//! 性能阈值（仅观测告警，不作为跨机器/跨数据规模的硬性断言，与
+//! commands/usage/performance_tests.rs 的既有设计一致）：
 //! - 冷启动首次查询：< 2000ms（警告级别，不会失败）
-//! - 热缓存二次查询：< 100ms（断言级别，超过会失败）
+//! - 热缓存二次查询：< 100ms（警告级别，超过仅打印 WARNING）
 //! - 签名变更后重查：< 500ms（警告级别）
 
 #[cfg(test)]
@@ -58,14 +59,14 @@ mod tests {
             sessions_warm.len()
         );
 
-        // 热查询必须快
-        assert!(
-            time_warm < 100,
-            "Warm query too slow: {}ms (threshold: 100ms)",
-            time_warm
-        );
+        if time_warm > 100 {
+            eprintln!(
+                "⚠️  WARNING: Warm query exceeded 100ms observational target ({}ms)",
+                time_warm
+            );
+        }
 
-        // 验证数据一致性
+        // 验证数据一致性（功能断言，保留）
         assert_eq!(
             sessions_cold.len(),
             sessions_warm.len(),
@@ -132,11 +133,12 @@ mod tests {
             time_warm, total_count_warm, page_count_warm
         );
 
-        assert!(
-            time_warm < 100,
-            "Warm query too slow: {}ms (threshold: 100ms)",
-            time_warm
-        );
+        if time_warm > 100 {
+            eprintln!(
+                "⚠️  WARNING: Warm query exceeded 100ms observational target ({}ms)",
+                time_warm
+            );
+        }
 
         assert_eq!(
             total_count, total_count_warm,
@@ -183,11 +185,12 @@ mod tests {
             projects_warm.len()
         );
 
-        assert!(
-            time_warm < 100,
-            "Warm query too slow: {}ms (threshold: 100ms)",
-            time_warm
-        );
+        if time_warm > 100 {
+            eprintln!(
+                "⚠️  WARNING: Warm query exceeded 100ms observational target ({}ms)",
+                time_warm
+            );
+        }
 
         assert_eq!(
             projects_cold.len(),
@@ -287,11 +290,12 @@ mod tests {
         let warm_total = warm_start.elapsed().as_millis();
         println!("\n热缓存总耗时: {} ms\n", warm_total);
 
-        assert!(
-            warm_total < 300,
-            "Warm cache total time too slow: {}ms (threshold: 300ms)",
-            warm_total
-        );
+        if warm_total > 300 {
+            eprintln!(
+                "⚠️  WARNING: Warm cache total exceeded 300ms observational target ({}ms)",
+                warm_total
+            );
+        }
     }
 
     #[test]
@@ -315,11 +319,12 @@ mod tests {
         let time_sync2 = t.elapsed().as_millis();
         println!("节流期内二次同步: {} ms", time_sync2);
 
-        assert!(
-            time_sync2 < 10,
-            "Throttled sync too slow: {}ms (should be < 10ms)",
-            time_sync2
-        );
+        if time_sync2 > 10 {
+            eprintln!(
+                "⚠️  WARNING: Throttled sync exceeded 10ms observational target ({}ms)",
+                time_sync2
+            );
+        }
 
         println!();
     }

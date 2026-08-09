@@ -200,15 +200,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_no_pricing_returns_zero() {
+    fn no_pricing_returns_zero_pricing() {
         let pricings: Vec<ModelPricingConfig> = vec![];
         let pricing = get_pricing("claude-3-5-sonnet-20241022", &pricings, "fuzzy");
         assert_eq!(pricing.input, 0.0);
         assert_eq!(pricing.output, 0.0);
+        // 无匹配价格时缓存读写价格也应为 0，避免按 0 计费与按默认值计费混淆。
+        assert_eq!(pricing.cache_write_5m, 0.0);
+        assert_eq!(pricing.cache_write_1h, 0.0);
+        assert_eq!(pricing.cache_read, 0.0);
     }
 
     #[test]
-    fn test_custom_pricing_fuzzy_match() {
+    fn custom_pricing_fuzzy_match() {
         let pricings = vec![ModelPricingConfig {
             model_id: "minimax-m2-5".to_string(),
             display_name: None,
@@ -222,12 +226,12 @@ mod tests {
 
         // 模糊匹配应能在搜索部分字符串时找到 minimax-m2-5
         let pricing = get_pricing("minimax-m2-5", &pricings, "fuzzy");
-        assert!((pricing.input - 0.33).abs() < 0.01);
-        assert!((pricing.output - 1.32).abs() < 0.01);
+        assert!((pricing.input - 0.33).abs() < 1e-9);
+        assert!((pricing.output - 1.32).abs() < 1e-9);
     }
 
     #[test]
-    fn test_custom_pricing_exact_match() {
+    fn custom_pricing_exact_match() {
         let pricings = vec![ModelPricingConfig {
             model_id: "exact-model".to_string(),
             display_name: None,
@@ -241,15 +245,15 @@ mod tests {
 
         // 精确匹配应只匹配完全相同的字符串
         let pricing = get_pricing("exact-model", &pricings, "exact");
-        assert!((pricing.input - 5.0).abs() < 0.01);
+        assert!((pricing.input - 5.0).abs() < 1e-9);
 
         // 对于非精确匹配应返回默认值 (0.0)
         let pricing = get_pricing("exact-model-v2", &pricings, "exact");
-        assert!((pricing.input - 0.0).abs() < 0.01);
+        assert!((pricing.input - 0.0).abs() < 1e-9);
     }
 
     #[test]
-    fn test_exact_match_requires_identical_model_id() {
+    fn exact_match_requires_identical_model_id() {
         let pricings = vec![ModelPricingConfig {
             model_id: "glm-5".to_string(),
             display_name: None,
@@ -262,14 +266,14 @@ mod tests {
         }];
 
         let pricing = get_pricing("GLM-5", &pricings, "exact");
-        assert!((pricing.input - 0.0).abs() < 0.01);
+        assert!((pricing.input - 0.0).abs() < 1e-9);
 
         let pricing = get_pricing("glm-5", &pricings, "exact");
-        assert!((pricing.input - 1.0).abs() < 0.01);
+        assert!((pricing.input - 1.0).abs() < 1e-9);
     }
 
     #[test]
-    fn test_fuzzy_match_tolerates_case_and_separators() {
+    fn fuzzy_match_tolerates_case_and_separators() {
         let pricings = vec![ModelPricingConfig {
             model_id: "MiniMax-M2.5".to_string(),
             display_name: None,
@@ -282,12 +286,12 @@ mod tests {
         }];
 
         let pricing = get_pricing("minimax-m2-5", &pricings, "fuzzy");
-        assert!((pricing.input - 0.3).abs() < 0.01);
-        assert!((pricing.output - 1.2).abs() < 0.01);
+        assert!((pricing.input - 0.3).abs() < 1e-9);
+        assert!((pricing.output - 1.2).abs() < 1e-9);
     }
 
     #[test]
-    fn test_fuzzy_match_prioritizes_custom_pricing() {
+    fn fuzzy_match_prioritizes_custom_pricing() {
         let pricings = vec![
             ModelPricingConfig {
                 model_id: "GLM-5".to_string(),
@@ -312,12 +316,12 @@ mod tests {
         ];
 
         let pricing = get_pricing("GLM-5", &pricings, "fuzzy");
-        assert!((pricing.input - 0.59).abs() < 0.01);
-        assert!((pricing.output - 2.64).abs() < 0.01);
+        assert!((pricing.input - 0.59).abs() < 1e-9);
+        assert!((pricing.output - 2.64).abs() < 1e-9);
     }
 
     #[test]
-    fn test_cost_estimation_with_pricing() {
+    fn cost_estimation_with_pricing() {
         let pricings = vec![ModelPricingConfig {
             model_id: "claude-3-5-sonnet".to_string(),
             display_name: None,
@@ -343,11 +347,11 @@ mod tests {
         // cache_create: 0.1M * 1.5 = $0.15
         // cache_read: 0.2M * 0.3 = $0.06
         // total: $10.71
-        assert!((cost - 10.71).abs() < 0.01);
+        assert!((cost - 10.71).abs() < 1e-9);
     }
 
     #[test]
-    fn test_cost_estimation_without_pricing() {
+    fn cost_estimation_without_pricing() {
         let pricings: Vec<ModelPricingConfig> = vec![];
         let cost = estimate_session_cost(
             1_000_000,
@@ -359,6 +363,6 @@ mod tests {
             "fuzzy",
         );
         // 无价格配置 = $0 费用
-        assert!((cost - 0.0).abs() < 0.01);
+        assert!((cost - 0.0).abs() < 1e-9);
     }
 }

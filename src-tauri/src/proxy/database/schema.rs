@@ -676,3 +676,272 @@ impl ProxyDatabase {
         crate::utils::business_time::normalize_day_boundary_mode(&settings.day_boundary_mode)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_db() -> (tempfile::TempDir, ProxyDatabase) {
+        let tmpdir = tempfile::tempdir().expect("create temp dir");
+        let path = tmpdir.path().join("proxy_data.db");
+        let db = ProxyDatabase::new_with_path(&path).expect("open temp db");
+        (tmpdir, db)
+    }
+
+    fn columns_of(conn: &Connection, table: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .expect("prepare table info");
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query table info");
+        rows.flatten().collect()
+    }
+
+    fn generation(conn: &Connection) -> i64 {
+        conn.query_row(
+            "SELECT CAST(state_value AS INTEGER) FROM daily_rollup_state
+             WHERE state_key = 'merge_cache_generation'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("read merge cache generation")
+    }
+
+    #[test]
+    fn create_tables_is_idempotent() {
+        let (_tmp, db) = temp_db();
+        {
+            let conn = db.conn.lock().expect("lock conn");
+            ProxyDatabase::create_tables(&conn).expect("recreate tables");
+            ProxyDatabase::create_tables(&conn).expect("recreate tables again");
+            ProxyDatabase::create_model_pricing_table_static(&conn)
+                .expect("recreate pricing table");
+        }
+        // 重复建表不抛错即可；核心表都在。
+        let conn = db.conn.lock().expect("lock conn");
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+                rows.collect::<Result<Vec<_>, _>>()
+            })
+            .expect("list tables");
+        for required in [
+            "usage_records",
+            "session_stats",
+            "daily_summary",
+            "daily_rollup_state",
+            "model_usage",
+            "model_pricing",
+        ] {
+            assert!(tables.iter().any(|t| t == required), "missing {required}");
+        }
+    }
+
+    #[test]
+    fn migrate_schema_upgrades_legacy_tables_and_preserves_data() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE usage_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                message_id TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                model TEXT NOT NULL DEFAULT '',
+                session_id TEXT,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                ttft_ms INTEGER,
+                status_code INTEGER NOT NULL DEFAULT 200,
+                estimated_cost REAL NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            );
+            CREATE TABLE daily_summary (
+                date TEXT PRIMARY KEY,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                request_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE model_usage (
+                date TEXT NOT NULL,
+                model TEXT NOT NULL,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                request_count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (date, model)
+            );
+            INSERT INTO usage_records (timestamp, message_id, input_tokens, output_tokens, model, session_id)
+                VALUES (1_700_000_000_000, 'legacy-msg', 100, 200, 'gpt-4', 'legacy-sess');
+            INSERT INTO daily_summary (date, request_count) VALUES ('2024-01-01', 3);
+            INSERT INTO model_usage (date, model, request_count) VALUES ('2024-01-01', 'gpt-4', 3);
+            "#,
+        )
+        .expect("create legacy schema");
+
+        ProxyDatabase::create_tables(&conn).expect("create new tables around legacy");
+        ProxyDatabase::migrate_schema(&conn).expect("migrate legacy schema");
+
+        // usage_records 补全了全部新列。
+        let usage_cols = columns_of(&conn, "usage_records");
+        for required in [
+            "storage_dedupe_key",
+            "canonical_request_key",
+            "client_tool",
+            "cost_locked",
+            "estimated_cost",
+            "updated_at",
+            "usage_source",
+        ] {
+            assert!(
+                usage_cols.iter().any(|c| c == required),
+                "usage_records missing {required}"
+            );
+        }
+        // 数据保留，且 storage_dedupe_key 按 message_id 派生填充。
+        let (count, dedupe, client_tool): (i64, String, String) = conn
+            .query_row(
+                "SELECT COUNT(*), storage_dedupe_key, client_tool FROM usage_records",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read migrated record");
+        assert_eq!(count, 1);
+        assert_eq!(dedupe, "claude_code:legacy-msg");
+        assert_eq!(client_tool, "claude_code");
+
+        // daily_summary / model_usage 升级补列。
+        assert!(columns_of(&conn, "daily_summary")
+            .iter()
+            .any(|c| c == "cost"));
+        assert!(columns_of(&conn, "model_usage").iter().any(|c| c == "cost"));
+
+        // 迁移初始化 day_boundary_mode 状态行。
+        let boundary: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM daily_rollup_state WHERE state_key = 'day_boundary_mode'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count day boundary state");
+        assert_eq!(boundary, 1);
+    }
+
+    #[test]
+    fn migrate_schema_is_idempotent_on_current_schema() {
+        let (_tmp, db) = temp_db();
+        {
+            let conn = db.conn.lock().expect("lock conn");
+            conn.execute(
+                "INSERT INTO usage_records (timestamp, message_id, storage_dedupe_key, model)
+                 VALUES (1_700_000_000_000, 'm1', 'key-m1', 'gpt-4o')",
+                [],
+            )
+            .expect("insert record");
+
+            let dates = ProxyDatabase::migrate_schema(&conn).expect("first migrate");
+            assert!(dates.is_empty());
+            // 二次迁移：列不变、记录不丢、不重建表。
+            let dates = ProxyDatabase::migrate_schema(&conn).expect("second migrate");
+            assert!(dates.is_empty());
+        }
+        let conn = db.conn.lock().expect("lock conn");
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM usage_records", [], |row| row.get(0))
+            .expect("count records");
+        assert_eq!(count, 1);
+        let storage_key: String = conn
+            .query_row(
+                "SELECT storage_dedupe_key FROM usage_records WHERE message_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read storage key");
+        assert_eq!(storage_key, "key-m1");
+    }
+
+    #[test]
+    fn merge_generation_initialized_to_one() {
+        let (_tmp, db) = temp_db();
+        let conn = db.conn.lock().expect("lock conn");
+        assert_eq!(generation(&conn), 1);
+    }
+
+    #[test]
+    fn merge_generation_triggers_bump_on_usage_records_writes() {
+        let (_tmp, db) = temp_db();
+        {
+            let conn = db.conn.lock().expect("lock conn");
+            let initial = generation(&conn);
+
+            conn.execute(
+                "INSERT INTO usage_records (timestamp, message_id, storage_dedupe_key, model)
+                 VALUES (1_700_000_000_000, 'm1', 'key-m1', 'gpt-4o')",
+                [],
+            )
+            .expect("insert usage record");
+            assert_eq!(generation(&conn), initial + 1);
+
+            conn.execute(
+                "UPDATE usage_records SET output_tokens = 1 WHERE message_id = 'm1'",
+                [],
+            )
+            .expect("update usage record");
+            assert_eq!(generation(&conn), initial + 2);
+
+            conn.execute("DELETE FROM usage_records WHERE message_id = 'm1'", [])
+                .expect("delete usage record");
+            assert_eq!(generation(&conn), initial + 3);
+        }
+    }
+
+    #[test]
+    fn merge_generation_triggers_bump_on_session_stats_writes_but_not_derived_tables() {
+        let (_tmp, db) = temp_db();
+        {
+            let conn = db.conn.lock().expect("lock conn");
+            let initial = generation(&conn);
+
+            conn.execute(
+                "INSERT INTO session_stats (session_id, last_updated) VALUES ('sess-1', 1)",
+                [],
+            )
+            .expect("insert session stats");
+            assert_eq!(generation(&conn), initial + 1);
+
+            conn.execute(
+                "UPDATE session_stats SET total_duration_ms = 5 WHERE session_id = 'sess-1'",
+                [],
+            )
+            .expect("update session stats");
+            assert_eq!(generation(&conn), initial + 2);
+
+            conn.execute("DELETE FROM session_stats WHERE session_id = 'sess-1'", [])
+                .expect("delete session stats");
+            assert_eq!(generation(&conn), initial + 3);
+
+            // daily_summary / model_pricing 写入不触发 generation（内部 rollup 与配置）。
+            conn.execute(
+                "INSERT INTO daily_summary (date, request_count, finalized_at) VALUES ('2026-06-01', 1, 1)",
+                [],
+            )
+            .expect("insert daily summary");
+            conn.execute(
+                "INSERT INTO model_pricing (model_id, input_price, output_price, last_updated)
+                 VALUES ('gpt-4o', 1.0, 2.0, 1)",
+                [],
+            )
+            .expect("insert model pricing");
+            assert_eq!(generation(&conn), initial + 3);
+        }
+    }
+}
