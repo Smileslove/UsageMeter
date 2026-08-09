@@ -338,6 +338,27 @@ mod tests {
     }
 
     #[test]
+    fn codex_gateway_record_fuzzy_merges_with_local() {
+        // 网关 Codex 记录（client_tool=api_gateway、label=Codex、真实 resp id）与
+        // 本地 Codex 扫描记录（合成 id）精确键永不相等：必须经 fuzzy 二次匹配
+        // 合并为单条事实，消除网关 + 本地 Codex 双计。
+        let local = local("codex", "local-generated-id", 1_700_000_000);
+        let mut gateway = proxy("api_gateway", "resp_provider-1", 1_700_000_002_000);
+        gateway.ingress_kind = "gateway".to_string();
+        gateway.gateway_profile_id = Some("profile-1".to_string());
+        gateway.gateway_caller_label = Some("Codex".to_string());
+
+        let mut input = input(vec![local]);
+        input.raw_proxy_records = vec![gateway];
+
+        let facts = merge_realtime_facts(input);
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].coverage_origin, CoverageOrigin::MergedFuzzyMatched);
+        assert_eq!(facts[0].tool, "codex");
+    }
+
+    #[test]
     fn filtered_codex_proxy_suppresses_matching_local_duplicate() {
         let local = local("codex", "local-generated-id", 1_700_000_000);
         let mut input = input(vec![local]);

@@ -880,7 +880,7 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
     }
     drop(db);
 
-    let reopened = LocalUsageDatabase::new_with_path(&path).expect("migrate v20 database to v24");
+    let reopened = LocalUsageDatabase::new_with_path(&path).expect("migrate v20 database to v25");
     let conn = reopened.conn.lock().unwrap();
     let schema_version: String = conn
         .query_row(
@@ -889,7 +889,7 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
             |row| row.get(0),
         )
         .expect("read schema version");
-    assert_eq!(schema_version, "24");
+    assert_eq!(schema_version, "25");
     for table in ["local_sessions", "remote_sessions"] {
         let columns: Vec<String> = conn
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -2684,7 +2684,7 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
             .get_local_sync_state("schema_version")
             .unwrap()
             .as_deref(),
-        Some("24")
+        Some("25")
     );
     assert!(
         reopened

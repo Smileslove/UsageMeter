@@ -497,30 +497,6 @@ pub struct TakeoverConflictRegistry {
     pub tools: HashMap<String, TakeoverConflictState>,
 }
 
-/// Claude API 的 SSE 事件类型
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub enum SseEvent {
-    MessageStart {
-        message_id: String,
-        model: String,
-        input_tokens: u64,
-    },
-    MessageDelta {
-        output_tokens: u64,
-    },
-    MessageStop {
-        message_id: String,
-    },
-    ContentBlockDelta {
-        delta_text: String,
-    },
-    Error {
-        error_type: String,
-        message: String,
-    },
-}
-
 /// 请求上下文（用于追踪）
 #[derive(Debug, Clone)]
 #[allow(dead_code)]

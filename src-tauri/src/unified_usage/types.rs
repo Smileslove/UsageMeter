@@ -90,7 +90,8 @@ pub(crate) fn canonical_request_key_for_local(record: &LocalRequestRecord) -> St
             record.total_tokens
         )
     } else {
-        format!("{}:{}", record.tool, record.message_id)
+        // 判定与拼接使用同一 trim 后值：真实 message_id 带首尾空白时，两侧键仍对齐。
+        format!("{}:{}", record.tool, record.message_id.trim())
     }
 }
 
@@ -150,6 +151,33 @@ fn normalize_gateway_caller_label(label: &str) -> Option<&'static str> {
     }
 }
 
+/// 网关记录在 message_id 可靠（非空、非 fallback 合成 id）且 caller label 命中工具
+/// 白名单时，返回其对应的真实工具 tool_id；否则返回 None（保持 api_gateway 孤立显示）。
+/// 判定条件与 canonical_request_key_for_proxy 的归一化完全一致，供 from_proxy 把
+/// proxy-only 网关 fact 归因到真实工具，避免同一请求的键前缀与 tool 字段分裂。
+fn normalized_gateway_tool(record: &UsageRecord) -> Option<&'static str> {
+    if record.ingress_kind != "gateway" {
+        return None;
+    }
+    let message_id = record.message_id.trim();
+    if message_id.is_empty() || is_gateway_fallback_message_id(message_id) {
+        return None;
+    }
+    record
+        .gateway_caller_label
+        .as_deref()
+        .and_then(normalize_gateway_caller_label)
+}
+
+/// 判断代理记录是否属于 Codex。本地代理（接管）记录的 client_tool 直接是 codex；
+/// 网关记录（client_tool = api_gateway）在 message_id 为真实上游 id 且 caller label
+/// 归一化为 codex 时同样属于 Codex。网关 Codex 记录的 message_id（resp_*/chatcmpl-*）
+/// 与本地 Codex 扫描的合成 id（codex:{session}:{index}）结构不同，精确键永不相等，
+/// 必须进入 fuzzy 二次匹配池才能与本地记录对账，否则同一请求仍会双计。
+fn is_codex_proxy_record(record: &UsageRecord) -> bool {
+    record.client_tool == "codex" || normalized_gateway_tool(record) == Some(TOOL_CODEX)
+}
+
 pub(crate) fn canonical_request_key_for_proxy(record: &UsageRecord) -> String {
     // 网关记录（ingress_kind == "gateway"）的存储层键固定为
     // `gateway:{profile_id}:{gateway_request_id}`（见 proxy/database/session.rs 与
@@ -166,17 +194,10 @@ pub(crate) fn canonical_request_key_for_proxy(record: &UsageRecord) -> String {
     //
     // 归一化失败 / message_id 为空 / fallback id → 回退现有逻辑（存储层
     // canonical_request_key 优先），保持 api_gateway 孤立显示，避免误合并。
-    if record.ingress_kind == "gateway" {
+    if let Some(tool_id) = normalized_gateway_tool(record) {
+        // 拼接使用与判定同一的 trim 后 message_id，避免两侧不一致。
         let message_id = record.message_id.trim();
-        if !message_id.is_empty() && !is_gateway_fallback_message_id(message_id) {
-            if let Some(tool_id) = record
-                .gateway_caller_label
-                .as_deref()
-                .and_then(normalize_gateway_caller_label)
-            {
-                return format!("{tool_id}:{message_id}");
-            }
-        }
+        return format!("{tool_id}:{message_id}");
     }
     if let Some(key) = record.canonical_request_key.as_ref() {
         let trimmed = key.trim();
@@ -198,7 +219,7 @@ pub(crate) fn canonical_request_key_for_proxy(record: &UsageRecord) -> String {
             record.total_tokens
         )
     } else {
-        format!("{}:{}", record.client_tool, record.message_id)
+        format!("{}:{}", record.client_tool, record.message_id.trim())
     }
 }
 
@@ -262,6 +283,11 @@ pub(crate) enum CodexFuzzyOutcome {
 /// `merge_realtime_range`, extract the Codex-only orphan subsets the fuzzy pass operates on.
 /// No I/O — safe to unit test with hand-built maps. Non-Codex tools (in particular Claude
 /// Code, whose local reader sets a real message id and matches exactly today) are untouched.
+///
+/// The proxy-side pool includes gateway records whose caller label normalizes to Codex
+/// (see `is_codex_proxy_record`): their real upstream message id can never equal the local
+/// synthetic id, so they need the same fuzzy second-chance reconciliation as direct proxy
+/// Codex records to avoid double-counting.
 pub(crate) fn codex_orphan_pools<'a>(
     local_index: &'a HashMap<String, LocalRequestRecord>,
     proxy_index: &'a HashMap<String, UsageRecord>,
@@ -279,7 +305,7 @@ pub(crate) fn codex_orphan_pools<'a>(
 
     let mut proxy_orphans_visible: Vec<&UsageRecord> = proxy_index
         .iter()
-        .filter(|(key, rec)| rec.client_tool == "codex" && !local_index.contains_key(*key))
+        .filter(|(key, rec)| is_codex_proxy_record(rec) && !local_index.contains_key(*key))
         .map(|(_, rec)| rec)
         .collect();
 
@@ -289,7 +315,7 @@ pub(crate) fn codex_orphan_pools<'a>(
     let mut proxy_orphans_all_extra: Vec<&UsageRecord> = all_proxy_index
         .iter()
         .filter(|(key, rec)| {
-            rec.client_tool == "codex"
+            is_codex_proxy_record(rec)
                 && !local_index.contains_key(*key)
                 && !proxy_index.contains_key(*key)
         })
@@ -688,6 +714,14 @@ impl MergedRequestFact {
             record.api_key_prefix.as_deref(),
             record.request_base_url.as_deref(),
         );
+        // 网关记录经归一化判定命中时（message_id 为真实上游 id 且 label 命中白名单），
+        // 该 fact 对应真实工具的请求：tool 归因到归一化 tool_id 而非 api_gateway，
+        // 与 merge 路径（tool 取 local）的语义一致，避免同一工具的请求在统计中
+        // 分裂为 api_gateway 与真实工具两部分；未命中（fallback id / 未知 label /
+        // 非网关）保持 client_tool 原样。
+        let tool = normalized_gateway_tool(record)
+            .map(str::to_string)
+            .unwrap_or_else(|| record.client_tool.clone());
 
         Self {
             canonical_request_key: canonical_request_key_for_proxy(record),
@@ -696,10 +730,10 @@ impl MergedRequestFact {
             project_path,
             api_key_prefix: record.api_key_prefix.clone(),
             request_base_url: record.request_base_url.clone(),
-            tool: record.client_tool.clone(),
+            tool: tool.clone(),
             timestamp_sec: record.timestamp / 1000,
             timestamp_ms: record.timestamp,
-            model: normalize_model_bucket(&record.client_tool, &record.model),
+            model: normalize_model_bucket(&tool, &record.model),
             input_tokens: record.input_tokens,
             output_tokens: record.output_tokens,
             cache_create_tokens: record.cache_create_tokens,
@@ -1367,6 +1401,76 @@ mod tests {
     }
 
     #[test]
+    fn codex_orphan_pools_includes_gateway_codex_record() {
+        // 网关记录（client_tool=api_gateway）只要 caller label 归一化为 codex 且
+        // message_id 为真实上游 id，就应进入 codex fuzzy 池；label 非 codex 的
+        // 网关记录（如 Claude Code）不得进入。
+        let codex_local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let mut local_index = HashMap::new();
+        local_index.insert(
+            canonical_request_key_for_local(&codex_local),
+            codex_local.clone(),
+        );
+
+        let gateway_codex = gateway_proxy_with("resp_abc123", Some("Codex"), None);
+        let gateway_claude = gateway_proxy_with("chatcmpl-abc123", Some("Claude Code"), None);
+
+        let mut proxy_index = HashMap::new();
+        proxy_index.insert(
+            canonical_request_key_for_proxy(&gateway_codex),
+            gateway_codex.clone(),
+        );
+        proxy_index.insert(
+            canonical_request_key_for_proxy(&gateway_claude),
+            gateway_claude.clone(),
+        );
+        let all_proxy_index = proxy_index.clone();
+
+        let (_, proxy_orphans_visible, _) =
+            codex_orphan_pools(&local_index, &proxy_index, &all_proxy_index);
+        // 只有归一化为 codex 的网关记录进入池；Claude Code 网关记录必须被排除。
+        assert_eq!(proxy_orphans_visible.len(), 1);
+        assert_eq!(proxy_orphans_visible[0].message_id, "resp_abc123");
+    }
+
+    #[test]
+    fn fuzzy_match_reconciles_gateway_codex_record_with_local() {
+        // 网关 Codex 记录与本地 Codex 扫描记录（合成 id）精确键永不相等，必须经
+        // fuzzy 匹配合并为单条事实，否则同一请求双计。token 指纹需与本地一致。
+        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        let mut gateway = gateway_proxy_with("resp_abc123", Some("Codex"), None);
+        gateway.model = "gpt-5".to_string();
+        gateway.input_tokens = 150;
+        gateway.output_tokens = 150;
+        gateway.total_tokens = 300;
+        gateway.timestamp = 1_700_000_002_000;
+        gateway.cache_create_tokens = 0;
+        gateway.cache_read_tokens = 0;
+
+        let mut local_index = HashMap::new();
+        local_index.insert(canonical_request_key_for_local(&local), local.clone());
+        let mut proxy_index = HashMap::new();
+        proxy_index.insert(canonical_request_key_for_proxy(&gateway), gateway.clone());
+
+        let all_proxy_index = proxy_index.clone();
+        let (local_orphans, proxy_orphans_visible, proxy_orphans_all_extra) =
+            codex_orphan_pools(&local_index, &proxy_index, &all_proxy_index);
+        let outcomes = find_codex_fuzzy_matches(
+            &local_orphans,
+            &proxy_orphans_visible,
+            &proxy_orphans_all_extra,
+        );
+
+        assert_eq!(outcomes.len(), 1);
+        assert!(matches!(
+            &outcomes[0],
+            CodexFuzzyOutcome::MatchedVisible { local_key, proxy_key }
+                if *local_key == canonical_request_key_for_local(&local)
+                    && *proxy_key == canonical_request_key_for_proxy(&gateway)
+        ));
+    }
+
+    #[test]
     fn from_local_uses_fallback_base_url_when_provided() {
         let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
         let fact = MergedRequestFact::from_local(&local, None, 0.0, Some("https://sui-xiang.com"));
@@ -1542,6 +1646,69 @@ mod tests {
                 "message_id: {message_id}"
             );
         }
+    }
+
+    #[test]
+    fn gateway_message_id_with_whitespace_is_trimmed_in_normalized_key() {
+        // message_id 带首尾空白：判定与拼接使用同一 trim 后值（本地键同样 trim），
+        // 两侧键才能对齐。
+        let record = gateway_proxy_with(" chatcmpl-abc123 ", Some("Claude Code"), None);
+        assert_eq!(
+            canonical_request_key_for_proxy(&record),
+            "claude_code:chatcmpl-abc123"
+        );
+    }
+
+    #[test]
+    fn local_message_id_with_whitespace_is_trimmed_in_canonical_key() {
+        // 与网关侧对称：canonical_request_key_for_local 的尾部分支也必须用
+        // trim 后值拼接，否则同一 message_id 在 local/proxy 两侧键不一致。
+        let mut local = local_with(100, 200, 0, 0, "sess", 1_700_000_000);
+        local.message_id = " chatcmpl-abc123 ".to_string();
+        assert_eq!(
+            canonical_request_key_for_local(&local),
+            "claude_code:chatcmpl-abc123"
+        );
+    }
+
+    #[test]
+    fn gateway_proxy_only_fact_attributes_tool_to_normalized_tool() {
+        // 网关归一化命中（真实 message_id + 白名单 label）→ proxy-only fact 的
+        // tool 归因到真实工具，与键前缀一致，避免同一工具的请求在统计中分裂为
+        // api_gateway 与真实工具两部分。
+        let record = gateway_proxy_with(
+            "chatcmpl-abc123",
+            Some("Claude Code"),
+            Some("gateway:profile-1:gw-123-0"),
+        );
+        let fact = MergedRequestFact::from_proxy(&record, None);
+        assert_eq!(fact.tool, "claude_code");
+        assert_eq!(fact.canonical_request_key, "claude_code:chatcmpl-abc123");
+    }
+
+    #[test]
+    fn gateway_proxy_only_fact_keeps_api_gateway_when_label_misses() {
+        // label 未命中白名单 → 保持 api_gateway 孤立显示，键也回退存储层键。
+        let record = gateway_proxy_with(
+            "chatcmpl-abc123",
+            Some("Cursor"),
+            Some("gateway:profile-1:gw-123-0"),
+        );
+        let fact = MergedRequestFact::from_proxy(&record, None);
+        assert_eq!(fact.tool, "api_gateway");
+        assert_eq!(fact.canonical_request_key, "gateway:profile-1:gw-123-0");
+    }
+
+    #[test]
+    fn gateway_proxy_only_fact_keeps_api_gateway_for_fallback_message_id() {
+        // fallback message_id → 不参与归一化，tool 保持 api_gateway。
+        let record = gateway_proxy_with(
+            "claude_usage_missing_1700000000_200",
+            Some("Claude Code"),
+            Some("gateway:profile-1:gw-123-0"),
+        );
+        let fact = MergedRequestFact::from_proxy(&record, None);
+        assert_eq!(fact.tool, "api_gateway");
     }
 
     #[test]

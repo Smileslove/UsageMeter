@@ -21,7 +21,6 @@ use bytes::{Buf, Bytes, BytesMut};
 use futures::TryStreamExt;
 use http_body_util::BodyDataStream;
 use hyper::{
-    body::Incoming,
     header::{
         HeaderName, HeaderValue, AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, UPGRADE,
     },
@@ -29,6 +28,7 @@ use hyper::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 const GATEWAY_PREFIX: &str = "/gateway/";
 const CLIENT_LABEL_HEADER: &str = "x-usagemeter-client";
@@ -38,6 +38,12 @@ static NEXT_GATEWAY_REQUEST: AtomicU64 = AtomicU64::new(1);
 /// than this are forwarded unchanged without field validation so large uploads
 /// keep their streaming passthrough behaviour.
 const MAX_VALIDATION_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// Per-chunk idle timeout while buffering a body for validation. The gateway
+/// listens on loopback, so a local body read completes in milliseconds; a
+/// client that declares a `Content-Length` and then stalls mid-body must not
+/// be able to hold the gateway (and the upstream forward) open forever.
+const MAX_GATEWAY_BODY_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GatewayForwardMode {
@@ -75,6 +81,7 @@ enum GatewayRouteError {
     LocalKeyUnauthorized,
     UpstreamKeyUnavailable,
     ProtocolMismatch,
+    BodyReadTimeout,
 }
 
 impl GatewayRouteError {
@@ -111,6 +118,11 @@ impl GatewayRouteError {
                 StatusCode::BAD_REQUEST,
                 "protocol_mismatch",
                 "Request body or content type does not match the gateway profile protocol",
+            ),
+            Self::BodyReadTimeout => (
+                StatusCode::REQUEST_TIMEOUT,
+                "gateway_body_timeout",
+                "Gateway request body read timed out",
             ),
         };
 
@@ -216,9 +228,11 @@ fn validate_body_fields(protocol: GatewayProtocol, body: &[u8]) -> Result<(), Ga
 
 /// A gateway request body that has either been buffered and validated, or is
 /// left as the incoming streaming body for passthrough/oversized requests.
-enum ValidatedBody {
+/// Generic over the body type so tests can feed `http_body_util::Full` bodies
+/// without constructing a real `Incoming`.
+enum ValidatedBody<B> {
     Buffered(Bytes),
-    Streaming(Incoming),
+    Streaming(B),
 }
 
 /// Reads the request body when it can be validated, checks it against the
@@ -226,13 +240,18 @@ enum ValidatedBody {
 /// (larger than `MAX_VALIDATION_BODY_BYTES`) or chunked bodies without a
 /// `Content-Length` are forwarded unchanged with the original streaming body so
 /// large uploads keep their behaviour.
-async fn read_and_validate_gateway_body(
+async fn read_and_validate_gateway_body<B>(
     mode: GatewayForwardMode,
     protocol: GatewayProtocol,
     method: &Method,
     headers: &hyper::HeaderMap,
-    body: Incoming,
-) -> Result<ValidatedBody, GatewayRouteError> {
+    body: B,
+) -> Result<ValidatedBody<B>, GatewayRouteError>
+where
+    B: hyper::body::Body + Unpin,
+    B::Data: bytes::Buf,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     // Passthrough modes forward arbitrary endpoints (uploads, embeddings,
     // non-standard paths). Only the cheap header checks apply; the body keeps
     // streaming so the transparent behaviour is unchanged.
@@ -248,7 +267,8 @@ async fn read_and_validate_gateway_body(
 
     match content_length {
         Some(len) if len <= MAX_VALIDATION_BODY_BYTES as u64 => {
-            let bytes = read_body_limited(body, len as usize).await?;
+            let bytes =
+                read_body_limited(body, len as usize, MAX_GATEWAY_BODY_READ_TIMEOUT).await?;
             validate_gateway_request(mode, protocol, method, headers, &bytes)?;
             Ok(ValidatedBody::Buffered(bytes))
         }
@@ -261,7 +281,11 @@ async fn read_and_validate_gateway_body(
     }
 }
 
-async fn read_body_limited<B>(body: B, limit: usize) -> Result<Bytes, GatewayRouteError>
+async fn read_body_limited<B>(
+    body: B,
+    limit: usize,
+    read_timeout: Duration,
+) -> Result<Bytes, GatewayRouteError>
 where
     B: hyper::body::Body + Unpin,
     B::Data: bytes::Buf,
@@ -269,11 +293,15 @@ where
 {
     let mut bytes = BytesMut::new();
     let mut stream = BodyDataStream::new(body);
-    while let Some(chunk) = stream
-        .try_next()
-        .await
-        .map_err(|_| GatewayRouteError::ProtocolMismatch)?
-    {
+    loop {
+        // Per-chunk idle timeout: a client that stalls mid-body must not hold
+        // the buffered-forward path (and the upstream connection) open forever.
+        let item = tokio::time::timeout(read_timeout, stream.try_next())
+            .await
+            .map_err(|_| GatewayRouteError::BodyReadTimeout)?;
+        let Some(chunk) = item.map_err(|_| GatewayRouteError::ProtocolMismatch)? else {
+            break;
+        };
         let chunk_len = chunk.remaining();
         if bytes.len().saturating_add(chunk_len) > limit {
             return Err(GatewayRouteError::ProtocolMismatch);
@@ -1656,10 +1684,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn oversized_body_skips_field_validation_and_keeps_streaming() {
+    #[tokio::test]
+    async fn oversized_body_skips_field_validation_and_keeps_streaming() {
         // A body larger than the validation cap is forwarded without buffering;
-        // the header checks still apply.
+        // the header checks still apply and the original streaming body survives.
         let mode = GatewayForwardMode::OpenAiUsage;
         let method = Method::POST;
         let mut headers = hyper::HeaderMap::new();
@@ -1668,17 +1696,19 @@ mod tests {
             CONTENT_LENGTH,
             HeaderValue::from((MAX_VALIDATION_BODY_BYTES + 1) as u64),
         );
-        // Since the body is not read, only the header checks run and a plain
-        // non-JSON body cannot fail the field check. We just assert the header
-        // path accepts oversized bodies for matching content types.
-        assert!(validate_gateway_request(
+        // A non-JSON body must still pass: with an oversized declared length the
+        // body is never read, so no field validation can run on it.
+        let body = http_body_util::Full::new(bytes::Bytes::from_static(b"not-json"));
+        let validated = read_and_validate_gateway_body(
             mode,
             GatewayProtocol::OpenAiChatCompletions,
             &method,
             &headers,
-            b""
+            body,
         )
-        .is_ok());
+        .await
+        .unwrap();
+        assert!(matches!(validated, ValidatedBody::Streaming(_)));
     }
 
     #[tokio::test]
@@ -1688,7 +1718,7 @@ mod tests {
         // hang the upstream. It must be rejected instead.
         let body = http_body_util::Full::new(bytes::Bytes::from_static(b"{\"a\":")); // 5 bytes, declared 8
         assert!(matches!(
-            read_body_limited(body, 8).await,
+            read_body_limited(body, 8, Duration::from_secs(1)).await,
             Err(GatewayRouteError::ProtocolMismatch)
         ));
     }
@@ -1696,7 +1726,34 @@ mod tests {
     #[tokio::test]
     async fn read_body_limited_accepts_exact_content_length() {
         let body = http_body_util::Full::new(bytes::Bytes::from_static(b"{\"a\":1}")); // 7 bytes
-        let bytes = read_body_limited(body, 7).await.unwrap();
+        let bytes = read_body_limited(body, 7, Duration::from_secs(1))
+            .await
+            .unwrap();
         assert_eq!(&bytes[..], b"{\"a\":1}");
+    }
+
+    /// A body that never yields a frame and never completes: models a client
+    /// that declared a Content-Length and then stalls mid-body.
+    struct StalledBody;
+
+    impl hyper::body::Body for StalledBody {
+        type Data = bytes::Bytes;
+        type Error = std::convert::Infallible;
+
+        fn poll_frame(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    #[tokio::test]
+    async fn read_body_limited_times_out_when_client_stalls() {
+        let started = std::time::Instant::now();
+        let result = read_body_limited(StalledBody, 8, Duration::from_millis(100)).await;
+        assert!(matches!(result, Err(GatewayRouteError::BodyReadTimeout)));
+        // The timeout must actually fire rather than returning early.
+        assert!(started.elapsed() >= Duration::from_millis(80));
     }
 }

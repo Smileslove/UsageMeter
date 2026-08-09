@@ -20,7 +20,7 @@ impl LocalUsageDatabase {
 
     pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 24 {
+        if schema_version >= 25 {
             return Ok(());
         }
         let mut cleared_runtime_caches = false;
@@ -772,6 +772,41 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to update v24 schema version: {}", e))?;
             tx.commit()
                 .map_err(|e| format!("Failed to commit v24 schema migration: {}", e))?;
+        }
+
+        if schema_version < 25 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v25 schema migration: {}", e))?;
+
+            // 网关 proxy-only 事实的 tool 归因变更（此前 api_gateway 归因到真实工具）
+            // 需要重建历史物化数据，否则升级后历史统计仍按 api_gateway 展示、与
+            // 键前缀分裂。清空四张物化表并 bump invalidation version，让下一次查询
+            // 按新归因全量重新物化（一次性成本）。
+            tx.execute("DELETE FROM unified_daily_materialized_facts", [])
+                .map_err(|e| format!("Failed to clear v25 materialized facts: {}", e))?;
+            tx.execute("DELETE FROM unified_daily_summary", [])
+                .map_err(|e| format!("Failed to clear v25 daily summary: {}", e))?;
+            tx.execute("DELETE FROM unified_daily_model_summary", [])
+                .map_err(|e| format!("Failed to clear v25 model summary: {}", e))?;
+            tx.execute("DELETE FROM unified_daily_materialization_state", [])
+                .map_err(|e| format!("Failed to clear v25 materialization state: {}", e))?;
+            Self::bump_unified_materialization_invalidation_version_tx(
+                &tx,
+                chrono::Utc::now().timestamp(),
+            )?;
+            cleared_runtime_caches = true;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '25', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v25 schema version: {}", e))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v25 schema migration: {}", e))?;
         }
 
         if cleared_runtime_caches {

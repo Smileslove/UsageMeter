@@ -526,4 +526,43 @@ mod tests {
             1_717_000_456
         );
     }
+
+    #[test]
+    fn hermes_session_folds_reasoning_into_output_and_total_once() {
+        // 口径回归：output_tokens 含 reasoning（40+10=50），total 只含一次
+        // reasoning（input 10 + cache_read 5 + cache_write 3 + output 50 = 68），
+        // 且 request_key 与 total_tokens 使用同一口径，不允许双计或口径分裂。
+        let db_meta = HermesDbMeta {
+            db_path: PathBuf::from("/tmp/hermes/state.db"),
+            file_size: 100,
+            last_modified: 1_717_000_000,
+            fingerprint: 1,
+        };
+        let row = HermesSessionRow {
+            raw_session_id: "sess-1".to_string(),
+            model: "hermes-3".to_string(),
+            started_at: 1_717_000_000,
+            ended_at: 1_717_000_100,
+            message_count: 1,
+            input_tokens: 10,
+            output_tokens: 40,
+            cache_read_tokens: 5,
+            cache_write_tokens: 3,
+            reasoning_tokens: 10,
+            estimated_cost_usd: None,
+            actual_cost_usd: None,
+        };
+
+        let session = build_hermes_session(&db_meta, "hermes::sess-1", row)
+            .expect("session with tokens must be built");
+        let record = &session.requests[0];
+
+        assert_eq!(record.output_tokens, 50); // raw output 40 + reasoning 10
+        assert_eq!(record.total_tokens, 68); // 10 + 5 + 3 + 50
+        let request_key = record.request_key.as_deref().expect("request_key present");
+        assert!(
+            request_key.ends_with(":68"),
+            "request_key must use the same reasoning-inclusive total: {request_key}"
+        );
+    }
 }

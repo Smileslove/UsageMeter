@@ -11,12 +11,18 @@ static SETTINGS_WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()
 
 /// 加载应用设置（同步实现，供 Rust 内部直接调用；macOS 上可能 spawn Keychain 子进程）
 pub fn load_settings_blocking() -> Result<AppSettings, String> {
+    // 偏好文件版本用于存量迁移判定：0.11.x 及更早（settingsVersion <= 2）落盘的
+    // streaming_idle_timeout_seconds=0 是旧默认值而非显式关闭；文件缺失时按旧版
+    // 处理，使 DB-only 的旧设置同样进入迁移。迁移作用于最终 settings（在
+    // apply_preferences / 默认值之后），保证文件与 DB 两个来源都被覆盖。
+    let legacy_file_version = load_preferences_file_version();
     let mut settings = with_config_database(|database| {
         if let Some(mut settings) = database.load_settings()? {
             if let Some(preferences) = load_preferences_file()? {
                 apply_preferences(&mut settings, preferences);
             }
             normalize_settings(&mut settings)?;
+            migrate_legacy_streaming_idle_timeout(&mut settings, legacy_file_version);
             migrate_legacy_model_pricings(&mut settings)?;
             // Re-save once to remove the old full-snapshot documents after a
             // user upgrades to the split preferences/entity layout.
@@ -26,6 +32,7 @@ pub fn load_settings_blocking() -> Result<AppSettings, String> {
         } else {
             let mut settings = load_preferences_file()?.unwrap_or_default();
             normalize_settings(&mut settings)?;
+            migrate_legacy_streaming_idle_timeout(&mut settings, legacy_file_version);
             migrate_legacy_model_pricings(&mut settings)?;
 
             let previous_settings = settings.clone();
@@ -66,6 +73,38 @@ fn load_preferences_file() -> Result<Option<AppSettings>, String> {
     }
 
     Ok(Some(settings))
+}
+
+/// 读取偏好文件的 `settingsVersion`。文件缺失或无法解析时按 1（旧版）处理：
+/// 这样 settings.json 缺失、仅 app_config.db 存有旧设置的路径（0.10.x 全字段
+/// 存储形态）同样进入存量迁移判定。
+fn load_preferences_file_version() -> u64 {
+    let path = match AppSettings::settings_path() {
+        Ok(path) => path,
+        Err(_) => return 1,
+    };
+    let Ok(raw) = fs::read_to_string(path) else {
+        return 1;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return 1;
+    };
+    value
+        .get("settingsVersion")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(1)
+}
+
+/// 0.11.x 及更早（settingsVersion <= 2，含缺失）写入的
+/// `streaming_idle_timeout_seconds: 0` 是「默认无超时」（旧版默认值即为 0），
+/// 并非用户显式关闭——settingsVersion: 2 自 0.11.0 起就存在，而彼时默认值仍是 0。
+/// 升级为当前默认 300 秒，让存量用户升级后自动获得流式空闲超时保护。
+/// settingsVersion 3 起「显式 0 = 关闭」语义才存在，此时必须保持 0 不动。
+fn migrate_legacy_streaming_idle_timeout(settings: &mut AppSettings, file_version: u64) {
+    if file_version <= 2 && settings.proxy.streaming_idle_timeout_seconds == 0 {
+        settings.proxy.streaming_idle_timeout_seconds =
+            crate::models::default_proxy_streaming_idle_timeout_seconds();
+    }
 }
 
 fn apply_preferences(settings: &mut AppSettings, preferences: AppSettings) {
@@ -221,7 +260,7 @@ fn write_preferences_file(settings: &AppSettings) -> Result<(), String> {
     document.remove("gateway");
     document.remove("sourceAware");
     document.remove("clientTools");
-    document.insert("settingsVersion".to_string(), serde_json::json!(2));
+    document.insert("settingsVersion".to_string(), serde_json::json!(3));
     document.insert(
         "filters".to_string(),
         serde_json::json!({
@@ -554,6 +593,108 @@ mod tests {
     }
 
     #[test]
+    fn legacy_settings_zero_streaming_timeout_upgrades_to_default() {
+        // 旧版（settingsVersion <= 2，含缺失）的 0 是旧默认值而非显式关闭：
+        // version 1 = 0.10.x 及更早（无字段），version 2 = 0.11.x（settingsVersion: 2
+        // 自 0.11.0 起存在，彼时默认值仍为 0）。两者都必须升级为当前默认 300。
+        for file_version in [0, 1, 2] {
+            let mut settings = AppSettings::default();
+            settings.proxy.streaming_idle_timeout_seconds = 0;
+            migrate_legacy_streaming_idle_timeout(&mut settings, file_version);
+            assert_eq!(
+                settings.proxy.streaming_idle_timeout_seconds,
+                crate::models::default_proxy_streaming_idle_timeout_seconds(),
+                "file_version: {file_version}"
+            );
+        }
+    }
+
+    #[test]
+    fn modern_settings_explicit_zero_streaming_timeout_stays_zero() {
+        // settingsVersion >= 3：0 是「显式关闭」语义，迁移不得覆盖。
+        let mut settings = AppSettings::default();
+        settings.proxy.streaming_idle_timeout_seconds = 0;
+        migrate_legacy_streaming_idle_timeout(&mut settings, 3);
+        assert_eq!(settings.proxy.streaming_idle_timeout_seconds, 0);
+
+        // 非零值在任何版本下都不受影响。
+        let mut settings = AppSettings::default();
+        settings.proxy.streaming_idle_timeout_seconds = 15;
+        migrate_legacy_streaming_idle_timeout(&mut settings, 1);
+        assert_eq!(settings.proxy.streaming_idle_timeout_seconds, 15);
+    }
+
+    #[test]
+    fn legacy_settings_file_json_upgrades_streaming_timeout_on_load() {
+        // 端到端形状：0.11.x 文件（settingsVersion=2、streaming 0）与 0.10.x 文件
+        // （无 settingsVersion、streaming 0）都应得到默认 300；settingsVersion=3 的
+        // 显式 0 保持 0。
+        let cases = [
+            (
+                serde_json::json!({ "proxy": { "streamingIdleTimeoutSeconds": 0 } }),
+                1,
+                300,
+            ),
+            (
+                serde_json::json!({
+                    "settingsVersion": 2,
+                    "proxy": { "streamingIdleTimeoutSeconds": 0 }
+                }),
+                2,
+                300,
+            ),
+            (
+                serde_json::json!({
+                    "settingsVersion": 3,
+                    "proxy": { "streamingIdleTimeoutSeconds": 0 }
+                }),
+                3,
+                0,
+            ),
+        ];
+        for (json, file_version, expected) in cases {
+            let mut settings: AppSettings = serde_json::from_value(json).unwrap();
+            migrate_legacy_streaming_idle_timeout(&mut settings, file_version);
+            assert_eq!(
+                settings.proxy.streaming_idle_timeout_seconds, expected,
+                "file_version: {file_version}"
+            );
+        }
+    }
+
+    #[test]
+    fn preferences_file_version_extraction_handles_missing_and_invalid() {
+        let _guard = crate::test_support::env_lock();
+        let previous_home = std::env::var_os("HOME");
+        let dir = tempdir().expect("tempdir");
+        std::env::set_var("HOME", dir.path());
+
+        let result = (|| -> Result<(u64, u64, u64), String> {
+            // 文件缺失 → 按旧版 1
+            let missing = load_preferences_file_version();
+            let settings_dir = dir.path().join(".usagemeter");
+            fs::create_dir_all(&settings_dir).map_err(|e| e.to_string())?;
+            // 非法 JSON → 按旧版 1
+            fs::write(settings_dir.join("settings.json"), "not-json").map_err(|e| e.to_string())?;
+            let invalid = load_preferences_file_version();
+            // 合法 version → 按文件值
+            fs::write(
+                settings_dir.join("settings.json"),
+                serde_json::json!({ "settingsVersion": 2 }).to_string(),
+            )
+            .map_err(|e| e.to_string())?;
+            let valid = load_preferences_file_version();
+            Ok((missing, invalid, valid))
+        })();
+
+        restore_home(previous_home);
+        let (missing, invalid, valid) = result.unwrap();
+        assert_eq!(missing, 1);
+        assert_eq!(invalid, 1);
+        assert_eq!(valid, 2);
+    }
+
+    #[test]
     fn normalize_settings_restores_invalid_legacy_values() {
         let mut settings = AppSettings::default();
         settings.model_pricing.match_mode.clear();
@@ -654,10 +795,94 @@ mod tests {
         assert_eq!(imported.locale, "en-US");
         assert_eq!(reloaded.locale, "zh-CN");
         assert!(dir.path().join(".usagemeter/app_config.db").exists());
-        assert_eq!(compact_file["settingsVersion"], 2);
+        assert_eq!(compact_file["settingsVersion"], 3);
         assert!(compact_file.get("gateway").is_none());
         assert!(compact_file.get("sourceAware").is_none());
         assert!(compact_file.get("clientTools").is_none());
+    }
+
+    #[test]
+    fn legacy_0_11_settings_file_upgrades_streaming_timeout_on_load() {
+        // 端到端：0.11.x 用户磁盘形态 = settingsVersion:2 + streaming 0（旧默认）。
+        // 首次加载应升级为 300，并写回 settingsVersion:3 固化，二次加载不再变化。
+        let _guard = crate::test_support::env_lock();
+        let previous_home = std::env::var_os("HOME");
+        let dir = tempdir().expect("tempdir");
+        std::env::set_var("HOME", dir.path());
+
+        let result = (|| -> Result<(u64, u64, serde_json::Value), String> {
+            let settings_dir = dir.path().join(".usagemeter");
+            fs::create_dir_all(&settings_dir).map_err(|e| e.to_string())?;
+            fs::write(
+                settings_dir.join("settings.json"),
+                serde_json::json!({
+                    "settingsVersion": 2,
+                    "proxy": { "streamingIdleTimeoutSeconds": 0 }
+                })
+                .to_string(),
+            )
+            .map_err(|e| e.to_string())?;
+
+            let imported = load_settings_blocking()?;
+            let first = imported.proxy.streaming_idle_timeout_seconds;
+            let reloaded = load_settings_blocking()?;
+            let second = reloaded.proxy.streaming_idle_timeout_seconds;
+            let compact_file: serde_json::Value = serde_json::from_str(
+                &fs::read_to_string(settings_dir.join("settings.json"))
+                    .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            Ok((first, second, compact_file))
+        })();
+
+        restore_home(previous_home);
+        let (first, second, compact_file) = result.unwrap();
+        assert_eq!(first, 300);
+        assert_eq!(second, 300);
+        // 写回固化：settingsVersion bump 到 3，streaming 300，二次加载幂等。
+        assert_eq!(compact_file["settingsVersion"], 3);
+        assert_eq!(
+            compact_file["proxy"]["streamingIdleTimeoutSeconds"],
+            serde_json::json!(300)
+        );
+    }
+
+    #[test]
+    fn db_only_legacy_settings_upgrade_streaming_timeout_when_file_missing() {
+        // 端到端：0.10.x 全字段存储形态——app_config.db 的 config_documents 含
+        // proxy 文档（streaming 0），settings.json 缺失。迁移必须作用于最终设置
+        // （DB 来源），升级为 300 而非停留在 0。
+        let _guard = crate::test_support::env_lock();
+        let previous_home = std::env::var_os("HOME");
+        let dir = tempdir().expect("tempdir");
+        std::env::set_var("HOME", dir.path());
+
+        let result = (|| -> Result<u64, String> {
+            let settings_dir = dir.path().join(".usagemeter");
+            fs::create_dir_all(&settings_dir).map_err(|e| e.to_string())?;
+            // 先建库（含 schema），再直插 0.10.x 形态的 proxy 文档。
+            crate::app_config::with_config_database(|_| Ok(()))?;
+            let db_path = settings_dir.join("app_config.db");
+            let conn = rusqlite::Connection::open(&db_path)
+                .map_err(|e| format!("ERR_OPEN_TEST_DB: {e}"))?;
+            conn.execute(
+                "INSERT INTO config_documents (document_key, payload_json, revision, updated_at)
+                 VALUES ('proxy', ?1, 1, 0)",
+                rusqlite::params![serde_json::json!({
+                    "streamingIdleTimeoutSeconds": 0
+                })
+                .to_string()],
+            )
+            .map_err(|e| format!("ERR_INSERT_TEST_DOCUMENT: {e}"))?;
+            drop(conn);
+            // settings.json 缺失 → 文件版本按 1（旧版）处理，迁移 DB 来源的 0。
+            assert!(!settings_dir.join("settings.json").exists());
+            let loaded = load_settings_blocking()?;
+            Ok(loaded.proxy.streaming_idle_timeout_seconds)
+        })();
+
+        restore_home(previous_home);
+        assert_eq!(result.unwrap(), 300);
     }
 
     #[test]
