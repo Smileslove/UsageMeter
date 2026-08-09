@@ -71,6 +71,7 @@ export interface GatewayProfile {
   dispatchStrategy: GatewayDispatchStrategy
   upstreamKeys: GatewayUpstreamKey[]
   localKeys: GatewayLocalKey[]
+  upstreamModels: GatewayUpstreamModel[]
   credentialRecovery: GatewayCredentialRecovery
 }
 
@@ -83,6 +84,36 @@ export interface GatewayStatus {
   routingActive: boolean
   enabledProfileCount: number
   listenerAddress?: string | null
+}
+
+export interface GatewayUpstreamModel {
+  id: string
+  name?: string
+  ownedBy?: string
+}
+
+export interface GatewayUpstreamModelsResult {
+  ok: boolean
+  models: GatewayUpstreamModel[]
+  latencyMs?: number
+  errorKind?: string
+  errorDetail?: string
+}
+
+export interface GatewayModelTestResult {
+  ok: boolean
+  modelId: string
+  latencyMs?: number
+  httpStatus?: number
+  errorKind?: string
+  errorDetail?: string
+}
+
+export interface GatewayBaseUrlPreview {
+  basePath: string
+  effectiveBaseUrl: string
+  basePathAdded: boolean
+  sampleRequestUrl: string
 }
 
 export type NetworkProxyScheme = 'http' | 'https' | 'socks5'

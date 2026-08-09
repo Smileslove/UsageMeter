@@ -43,6 +43,22 @@ pub struct GatewayProfile {
     pub upstream_keys: Vec<GatewayUpstreamKey>,
     #[serde(default)]
     pub local_keys: Vec<GatewayLocalKey>,
+    /// Last model list discovered from the upstream `/models` endpoint,
+    /// persisted so the UI can test a model without re-probing on every open.
+    #[serde(default)]
+    pub upstream_models: Vec<GatewayUpstreamModel>,
+}
+
+/// A model discovered from the upstream `/models` endpoint. Persisted with
+/// the profile so the UI can test a model without re-probing on every open.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayUpstreamModel {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owned_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -122,7 +138,7 @@ pub fn default_gateway_key_weight() -> u16 {
     1
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayProtocol {
     OpenAiChatCompletions,

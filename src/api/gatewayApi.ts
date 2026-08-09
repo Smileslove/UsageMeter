@@ -1,9 +1,13 @@
 import { invoke } from '@tauri-apps/api/core'
 import type {
+  GatewayBaseUrlPreview,
   GatewayDispatchStrategy,
+  GatewayModelTestResult,
   GatewayProfile,
   GatewayProtocol,
-  GatewayStatus
+  GatewayStatus,
+  GatewayUpstreamModel,
+  GatewayUpstreamModelsResult
 } from '../types'
 
 export interface GatewayProfileInput {
@@ -82,4 +86,26 @@ export function revokeGatewayLocalKey(profileId: string, keyId: string): Promise
 
 export function revealGatewayLocalKey(profileId: string, keyId: string): Promise<string> {
   return invoke('reveal_gateway_local_key', { profileId, keyId })
+}
+
+export function listGatewayUpstreamModels(profileId: string): Promise<GatewayUpstreamModelsResult> {
+  return invoke('list_gateway_upstream_models', { profileId })
+}
+
+export function saveGatewayUpstreamModels(
+  profileId: string,
+  models: GatewayUpstreamModel[]
+): Promise<GatewayProfile> {
+  return invoke('save_gateway_upstream_models', { profileId, models })
+}
+
+export function testGatewayUpstreamModel(profileId: string, modelId: string): Promise<GatewayModelTestResult> {
+  return invoke('test_gateway_upstream_model', { profileId, modelId })
+}
+
+export function previewGatewayBaseUrl(
+  protocol: GatewayProtocol,
+  baseUrl: string
+): Promise<GatewayBaseUrlPreview> {
+  return invoke('preview_gateway_base_url', { protocol, baseUrl })
 }

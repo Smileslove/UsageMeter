@@ -1696,6 +1696,7 @@ mod tests {
             dispatch_strategy: crate::models::GatewayDispatchStrategy::RoundRobin,
             upstream_keys: Vec::new(),
             local_keys: Vec::new(),
+            upstream_models: Vec::new(),
         });
 
         server.update_settings_snapshot(settings).await;

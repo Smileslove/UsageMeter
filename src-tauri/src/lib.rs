@@ -536,6 +536,10 @@ pub fn run() {
             commands::revoke_gateway_local_key,
             commands::reveal_gateway_local_key,
             commands::get_gateway_status,
+            commands::list_gateway_upstream_models,
+            commands::save_gateway_upstream_models,
+            commands::test_gateway_upstream_model,
+            commands::preview_gateway_base_url,
             // 用量命令
             commands::refresh_usage_bundle,
             commands::get_overview_deferred_bundle,

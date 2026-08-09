@@ -314,6 +314,7 @@ mod tests {
                 dispatch_strategy: crate::models::GatewayDispatchStrategy::RoundRobin,
                 upstream_keys: vec![],
                 local_keys: vec![],
+                upstream_models: vec![],
             });
 
         db.save_settings(&settings).unwrap();

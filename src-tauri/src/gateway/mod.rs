@@ -4,11 +4,12 @@
 //! Old macOS Keychain references are read only during one-time migration.
 
 pub mod audit;
+pub mod probe;
 pub mod rate_limit;
 
 use crate::models::{
     GatewayAuthMode, GatewayDispatchStrategy, GatewayLocalKey, GatewayProfile, GatewayProtocol,
-    GatewayUpstreamKey,
+    GatewayUpstreamKey, GatewayUpstreamModel,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::{rngs::OsRng, RngCore};
@@ -121,6 +122,7 @@ pub struct GatewayProfileView {
     pub dispatch_strategy: GatewayDispatchStrategy,
     pub upstream_keys: Vec<GatewayUpstreamKeyView>,
     pub local_keys: Vec<GatewayLocalKeyView>,
+    pub upstream_models: Vec<GatewayUpstreamModel>,
     pub credential_recovery: GatewayCredentialRecoveryView,
 }
 
@@ -158,7 +160,7 @@ impl From<&GatewayProfile> for GatewayProfileView {
         Self {
             id: profile.id.clone(),
             name: profile.name.clone(),
-            protocol: profile.protocol.clone(),
+            protocol: profile.protocol,
             base_url: profile.base_url.clone(),
             enabled: profile.enabled,
             client_label: profile.client_label.clone(),
@@ -186,6 +188,7 @@ impl From<&GatewayProfile> for GatewayProfileView {
                     last_used_at_ms: key.last_used_at_ms,
                 })
                 .collect(),
+            upstream_models: profile.upstream_models.clone(),
             credential_recovery: GatewayCredentialRecoveryView {
                 upstream_key_required: profile.upstream_keys.iter().any(|key| {
                     key.secret.trim().is_empty()
@@ -220,6 +223,7 @@ pub fn create_profile(input: GatewayProfileInput) -> Result<GatewayProfile, Stri
         dispatch_strategy: input.dispatch_strategy,
         upstream_keys: Vec::new(),
         local_keys: Vec::new(),
+        upstream_models: Vec::new(),
     };
     validate_profile(&profile)?;
     Ok(normalize_profile(profile))
@@ -237,6 +241,7 @@ pub fn update_profile(id: &str, input: GatewayProfileInput) -> Result<GatewayPro
         dispatch_strategy: input.dispatch_strategy,
         upstream_keys: Vec::new(),
         local_keys: Vec::new(),
+        upstream_models: Vec::new(),
     };
     validate_profile(&profile)?;
     Ok(normalize_profile(profile))
@@ -342,6 +347,32 @@ pub fn normalize_profile(mut profile: GatewayProfile) -> GatewayProfile {
     profile.client_label = profile.client_label.trim().to_string();
     profile.base_url = profile.base_url.trim().trim_end_matches('/').to_string();
     profile
+}
+
+/// Upper bound on the model list persisted with a profile, keeping the
+/// settings document bounded even when an upstream exposes a huge catalog.
+pub const MAX_UPSTREAM_MODELS: usize = 200;
+
+/// Model ids are embedded in the Gemini request path, so model ids are
+/// restricted to path-safe characters. Shared by the probe path and by
+/// [`normalize_upstream_models`].
+pub fn is_safe_model_id(model_id: &str) -> bool {
+    !model_id.is_empty()
+        && model_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
+/// Normalizes a model list before persisting it with a profile:
+/// drops ids that are unsafe for request paths, de-duplicates by `id`
+/// preserving first-seen order, and caps the list at [`MAX_UPSTREAM_MODELS`].
+pub fn normalize_upstream_models(models: Vec<GatewayUpstreamModel>) -> Vec<GatewayUpstreamModel> {
+    let mut seen = std::collections::HashSet::new();
+    models
+        .into_iter()
+        .filter(|model| is_safe_model_id(&model.id) && seen.insert(model.id.clone()))
+        .take(MAX_UPSTREAM_MODELS)
+        .collect()
 }
 
 pub fn create_upstream_key(
@@ -462,6 +493,24 @@ pub fn verify_local_key_with_expiry(
     }
 
     Ok(())
+}
+
+/// Returns the upstream auth header `(name, value)` for a protocol:
+/// - OpenAI: `Authorization: Bearer {secret}`
+/// - Anthropic: `x-api-key: {secret}`
+/// - Gemini: `x-goog-api-key: {secret}`
+///
+/// Single source of truth shared by the gateway forwarder
+/// (`proxy/handlers/gateway.rs`) and the connectivity probe
+/// (`gateway/probe.rs`) so credential injection can never diverge.
+pub fn upstream_auth_header(protocol: GatewayProtocol, secret: &str) -> (&'static str, String) {
+    match protocol {
+        GatewayProtocol::OpenAiChatCompletions | GatewayProtocol::OpenAiResponses => {
+            ("authorization", format!("Bearer {secret}"))
+        }
+        GatewayProtocol::AnthropicMessages => ("x-api-key", secret.to_string()),
+        GatewayProtocol::GeminiGenerateContent => ("x-goog-api-key", secret.to_string()),
+    }
 }
 
 pub fn select_upstream_key(profile: &GatewayProfile) -> Option<&GatewayUpstreamKey> {
@@ -729,6 +778,32 @@ mod tests {
     }
 
     #[test]
+    fn normalize_models_dedupes_filters_and_caps() {
+        let model = |id: &str| GatewayUpstreamModel {
+            id: id.to_string(),
+            name: None,
+            owned_by: None,
+        };
+        let many: Vec<_> = (0..250).map(|index| model(&format!("m-{index}"))).collect();
+        let normalized = normalize_upstream_models(vec![
+            model("gemini-1.5-pro"),
+            model("a/b"),            // unsafe for the request path
+            model("gemini-1.5-pro"), // duplicate, first-seen wins
+            model("deepseek-chat"),
+        ]);
+        assert_eq!(
+            normalized
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gemini-1.5-pro", "deepseek-chat"]
+        );
+        assert_eq!(normalize_upstream_models(many).len(), MAX_UPSTREAM_MODELS);
+        assert!(normalize_upstream_models(vec![model("")]).is_empty());
+        assert!(normalize_upstream_models(vec![model("a?b")]).is_empty());
+    }
+
+    #[test]
     fn rejects_credential_bearing_or_non_https_urls() {
         assert_eq!(
             create_profile(input("https://key@example.com/v1")).unwrap_err(),
@@ -952,5 +1027,24 @@ mod tests {
             },
         ];
         assert_eq!(select_upstream_key(&profile).unwrap().id, "a");
+    }
+
+    #[test]
+    fn upstream_auth_header_uses_bearer_for_openai_and_raw_for_others() {
+        let (name, value) = upstream_auth_header(GatewayProtocol::OpenAiChatCompletions, "sk-test");
+        assert_eq!(name, "authorization");
+        assert_eq!(value, "Bearer sk-test");
+
+        let (name, value) = upstream_auth_header(GatewayProtocol::OpenAiResponses, "sk-test");
+        assert_eq!(name, "authorization");
+        assert_eq!(value, "Bearer sk-test");
+
+        let (name, value) = upstream_auth_header(GatewayProtocol::AnthropicMessages, "ant-key");
+        assert_eq!(name, "x-api-key");
+        assert_eq!(value, "ant-key");
+
+        let (name, value) = upstream_auth_header(GatewayProtocol::GeminiGenerateContent, "gem-key");
+        assert_eq!(name, "x-goog-api-key");
+        assert_eq!(value, "gem-key");
     }
 }

@@ -295,21 +295,14 @@ fn inject_upstream_auth(
     secret: &str,
 ) -> Result<(), GatewayRouteError> {
     strip_gateway_auth_headers(headers);
-    let value = match profile.protocol {
-        GatewayProtocol::OpenAiChatCompletions | GatewayProtocol::OpenAiResponses => {
-            HeaderValue::from_str(&format!("Bearer {secret}"))
-        }
-        GatewayProtocol::AnthropicMessages | GatewayProtocol::GeminiGenerateContent => {
-            HeaderValue::from_str(secret)
-        }
-    }
-    .map_err(|_| GatewayRouteError::UpstreamKeyUnavailable)?;
-    let name = match profile.protocol {
-        GatewayProtocol::OpenAiChatCompletions | GatewayProtocol::OpenAiResponses => AUTHORIZATION,
-        GatewayProtocol::AnthropicMessages => HeaderName::from_static("x-api-key"),
-        GatewayProtocol::GeminiGenerateContent => HeaderName::from_static("x-goog-api-key"),
-    };
-    headers.insert(name, value);
+    // Delegate to the single source of truth shared with the connectivity
+    // probe so the forwarder and the test path can never diverge.
+    let (name, value) = crate::gateway::upstream_auth_header(profile.protocol, secret);
+    let header_name = HeaderName::from_bytes(name.as_bytes())
+        .map_err(|_| GatewayRouteError::UpstreamKeyUnavailable)?;
+    let header_value =
+        HeaderValue::from_str(&value).map_err(|_| GatewayRouteError::UpstreamKeyUnavailable)?;
+    headers.insert(header_name, header_value);
     Ok(())
 }
 
@@ -886,7 +879,16 @@ pub(crate) async fn handle_gateway_request(
         proxy_profile_id: None,
         client_detection_method: "gateway_profile".to_string(),
         request_base_url: Some(route.profile.base_url.clone()),
-        target_base_url: Some(route.profile.base_url.clone()),
+        // Clients usually carry the protocol base path inside their request
+        // path (e.g. `/v1/messages`); in that case a base URL that already
+        // ends with `/v1` must be stripped to avoid `.../v1/v1/messages`.
+        // When the client path has no base path, the base URL is kept so the
+        // profile still supplies it.
+        target_base_url: Some(crate::gateway::probe::forwarding_base_url(
+            &route.profile.base_url,
+            route.profile.protocol,
+            &route.path,
+        )),
         ingress_kind: "gateway".to_string(),
         gateway_profile_id: Some(route.profile.id.clone()),
         gateway_caller_label: managed_key_remark.or(caller_label),
@@ -957,6 +959,7 @@ mod tests {
             dispatch_strategy: crate::models::GatewayDispatchStrategy::RoundRobin,
             upstream_keys: Vec::new(),
             local_keys: Vec::new(),
+            upstream_models: Vec::new(),
         }
     }
 

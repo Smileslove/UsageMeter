@@ -193,9 +193,12 @@ pub async fn update_gateway_profile(
             .find(|candidate| candidate.id == id)
             .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
         // Updating a route must never discard its managed credentials.
+        // The model list is a managed artifact too: it is refreshed and saved
+        // separately, so a settings save must not clear it.
         updated_profile.auth_mode = existing.auth_mode.clone();
         updated_profile.upstream_keys = existing.upstream_keys.clone();
         updated_profile.local_keys = existing.local_keys.clone();
+        updated_profile.upstream_models = existing.upstream_models.clone();
         if let Some(secret) = replacement_secret {
             let key = updated_profile
                 .upstream_keys
@@ -486,5 +489,92 @@ pub async fn get_gateway_status(state: State<'_, ProxyState>) -> Result<GatewayS
         routing_active: proxy_running,
         enabled_profile_count,
         listener_address: proxy_running.then(|| gateway::listener_address(settings.proxy.port)),
+    })
+}
+
+/// Queries the upstream `/models` endpoint of a saved profile and returns the
+/// normalized model list. The probe bypasses the gateway forwarder, so it
+/// produces no usage records and never trips the circuit breaker.
+#[tauri::command]
+pub async fn list_gateway_upstream_models(
+    profile_id: String,
+) -> Result<gateway::probe::GatewayUpstreamModelsResult, String> {
+    let settings = load_settings_blocking()?;
+    let profile = settings
+        .gateway
+        .profiles
+        .iter()
+        .find(|item| item.id == profile_id)
+        .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
+    Ok(gateway::probe::probe_upstream_models(profile).await)
+}
+
+/// Persists a normalized model list with a profile so the UI can test models
+/// without re-probing on every open. The list is a managed artifact: it is
+/// saved right after a successful refresh and never enters
+/// [`GatewayProfileInput`], so saving profile settings cannot clear it.
+#[tauri::command]
+pub async fn save_gateway_upstream_models(
+    profile_id: String,
+    models: Vec<crate::models::GatewayUpstreamModel>,
+) -> Result<GatewayProfileView, String> {
+    let normalized = gateway::normalize_upstream_models(models);
+    let (view, _settings) = update_settings_internal(move |settings| {
+        let existing = settings
+            .gateway
+            .profiles
+            .iter_mut()
+            .find(|candidate| candidate.id == profile_id)
+            .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
+        if normalized.is_empty() {
+            // An empty catalog must not wipe a previously saved list; the
+            // probe path already treats empty results as "keep old data",
+            // so this command mirrors that contract.
+            return Ok(GatewayProfileView::from(&*existing));
+        }
+        existing.upstream_models = normalized.clone();
+        Ok(GatewayProfileView::from(&*existing))
+    })
+    .map_err(String::from)?;
+    Ok(view)
+}
+
+/// Sends a minimal request to verify that a specific model is usable on the
+/// profile's upstream. Like the model-list probe, this never flows through
+/// the forwarder and is excluded from usage statistics.
+#[tauri::command]
+pub async fn test_gateway_upstream_model(
+    profile_id: String,
+    model_id: String,
+) -> Result<gateway::probe::GatewayModelTestResult, String> {
+    let settings = load_settings_blocking()?;
+    let profile = settings
+        .gateway
+        .profiles
+        .iter()
+        .find(|item| item.id == profile_id)
+        .ok_or_else(|| "ERR_GATEWAY_PROFILE_NOT_FOUND".to_string())?;
+    Ok(gateway::probe::test_upstream_model(profile, &model_id).await)
+}
+
+/// Computes the effective upstream base URL for a protocol and a
+/// user-entered base URL, so the UI can preview exactly where requests will
+/// go and whether the protocol base path is appended automatically.
+#[tauri::command]
+pub fn preview_gateway_base_url(
+    protocol: crate::models::GatewayProtocol,
+    base_url: String,
+) -> Result<gateway::probe::GatewayBaseUrlPreview, String> {
+    let normalized = gateway::probe::normalize_gateway_base_url(&base_url);
+    let effective = gateway::probe::effective_gateway_base_url(&base_url, protocol);
+    Ok(gateway::probe::GatewayBaseUrlPreview {
+        base_path: gateway::probe::protocol_base_path(protocol),
+        effective_base_url: effective.clone(),
+        base_path_added: effective != normalized,
+        sample_request_url: format!(
+            "{}{}",
+            effective,
+            gateway::probe::sample_request_path(protocol)
+        ),
     })
 }

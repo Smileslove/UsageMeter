@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Check, Copy, Eye, KeyRound, Link2, Pencil, Plus, RadioTower, Save, Trash2, X } from 'lucide-vue-next'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { Check, Copy, Eye, KeyRound, Link2, Pencil, Plus, RadioTower, RefreshCw, Save, Trash2, X } from 'lucide-vue-next'
 import {
   createGatewayLocalKey,
   createGatewayProfile,
@@ -9,14 +9,18 @@ import {
   deleteGatewayUpstreamKey,
   getGatewayStatus,
   listGatewayProfiles,
+  listGatewayUpstreamModels,
+  previewGatewayBaseUrl,
   revealGatewayLocalKey,
   revokeGatewayLocalKey,
+  saveGatewayUpstreamModels,
+  testGatewayUpstreamModel,
   updateGatewayProfile,
   updateGatewayUpstreamKey
 } from '../api/gatewayApi'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
-import type { GatewayCredentialRecovery, GatewayDispatchStrategy, GatewayProfile, GatewayProtocol, GatewayStatus, GatewayUpstreamKey } from '../types'
+import type { GatewayBaseUrlPreview, GatewayCredentialRecovery, GatewayDispatchStrategy, GatewayModelTestResult, GatewayProfile, GatewayProtocol, GatewayStatus, GatewayUpstreamKey, GatewayUpstreamModelsResult } from '../types'
 import ProxyControlPanel from '../components/settings/ProxyControlPanel.vue'
 import CcSwitchCompatPanel from '../components/settings/CcSwitchCompatPanel.vue'
 import SettingsSwitch from '../components/settings/SettingsSwitch.vue'
@@ -37,6 +41,12 @@ const localRemark = ref('')
 const generatedLocalKey = ref('')
 const keyPanel = ref<'upstream' | 'local' | null>(null)
 const revealedLocalKeys = ref<Record<string, string>>({})
+const modelsLoading = ref(false)
+const modelsResult = ref<GatewayUpstreamModelsResult | null>(null)
+const modelsPersisted = ref(false)
+const selectedModelId = ref('')
+const testingModel = ref(false)
+const testResult = ref<GatewayModelTestResult | null>(null)
 const emptyCredentialRecovery = (): GatewayCredentialRecovery => ({ upstreamKeyRequired: false, localKeyRotationRecommended: false })
 
 const protocolOptions: Array<{ value: GatewayProtocol; labelKey: string; compactLabelKey: string; basePath: string }> = [
@@ -56,10 +66,44 @@ const draft = ref({
   dispatchStrategy: 'round_robin' as GatewayDispatchStrategy,
   upstreamKeys: [] as GatewayProfile['upstreamKeys'],
   localKeys: [] as GatewayProfile['localKeys'],
+  upstreamModels: [] as GatewayProfile['upstreamModels'],
   credentialRecovery: emptyCredentialRecovery()
 })
 
 const locale = computed(() => store.settings.locale)
+
+const baseUrlPreview = ref<GatewayBaseUrlPreview | null>(null)
+let previewTimer: ReturnType<typeof setTimeout> | undefined
+let previewSeq = 0
+
+async function updateBaseUrlPreview() {
+  const raw = draft.value.baseUrl.trim()
+  const seq = ++previewSeq
+  if (!raw) {
+    if (seq === previewSeq) baseUrlPreview.value = null
+    return
+  }
+  try {
+    new URL(raw)
+  } catch {
+    if (seq === previewSeq) baseUrlPreview.value = null
+    return
+  }
+  try {
+    const preview = await previewGatewayBaseUrl(draft.value.protocol, raw)
+    if (seq === previewSeq) baseUrlPreview.value = preview
+  } catch {
+    if (seq === previewSeq) baseUrlPreview.value = null
+  }
+}
+
+watch(
+  [() => draft.value.baseUrl, () => draft.value.protocol],
+  () => {
+    if (previewTimer) clearTimeout(previewTimer)
+    previewTimer = setTimeout(updateBaseUrlPreview, 250)
+  }
+)
 const selectedProfile = computed(() => profiles.value.find(profile => profile.id === selectedId.value) ?? null)
 const listenerAddress = computed(() => status.value?.listenerAddress || `http://127.0.0.1:${store.settings.proxy.port}`)
 const selectedAddress = computed(() => selectedProfile.value ? profileAddress(selectedProfile.value) : '')
@@ -92,14 +136,36 @@ const feedbackMessage = computed(() => {
   return t(locale.value, errorKey)
 })
 
+const testErrorMessage = computed(() => {
+  if (!testResult.value || testResult.value.ok) return ''
+  const kind = testResult.value.errorKind
+  if (!kind) return t(locale.value, 'gateway.testFailed')
+  const camelKind = kind.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())
+  return t(locale.value, `gateway.modelError.${camelKind}`, { status: testResult.value.httpStatus ?? '' })
+})
+
+function clearBaseUrlPreview() {
+  baseUrlPreview.value = null
+  if (previewTimer) clearTimeout(previewTimer)
+  previewTimer = undefined
+  previewSeq++
+}
+
 function resetDraft() {
-  draft.value = { id: undefined, name: '', protocol: 'open_ai_chat_completions', baseUrl: '', enabled: true, clientLabel: '', dispatchStrategy: 'round_robin', upstreamKeys: [], localKeys: [], credentialRecovery: emptyCredentialRecovery() }
+  draft.value = { id: undefined, name: '', protocol: 'open_ai_chat_completions', baseUrl: '', enabled: true, clientLabel: '', dispatchStrategy: 'round_robin', upstreamKeys: [], localKeys: [], upstreamModels: [], credentialRecovery: emptyCredentialRecovery() }
   upstreamRemark.value = ''
   upstreamSecret.value = ''
   localRemark.value = ''
   generatedLocalKey.value = ''
   revealedLocalKeys.value = {}
   keyPanel.value = null
+  modelsResult.value = null
+  modelsPersisted.value = false
+  selectedModelId.value = ''
+  testResult.value = null
+  modelsLoading.value = false
+  testingModel.value = false
+  clearBaseUrlPreview()
 }
 
 function selectProfile(profile: GatewayProfile) {
@@ -110,6 +176,13 @@ function selectProfile(profile: GatewayProfile) {
   feedback.value = null
   errorCode.value = ''
   keyPanel.value = null
+  modelsResult.value = profile.upstreamModels.length > 0 ? { ok: true, models: profile.upstreamModels } : null
+  modelsPersisted.value = profile.upstreamModels.length > 0
+  selectedModelId.value = profile.upstreamModels[0]?.id ?? ''
+  testResult.value = null
+  modelsLoading.value = false
+  testingModel.value = false
+  clearBaseUrlPreview()
 }
 
 function startNewProfile() {
@@ -369,6 +442,65 @@ async function copyProfileApiKey(profile: GatewayProfile) {
   feedback.value = 'copied'
 }
 
+async function refreshModels() {
+  if (!draft.value.id || modelsLoading.value) return
+  const profileId = draft.value.id
+  modelsLoading.value = true
+  testResult.value = null
+  try {
+    const result = await listGatewayUpstreamModels(profileId)
+    // The user may have switched to another profile while probing; do not
+    // let a stale response populate the wrong profile's form.
+    if (draft.value.id !== profileId) return
+    modelsResult.value = result
+    selectedModelId.value = result.models[0]?.id ?? ''
+    // Persist the fresh list right away so the next open can test models
+    // without re-probing. A failed save keeps the list usable this session.
+    if (result.ok) {
+      if (result.models.length > 0) {
+        try {
+          const saved = await saveGatewayUpstreamModels(profileId, result.models)
+          if (draft.value.id !== profileId) return
+          modelsPersisted.value = true
+          // Only sync the model list back into the draft; never clobber edits
+          // the user is still making in the form.
+          draft.value = { ...draft.value, upstreamModels: saved.upstreamModels }
+        } catch {
+          modelsPersisted.value = false
+        }
+      } else {
+        // An empty upstream catalog is not a reason to wipe a previously
+        // saved list; keep the old data until a non-empty refresh succeeds.
+        modelsPersisted.value = false
+      }
+    } else {
+      modelsPersisted.value = false
+    }
+  } catch (error) {
+    if (draft.value.id !== profileId) return
+    modelsResult.value = { ok: false, models: [], errorKind: 'transport_error', errorDetail: String(error) }
+    selectedModelId.value = ''
+    modelsPersisted.value = false
+  } finally {
+    if (draft.value.id === profileId) modelsLoading.value = false
+  }
+}
+
+async function testSelectedModel() {
+  if (!draft.value.id || !selectedModelId.value || testingModel.value) return
+  const profileId = draft.value.id
+  const modelId = selectedModelId.value
+  testingModel.value = true
+  try {
+    testResult.value = await testGatewayUpstreamModel(profileId, modelId)
+  } catch (error) {
+    if (draft.value.id !== profileId) return
+    testResult.value = { ok: false, modelId, errorKind: 'transport_error', errorDetail: String(error) }
+  } finally {
+    if (draft.value.id === profileId) testingModel.value = false
+  }
+}
+
 function compactProtocolLabel(protocol: GatewayProtocol) {
   const option = protocolOptions.find(item => item.value === protocol)
   return option ? t(locale.value, option.compactLabelKey) : protocol
@@ -390,6 +522,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
+  if (previewTimer) clearTimeout(previewTimer)
 })
 </script>
 
@@ -506,6 +639,12 @@ onUnmounted(() => {
                 <span class="w-[66px] shrink-0 text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.baseUrl') }}</span>
                 <input v-model="draft.baseUrl" class="min-w-0 flex-1 bg-transparent text-right font-mono text-[10.5px] text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]" :placeholder="t(locale, 'gateway.baseUrlPlaceholder')" inputmode="url" />
               </label>
+              <div v-if="baseUrlPreview" class="border-t border-[var(--theme-border-default)] px-3 py-2">
+                <p class="break-all font-mono text-[10px] leading-relaxed text-[var(--theme-text-primary)]">POST {{ baseUrlPreview.sampleRequestUrl }}</p>
+                <p v-if="!baseUrlPreview.basePathAdded" class="mt-1 text-right text-[9px] leading-none text-emerald-600/90 dark:text-emerald-400/90">
+                  {{ t(locale, 'gateway.basePathAlreadyIncluded', { path: baseUrlPreview.basePath }) }}
+                </p>
+              </div>
               <label class="flex h-11 items-center gap-3 border-t border-[var(--theme-border-default)] px-3">
                 <span class="w-[66px] shrink-0 text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.upstreamKey') }}</span>
                 <input v-model="upstreamSecret" type="password" class="min-w-0 flex-1 bg-transparent text-right font-mono text-[10.5px] text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]" :placeholder="upstreamKeyRecoveryRequired ? t(locale, 'gateway.upstreamKeyRecoveryPlaceholder') : (draft.id ? t(locale, 'gateway.upstreamKeyKeepHint') : t(locale, 'gateway.upstreamKeyPlaceholder'))" autocomplete="off" />
@@ -526,6 +665,18 @@ onUnmounted(() => {
               <div v-if="draft.id" class="theme-surface-muted rounded-xl border px-3 py-2.5">
                 <div class="flex items-center justify-between gap-2"><span class="text-[9.5px] font-semibold text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.address') }}</span><div class="flex items-center gap-1"><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.localKeys')" :aria-label="t(locale, 'gateway.localKeys')" @click="keyPanel = 'local'"><KeyRound class="h-3.5 w-3.5" /></button><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.copyAddress')" :aria-label="t(locale, 'gateway.copyAddress')" @click="copyAddress()"><Copy class="h-3.5 w-3.5" /></button></div></div>
                 <p class="mt-1 break-all font-mono text-[9px] leading-snug text-[var(--theme-text-primary)]">{{ selectedAddress }}</p>
+              </div>
+              <div v-if="draft.id" class="theme-surface-muted rounded-xl border px-3 py-2.5">
+                <div class="flex items-center justify-between gap-2"><span class="text-[9.5px] font-semibold text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.modelTest') }}</span><button type="button" class="theme-icon-button rounded-lg p-1" :title="t(locale, 'gateway.refreshModels')" :aria-label="t(locale, 'gateway.refreshModels')" :disabled="modelsLoading" @click="refreshModels"><RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': modelsLoading }" /></button></div>
+                <p v-if="modelsLoading" class="mt-1 text-[9px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.modelsLoading') }}</p>
+                <p v-else-if="modelsResult && !modelsResult.ok" class="mt-1 text-[9px] text-red-500">{{ t(locale, 'gateway.modelsFailed') }}</p>
+                <p v-else-if="modelsResult && modelsResult.ok && modelsPersisted && modelsResult.models.length > 0" class="mt-1 text-[9px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.modelsSaved', { count: modelsResult.models.length }) }}</p>
+                <p v-else-if="modelsResult && modelsResult.ok && !modelsPersisted && modelsResult.models.length > 0" class="mt-1 text-[9px] text-amber-500">{{ t(locale, 'gateway.modelsSaveFailed') }}</p>
+                <p v-else-if="modelsResult && modelsResult.ok && modelsResult.models.length === 0" class="mt-1 text-[9px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.modelsEmpty') }}</p>
+                <div v-if="modelsResult && modelsResult.models.length > 0" class="mt-1.5 max-h-[120px] overflow-y-auto space-y-1">
+                  <label v-for="model in modelsResult.models" :key="model.id" class="flex cursor-pointer items-center gap-2 rounded-lg border px-2 py-1.5 text-[10px]" :class="selectedModelId === model.id ? 'border-[var(--theme-accent-primary)] bg-[var(--theme-accent-primary)]/5' : 'border-[var(--theme-border-default)]'"><input v-model="selectedModelId" :value="model.id" type="radio" class="sr-only" /><span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="selectedModelId === model.id ? 'bg-[var(--theme-accent-primary)]' : 'bg-[var(--theme-border-strong)]'"></span><span class="min-w-0 flex-1 truncate font-mono text-[var(--theme-text-secondary)]">{{ model.id }}</span></label>
+                </div>
+                <div v-if="modelsResult && modelsResult.models.length > 0" class="mt-2 flex items-center gap-2"><button type="button" class="rounded-lg border border-[var(--theme-border-default)] px-2.5 py-1 text-[10px] font-semibold text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)] disabled:opacity-50" :disabled="testingModel || !selectedModelId" @click="testSelectedModel">{{ testingModel ? t(locale, 'gateway.testingModel') : t(locale, 'gateway.testModel') }}</button><span v-if="testResult && testResult.ok" class="text-[9.5px] text-emerald-600 dark:text-emerald-300">{{ t(locale, 'gateway.testSuccess', { ms: testResult.latencyMs ?? 0 }) }}</span><span v-else-if="testResult && !testResult.ok" class="text-[9.5px] text-red-500">{{ testErrorMessage }}</span></div>
               </div>
               <p class="px-1 text-[9px] leading-snug text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.singleUpstreamKeyHint') }}</p>
             </template>
