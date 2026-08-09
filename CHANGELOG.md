@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.12.0] - 2026-08-09
+
+### Fixed
+
+- **Gateway Double-Counting**: Gateway records now reconcile with local session scans by message id, so the same physical request no longer produces two usage facts
+- **Streaming Idle Timeout**: Streaming responses are now reaped after 300s of upstream silence (configurable, explicit 0 still disables), preventing leaked connections
+- **Gateway Protocol Mismatch**: Requests whose body does not match the profile's protocol now get a clear 400 instead of an opaque upstream error
+
+### Changed
+
+- **SSE Parser Consolidation**: The three duplicated SSE streaming loops now share one `SseEventReader` driver in `sse.rs`
+- **Reasoning Token Semantics**: opencode / hermes token accounting now uniformly folds reasoning into output tokens with a single merge point
+
+---
+
+### 修复
+
+- **网关重复计数**：网关记录按 message id 与本地会话扫描对账，同一物理请求不再产生两条用量事实
+- **流式空闲超时**：流式响应在上游静默 300 秒后被回收（可配置，显式 0 仍可关闭），避免连接泄漏
+- **网关协议不匹配**：请求体与 profile 协议不符时返回明确的 400 错误，而非晦涩的上游报错
+
+### 变更
+
+- **SSE 解析收敛**：三套重复的 SSE 流式循环统一为 `sse.rs` 中的 `SseEventReader` 公共驱动
+- **Reasoning Token 口径**：opencode / hermes 的 token 统计统一将 reasoning 并入 output tokens，仅保留单一合并点
+
+---
+
 ## [0.11.1] - 2026-08-08
 
 ### Added
@@ -925,6 +953,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.12.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.12.0
 [0.11.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.1
 [0.11.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.0
 [0.10.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.10.0
