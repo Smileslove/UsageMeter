@@ -17,8 +17,14 @@ use crate::gateway::{
     report_upstream_outcome, select_upstream_key, validate_profile, UpstreamOutcome,
 };
 use crate::models::{AppSettings, GatewayAuthMode, GatewayProfile, GatewayProtocol};
+use bytes::{Buf, Bytes, BytesMut};
+use futures::TryStreamExt;
+use http_body_util::BodyDataStream;
 use hyper::{
-    header::{HeaderName, HeaderValue, AUTHORIZATION, CONNECTION, UPGRADE},
+    body::Incoming,
+    header::{
+        HeaderName, HeaderValue, AUTHORIZATION, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, UPGRADE,
+    },
     Method, Request, StatusCode,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,6 +33,11 @@ use std::sync::Arc;
 const GATEWAY_PREFIX: &str = "/gateway/";
 const CLIENT_LABEL_HEADER: &str = "x-usagemeter-client";
 static NEXT_GATEWAY_REQUEST: AtomicU64 = AtomicU64::new(1);
+
+/// Maximum request body size accepted for protocol validation. Bodies larger
+/// than this are forwarded unchanged without field validation so large uploads
+/// keep their streaming passthrough behaviour.
+const MAX_VALIDATION_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GatewayForwardMode {
@@ -63,6 +74,7 @@ enum GatewayRouteError {
     MethodNotAllowed,
     LocalKeyUnauthorized,
     UpstreamKeyUnavailable,
+    ProtocolMismatch,
 }
 
 impl GatewayRouteError {
@@ -95,6 +107,11 @@ impl GatewayRouteError {
                 "service_unavailable",
                 "Service temporarily unavailable",
             ),
+            Self::ProtocolMismatch => (
+                StatusCode::BAD_REQUEST,
+                "protocol_mismatch",
+                "Request body or content type does not match the gateway profile protocol",
+            ),
         };
 
         // Log the actual error for debugging
@@ -108,6 +125,168 @@ impl GatewayRouteError {
 
 pub(crate) fn is_gateway_path(path: &str) -> bool {
     path == "/gateway" || path.starts_with(GATEWAY_PREFIX)
+}
+
+/// Whether the HTTP method is expected to carry a request body.
+fn has_request_body(method: &Method) -> bool {
+    matches!(*method, Method::POST | Method::PUT | Method::PATCH)
+}
+
+/// Validates that a gateway request matches the profile's native protocol:
+/// the request-side Content-Type must not be `text/event-stream` (SSE is only
+/// valid on the response side), JSON bodies must declare `application/json`,
+/// and the body must contain the key fields expected by the profile protocol.
+///
+/// The check is deliberately shallow (field-name presence only, no deep schema
+/// validation). Passthrough modes keep their existing transparent behaviour.
+fn validate_gateway_request(
+    mode: GatewayForwardMode,
+    protocol: GatewayProtocol,
+    method: &Method,
+    headers: &hyper::HeaderMap,
+    body: &[u8],
+) -> Result<(), GatewayRouteError> {
+    // Request-side `text/event-stream` is never valid: streaming responses are
+    // produced by the upstream, not requested as an upload content type.
+    if let Some(value) = headers.get(CONTENT_TYPE).and_then(|v| v.to_str().ok()) {
+        let media_type = value
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if media_type == "text/event-stream" {
+            return Err(GatewayRouteError::ProtocolMismatch);
+        }
+    }
+
+    // Requests without a body (e.g. GET /v1/models) carry nothing to validate.
+    if !has_request_body(method) {
+        return Ok(());
+    }
+
+    // Passthrough modes forward arbitrary endpoints (uploads, embeddings,
+    // non-standard paths) and must keep their existing transparent behaviour.
+    if !mode.captures_usage() {
+        return Ok(());
+    }
+
+    // Usage modes speak JSON: a declared non-JSON content type is a protocol
+    // mismatch. A missing content type is tolerated and falls back to the body
+    // field check below (some clients omit the header).
+    if let Some(value) = headers.get(CONTENT_TYPE).and_then(|v| v.to_str().ok()) {
+        let media_type = value
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if media_type != "application/json" {
+            return Err(GatewayRouteError::ProtocolMismatch);
+        }
+    }
+
+    validate_body_fields(protocol, body)
+}
+
+/// Shallow key-field presence check for the profile's native protocol.
+fn validate_body_fields(protocol: GatewayProtocol, body: &[u8]) -> Result<(), GatewayRouteError> {
+    if body.is_empty() {
+        return Ok(());
+    }
+    let json: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| GatewayRouteError::ProtocolMismatch)?;
+    let ok = match protocol {
+        GatewayProtocol::AnthropicMessages => json.get("messages").is_some(),
+        GatewayProtocol::OpenAiChatCompletions => {
+            json.get("model").is_some()
+                && (json.get("messages").is_some() || json.get("stream").is_some())
+        }
+        GatewayProtocol::OpenAiResponses => {
+            json.get("input").is_some() || json.get("model").is_some()
+        }
+        GatewayProtocol::GeminiGenerateContent => json.get("contents").is_some(),
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(GatewayRouteError::ProtocolMismatch)
+    }
+}
+
+/// A gateway request body that has either been buffered and validated, or is
+/// left as the incoming streaming body for passthrough/oversized requests.
+enum ValidatedBody {
+    Buffered(Bytes),
+    Streaming(Incoming),
+}
+
+/// Reads the request body when it can be validated, checks it against the
+/// profile protocol, and returns a body ready for forwarding. Oversized bodies
+/// (larger than `MAX_VALIDATION_BODY_BYTES`) or chunked bodies without a
+/// `Content-Length` are forwarded unchanged with the original streaming body so
+/// large uploads keep their behaviour.
+async fn read_and_validate_gateway_body(
+    mode: GatewayForwardMode,
+    protocol: GatewayProtocol,
+    method: &Method,
+    headers: &hyper::HeaderMap,
+    body: Incoming,
+) -> Result<ValidatedBody, GatewayRouteError> {
+    // Passthrough modes forward arbitrary endpoints (uploads, embeddings,
+    // non-standard paths). Only the cheap header checks apply; the body keeps
+    // streaming so the transparent behaviour is unchanged.
+    if !mode.captures_usage() {
+        validate_gateway_request(mode, protocol, method, headers, &[])?;
+        return Ok(ValidatedBody::Streaming(body));
+    }
+
+    let content_length = headers
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+
+    match content_length {
+        Some(len) if len <= MAX_VALIDATION_BODY_BYTES as u64 => {
+            let bytes = read_body_limited(body, len as usize).await?;
+            validate_gateway_request(mode, protocol, method, headers, &bytes)?;
+            Ok(ValidatedBody::Buffered(bytes))
+        }
+        _ => {
+            // Missing or oversized Content-Length: keep the streaming body and
+            // only apply the cheap header-based checks.
+            validate_gateway_request(mode, protocol, method, headers, &[])?;
+            Ok(ValidatedBody::Streaming(body))
+        }
+    }
+}
+
+async fn read_body_limited<B>(body: B, limit: usize) -> Result<Bytes, GatewayRouteError>
+where
+    B: hyper::body::Body + Unpin,
+    B::Data: bytes::Buf,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let mut bytes = BytesMut::new();
+    let mut stream = BodyDataStream::new(body);
+    while let Some(chunk) = stream
+        .try_next()
+        .await
+        .map_err(|_| GatewayRouteError::ProtocolMismatch)?
+    {
+        let chunk_len = chunk.remaining();
+        if bytes.len().saturating_add(chunk_len) > limit {
+            return Err(GatewayRouteError::ProtocolMismatch);
+        }
+        bytes.extend_from_slice(chunk.chunk());
+    }
+    // EOF 时实际读取字节数必须等于声明的 Content-Length；若客户端提前断开
+    // （CL 大但实际字节少），直接转发会带着原 CL 头让上游挂起至超时，
+    // 因此这里显式拒绝。
+    if bytes.len() != limit {
+        return Err(GatewayRouteError::ProtocolMismatch);
+    }
+    Ok(bytes.freeze())
 }
 
 fn split_gateway_path(path: &str) -> Result<(String, String), GatewayRouteError> {
@@ -872,7 +1051,7 @@ pub(crate) async fn handle_gateway_request(
 
     let request_start_time_ms = chrono::Utc::now().timestamp_millis();
     let request_start_instant = std::time::Instant::now();
-    let context = RequestContext {
+    let mut context = RequestContext {
         start_time: request_start_instant,
         start_time_ms: request_start_time_ms,
         client_tool: "api_gateway".to_string(),
@@ -905,8 +1084,43 @@ pub(crate) async fn handle_gateway_request(
     let query = forward_query(&route.profile, raw_query);
     let forward_path = append_query(&route.path, query.as_deref());
 
+    // Validate the request body against the profile protocol before touching
+    // the upstream: mismatched content types or body shapes get a clear 400
+    // instead of being forwarded to an opaque upstream error.
+    let body = match read_and_validate_gateway_body(
+        route.mode,
+        route.profile.protocol,
+        &method,
+        &headers,
+        req.into_body(),
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(error) => return Ok(error.response()),
+    };
+
     let result = if route.mode.captures_usage() {
-        let body = ForwardRequestBody::observed_stream(req.into_body());
+        let body = match body {
+            ValidatedBody::Buffered(bytes) => {
+                // Preserve the model/stream extraction that the streaming
+                // observation used to provide for buffered (validated) bodies.
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    if context.model.is_none() {
+                        context.model = json
+                            .get("model")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string);
+                    }
+                    context.stream = json
+                        .get("stream")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(context.stream);
+                }
+                ForwardRequestBody::Buffered(bytes)
+            }
+            ValidatedBody::Streaming(incoming) => ForwardRequestBody::observed_stream(incoming),
+        };
         forward_gateway_attempt(
             route.mode,
             &forwarder,
@@ -919,7 +1133,14 @@ pub(crate) async fn handle_gateway_request(
         )
         .await
     } else {
-        let (body, _) = ForwardRequestBody::passthrough_stream(req.into_body()).into_parts();
+        let body = match body {
+            ValidatedBody::Buffered(bytes) => ForwardRequestBody::Buffered(bytes).into_parts().0,
+            ValidatedBody::Streaming(incoming) => {
+                ForwardRequestBody::passthrough_stream(incoming)
+                    .into_parts()
+                    .0
+            }
+        };
         forward_gateway_passthrough_attempt(
             route.mode,
             &forwarder,
@@ -1192,5 +1413,290 @@ mod tests {
             assert!(!should_failover_status(status, true), "{status}");
         }
         assert!(!should_failover_status(503, false));
+    }
+
+    fn json_headers() -> hyper::HeaderMap {
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers
+    }
+
+    #[test]
+    fn protocol_validation_accepts_matching_json_bodies() {
+        let mode = GatewayForwardMode::OpenAiUsage;
+        let method = Method::POST;
+        let headers = json_headers();
+
+        // OpenAI chat: model + messages
+        assert!(validate_gateway_request(
+            mode,
+            GatewayProtocol::OpenAiChatCompletions,
+            &method,
+            &headers,
+            br#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#
+        )
+        .is_ok());
+
+        // OpenAI chat: model + stream
+        assert!(validate_gateway_request(
+            mode,
+            GatewayProtocol::OpenAiChatCompletions,
+            &method,
+            &headers,
+            br#"{"model":"gpt-4o","stream":true}"#
+        )
+        .is_ok());
+
+        // OpenAI responses: input or model
+        assert!(validate_gateway_request(
+            mode,
+            GatewayProtocol::OpenAiResponses,
+            &method,
+            &headers,
+            br#"{"input":"tell me a joke"}"#
+        )
+        .is_ok());
+        assert!(validate_gateway_request(
+            mode,
+            GatewayProtocol::OpenAiResponses,
+            &method,
+            &headers,
+            br#"{"model":"gpt-4o","input":"hi"}"#
+        )
+        .is_ok());
+
+        // Anthropic messages: messages present
+        assert!(validate_gateway_request(
+            mode,
+            GatewayProtocol::AnthropicMessages,
+            &method,
+            &headers,
+            br#"{"model":"claude","messages":[{"role":"user","content":"hi"}]}"#
+        )
+        .is_ok());
+
+        // Gemini: contents present
+        assert!(validate_gateway_request(
+            mode,
+            GatewayProtocol::GeminiGenerateContent,
+            &method,
+            &headers,
+            br#"{"contents":[{"parts":[{"text":"hi"}]}]}"#
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn protocol_validation_rejects_mismatched_body_shapes() {
+        let mode = GatewayForwardMode::OpenAiUsage;
+        let method = Method::POST;
+        let headers = json_headers();
+
+        // OpenAI Responses body (input) sent to Anthropic profile: no messages
+        // field, which Anthropic Messages requires.
+        assert_eq!(
+            validate_gateway_request(
+                mode,
+                GatewayProtocol::AnthropicMessages,
+                &method,
+                &headers,
+                br#"{"input":"tell me a joke"}"#
+            ),
+            Err(GatewayRouteError::ProtocolMismatch)
+        );
+
+        // OpenAI chat: model missing.
+        assert_eq!(
+            validate_gateway_request(
+                mode,
+                GatewayProtocol::OpenAiChatCompletions,
+                &method,
+                &headers,
+                br#"{"messages":[{"role":"user","content":"hi"}]}"#
+            ),
+            Err(GatewayRouteError::ProtocolMismatch)
+        );
+
+        // OpenAI chat: neither messages nor stream.
+        assert_eq!(
+            validate_gateway_request(
+                mode,
+                GatewayProtocol::OpenAiChatCompletions,
+                &method,
+                &headers,
+                br#"{"model":"gpt-4o","temperature":0.5}"#
+            ),
+            Err(GatewayRouteError::ProtocolMismatch)
+        );
+
+        // OpenAI responses: neither input nor model.
+        assert_eq!(
+            validate_gateway_request(
+                mode,
+                GatewayProtocol::OpenAiResponses,
+                &method,
+                &headers,
+                br#"{"temperature":0.5}"#
+            ),
+            Err(GatewayRouteError::ProtocolMismatch)
+        );
+
+        // Gemini: contents missing.
+        assert_eq!(
+            validate_gateway_request(
+                mode,
+                GatewayProtocol::GeminiGenerateContent,
+                &method,
+                &headers,
+                br#"{"model":"gemini-2.0-flash"}"#
+            ),
+            Err(GatewayRouteError::ProtocolMismatch)
+        );
+
+        // Not valid JSON at all.
+        assert_eq!(
+            validate_gateway_request(
+                mode,
+                GatewayProtocol::GeminiGenerateContent,
+                &method,
+                &headers,
+                b"this is not json"
+            ),
+            Err(GatewayRouteError::ProtocolMismatch)
+        );
+    }
+
+    #[test]
+    fn protocol_validation_rejects_request_side_event_stream_content_type() {
+        let mode = GatewayForwardMode::OpenAiUsage;
+        let method = Method::POST;
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
+        assert_eq!(
+            validate_gateway_request(
+                mode,
+                GatewayProtocol::OpenAiChatCompletions,
+                &method,
+                &headers,
+                br#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}"#
+            ),
+            Err(GatewayRouteError::ProtocolMismatch)
+        );
+    }
+
+    #[test]
+    fn protocol_validation_rejects_non_json_content_type_for_usage_modes() {
+        let mode = GatewayForwardMode::OpenAiUsage;
+        let method = Method::POST;
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+        assert_eq!(
+            validate_gateway_request(
+                mode,
+                GatewayProtocol::OpenAiChatCompletions,
+                &method,
+                &headers,
+                br#"{"model":"gpt-4o","messages":[]}"#
+            ),
+            Err(GatewayRouteError::ProtocolMismatch)
+        );
+
+        // application/json with a charset suffix is accepted.
+        let mut json_charset = hyper::HeaderMap::new();
+        json_charset.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+        assert!(validate_gateway_request(
+            mode,
+            GatewayProtocol::OpenAiChatCompletions,
+            &method,
+            &json_charset,
+            br#"{"model":"gpt-4o","messages":[]}"#
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn protocol_validation_ignores_body_for_get_and_passthrough_modes() {
+        let method_get = Method::GET;
+        assert!(validate_gateway_request(
+            GatewayForwardMode::OpenAiUsage,
+            GatewayProtocol::OpenAiChatCompletions,
+            &method_get,
+            &hyper::HeaderMap::new(),
+            b""
+        )
+        .is_ok());
+
+        // Passthrough mode keeps its transparent behaviour even for non-JSON
+        // content types and bodies that would fail usage-mode validation.
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+        assert!(validate_gateway_request(
+            GatewayForwardMode::OpenAiPassthrough,
+            GatewayProtocol::OpenAiResponses,
+            &Method::POST,
+            &headers,
+            b"anything"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn protocol_mismatch_error_maps_to_bad_request_json() {
+        let response = GatewayRouteError::ProtocolMismatch.response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response
+                .headers()
+                .get(hyper::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json")
+        );
+    }
+
+    #[test]
+    fn oversized_body_skips_field_validation_and_keeps_streaming() {
+        // A body larger than the validation cap is forwarded without buffering;
+        // the header checks still apply.
+        let mode = GatewayForwardMode::OpenAiUsage;
+        let method = Method::POST;
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(
+            CONTENT_LENGTH,
+            HeaderValue::from((MAX_VALIDATION_BODY_BYTES + 1) as u64),
+        );
+        // Since the body is not read, only the header checks run and a plain
+        // non-JSON body cannot fail the field check. We just assert the header
+        // path accepts oversized bodies for matching content types.
+        assert!(validate_gateway_request(
+            mode,
+            GatewayProtocol::OpenAiChatCompletions,
+            &method,
+            &headers,
+            b""
+        )
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn read_body_limited_rejects_short_body_against_content_length() {
+        // Client declares CL=8 but sends only 4 bytes (premature EOF): the
+        // buffered forward would otherwise carry the original CL header and
+        // hang the upstream. It must be rejected instead.
+        let body = http_body_util::Full::new(bytes::Bytes::from_static(b"{\"a\":")); // 5 bytes, declared 8
+        assert!(matches!(
+            read_body_limited(body, 8).await,
+            Err(GatewayRouteError::ProtocolMismatch)
+        ));
+    }
+
+    #[tokio::test]
+    async fn read_body_limited_accepts_exact_content_length() {
+        let body = http_body_util::Full::new(bytes::Bytes::from_static(b"{\"a\":1}")); // 7 bytes
+        let bytes = read_body_limited(body, 7).await.unwrap();
+        assert_eq!(&bytes[..], b"{\"a\":1}");
     }
 }
