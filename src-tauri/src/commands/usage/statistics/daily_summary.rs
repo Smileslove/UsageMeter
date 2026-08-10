@@ -13,11 +13,105 @@ use crate::unified_usage::{
 };
 use std::collections::HashMap;
 
-fn next_business_date(date: &str, settings: &AppSettings) -> Result<String, String> {
+pub(super) fn next_business_date(date: &str, settings: &AppSettings) -> Result<String, String> {
     let (_, end_epoch) = crate::utils::business_time::business_date_epoch_bounds(date, settings)?;
     Ok(crate::utils::business_time::business_date_for_timestamp(
         end_epoch, settings,
     ))
+}
+
+/// 计算 [start_date, end_date_excl) 内「实际存在数据」的业务日跨度；全空返回 0。
+///
+/// 对齐标准：`ensure_materialized_history_for_range` 对数据范围内的每一天（含空天）都写入
+/// summary 行，因此「数据范围 ∩ 查询范围的自然天数」正是 summary 行数检查的正确标准——
+/// 修复旧实现按查询范围自然天数计算、导致数据年中开始时 `rows.len() < expected` 恒成立的缺陷。
+fn expected_history_days_from_bounds(
+    bounds: Option<(i64, i64)>,
+    start_date: &str,
+    end_date_excl: &str,
+    settings: &AppSettings,
+) -> Result<usize, String> {
+    // 无任何数据（local 与 proxy 均无记录）→ 无需物化，期望 0。
+    let Some((data_start, data_end)) = bounds else {
+        return Ok(0);
+    };
+    // 与旧实现一致：日期无法解析时保守返回 0（不触发物化），而非向上报错。
+    let Some(range_start) = chrono::NaiveDate::parse_from_str(start_date, "%Y-%m-%d").ok() else {
+        return Ok(0);
+    };
+    let Some(range_end_excl) = chrono::NaiveDate::parse_from_str(end_date_excl, "%Y-%m-%d").ok()
+    else {
+        return Ok(0);
+    };
+    if range_end_excl <= range_start {
+        return Ok(0);
+    }
+    // 数据时间范围映射到业务日：起点/终点分别落在的当天即「含端」首/末日。
+    // combined_data_time_bounds 返回的 end 已统一为含端（proxy 的排他 max+1 在
+    // service.rs 合并时已 saturating_sub(1) 还原），此处 data_last 即真实数据末日；
+    // 需要半开区间 [start, end) 的调用方自行对含端 end 做 saturating_add(1)。
+    let data_first = chrono::NaiveDate::parse_from_str(
+        &crate::utils::business_time::business_date_for_timestamp(data_start, settings),
+        "%Y-%m-%d",
+    )
+    .unwrap_or(range_start);
+    let data_last = chrono::NaiveDate::parse_from_str(
+        &crate::utils::business_time::business_date_for_timestamp(data_end, settings),
+        "%Y-%m-%d",
+    )
+    .unwrap_or(range_start);
+    // data_last 是含端业务日，排他端为其后一天。
+    let Some(data_last_excl) = data_last.succ_opt() else {
+        return Ok(0);
+    };
+    let overlap_start = range_start.max(data_first);
+    let overlap_end_excl = range_end_excl.min(data_last_excl);
+    if overlap_end_excl <= overlap_start {
+        return Ok(0);
+    }
+    Ok((overlap_end_excl - overlap_start).num_days() as usize)
+}
+
+/// 基于实际数据范围（local/proxy 合并）计算 [start_date, end_date_excl) 内应有
+/// summary 行数的期望值；无数据返回 0。
+fn expected_history_days(
+    local_db: &crate::local_usage::LocalUsageDatabase,
+    start_date: &str,
+    end_date_excl: &str,
+    settings: &AppSettings,
+) -> Result<usize, String> {
+    expected_history_days_from_bounds(
+        crate::unified_usage::combined_data_time_bounds(local_db)?,
+        start_date,
+        end_date_excl,
+        settings,
+    )
+}
+
+/// 判断历史 summary 是否缺失、需要触发物化重建（`rows.len() < expected`）。
+/// 测试专用变体：直接注入数据 bounds 即可构造数据范围，无需真实数据库。
+#[cfg(test)]
+fn should_materialize_history_from_bounds(
+    bounds: Option<(i64, i64)>,
+    existing_rows: usize,
+    start_date: &str,
+    end_date_excl: &str,
+    settings: &AppSettings,
+) -> Result<bool, String> {
+    let expected = expected_history_days_from_bounds(bounds, start_date, end_date_excl, settings)?;
+    Ok(existing_rows < expected)
+}
+
+/// 同 `should_materialize_history_from_bounds`，但数据范围由实际数据库推导，供生产路径调用。
+fn should_materialize_history(
+    local_db: &crate::local_usage::LocalUsageDatabase,
+    existing_rows: usize,
+    start_date: &str,
+    end_date_excl: &str,
+    settings: &AppSettings,
+) -> Result<bool, String> {
+    let expected = expected_history_days(local_db, start_date, end_date_excl, settings)?;
+    Ok(existing_rows < expected)
 }
 
 pub(super) fn can_use_unified_daily_summary(settings: &AppSettings) -> bool {
@@ -25,7 +119,7 @@ pub(super) fn can_use_unified_daily_summary(settings: &AppSettings) -> bool {
         && settings.source_aware.active_source_filter.is_none()
 }
 
-fn day_activity_from_summary_row(
+pub(super) fn day_activity_from_summary_row(
     row: &crate::local_usage::UnifiedDailySummaryRow,
     include_errors: bool,
 ) -> DayActivity {
@@ -84,12 +178,7 @@ pub(super) async fn load_day_activity_from_summary_with_hot_overlay(
             today_date.clone()
         };
         let mut rows = local_db.get_unified_daily_summaries_between(&start_date, &summary_end)?;
-        let expected = chrono::NaiveDate::parse_from_str(&summary_end, "%Y-%m-%d")
-            .ok()
-            .zip(chrono::NaiveDate::parse_from_str(&start_date, "%Y-%m-%d").ok())
-            .map(|(end, start)| (end - start).num_days().max(0) as usize)
-            .unwrap_or(rows.len());
-        if rows.len() < expected {
+        if should_materialize_history(&local_db, rows.len(), &start_date, &summary_end, settings)? {
             crate::unified_usage::ensure_materialized_history_no_sync(
                 settings,
                 start_epoch,
@@ -320,12 +409,13 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
             today_date.clone()
         };
         let existing = local_db.get_unified_daily_summaries_between(&start_date, &history_end)?;
-        let expected = chrono::NaiveDate::parse_from_str(&history_end, "%Y-%m-%d")
-            .ok()
-            .zip(chrono::NaiveDate::parse_from_str(&start_date, "%Y-%m-%d").ok())
-            .map(|(end, start)| (end - start).num_days().max(0) as usize)
-            .unwrap_or(existing.len());
-        if existing.len() < expected {
+        if should_materialize_history(
+            &local_db,
+            existing.len(),
+            &start_date,
+            &history_end,
+            settings,
+        )? {
             crate::unified_usage::ensure_materialized_history_no_sync(
                 settings,
                 start_epoch,
@@ -711,6 +801,24 @@ mod tests {
     use super::*;
     use crate::models::AppSettings;
     use crate::unified_usage::CoverageOrigin;
+    use chrono::TimeZone;
+
+    /// 中午 12 点构造本地时间戳：standard 日界（0 点）下该时间戳必映射到当天业务日，
+    /// 测试不受机器时区/DST 影响。
+    fn local_ts(y: i32, m: u32, d: u32) -> i64 {
+        chrono::Local
+            .with_ymd_and_hms(y, m, d, 12, 0, 0)
+            .single()
+            .expect("resolvable local time")
+            .timestamp()
+    }
+
+    fn standard_settings() -> AppSettings {
+        let mut settings = AppSettings::default();
+        settings.day_boundary_mode =
+            crate::utils::business_time::DAY_BOUNDARY_MODE_STANDARD.to_string();
+        settings
+    }
 
     fn test_fact(
         model: &str,
@@ -920,5 +1028,103 @@ mod tests {
         assert_eq!(row.request_count, 2);
         assert_eq!(row.visible_request_count, 1);
         assert_eq!(row.success_request_count, 1);
+    }
+
+    /// 数据年中开始（3 月才有数据）时，expected 应按「数据范围 ∩ 查询范围」的
+    /// 业务日跨度计算，而非查询范围的自然天数（旧实现 365 > 112 恒成立）。
+    #[test]
+    fn expected_history_days_uses_actual_data_range_not_query_natural_days() {
+        let settings = standard_settings();
+        // 数据只覆盖 2026-03-01 .. 2026-06-20，查询整年。
+        let bounds = Some((local_ts(2026, 3, 1), local_ts(2026, 6, 20)));
+        let expected =
+            expected_history_days_from_bounds(bounds, "2026-01-01", "2027-01-01", &settings)
+                .unwrap();
+        assert_eq!(expected, 112);
+        // 旧自然天数口径是 365（全年），新口径回到真实数据跨度。
+        assert!(expected < 365);
+    }
+
+    /// 钉住根因缺陷：数据年中开始 + 物化完整（行数 == 数据跨度）→ 不再触发全量物化。
+    #[test]
+    fn should_materialize_history_complete_materialization_returns_false() {
+        let settings = standard_settings();
+        let bounds = Some((local_ts(2026, 3, 1), local_ts(2026, 6, 20)));
+        let expected =
+            expected_history_days_from_bounds(bounds, "2026-01-01", "2027-01-01", &settings)
+                .unwrap();
+        assert!(!should_materialize_history_from_bounds(
+            bounds,
+            expected,
+            "2026-01-01",
+            "2027-01-01",
+            &settings
+        )
+        .unwrap());
+    }
+
+    /// 空库（bounds=None）→ expected 0，且不应触发物化。
+    #[test]
+    fn should_materialize_history_empty_db_returns_false() {
+        let settings = standard_settings();
+        assert_eq!(
+            expected_history_days_from_bounds(None, "2026-01-01", "2026-07-01", &settings).unwrap(),
+            0
+        );
+        assert!(!should_materialize_history_from_bounds(
+            None,
+            0,
+            "2026-01-01",
+            "2026-07-01",
+            &settings
+        )
+        .unwrap());
+    }
+
+    /// 中间某天缺行（行数 < 数据跨度）→ 触发物化。
+    #[test]
+    fn should_materialize_history_missing_middle_days_returns_true() {
+        let settings = standard_settings();
+        let bounds = Some((local_ts(2026, 3, 1), local_ts(2026, 6, 20)));
+        let expected =
+            expected_history_days_from_bounds(bounds, "2026-01-01", "2027-01-01", &settings)
+                .unwrap();
+        assert!(expected > 5);
+        assert!(should_materialize_history_from_bounds(
+            bounds,
+            expected - 5,
+            "2026-01-01",
+            "2027-01-01",
+            &settings
+        )
+        .unwrap());
+    }
+
+    /// 查询范围在数据之前 → 与数据无交集，expected 0，不触发。
+    #[test]
+    fn expected_history_days_range_before_data_returns_zero() {
+        let settings = standard_settings();
+        let bounds = Some((local_ts(2026, 6, 1), local_ts(2026, 12, 31)));
+        assert_eq!(
+            expected_history_days_from_bounds(bounds, "2026-01-01", "2026-03-01", &settings)
+                .unwrap(),
+            0
+        );
+    }
+
+    /// 跨年：数据跨越 2025/2026，查询 2025 全年 → 交集为 2025-06-01 .. 2025-12-31（214 天）。
+    #[test]
+    fn expected_history_days_crosses_year_boundary() {
+        let settings = standard_settings();
+        let bounds = Some((local_ts(2025, 6, 1), local_ts(2026, 2, 28)));
+        let expected =
+            expected_history_days_from_bounds(bounds, "2025-01-01", "2026-01-01", &settings)
+                .unwrap();
+        assert_eq!(expected, 214);
+        // 与 chrono 直接计算的跨度一致。
+        let span = (chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()
+            - chrono::NaiveDate::from_ymd_opt(2025, 6, 1).unwrap())
+        .num_days();
+        assert_eq!(expected as i64, span);
     }
 }

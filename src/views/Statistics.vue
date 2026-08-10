@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useMonitorStore } from '../stores/monitor'
-import type { DayActivity, StatisticsBucket, StatisticsMetric, StatisticsRangePreset } from '../types'
+import { fetchMonthActivityAction, fetchYearActivityAction } from '../stores/monitorDomains'
+import type { ActivityMaterializationDone, DayActivity, StatisticsBucket, StatisticsMetric, StatisticsRangePreset } from '../types'
 import ActivityGrid from '../components/statistics/ActivityGrid.vue'
 import StatisticsRangePicker from '../components/statistics/StatisticsRangePicker.vue'
 import StatisticsMetricCards from '../components/statistics/StatisticsMetricCards.vue'
@@ -21,6 +23,7 @@ const customEnd = ref(toDateTimeInput(new Date()))
 // 标记是否已经初始化完成，用于区分用户操作和初始化
 const initialized = ref(false)
 let customRangeTimer: ReturnType<typeof setTimeout> | null = null
+let unlistenActivityMaterialization: UnlistenFn | null = null
 
 const locale = computed(() => store.settings.locale)
 const dayBoundaryHour = computed(() => store.settings.dayBoundaryMode === 'night_owl' ? 4 : 0)
@@ -153,6 +156,26 @@ function fetchMonth() {
   store.fetchMonthActivity(monthYear.value, monthNumber.value, monthMetric.value)
 }
 
+/**
+ * 后端后台物化完成事件回调：仅当 payload 与当前视图的 kind + year 匹配时静默刷新
+ * （silent 不翻转 loading，避免打断用户正在观察的加载态）。
+ *
+ * 匹配规则刻意放宽为 kind + year：后端并发场景会 emit 最新 pending 视图的 scope
+ * （而非发起请求时的 scope），month/metric 可能与当前视图不一致；静默刷新按当前
+ * monthNumber/monthMetric 拉取最新数据，month/metric 不参与匹配时刷新无害，
+ * 并可覆盖用户快速切换月份的场景。
+ */
+function handleActivityMaterializationDone(payload: ActivityMaterializationDone) {
+  if (!payload.ok) return
+  if (payload.kind !== activityView.value) return
+  if (payload.year !== monthYear.value) return
+  if (payload.kind === 'month') {
+    void fetchMonthActivityAction(store, monthYear.value, monthNumber.value, monthMetric.value, { silent: true })
+  } else {
+    void fetchYearActivityAction(store, monthYear.value, monthMetric.value, { silent: true })
+  }
+}
+
 function moveMonth(delta: number) {
   if (activityView.value === 'year') {
     currentMonth.value = new Date(currentMonth.value.getFullYear() + delta, currentMonth.value.getMonth(), 1)
@@ -226,6 +249,17 @@ watch(
 )
 
 onMounted(async () => {
+  // 先注册事件监听再发首次请求：物化完成事件可能在首次 fetch 返回后极短时间内 emit，
+  // 若 listen 晚于 fetch 注册，事件会丢失导致页面停留在全零快照。
+  try {
+    unlistenActivityMaterialization = await listen<ActivityMaterializationDone>(
+      'activity_materialization_done',
+      event => handleActivityMaterializationDone(event.payload)
+    )
+  } catch (error) {
+    // 事件监听失败不影响主流程（正常请求路径仍可用）
+    console.error('Failed to listen activity_materialization_done:', error)
+  }
   await Promise.all([fetchSummary(), fetchMonth()])
   initialized.value = true
 })
@@ -235,6 +269,8 @@ onUnmounted(() => {
     clearTimeout(customRangeTimer)
     customRangeTimer = null
   }
+  unlistenActivityMaterialization?.()
+  unlistenActivityMaterialization = null
 })
 
 </script>

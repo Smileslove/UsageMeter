@@ -841,6 +841,16 @@ export interface YearActivity {
   days: DayActivity[]
 }
 
+// 后端后台物化完成事件 activity_materialization_done 的 payload
+// month 为后端 Option<u8>，序列化为 null（year 视图时恒为 null），故不能用可选字段省略。
+export interface ActivityMaterializationDone {
+  kind: 'month' | 'year'
+  year: number
+  month: number | null
+  metric: StatisticsMetric
+  ok: boolean
+}
+
 // ============ Subscription Types ============
 
 export type QuotaKind = 'window' | 'balance'

@@ -34,6 +34,9 @@ jobs:
       - name: Type check and build
         run: npm run build
 
+      - name: Run frontend unit tests
+        run: npm run test
+
       - name: Audit frontend dependencies
         run: npm run audit
 
@@ -66,6 +69,16 @@ jobs:
 
       - name: Check compilation
         run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Run Rust unit tests
+        # 默认 feature 的完整单元测试套件（700+ 用例），全部使用 tempfile 隔离，不依赖真实 ~/.usagemeter 数据库。
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Run performance observation tests (informational only)
+        # 性能测试读取真实 ~/.usagemeter 数据库；DB 缺失时会被自动创建为空库，查询返回空结果并优雅跳过，不会 panic。
+        # 阈值仅作观测告警、不作为门禁，因此失败不阻断 CI。
+        continue-on-error: true
+        run: cargo test --manifest-path src-tauri/Cargo.toml --features performance-tests query_response_time -- --test-threads=1
 
   tauri-build-macos:
     name: Tauri Build Check (macOS)

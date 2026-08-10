@@ -487,3 +487,89 @@ async fn query_response_time_summary_report() {
         projects.len()
     );
 }
+
+#[tokio::test]
+async fn query_response_time_statistics_summary_hour_fallback() {
+    // Hour bucket 的快路径（daily_summary 仅接受 Day bucket、hourly_cache
+    // 仅接受单历史日）在 30d 范围下都不命中，必然落到
+    // get_merged_request_facts_no_sync + build_merged_statistics 的 fallback
+    // 路径（内含 client_tools/source_aware 过滤），本测试观测该路径耗时。
+    let settings = load_settings();
+    let end_epoch = Utc::now().timestamp() + 1;
+    let query = StatisticsQuery {
+        start_epoch: end_epoch - 30 * 24 * 60 * 60,
+        end_epoch,
+        timezone: settings.timezone.clone(),
+        bucket: StatisticsBucket::Hour,
+    };
+
+    crate::unified_usage::clear_runtime_caches();
+    let cold = measure(
+        "get_statistics_summary_hour_30d_fallback",
+        "cold",
+        COLD_TARGET,
+        get_statistics_summary_no_sync(&query, &settings),
+        |summary| summary.trend.len() + summary.models.len(),
+    )
+    .await;
+
+    let warm = measure(
+        "get_statistics_summary_hour_30d_fallback",
+        "warm",
+        WARM_TARGET,
+        get_statistics_summary_no_sync(&query, &settings),
+        |summary| summary.trend.len() + summary.models.len(),
+    )
+    .await;
+
+    if cold.totals.request_count == 0 {
+        println!(
+            "QUERY_TIME name=get_statistics_summary_hour_30d_fallback phase=no_data elapsed_ms=0.000 result_size=0"
+        );
+    } else {
+        assert_eq!(cold.totals.request_count, warm.totals.request_count);
+        assert_eq!(cold.totals.total_tokens, warm.totals.total_tokens);
+    }
+}
+
+#[tokio::test]
+async fn query_response_time_refresh_usage_bundle_frontend_window_matrix() {
+    // 前端真实滑动窗口矩阵：5h/24h/7d/30d 各自 cold/warm 一次。
+    // 窗口集合与 src/types.ts 的 WINDOW_ORDER 对齐；today/current_month 属于
+    // 业务日界窗口，不参与 refresh_usage_bundle 的滑动窗口矩阵。
+    // 90d 不是产品窗口：business_window_cutoff_epoch 对未知窗口保守回落 24h
+    // 属预期兜底行为，见 utils/business_time.rs 的单元测试。
+    let now = Utc::now().timestamp().max(0) as u64;
+    for window in ["5h", "24h", "7d", "30d"] {
+        let mut settings = load_settings();
+        settings.summary_window = window.to_string();
+        let cutoff = crate::utils::business_time::business_window_cutoff_epoch_at(
+            window, &settings, now as i64,
+        );
+        println!(
+            "QUERY_TIME name=refresh_usage_bundle_{window} phase=window_cutoff elapsed_ms=0.000 result_size={cutoff}"
+        );
+
+        crate::unified_usage::clear_runtime_caches();
+        let label = format!("refresh_usage_bundle_{window}");
+        let cold = measure(
+            &label,
+            "cold",
+            COLD_TARGET,
+            refresh_usage_bundle_no_sync(&settings, now),
+            |bundle| bundle.snapshot.windows.len(),
+        )
+        .await;
+
+        let warm = measure(
+            &label,
+            "warm",
+            WARM_TARGET,
+            refresh_usage_bundle_no_sync(&settings, now),
+            |bundle| bundle.snapshot.windows.len(),
+        )
+        .await;
+
+        assert_eq!(cold.snapshot.windows.len(), warm.snapshot.windows.len());
+    }
+}

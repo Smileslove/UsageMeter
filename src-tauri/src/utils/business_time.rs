@@ -231,6 +231,29 @@ mod tests {
     }
 
     #[test]
+    fn unknown_window_falls_back_to_24h_cutoff() {
+        // 90d 不是产品窗口（前端仅 5h/24h/today/7d/30d/current_month，见
+        // src/types.ts 的 WINDOW_ORDER）。对未知窗口保守取最近 24h 是设计意图：
+        // 兜底回落可避免统计范围意外扩大，属预期行为而非缺陷。
+        let settings = settings(DAY_BOUNDARY_MODE_STANDARD);
+        let now = 1_800_000_059;
+        let expected = now - Duration::hours(24).num_seconds();
+
+        assert_eq!(
+            business_window_cutoff_epoch_at("90d", &settings, now),
+            expected
+        );
+        assert_eq!(
+            business_window_cutoff_epoch_at("24h", &settings, now),
+            expected
+        );
+        assert_eq!(
+            business_window_cutoff_epoch_at("bogus", &settings, now),
+            expected
+        );
+    }
+
+    #[test]
     fn fixed_now_controls_business_day_and_month_boundaries() {
         let settings = settings(DAY_BOUNDARY_MODE_NIGHT_OWL);
         let now = Local

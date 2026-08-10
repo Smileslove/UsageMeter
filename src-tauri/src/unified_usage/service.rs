@@ -1019,14 +1019,28 @@ async fn ensure_materialized_history_for_range(
     Ok(ready_dates)
 }
 
-fn combined_data_time_bounds(
+/// 合并 local / proxy 的「实际有数据」时间范围，返回 `(start, end)`（秒，单位与
+/// `get_request_time_bounds` 一致）。
+///
+/// **端语义约定：返回值统一为含端**（end 是真实存在的最大时间戳，毫秒级时间戳
+/// 在 /1000 时向下取整，end 含最后一条记录所在秒）。
+///   - local 的 end 本就是最大时间戳原值（含端）；
+///   - proxy 的 end 是 `max_ms/1000 + 1`（排他），合并前先 `saturating_sub(1)`
+///     还原为含端，避免两个语义不同的 end 直接 `max` —— 若 proxy 为较晚端且
+///     `max_ms/1000 + 1` 恰跨业务日界（如 23:59:59 → 次日 00:00:00），
+///     `business_date_for_timestamp` 会把它映射到次日的业务日，导致
+///     `expected_history_days` 多算一天。
+///
+/// 调用方需要半开区间 `[start, end)` 时自行对含端 end 做 `saturating_add(1)`。
+pub(crate) fn combined_data_time_bounds(
     local_db: &crate::local_usage::LocalUsageDatabase,
 ) -> Result<Option<(i64, i64)>, String> {
     let local_bounds = local_db.get_request_time_bounds()?;
     let proxy_bounds = ProxyDatabase::get_global()
         .map(|db| db.get_request_time_bounds())
         .transpose()?
-        .flatten();
+        .flatten()
+        .map(|(start, end)| (start, end.saturating_sub(1)));
 
     Ok(match (local_bounds, proxy_bounds) {
         (Some((local_start, local_end)), Some((proxy_start, proxy_end))) => {
@@ -1105,6 +1119,71 @@ pub(crate) async fn ensure_materialized_history_no_sync(
 ) -> Result<(), String> {
     let local_db = crate::local_usage::get_local_usage_db()?;
     ensure_materialized_history_with_db(local_db, settings, start_epoch, end_epoch).await
+}
+
+/// 统计 [start_epoch, end_epoch) 内、早于今天（不含今天）需要重建物化的业务日数量。
+///
+/// 判据与 `ensure_materialized_history_for_range` 的 needs_rebuild 完全一致：
+/// 对 date < today 的每个业务日，只要 materialization state 缺失、与本地/代理
+/// 依赖快照或定价指纹不匹配、或事实缓存不完整，就计为 stale。同步函数（不
+/// await），供命令在「后台物化」与「同步物化」之间做低成本决策；预估的重建
+/// 天数超过阈值时把物化移出请求路径。
+pub(crate) fn count_stale_materialization_days(
+    settings: &AppSettings,
+    start_epoch: i64,
+    end_epoch: i64,
+) -> Result<usize, String> {
+    let local_db = crate::local_usage::get_local_usage_db()?;
+    let today = crate::local_usage::LocalUsageDatabase::today_local_date_with_settings(settings);
+    let materializable_dates: Vec<String> = enumerate_local_dates(start_epoch, end_epoch, settings)
+        .into_iter()
+        .filter(|date| date < &today)
+        .collect();
+
+    let pricings = ProxyDatabase::get_global()
+        .and_then(|db| db.get_all_model_pricings().ok())
+        .unwrap_or_default();
+    let pricing_fingerprint = fingerprint_pricings(&pricings);
+    let states = local_db.get_unified_days_materialization_states(&materializable_dates)?;
+
+    let mut stale_days = 0usize;
+    for local_date in materializable_dates {
+        // 先查物化 state：缺失说明该业务日从未物化，必然 stale，直接计入并跳过
+        // snapshot / fact-cache 查询 —— 避免 366 天全缺失时对每天做无谓 DB 读。
+        let Some(state) = states.get(&local_date) else {
+            stale_days += 1;
+            continue;
+        };
+        let (day_start, day_end) =
+            crate::local_usage::LocalUsageDatabase::local_date_epoch_bounds_with_settings(
+                &local_date,
+                settings,
+            )?;
+        let local_snapshot =
+            local_db.get_unified_day_local_snapshot_with_settings(&local_date, settings)?;
+        let proxy_snapshot = ProxyDatabase::get_global()
+            .map(|db| {
+                db.get_day_dependency_snapshot(
+                    day_start.saturating_mul(1000),
+                    day_end.saturating_mul(1000),
+                )
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let needs_rebuild = !materialization_state_matches(
+            state,
+            &local_snapshot,
+            proxy_snapshot,
+            pricing_fingerprint,
+            settings,
+        ) || !local_db
+            .is_unified_day_fact_cache_complete(&local_date)
+            .unwrap_or(false);
+        if needs_rebuild {
+            stale_days += 1;
+        }
+    }
+    Ok(stale_days)
 }
 
 async fn get_hot_merge_facts(
@@ -1231,7 +1310,8 @@ async fn get_merged_request_facts_with_db(
         let history_ready_dates =
             if let Some((data_start, data_end)) = combined_data_time_bounds(&local_db)? {
                 let effective_start = range_start.max(data_start);
-                let effective_end = range_end.min(data_end.max(range_start + 1));
+                // combined_data_time_bounds 返回含端 end，恢复半开区间语义再参与比较。
+                let effective_end = range_end.min(data_end.saturating_add(1).max(range_start + 1));
                 if effective_end > effective_start {
                     ensure_materialized_history_for_range(
                         local_db.clone(),
@@ -1662,7 +1742,9 @@ async fn get_targeted_session_facts_with_db(
         .map(|(start, _)| start)?;
     let history_dates = if let Some((data_start, data_end)) = combined_data_time_bounds(&local_db)?
     {
-        let history_end = data_end.min(today_start);
+        // combined_data_time_bounds 返回含端 end；ensure_materialized_history_for_range
+        // 期望半开区间，恢复排他语义后再与 today_start 求交。
+        let history_end = data_end.saturating_add(1).min(today_start);
         if history_end > data_start {
             ensure_materialized_history_for_range(
                 local_db.clone(),

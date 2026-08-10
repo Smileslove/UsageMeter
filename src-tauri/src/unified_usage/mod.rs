@@ -15,7 +15,8 @@ mod performance_tests;
 
 pub(crate) use merge_engine::build_coverage;
 pub(crate) use service::{
-    clear_runtime_caches, ensure_materialized_history_no_sync, get_merged_project_stats_no_sync,
+    clear_runtime_caches, combined_data_time_bounds, count_stale_materialization_days,
+    ensure_materialized_history_no_sync, get_merged_project_stats_no_sync,
     get_merged_request_facts_no_sync, get_merged_session_detail, get_merged_sessions_no_sync,
 };
 #[cfg(test)]

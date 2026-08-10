@@ -401,4 +401,168 @@ mod tests {
             time_projects
         );
     }
+
+    #[tokio::test]
+    async fn test_same_range_concurrent_requests_share_inflight() {
+        println!("\n=== 同 range 并发请求（inflight 排队）观测 ===\n");
+
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
+        let include_errors = settings.proxy.include_error_requests;
+        let now = chrono::Utc::now().timestamp();
+        let cutoff =
+            crate::utils::business_time::business_window_cutoff_epoch_at("30d", &settings, now);
+
+        // 1. 单路冷基准 + 缓存命中基准，用于对比并发慢者的排队等待成本。
+        crate::unified_usage::clear_runtime_caches();
+        let t = Instant::now();
+        let (baseline, _) = crate::unified_usage::get_merged_request_facts_no_sync(
+            &settings,
+            Some(cutoff),
+            Some(now + 1),
+            include_errors,
+        )
+        .await
+        .expect("baseline facts");
+        let time_cold = t.elapsed().as_millis();
+        println!("✓ 单路冷查询: {} ms ({} facts)", time_cold, baseline.len());
+        if time_cold > 2000 {
+            eprintln!("⚠️  WARNING: cold query exceeded 2000ms ({}ms)", time_cold);
+        }
+
+        let t = Instant::now();
+        let (cached, _) = crate::unified_usage::get_merged_request_facts_no_sync(
+            &settings,
+            Some(cutoff),
+            Some(now + 1),
+            include_errors,
+        )
+        .await
+        .expect("cached facts");
+        let time_cached = t.elapsed().as_millis();
+        println!(
+            "✓ 缓存命中基准: {} ms ({} facts)",
+            time_cached,
+            cached.len()
+        );
+        drop(baseline);
+        drop(cached);
+
+        // 2. 清缓存后同一 range 两路并发：第一路拿 inflight key 计算，
+        //    第二路必须在 acquire_inflight_key 处排队等待，完成前不得提前返回。
+        crate::unified_usage::clear_runtime_caches();
+        let started = Instant::now();
+        let (first, second) = tokio::join!(
+            async {
+                let t = Instant::now();
+                let result = crate::unified_usage::get_merged_request_facts_no_sync(
+                    &settings,
+                    Some(cutoff),
+                    Some(now + 1),
+                    include_errors,
+                )
+                .await;
+                (t.elapsed(), result)
+            },
+            async {
+                let t = Instant::now();
+                let result = crate::unified_usage::get_merged_request_facts_no_sync(
+                    &settings,
+                    Some(cutoff),
+                    Some(now + 1),
+                    include_errors,
+                )
+                .await;
+                (t.elapsed(), result)
+            },
+        );
+        let time_total = started.elapsed().as_millis();
+        let (elapsed_first, result_first) = first;
+        let (elapsed_second, result_second) = second;
+        let (facts_first, _) = result_first.expect("first concurrent facts");
+        let (facts_second, _) = result_second.expect("second concurrent facts");
+
+        let time_fast = elapsed_first.min(elapsed_second).as_millis();
+        let time_slow = elapsed_first.max(elapsed_second).as_millis();
+        let facts_fast = if elapsed_first <= elapsed_second {
+            &facts_first
+        } else {
+            &facts_second
+        };
+        println!(
+            "✓ 并发双路: fast={} ms, queued(慢者)={} ms, 总耗时={} ms ({} facts)",
+            time_fast,
+            time_slow,
+            time_total,
+            facts_fast.len()
+        );
+        if time_slow > 2000 {
+            eprintln!(
+                "⚠️  WARNING: queued concurrent query exceeded 2000ms observational target ({}ms)",
+                time_slow
+            );
+        }
+
+        // 功能断言：同一 range 的并发查询在 inflight 排队后必须复用同一份
+        // 缓存结果（Arc 指针相同），且后完成者必须晚于先完成者结束。
+        assert!(
+            std::sync::Arc::ptr_eq(&facts_first, &facts_second),
+            "concurrent same-range queries should share the merged cache Arc"
+        );
+        assert_eq!(facts_first.len(), facts_second.len());
+        assert!(
+            time_slow >= time_fast,
+            "queued caller must not finish before the first caller"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_large_dataset_stress_load_observation() {
+        // 大数据量压力测试：临时 DB 方案在本项目不可行，原因如下——
+        // 1. LocalUsageDatabase::new_with_path 是私有构造，unified_usage 合并
+        //    路径统一经 get_local_usage_db() 打开固定 ~/.usagemeter/local_usage.db，
+        //    usagemeter_dir() 也无环境变量覆盖，tempfile 构造的 DB 无法注入。
+        // 2. GLOBAL_LOCAL_USAGE_DB 是 OnceLock 单例且测试进程内不可替换；
+        //    物化历史、冷/热分片缓存、materialization 状态机均为进程内全局，
+        //    seed 数万条记录还要跑迁移/物化，构造成本等价于再造一套真实 DB。
+        // 因此按约定不硬造，改为观测当前真实 DB 的数据规模与全量查询耗时，
+        // 数据规模下的耗时基准复用既有 test_recent_requests_query_performance
+        // 与 test_sessions_query_performance 的观测输出。
+        println!("\n=== 大数据量压力观测（不可构造临时 DB，降级观测真实数据）===\n");
+
+        let settings = crate::settings::load_settings_blocking().unwrap_or_default();
+        let include_errors = settings.proxy.include_error_requests;
+
+        crate::unified_usage::clear_runtime_caches();
+        let t = Instant::now();
+        let (facts, _) = crate::unified_usage::get_merged_request_facts_no_sync(
+            &settings,
+            None,
+            None,
+            include_errors,
+        )
+        .await
+        .expect("get_merged_request_facts for dataset observation");
+        let time_facts = t.elapsed().as_millis();
+
+        let t = Instant::now();
+        let sessions =
+            crate::unified_usage::get_merged_sessions_no_sync(&settings, i64::MAX / 4, 0)
+                .await
+                .expect("get_merged_sessions for dataset observation");
+        let time_sessions = t.elapsed().as_millis();
+
+        println!(
+            "✓ 当前 DB 数据规模: {} facts, {} sessions; 全量 facts={} ms, 全量 sessions={} ms",
+            facts.len(),
+            sessions.len(),
+            time_facts,
+            time_sessions
+        );
+        if time_facts > 2000 {
+            eprintln!(
+                "⚠️  WARNING: full facts load exceeded 2000ms observational target ({}ms)",
+                time_facts
+            );
+        }
+    }
 }

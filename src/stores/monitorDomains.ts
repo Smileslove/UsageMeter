@@ -43,13 +43,14 @@ export async function fetchMonthActivityAction(
   context: MonitorDomainContext,
   year: number,
   month: number,
-  metric: StatisticsMetric
+  metric: StatisticsMetric,
+  options?: { silent?: boolean }
 ) {
   const requestKey = JSON.stringify({ year, month, metric, settings: context.settings })
   if (context.monthActivityLoading && context.monthActivityRequestKey === requestKey) return
   const requestSeq = ++context.monthActivityRequestSeq
   context.monthActivityRequestKey = requestKey
-  context.monthActivityLoading = true
+  if (!options?.silent) context.monthActivityLoading = true
   try {
     context.statisticsError = ''
     const activity = await queryMonthActivity(context.settings, year, month, metric)
@@ -57,16 +58,19 @@ export async function fetchMonthActivityAction(
   } catch (error) {
     if (requestSeq === context.monthActivityRequestSeq) context.statisticsError = errorMessage(error)
   } finally {
+    // 无条件按“是否为最新请求”复位 loading：silent 请求成为最新请求时，
+    // 所有更早在途请求都已过期，由它收尾复位是正确语义；
+    // 若这里依赖 silent 跳过，用户请求在途 + silent 后来会导致 loading 永久卡 true。
     if (requestSeq === context.monthActivityRequestSeq) context.monthActivityLoading = false
   }
 }
 
-export async function fetchYearActivityAction(context: MonitorDomainContext, year: number, metric: StatisticsMetric) {
+export async function fetchYearActivityAction(context: MonitorDomainContext, year: number, metric: StatisticsMetric, options?: { silent?: boolean }) {
   const requestKey = JSON.stringify({ year, metric, settings: context.settings })
   if (context.yearActivityLoading && context.yearActivityRequestKey === requestKey) return
   const requestSeq = ++context.yearActivityRequestSeq
   context.yearActivityRequestKey = requestKey
-  context.yearActivityLoading = true
+  if (!options?.silent) context.yearActivityLoading = true
   try {
     context.statisticsError = ''
     const activity = await queryYearActivity(context.settings, year, metric)
@@ -74,6 +78,7 @@ export async function fetchYearActivityAction(context: MonitorDomainContext, yea
   } catch (error) {
     if (requestSeq === context.yearActivityRequestSeq) context.statisticsError = errorMessage(error)
   } finally {
+    // 同 month：无条件按最新请求复位 loading，避免 silent 后来时 loading 永久卡 true。
     if (requestSeq === context.yearActivityRequestSeq) context.yearActivityLoading = false
   }
 }
