@@ -2,15 +2,16 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Ellipsis, RefreshCw } from 'lucide-vue-next'
 import { useDesktopNavigationStore } from '../stores/desktopNavigation'
+import { useDesktopAnalyticsStore } from '../stores/desktopAnalytics'
 import { useMonitorStore } from '../../stores/monitor'
 import { t, windowNameLabel } from '../../i18n'
 import { formatToolDisplayName } from '../../utils/toolDisplay'
-import type { DesktopPage } from '../../types'
+import type { DesktopPage, WindowName } from '../../types'
 import SourceSelector from '../../components/SourceSelector.vue'
 import ToolSelector from '../../components/ToolSelector.vue'
 
 /** 页面时间范围（复用 settings.window* 文案）。 */
-const RANGES: Array<{ value: string; key: string }> = [
+const RANGES: Array<{ value: WindowName; key: string }> = [
   { value: '5h', key: 'settings.window5h' },
   { value: '24h', key: 'settings.window24h' },
   { value: 'today', key: 'settings.windowToday' },
@@ -26,6 +27,7 @@ const PAGES_WITH_FILTER_SUMMARY: DesktopPage[] = ['overview', 'analytics', 'sess
 
 const nav = useDesktopNavigationStore()
 const monitor = useMonitorStore()
+const analytics = useDesktopAnalyticsStore()
 
 const locale = computed(() => monitor.settings.locale)
 const currentPage = computed(() => nav.currentPage)
@@ -56,8 +58,18 @@ const toolFilterLabel = computed(() => {
 
 const filterSummary = computed(() => `${sourceFilterLabel.value} · ${toolFilterLabel.value}`)
 
-// 页面时间范围（M1 存于组件内，阶段 2 移入 store 做跨页保持）
-const range = ref('24h')
+// 页面时间范围：从 desktopAnalytics store 读写（设计 3.5 窗口局部状态）。
+// 概览页读 overviewWindow，分析页读 analyticsWindow；其余占位页沿用概览范围。
+const range = computed<WindowName>({
+  get: () => (currentPage.value === 'analytics' ? analytics.analyticsWindow : analytics.overviewWindow),
+  set: value => {
+    if (currentPage.value === 'analytics') {
+      analytics.analyticsWindow = value
+    } else {
+      analytics.overviewWindow = value
+    }
+  }
+})
 
 // 更多菜单（占位）
 const moreOpen = ref(false)
@@ -115,7 +127,7 @@ onUnmounted(() => {
               ? 'bg-[var(--theme-accent-soft)] text-[var(--theme-accent-primary)]'
               : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'
           "
-          @click="range = item.value"
+          @click="range = item.value as WindowName"
         >
           {{ windowNameLabel(locale, item.value) }}
         </button>
