@@ -101,6 +101,7 @@ pub struct StatisticsModelBreakdown {
     pub model_name: String,
     pub request_count: u64,
     pub local_request_count: u64,
+    pub estimated_request_count: u64,
     pub total_tokens: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,

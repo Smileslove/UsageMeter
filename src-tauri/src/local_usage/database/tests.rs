@@ -856,10 +856,17 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
         conn.execute(
             "INSERT INTO local_sessions (
                 session_id, tool, project_key, updated_at
-             ) VALUES ('reasonix::preserved', 'reasonix', 'p', 1700000000)",
+             ) VALUES ('claude::preserved', 'claude_code', 'p', 1700000000)",
             [],
         )
         .expect("insert preserved session");
+        conn.execute(
+            "INSERT INTO local_sessions (
+                session_id, tool, project_key, updated_at
+             ) VALUES ('reasonix::removed-by-v27', 'reasonix', 'p', 1700000000)",
+            [],
+        )
+        .expect("insert reasonix session");
         conn.execute(
             "UPDATE local_sync_state SET state_value = '20' WHERE state_key = 'schema_version'",
             [],
@@ -880,7 +887,7 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
     }
     drop(db);
 
-    let reopened = LocalUsageDatabase::new_with_path(&path).expect("migrate v20 database to v25");
+    let reopened = LocalUsageDatabase::new_with_path(&path).expect("migrate v20 database to v27");
     let conn = reopened.conn.lock().unwrap();
     let schema_version: String = conn
         .query_row(
@@ -889,7 +896,7 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
             |row| row.get(0),
         )
         .expect("read schema version");
-    assert_eq!(schema_version, "25");
+    assert_eq!(schema_version, "27");
     for table in ["local_sessions", "remote_sessions"] {
         let columns: Vec<String> = conn
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -911,14 +918,23 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
             );
         }
     }
+    // 非 reasonix 会话必须保留（v21 语义）；reasonix 会话由 v27 清理。
     let preserved: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM local_sessions WHERE session_id = 'reasonix::preserved'",
+            "SELECT COUNT(*) FROM local_sessions WHERE session_id = 'claude::preserved'",
             [],
             |row| row.get(0),
         )
         .expect("query preserved session");
     assert_eq!(preserved, 1);
+    let reasonix_removed: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM local_sessions WHERE session_id = 'reasonix::removed-by-v27'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("query reasonix session");
+    assert_eq!(reasonix_removed, 0);
 }
 
 #[test]
@@ -1077,7 +1093,7 @@ fn local_session_scope_round_trips_from_database() {
 }
 
 #[test]
-fn reasonix_v2_session_fields_survive_sync_export_and_remote_import() {
+fn reasonix_v2_session_fields_export_but_remote_import_skips_reasonix() {
     let (_tmp_a, db_a) = temp_db();
     {
         let conn = db_a.conn.lock().unwrap();
@@ -1122,19 +1138,14 @@ fn reasonix_v2_session_fields_survive_sync_export_and_remote_import() {
         4
     );
 
+    // ReasonX 本地会话链路已移除（v27）：远程导入跳过 reasonix 会话摘要，
+    // 即使其它设备仍导出旧 reasonix 会话，本端也不导入。
     let (_tmp_b, db_b) = temp_db();
     db_b.import_remote_sync_data("device-a", 1, &export)
         .expect("import remote sync data");
 
     let sessions = db_b.get_remote_sessions(&ToolFilter::All).unwrap();
-    assert_eq!(sessions.len(), 1);
-    assert_eq!(sessions[0].scope.as_deref(), Some("global"));
-    assert_eq!(sessions[0].total_reasoning_tokens, 7);
-    assert_eq!(sessions[0].total_elapsed_ms, 1234);
-    assert_eq!(sessions[0].explicit_cost, Some(7.2));
-    assert_eq!(sessions[0].explicit_cost_currency.as_deref(), Some("CNY"));
-    assert!(sessions[0].explicit_estimated_cost.is_none());
-    assert_eq!(sessions[0].usage_sources["executor"].request_count, 2);
+    assert!(sessions.is_empty(), "reasonix 会话不应被导入");
 }
 
 #[test]
@@ -1533,6 +1544,7 @@ fn remote_session_tombstone_removes_prior_summary() {
         total_elapsed_ms: 0,
         explicit_cost: None,
         explicit_cost_currency: None,
+        estimated: false,
         usage_sources: Default::default(),
         model_list: vec!["model".to_string()],
     };
@@ -1804,6 +1816,7 @@ fn unified_materialized_facts_round_trip() {
         total_tokens: 37,
         request_count: 1,
         estimated_cost: 1.2345,
+        estimated: false,
         coverage_origin: CoverageOrigin::MergedProxyPreferred,
         status_code: Some(200),
         duration_ms: Some(1500),
@@ -1940,6 +1953,7 @@ fn unified_materialization_state_persists_day_boundary_mode() {
         total_tokens: 20,
         request_count: 1,
         estimated_cost: 0.8,
+        estimated: false,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: Some(200),
         duration_ms: None,
@@ -2061,6 +2075,7 @@ fn cold_facts_shard_cache_only_refetches_rematerialized_day() {
         total_tokens: 30,
         request_count: 1,
         estimated_cost: 0.5,
+        estimated: false,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: Some(200),
         duration_ms: None,
@@ -2275,6 +2290,7 @@ fn v16_migration_clears_stale_unified_materialization_from_codex_fuzzy_match_fix
         total_tokens: 300,
         request_count: 1,
         estimated_cost: 1.0,
+        estimated: false,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: Some(200),
         duration_ms: None,
@@ -2360,6 +2376,7 @@ fn v17_migration_clears_stale_unified_materialization_from_codex_session_id_pref
         total_tokens: 300,
         request_count: 1,
         estimated_cost: 1.0,
+        estimated: false,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: Some(200),
         duration_ms: None,
@@ -2445,6 +2462,7 @@ fn v18_migration_clears_stale_unified_materialization_from_codex_session_id_remo
         total_tokens: 300,
         request_count: 1,
         estimated_cost: 1.0,
+        estimated: false,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: Some(200),
         duration_ms: None,
@@ -2530,6 +2548,7 @@ fn v19_migration_clears_stale_unified_materialization_from_per_field_match_fix()
         total_tokens: 300,
         request_count: 1,
         estimated_cost: 1.0,
+        estimated: false,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: Some(200),
         duration_ms: None,
@@ -2611,6 +2630,7 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
         total_tokens: 300,
         request_count: 1,
         estimated_cost: 1.0,
+        estimated: false,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: Some(200),
         duration_ms: None,
@@ -2684,7 +2704,7 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
             .get_local_sync_state("schema_version")
             .unwrap()
             .as_deref(),
-        Some("25")
+        Some("27")
     );
     assert!(
         reopened
@@ -2826,6 +2846,7 @@ fn purge_orphan_uses_business_day_bucketing_for_invalidated_dates() {
         total_tokens: 3,
         request_count: 1,
         estimated_cost: 0.1,
+        estimated: false,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: Some(200),
         duration_ms: None,
@@ -2917,6 +2938,7 @@ fn invalidate_unified_materialization_clears_rows_and_bumps_version() {
         total_tokens: 30,
         request_count: 1,
         estimated_cost: 1.0,
+        estimated: false,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: Some(200),
         duration_ms: None,
@@ -2994,6 +3016,7 @@ fn unified_visible_counts_exclude_3xx_statuses() {
         total_tokens: 30,
         request_count: 1,
         estimated_cost: 1.0,
+        estimated: false,
         coverage_origin: CoverageOrigin::ProxyOnly,
         status_code: Some(200),
         duration_ms: None,
@@ -3076,6 +3099,7 @@ fn unified_local_only_day_is_not_marked_partial() {
         total_tokens: 30,
         request_count: 1,
         estimated_cost: 1.0,
+        estimated: false,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: None,
         duration_ms: None,
@@ -3140,6 +3164,7 @@ fn unified_mixed_day_is_marked_partial() {
         total_tokens: 30,
         request_count: 1,
         estimated_cost: 1.0,
+        estimated: false,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: None,
         duration_ms: None,
@@ -3165,6 +3190,7 @@ fn unified_mixed_day_is_marked_partial() {
         total_tokens: 30,
         request_count: 1,
         estimated_cost: 1.0,
+        estimated: false,
         coverage_origin: CoverageOrigin::ProxyOnly,
         status_code: Some(200),
         duration_ms: Some(1200),
@@ -3232,6 +3258,7 @@ fn unified_summary_respects_request_count_weight() {
         total_tokens: 170,
         request_count: 7,
         estimated_cost: 0.42,
+        estimated: false,
         coverage_origin: CoverageOrigin::LocalOnly,
         status_code: Some(200),
         duration_ms: None,
@@ -3299,42 +3326,6 @@ fn make_scan_request(
     }
 }
 
-/// 构造一个待同步的脏会话（模拟 JSONL fingerprint 变化后的重新解析结果）
-fn make_reasonix_dirty_session(
-    session_id: &str,
-    fingerprint: &str,
-    end_time: i64,
-    input_tokens: u64,
-) -> DirtySessionSync {
-    let file_path = format!("/tmp/{session_id}.jsonl");
-    let meta = crate::session::SessionMeta {
-        session_id: session_id.to_string(),
-        tool: "reasonix".to_string(),
-        file_path: file_path.clone(),
-        file_size: 100,
-        last_modified: end_time,
-        start_time: end_time.saturating_sub(60),
-        end_time,
-        message_count: 1,
-        total_input_tokens: input_tokens,
-        total_output_tokens: 10,
-        source: "reasonix_session".to_string(),
-        ..Default::default()
-    };
-    DirtySessionSync {
-        session_id: session_id.to_string(),
-        tool: "reasonix".to_string(),
-        file_path,
-        file_role: "session_group".to_string(),
-        file_size: 100,
-        last_modified: end_time,
-        fingerprint: fingerprint.to_string(),
-        meta,
-        requests: Vec::new(),
-        project_key: "reasonix-project".to_string(),
-    }
-}
-
 fn make_dirty_session(
     session_id: &str,
     fingerprint: &str,
@@ -3399,154 +3390,6 @@ fn invalidation_version(db: &LocalUsageDatabase) -> String {
     db.get_local_sync_state("unified_materialization_invalidation_version")
         .expect("read invalidation version")
         .unwrap_or_else(|| "0".to_string())
-}
-
-#[test]
-fn reasonix_telemetry_only_session_contributes_to_time_bounds() {
-    let _guard = opencode_test_guard();
-    let (_tmp, db) = temp_db();
-    let history_ts = chrono::Utc::now().timestamp() - 3 * 86_400;
-    db.sync_dirty_sessions(
-        vec![make_reasonix_dirty_session(
-            "reasonix::bounds",
-            "fp-1",
-            history_ts,
-            100,
-        )],
-        vec![],
-    )
-    .expect("sync telemetry-only session");
-
-    assert_eq!(
-        db.get_request_time_bounds().unwrap(),
-        Some((history_ts, history_ts))
-    );
-}
-
-#[test]
-fn reasonix_telemetry_update_invalidates_old_and_new_history_dates() {
-    let _guard = opencode_test_guard();
-    let (_tmp, db) = temp_db();
-    let settings = crate::settings::load_settings_blocking().unwrap_or_default();
-    let old_ts = chrono::Utc::now().timestamp() - 5 * 86_400;
-    let new_ts = old_ts + 2 * 86_400;
-    let old_date = crate::utils::business_time::business_date_for_timestamp(old_ts, &settings);
-    let new_date = crate::utils::business_time::business_date_for_timestamp(new_ts, &settings);
-
-    db.sync_dirty_sessions(
-        vec![make_reasonix_dirty_session(
-            "reasonix::moved",
-            "fp-1",
-            old_ts,
-            100,
-        )],
-        vec![],
-    )
-    .expect("sync old telemetry");
-    seed_materialization_state(&db, &old_date);
-    seed_materialization_state(&db, &new_date);
-
-    db.sync_dirty_sessions(
-        vec![make_reasonix_dirty_session(
-            "reasonix::moved",
-            "fp-2",
-            new_ts,
-            200,
-        )],
-        vec![],
-    )
-    .expect("sync moved telemetry");
-
-    assert!(db
-        .get_unified_day_materialization_state(&old_date)
-        .unwrap()
-        .is_none());
-    assert!(db
-        .get_unified_day_materialization_state(&new_date)
-        .unwrap()
-        .is_none());
-}
-
-#[test]
-fn removing_reasonix_session_deletes_telemetry_summary_and_invalidates_history() {
-    let _guard = opencode_test_guard();
-    let (_tmp, db) = temp_db();
-    let settings = crate::settings::load_settings_blocking().unwrap_or_default();
-    let history_ts = chrono::Utc::now().timestamp() - 3 * 86_400;
-    let history_date =
-        crate::utils::business_time::business_date_for_timestamp(history_ts, &settings);
-
-    db.sync_dirty_sessions(
-        vec![make_reasonix_dirty_session(
-            "reasonix::removed",
-            "fp-1",
-            history_ts,
-            100,
-        )],
-        vec![],
-    )
-    .expect("sync telemetry session");
-    seed_materialization_state(&db, &history_date);
-
-    db.sync_dirty_sessions(vec![], vec!["reasonix::removed".to_string()])
-        .expect("remove telemetry session");
-
-    assert!(db
-        .get_all_sessions(&ToolFilter::Tool("reasonix".to_string()))
-        .unwrap()
-        .is_empty());
-    assert!(db
-        .get_unified_day_materialization_state(&history_date)
-        .unwrap()
-        .is_none());
-}
-
-#[test]
-fn remote_reasonix_telemetry_only_import_invalidates_history_date() {
-    let _guard = opencode_test_guard();
-    let (_tmp, db) = temp_db();
-    let settings = crate::settings::load_settings_blocking().unwrap_or_default();
-    let history_ts = chrono::Utc::now().timestamp() - 3 * 86_400;
-    let history_date =
-        crate::utils::business_time::business_date_for_timestamp(history_ts, &settings);
-    seed_materialization_state(&db, &history_date);
-    let data = SyncExportData {
-        sessions: vec![SyncExportSession {
-            deleted: false,
-            session_id: "reasonix::remote-only".to_string(),
-            tool: "reasonix".to_string(),
-            project_key: Some("reasonix-project".to_string()),
-            project_name: Some("Reasonix".to_string()),
-            scope: Some("global".to_string()),
-            start_time: history_ts - 60,
-            end_time: history_ts,
-            request_count: 1,
-            total_input_tokens: 100,
-            total_output_tokens: 10,
-            total_cache_create_tokens: 0,
-            total_cache_read_tokens: 0,
-            total_tokens: 110,
-            total_reasoning_tokens: 5,
-            total_elapsed_ms: 1_000,
-            explicit_cost: None,
-            explicit_cost_currency: None,
-            usage_sources: Default::default(),
-            model_list: vec!["deepseek-reasoner".to_string()],
-        }],
-        requests: Vec::new(),
-    };
-
-    db.import_remote_sync_data("device-remote", 1, &data)
-        .expect("import telemetry-only remote session");
-
-    assert!(db
-        .get_unified_day_materialization_state(&history_date)
-        .unwrap()
-        .is_none());
-    assert_eq!(
-        db.get_request_time_bounds().unwrap(),
-        Some((history_ts, history_ts))
-    );
 }
 
 #[test]

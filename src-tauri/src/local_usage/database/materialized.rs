@@ -116,6 +116,9 @@ impl LocalUsageDatabase {
                     });
             let request_count = fact.request_count.max(1);
             entry.request_count += request_count;
+            if fact.estimated {
+                entry.estimated_request_count += request_count;
+            }
             let visible = fact.status_code.map(|code| code < 300).unwrap_or(true);
             if visible {
                 entry.visible_request_count += request_count;
@@ -577,14 +580,16 @@ impl LocalUsageDatabase {
                         local_date, request_key, session_id, project_name, project_path,
                         api_key_prefix, request_base_url, tool, timestamp_sec, timestamp_ms,
                         model, input_tokens, output_tokens, cache_create_tokens,
-                        cache_read_tokens, total_tokens, request_count, estimated_cost, coverage_origin,
+                        cache_read_tokens, total_tokens, request_count, estimated_cost,
+                        estimated, coverage_origin,
                         status_code, duration_ms, output_tokens_per_second, ttft_ms, source_label
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5,
                         ?6, ?7, ?8, ?9, ?10,
                         ?11, ?12, ?13, ?14,
-                        ?15, ?16, ?17, ?18, ?19,
-                        ?20, ?21, ?22, ?23, ?24
+                        ?15, ?16, ?17, ?18,
+                        ?19, ?20,
+                        ?21, ?22, ?23, ?24, ?25
                     )
                     "#,
                 )
@@ -610,6 +615,7 @@ impl LocalUsageDatabase {
                     fact.total_tokens as i64,
                     fact.request_count as i64,
                     fact.estimated_cost,
+                    fact.estimated,
                     fact.coverage_origin.as_storage_str(),
                     fact.status_code.map(i64::from),
                     fact.duration_ms.map(|v| v as i64),
@@ -789,7 +795,8 @@ impl LocalUsageDatabase {
                 .prepare(
                     r#"
                     INSERT INTO unified_daily_model_summary (
-                        local_date, model_name, request_count, visible_request_count, total_tokens, visible_total_tokens, input_tokens,
+                        local_date, model_name, request_count, visible_request_count,
+                        estimated_request_count, total_tokens, visible_total_tokens, input_tokens,
                         visible_input_tokens, output_tokens, visible_output_tokens, cache_create_tokens, visible_cache_create_tokens,
                         cache_read_tokens, visible_cache_read_tokens, total_cost, visible_cost,
                         success_request_count, success_total_tokens, success_input_tokens,
@@ -798,13 +805,14 @@ impl LocalUsageDatabase {
                         server_error_requests, local_only_requests, rate_sum, rate_count, ttft_sum, ttft_count,
                         status_counts_json, materialized_at
                     ) VALUES (
-                        ?1, ?2, ?3, ?4, ?5, ?6, ?7,
-                        ?8, ?9, ?10, ?11, ?12,
-                        ?13, ?14, ?15, ?16,
-                        ?17, ?18, ?19,
-                        ?20, ?21, ?22, ?23, ?24,
-                        ?25, ?26, ?27, ?28, ?29,
-                        ?30, ?31, ?32
+                        ?1, ?2, ?3, ?4,
+                        ?5, ?6, ?7, ?8,
+                        ?9, ?10, ?11, ?12, ?13,
+                        ?14, ?15, ?16, ?17,
+                        ?18, ?19, ?20,
+                        ?21, ?22, ?23, ?24, ?25,
+                        ?26, ?27, ?28, ?29, ?30,
+                        ?31, ?32, ?33
                     )
                     "#,
                 )
@@ -819,6 +827,7 @@ impl LocalUsageDatabase {
                     row.model_name,
                     row.request_count as i64,
                     row.visible_request_count as i64,
+                    row.estimated_request_count as i64,
                     row.total_tokens as i64,
                     row.visible_total_tokens as i64,
                     row.input_tokens as i64,
@@ -898,7 +907,7 @@ impl LocalUsageDatabase {
                 request_key, session_id, project_name, project_path, api_key_prefix, request_base_url,
                 tool, timestamp_sec, timestamp_ms, model, input_tokens, output_tokens,
                 cache_create_tokens, cache_read_tokens, total_tokens, request_count, estimated_cost,
-                coverage_origin, status_code, duration_ms, output_tokens_per_second, ttft_ms,
+                estimated, coverage_origin, status_code, duration_ms, output_tokens_per_second, ttft_ms,
                 source_label
             FROM unified_daily_materialized_facts
             WHERE local_date IN ({date_placeholders}) {tool_clause}
@@ -935,14 +944,15 @@ impl LocalUsageDatabase {
                     total_tokens: row.get::<_, i64>(14)?.max(0) as u64,
                     request_count: row.get::<_, i64>(15)?.max(1) as u64,
                     estimated_cost: row.get(16)?,
+                    estimated: row.get::<_, i64>(17)?.max(0) > 0,
                     coverage_origin: CoverageOrigin::from_storage_str(
-                        row.get::<_, String>(17)?.as_str(),
+                        row.get::<_, String>(18)?.as_str(),
                     ),
-                    status_code: row.get::<_, Option<i64>>(18)?.map(|v| v as u16),
-                    duration_ms: row.get::<_, Option<i64>>(19)?.map(|v| v.max(0) as u64),
-                    output_tokens_per_second: row.get(20)?,
-                    ttft_ms: row.get::<_, Option<i64>>(21)?.map(|v| v.max(0) as u64),
-                    source_label: row.get(22)?,
+                    status_code: row.get::<_, Option<i64>>(19)?.map(|v| v as u16),
+                    duration_ms: row.get::<_, Option<i64>>(20)?.map(|v| v.max(0) as u64),
+                    output_tokens_per_second: row.get(21)?,
+                    ttft_ms: row.get::<_, Option<i64>>(22)?.map(|v| v.max(0) as u64),
+                    source_label: row.get(23)?,
                 })
             })
             .map_err(|e| format!("Failed to query unified materialized facts: {}", e))?;
@@ -1031,18 +1041,19 @@ impl LocalUsageDatabase {
                     total_tokens: row.get::<_, i64>(14)?.max(0) as u64,
                     request_count: row.get::<_, i64>(15)?.max(1) as u64,
                     estimated_cost: row.get(16)?,
+                    estimated: row.get::<_, i64>(17)?.max(0) > 0,
                     coverage_origin: CoverageOrigin::from_storage_str(
-                        row.get::<_, String>(17)?.as_str(),
+                        row.get::<_, String>(18)?.as_str(),
                     ),
-                    status_code: row.get::<_, Option<i64>>(18)?.map(|value| value as u16),
+                    status_code: row.get::<_, Option<i64>>(19)?.map(|value| value as u16),
                     duration_ms: row
-                        .get::<_, Option<i64>>(19)?
+                        .get::<_, Option<i64>>(20)?
                         .map(|value| value.max(0) as u64),
-                    output_tokens_per_second: row.get(20)?,
+                    output_tokens_per_second: row.get(21)?,
                     ttft_ms: row
-                        .get::<_, Option<i64>>(21)?
+                        .get::<_, Option<i64>>(22)?
                         .map(|value| value.max(0) as u64),
-                    source_label: row.get(22)?,
+                    source_label: row.get(23)?,
                 })
             })
             .map_err(|e| format!("Failed to query unified session facts: {}", e))?;
@@ -1073,7 +1084,7 @@ impl LocalUsageDatabase {
                 request_key, session_id, project_name, project_path, api_key_prefix, request_base_url,
                 tool, timestamp_sec, timestamp_ms, model, input_tokens, output_tokens,
                 cache_create_tokens, cache_read_tokens, total_tokens, request_count, estimated_cost,
-                coverage_origin, status_code, duration_ms, output_tokens_per_second, ttft_ms,
+                estimated, coverage_origin, status_code, duration_ms, output_tokens_per_second, ttft_ms,
                 source_label
             FROM unified_daily_materialized_facts
             WHERE local_date IN ({date_placeholders})
@@ -1105,14 +1116,15 @@ impl LocalUsageDatabase {
                         total_tokens: row.get::<_, i64>(15)?.max(0) as u64,
                         request_count: row.get::<_, i64>(16)?.max(1) as u64,
                         estimated_cost: row.get(17)?,
+                        estimated: row.get::<_, i64>(18)?.max(0) > 0,
                         coverage_origin: CoverageOrigin::from_storage_str(
-                            row.get::<_, String>(18)?.as_str(),
+                            row.get::<_, String>(19)?.as_str(),
                         ),
-                        status_code: row.get::<_, Option<i64>>(19)?.map(|v| v as u16),
-                        duration_ms: row.get::<_, Option<i64>>(20)?.map(|v| v.max(0) as u64),
-                        output_tokens_per_second: row.get(21)?,
-                        ttft_ms: row.get::<_, Option<i64>>(22)?.map(|v| v.max(0) as u64),
-                        source_label: row.get(23)?,
+                        status_code: row.get::<_, Option<i64>>(20)?.map(|v| v as u16),
+                        duration_ms: row.get::<_, Option<i64>>(21)?.map(|v| v.max(0) as u64),
+                        output_tokens_per_second: row.get(22)?,
+                        ttft_ms: row.get::<_, Option<i64>>(23)?.map(|v| v.max(0) as u64),
+                        source_label: row.get(24)?,
                     },
                 ))
             })
@@ -1206,7 +1218,8 @@ impl LocalUsageDatabase {
             .prepare(
                 r#"
                 SELECT
-                    local_date, model_name, request_count, visible_request_count, total_tokens, visible_total_tokens, input_tokens,
+                    local_date, model_name, request_count, visible_request_count,
+                    estimated_request_count, total_tokens, visible_total_tokens, input_tokens,
                     visible_input_tokens, output_tokens, visible_output_tokens, cache_create_tokens, visible_cache_create_tokens,
                     cache_read_tokens, visible_cache_read_tokens, total_cost, visible_cost,
                     success_request_count, success_total_tokens, success_input_tokens,
@@ -1222,7 +1235,7 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to prepare unified daily model summary query: {}", e))?;
         let rows = stmt
             .query_map([start_date_inclusive, end_date_exclusive], |row| {
-                let status_counts_json: String = row.get(30)?;
+                let status_counts_json: String = row.get(31)?;
                 let status_code_counts: HashMap<u16, u64> =
                     serde_json::from_str(&status_counts_json).unwrap_or_default();
                 Ok(UnifiedDailyModelSummaryRow {
@@ -1230,34 +1243,35 @@ impl LocalUsageDatabase {
                     model_name: row.get(1)?,
                     request_count: row.get::<_, i64>(2)?.max(0) as u64,
                     visible_request_count: row.get::<_, i64>(3)?.max(0) as u64,
-                    total_tokens: row.get::<_, i64>(4)?.max(0) as u64,
-                    visible_total_tokens: row.get::<_, i64>(5)?.max(0) as u64,
-                    input_tokens: row.get::<_, i64>(6)?.max(0) as u64,
-                    visible_input_tokens: row.get::<_, i64>(7)?.max(0) as u64,
-                    output_tokens: row.get::<_, i64>(8)?.max(0) as u64,
-                    visible_output_tokens: row.get::<_, i64>(9)?.max(0) as u64,
-                    cache_create_tokens: row.get::<_, i64>(10)?.max(0) as u64,
-                    visible_cache_create_tokens: row.get::<_, i64>(11)?.max(0) as u64,
-                    cache_read_tokens: row.get::<_, i64>(12)?.max(0) as u64,
-                    visible_cache_read_tokens: row.get::<_, i64>(13)?.max(0) as u64,
-                    total_cost: row.get(14)?,
-                    visible_cost: row.get(15)?,
-                    success_request_count: row.get::<_, i64>(16)?.max(0) as u64,
-                    success_total_tokens: row.get::<_, i64>(17)?.max(0) as u64,
-                    success_input_tokens: row.get::<_, i64>(18)?.max(0) as u64,
-                    success_output_tokens: row.get::<_, i64>(19)?.max(0) as u64,
-                    success_cache_create_tokens: row.get::<_, i64>(20)?.max(0) as u64,
-                    success_cache_read_tokens: row.get::<_, i64>(21)?.max(0) as u64,
-                    success_cost: row.get(22)?,
-                    client_error_requests: row.get::<_, i64>(23)?.max(0) as u64,
-                    server_error_requests: row.get::<_, i64>(24)?.max(0) as u64,
-                    local_only_requests: row.get::<_, i64>(25)?.max(0) as u64,
-                    rate_sum: row.get(26)?,
-                    rate_count: row.get::<_, i64>(27)?.max(0) as u64,
-                    ttft_sum: row.get(28)?,
-                    ttft_count: row.get::<_, i64>(29)?.max(0) as u64,
+                    estimated_request_count: row.get::<_, i64>(4)?.max(0) as u64,
+                    total_tokens: row.get::<_, i64>(5)?.max(0) as u64,
+                    visible_total_tokens: row.get::<_, i64>(6)?.max(0) as u64,
+                    input_tokens: row.get::<_, i64>(7)?.max(0) as u64,
+                    visible_input_tokens: row.get::<_, i64>(8)?.max(0) as u64,
+                    output_tokens: row.get::<_, i64>(9)?.max(0) as u64,
+                    visible_output_tokens: row.get::<_, i64>(10)?.max(0) as u64,
+                    cache_create_tokens: row.get::<_, i64>(11)?.max(0) as u64,
+                    visible_cache_create_tokens: row.get::<_, i64>(12)?.max(0) as u64,
+                    cache_read_tokens: row.get::<_, i64>(13)?.max(0) as u64,
+                    visible_cache_read_tokens: row.get::<_, i64>(14)?.max(0) as u64,
+                    total_cost: row.get(15)?,
+                    visible_cost: row.get(16)?,
+                    success_request_count: row.get::<_, i64>(17)?.max(0) as u64,
+                    success_total_tokens: row.get::<_, i64>(18)?.max(0) as u64,
+                    success_input_tokens: row.get::<_, i64>(19)?.max(0) as u64,
+                    success_output_tokens: row.get::<_, i64>(20)?.max(0) as u64,
+                    success_cache_create_tokens: row.get::<_, i64>(21)?.max(0) as u64,
+                    success_cache_read_tokens: row.get::<_, i64>(22)?.max(0) as u64,
+                    success_cost: row.get(23)?,
+                    client_error_requests: row.get::<_, i64>(24)?.max(0) as u64,
+                    server_error_requests: row.get::<_, i64>(25)?.max(0) as u64,
+                    local_only_requests: row.get::<_, i64>(26)?.max(0) as u64,
+                    rate_sum: row.get(27)?,
+                    rate_count: row.get::<_, i64>(28)?.max(0) as u64,
+                    ttft_sum: row.get(29)?,
+                    ttft_count: row.get::<_, i64>(30)?.max(0) as u64,
                     status_code_counts,
-                    materialized_at: row.get(31)?,
+                    materialized_at: row.get(32)?,
                 })
             })
             .map_err(|e| format!("Failed to query unified daily model summaries: {}", e))?;

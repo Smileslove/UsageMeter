@@ -15,7 +15,6 @@ pub(crate) mod opencode_reader;
 pub(crate) mod qoder_cli_reader;
 pub(crate) mod qoder_ide_reader;
 pub(crate) mod qoder_work_reader;
-mod reasonix_reader;
 mod registry;
 mod scanner;
 mod shared;

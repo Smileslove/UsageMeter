@@ -20,7 +20,7 @@ impl LocalUsageDatabase {
 
     pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 25 {
+        if schema_version >= 27 {
             return Ok(());
         }
         let mut cleared_runtime_caches = false;
@@ -807,6 +807,177 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to update v25 schema version: {}", e))?;
             tx.commit()
                 .map_err(|e| format!("Failed to commit v25 schema migration: {}", e))?;
+        }
+
+        if schema_version < 26 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v26 schema migration: {}", e))?;
+
+            // Reasonix telemetry `estimated` 标记：本地来源可在用量估算（请求中断/
+            // 失败）时标注估算数据。local_sessions / remote_sessions 持久化会话级标记，
+            // unified_daily_materialized_facts 持久化事实级标记。
+            Self::add_column_if_missing(
+                &tx,
+                "local_sessions",
+                "estimated",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            Self::add_column_if_missing(
+                &tx,
+                "remote_sessions",
+                "estimated",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            Self::add_column_if_missing(
+                &tx,
+                "unified_daily_materialized_facts",
+                "estimated",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            Self::add_column_if_missing(
+                &tx,
+                "unified_daily_model_summary",
+                "estimated_request_count",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+            // 事实级 estimated 仅影响展示口径（估算标注），无需重建物化数据：
+            // 旧行默认 0（非估算），与新逻辑一致；存量 reasonix 估算会话会在
+            // 下一次自然物化时带上标记。
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '26', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v26 schema version: {}", e))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v26 schema migration: {}", e))?;
+        }
+
+        if schema_version < 27 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v27 schema migration: {}", e))?;
+
+            // v27：移除 ReasonX 本地会话统计链路（会话级累计 telemetry 按 end_time
+            // 整段归入统计窗口，粒度太粗导致窗口数据失真）。仅清理 reasonix 的
+            // 本地会话行与物化残差，**绝不触碰 proxy_data.db**：代理采集的
+            // reasonix / api_gateway 逐请求数据（usage_records）继续保留与统计。
+            //
+            // 防护：删除后校验关键表（reasonix 会话与残差）已清空，不一致则回滚。
+            // 其余表（墓碑/源文件/远程行）与 reasonix 会话同源，由同一事务保证。
+
+            // 1) 先收集 reasonix 会话 id（outbox 清理依赖它们；必须在删除
+            //    local_sessions 之前取，否则子查询查不到行导致清理失效）。
+            let reasonix_session_ids: Vec<String> = {
+                let mut stmt = tx
+                    .prepare("SELECT session_id FROM local_sessions WHERE tool = 'reasonix'")
+                    .map_err(|e| format!("v27 failed to prepare reasonix session ids: {e}"))?;
+                let rows = stmt
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(|e| format!("v27 failed to query reasonix session ids: {e}"))?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("v27 failed to collect reasonix session ids: {e}"))?
+            };
+
+            // 2) 待同步的 outbox 会话事件：在删除 local_sessions 前清理，
+            //    避免向其它设备广播已删会话的导出。
+            if !reasonix_session_ids.is_empty() {
+                let placeholders = reasonix_session_ids
+                    .iter()
+                    .map(|_| "?")
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                tx.execute(
+                    &format!(
+                        "DELETE FROM sync_outbox_session_events
+                         WHERE session_id IN ({placeholders})"
+                    ),
+                    rusqlite::params_from_iter(reasonix_session_ids.iter()),
+                )
+                .map_err(|e| format!("v27 failed to delete reasonix outbox events: {e}"))?;
+            }
+
+            // 3) 会话级数据：本地会话、墓碑、源文件、远程同步会话。
+            tx.execute("DELETE FROM local_sessions WHERE tool = 'reasonix'", [])
+                .map_err(|e| format!("v27 failed to delete reasonix sessions: {e}"))?;
+
+            tx.execute(
+                "DELETE FROM local_session_tombstones WHERE tool = 'reasonix'",
+                [],
+            )
+            .map_err(|e| format!("v27 failed to delete reasonix tombstones: {e}"))?;
+
+            tx.execute("DELETE FROM local_source_files WHERE tool = 'reasonix'", [])
+                .map_err(|e| format!("v27 failed to delete reasonix source files: {e}"))?;
+
+            tx.execute("DELETE FROM remote_sessions WHERE tool = 'reasonix'", [])
+                .map_err(|e| format!("v27 failed to delete reasonix remote sessions: {e}"))?;
+
+            // 4) 物化残差：只删 reasonix 的 local_only（会话级残差事实）。
+            //    proxy_only / merged（代理/网关数据）与其它工具完全保留。
+            tx.execute(
+                "DELETE FROM unified_daily_materialized_facts
+                 WHERE tool = 'reasonix' AND coverage_origin = 'local_only'",
+                [],
+            )
+            .map_err(|e| format!("v27 failed to delete reasonix residuals: {e}"))?;
+
+            // 4) 失效全部历史物化（含统一日汇总/模型汇总/物化状态），
+            //    下次查询按"无 reasonix 本地链"全量重物化。
+            tx.execute("DELETE FROM unified_daily_summary", [])
+                .map_err(|e| format!("v27 failed to clear unified daily summary: {e}"))?;
+            tx.execute("DELETE FROM unified_daily_model_summary", [])
+                .map_err(|e| format!("v27 failed to clear unified model summary: {e}"))?;
+            tx.execute("DELETE FROM unified_daily_materialization_state", [])
+                .map_err(|e| format!("v27 failed to clear materialization state: {e}"))?;
+            Self::bump_unified_materialization_invalidation_version_tx(
+                &tx,
+                chrono::Utc::now().timestamp(),
+            )?;
+
+            // 5) 删除后校验：reasonix 会话与残差必须为 0；其它数据不受影响。
+            let reasonix_sessions_after: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM local_sessions WHERE tool = 'reasonix'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("v27 failed to re-count reasonix sessions: {e}"))?;
+            if reasonix_sessions_after != 0 {
+                return Err(format!(
+                    "v27 reasonix session cleanup verification failed: expected 0, got {reasonix_sessions_after}"
+                ));
+            }
+            let reasonix_residual_after: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM unified_daily_materialized_facts
+                     WHERE tool = 'reasonix' AND coverage_origin = 'local_only'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("v27 failed to re-count reasonix residuals: {e}"))?;
+            if reasonix_residual_after != 0 {
+                return Err(format!(
+                    "v27 reasonix residual cleanup verification failed: expected 0, got {reasonix_residual_after}"
+                ));
+            }
+
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '27', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v27 schema version: {}", e))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v27 schema migration: {}", e))?;
+            cleared_runtime_caches = true;
         }
 
         if cleared_runtime_caches {

@@ -63,6 +63,19 @@ const tokenPair = computed(() => {
   }
 })
 
+// 模型排行主指标 Token 使用「真实消耗」口径：input + output（不含缓存命中）。
+// 缓存命中在下方单独卡片展示，避免缓存读取量级淹没实际用量。
+const billableTokens = computed(() => {
+  const m = selectedModel.value
+  if (!m) return 0
+  return m.inputTokens + m.outputTokens
+})
+
+const hasEstimatedRequests = computed(() => {
+  const m = selectedModel.value
+  return !!m && (m.estimatedRequestCount ?? 0) > 0
+})
+
 const cacheHitRate = computed(() => {
   const m = selectedModel.value
   if (!m) return null
@@ -113,7 +126,8 @@ function metricValueSizeClass(text: string): string {
 
 function trendValue(point: StatisticsTrendPoint, metric: 'requests' | 'tokens' | 'cost' | 'rate'): number {
   if (metric === 'requests') return point.requestCount
-  if (metric === 'tokens') return point.totalTokens
+  // tokens 指标与主指标同口径：input + output（真实消耗，不含缓存命中）
+  if (metric === 'tokens') return (point.inputTokens ?? 0) + (point.outputTokens ?? 0)
   if (metric === 'cost') return point.cost
   return point.avgTokensPerSecond ?? 0
 }
@@ -393,8 +407,15 @@ onBeforeUnmount(() => {
               <p class="font-mono text-[11px] font-bold text-gray-800 dark:text-gray-100">{{ formatCost(selectedModel.cost, store.settings.currency) }}</p>
             </div>
             <div class="rounded-lg bg-gray-50 p-1.5 dark:bg-neutral-800/80">
-              <p class="text-[9px] text-gray-400 dark:text-gray-500">{{ t(locale, 'statistics.metricTokens') }}</p>
-              <p class="font-mono text-[11px] font-bold text-gray-800 dark:text-gray-100">{{ formatTokenValue(selectedModel.totalTokens) }}</p>
+              <p class="flex items-center gap-1 text-[9px] text-gray-400 dark:text-gray-500">
+                <span>{{ t(locale, 'statistics.metricTokens') }}</span>
+                <span
+                  v-if="hasEstimatedRequests"
+                  class="inline-flex shrink-0 items-center rounded-full bg-amber-50 px-1 py-px text-[7px] font-medium leading-none text-amber-500 dark:bg-amber-900/30 dark:text-amber-400"
+                  :title="t(locale, 'statistics.estimatedHint')"
+                >{{ t(locale, 'statistics.estimated') }}</span>
+              </p>
+              <p class="font-mono text-[11px] font-bold text-gray-800 dark:text-gray-100">{{ formatTokenValue(billableTokens) }}</p>
             </div>
             <div class="rounded-lg bg-gray-50 p-1.5 dark:bg-neutral-800/80">
               <p class="flex items-center gap-1 text-[9px] text-gray-400 dark:text-gray-500">

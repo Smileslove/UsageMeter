@@ -6,7 +6,6 @@ mod match_support;
 mod materialization_support;
 mod merge_engine;
 mod query_support;
-mod reasonix_support;
 mod service;
 mod types;
 

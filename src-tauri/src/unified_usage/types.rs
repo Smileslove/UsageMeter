@@ -49,6 +49,9 @@ pub struct MergedRequestFact {
     pub total_tokens: u64,
     pub request_count: u64,
     pub estimated_cost: f64,
+    /// 该事实的用量是否为本地来源标记的估算值（Reasonix telemetry `estimated`）。
+    /// 估算数据来自请求中断/失败时的推算，展示时应与真实 API 用量区分。
+    pub estimated: bool,
     pub coverage_origin: CoverageOrigin,
     pub status_code: Option<u16>,
     pub duration_ms: Option<u64>,
@@ -627,10 +630,11 @@ fn fallback_model_name_for_tool(tool: &str) -> Option<&'static str> {
 
 pub(crate) fn normalize_model_bucket(tool: &str, model: &str) -> String {
     if !is_opaque_model_name(model) {
+        let trimmed = model.trim();
         return if tool.starts_with("qoder_") {
-            crate::qoder_models::normalize_qoder_model_name(model)
+            crate::qoder_models::normalize_qoder_model_name(trimmed)
         } else {
-            model.trim().to_string()
+            trimmed.to_string()
         };
     }
 
@@ -696,6 +700,7 @@ impl MergedRequestFact {
             total_tokens: record.total_tokens,
             request_count: record.request_count.max(1),
             estimated_cost: record.explicit_estimated_cost.unwrap_or(cost).max(0.0),
+            estimated: meta.map(|m| m.estimated).unwrap_or(false),
             coverage_origin: CoverageOrigin::LocalOnly,
             // Local transcript requests are treated as successful; no proxy performance fields available.
             status_code: Some(200),
@@ -741,6 +746,7 @@ impl MergedRequestFact {
             total_tokens: record.total_tokens,
             request_count: 1,
             estimated_cost: record.estimated_cost,
+            estimated: false,
             coverage_origin: CoverageOrigin::ProxyOnly,
             status_code: Some(record.status_code),
             duration_ms: Some(record.duration_ms),
@@ -855,6 +861,7 @@ impl MergedRequestFact {
             total_tokens,
             request_count: local.request_count.max(1),
             estimated_cost,
+            estimated: meta.map(|m| m.estimated).unwrap_or(false),
             coverage_origin: CoverageOrigin::MergedProxyPreferred,
             status_code: Some(proxy.status_code),
             duration_ms: Some(proxy.duration_ms),

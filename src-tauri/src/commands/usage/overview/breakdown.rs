@@ -2,7 +2,7 @@ use super::super::types::{OverviewBreakdown, OverviewBreakdownCapability, Overvi
 use crate::commands::usage::accumulator::FactAccumulator;
 use crate::models::AppSettings;
 use crate::proxy::compute_source_id;
-use crate::unified_usage::MergedRequestFact;
+use crate::unified_usage::{normalize_model_bucket, MergedRequestFact};
 use std::collections::HashMap;
 
 type BreakdownAccumulator = FactAccumulator;
@@ -217,10 +217,12 @@ fn tool_meta_for_fact(settings: &AppSettings, fact: &MergedRequestFact) -> Break
 }
 
 fn model_meta_for_fact(fact: &MergedRequestFact) -> BreakdownMeta {
+    // 与统计聚合保持一致的分桶口径：ReasonX 的 `provider/model`（本地 telemetry）
+    // 需剥离 provider 前缀，才能与代理捕获的 `model`（无前缀）归入同一桶。
     let label = if fact.model.trim().is_empty() {
         "__unknown__".to_string()
     } else {
-        fact.model.clone()
+        normalize_model_bucket(&fact.tool, &fact.model)
     };
     BreakdownMeta {
         id: label.clone(),
@@ -319,6 +321,7 @@ mod tests {
             total_tokens: input_tokens + output_tokens,
             request_count: 1,
             estimated_cost: cost,
+            estimated: false,
             coverage_origin: CoverageOrigin::ProxyOnly,
             status_code,
             duration_ms: Some(1000),
@@ -508,5 +511,51 @@ mod tests {
 
         let meta = source_meta_for_fact(&settings, &fact);
         assert_eq!(meta.id, "__unknown__");
+    }
+
+    #[test]
+    fn reasonix_provider_model_merges_with_proxy_model_into_single_bucket() {
+        // 回归：本地 telemetry 的模型是 `provider/model`（基元律动/deepseek-v4-flash-0731），
+        // 代理捕获的是无前缀 `deepseek-v4-flash-0731`。两者必须剥离 provider 前缀
+        // 归入同一模型桶，否则 Overview 模型排行出现两个同模型桶。
+        let settings = AppSettings::default();
+        let breakdown = build_overview_breakdown_from_facts(
+            &settings,
+            "24h".to_string(),
+            1234,
+            &[
+                test_fact(
+                    "reasonix",
+                    "基元律动/deepseek-v4-flash-0731",
+                    100,
+                    50,
+                    1.0,
+                    None,
+                    None,
+                    Some(200),
+                    None,
+                    None,
+                ),
+                test_fact(
+                    "api_gateway",
+                    "deepseek-v4-flash-0731",
+                    200,
+                    100,
+                    2.0,
+                    None,
+                    None,
+                    Some(200),
+                    Some(10.0),
+                    None,
+                ),
+            ],
+        );
+        assert_eq!(
+            breakdown.model_ranking.len(),
+            1,
+            "本地与代理的同一模型必须合并为一个桶"
+        );
+        assert_eq!(breakdown.model_ranking[0].label, "deepseek-v4-flash-0731");
+        assert_eq!(breakdown.model_ranking[0].request_count, 2);
     }
 }

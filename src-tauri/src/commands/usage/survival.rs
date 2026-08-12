@@ -263,6 +263,7 @@ mod tests {
             total_tokens: tokens,
             request_count: 1,
             estimated_cost: 0.0,
+            estimated: false,
             coverage_origin: crate::unified_usage::CoverageOrigin::LocalOnly,
             status_code: None,
             duration_ms: None,

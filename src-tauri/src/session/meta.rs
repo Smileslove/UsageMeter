@@ -56,6 +56,8 @@ pub struct SessionUsageSourceMeta {
     pub session_cost: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_currency: Option<String>,
+    #[serde(default)]
+    pub estimated: bool,
 }
 
 /// 从 JSONL 文件提取的会话元数据
@@ -136,6 +138,12 @@ pub struct SessionMeta {
     /// Reasonix telemetry v2 的内部来源累计，仅用于诊断与后续精细聚合。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub usage_sources: BTreeMap<String, SessionUsageSourceMeta>,
+    /// 本地来源标记该会话用量为估算值（Reasonix telemetry `estimated`）。
+    /// 估算数据来自请求中断/失败时的推算，不应与 API 返回的真实用量混淆。
+    /// 注：ReasonX 本地扫描链路已移除（v27），当前无生产者写入 true；字段保留
+    /// 以支持其它工具未来提供估算标记，聚合层已消费（MergedRequestFact.estimated）。
+    #[serde(default)]
+    pub estimated: bool,
 }
 
 /// 本地 transcript 中抽取出的单条请求事实

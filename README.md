@@ -29,7 +29,7 @@ It is designed around a compact menu bar workflow on macOS: no Dock icon, fast p
 
 | Capability | Current Coverage |
 | --- | --- |
-| Local history scanning | Claude Code, Codex CLI, OpenClaw, OpenCode, Qoder CLI / IDE / IDE CN / Work / Work CN, Reasonix, Gemini CLI, GitHub Copilot CLI, Hermes Agent |
+| Local history scanning | Claude Code, Codex CLI, OpenClaw, OpenCode, Qoder CLI / IDE / IDE CN / Work / Work CN, Gemini CLI, GitHub Copilot CLI, Hermes Agent |
 | Proxy takeover and request capture | Claude Code, Codex, OpenCode global config routes, Reasonix global config, Gemini CLI env-based config; cc-switch coexistence safeguards for Claude Code and Codex |
 | Local API gateway | OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Gemini GenerateContent; one stored upstream credential and one generated local client key per profile |
 | Source/provider attribution | API sources detected from proxy traffic, manual source naming, source merge/delete/key-note management, source-level filtering |

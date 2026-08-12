@@ -299,6 +299,7 @@ mod tests {
             total_tokens: input_tokens + output_tokens + cache_create_tokens + cache_read_tokens,
             request_count: 1,
             estimated_cost: 0.0,
+            estimated: false,
             coverage_origin,
             status_code,
             duration_ms: None,

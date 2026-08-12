@@ -11,7 +11,7 @@ export const TOOL_CATALOG: readonly ToolDescriptor[] = [
   { id: 'codex', pathPrefix: 'codex', hasLocalSessions: true, supportsProxy: true },
   { id: 'openclaw', pathPrefix: 'openclaw', hasLocalSessions: true, supportsProxy: false },
   { id: 'opencode', pathPrefix: 'opencode', hasLocalSessions: true, supportsProxy: true },
-  { id: 'reasonix', pathPrefix: 'reasonix', hasLocalSessions: true, supportsProxy: true },
+  { id: 'reasonix', pathPrefix: 'reasonix', hasLocalSessions: false, supportsProxy: true },
   { id: 'gemini', pathPrefix: 'gemini', hasLocalSessions: true, supportsProxy: true },
   { id: 'hermes', pathPrefix: 'hermes', hasLocalSessions: true, supportsProxy: false },
   { id: 'copilot', pathPrefix: 'copilot', hasLocalSessions: true, supportsProxy: false },

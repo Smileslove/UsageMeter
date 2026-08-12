@@ -326,6 +326,9 @@ fn build_daily_model_summaries_from_facts(
         });
         let request_count = fact.request_count.max(1);
         entry.request_count += request_count;
+        if fact.estimated {
+            entry.estimated_request_count += request_count;
+        }
         let visible = fact.status_code.map(|code| code < 300).unwrap_or(true);
         if visible {
             entry.visible_request_count += request_count;
@@ -535,6 +538,7 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
     struct ModelAgg {
         request_count: u64,
         local_request_count: u64,
+        estimated_request_count: u64,
         total_tokens: u64,
         input_tokens: u64,
         output_tokens: u64,
@@ -562,6 +566,7 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
             row.request_count
         };
         agg.local_request_count += row.local_only_requests;
+        agg.estimated_request_count += row.estimated_request_count;
         agg.total_tokens += if use_visible_only {
             row.visible_total_tokens
         } else {
@@ -671,16 +676,23 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
                 model_name,
                 request_count: agg.request_count,
                 local_request_count: agg.local_request_count,
+                estimated_request_count: agg.estimated_request_count,
                 total_tokens: agg.total_tokens,
                 input_tokens: agg.input_tokens,
                 output_tokens: agg.output_tokens,
                 cache_create_tokens: agg.cache_create_tokens,
                 cache_read_tokens: agg.cache_read_tokens,
                 cost: agg.cost,
-                percent: if totals.total_tokens > 0 {
-                    (agg.total_tokens as f64 / totals.total_tokens as f64) * 100.0
-                } else {
-                    0.0
+                // 占比基于「真实消耗」Token（input + output，不含缓存命中），
+                // 与模型排行主指标口径一致，避免缓存读取量级扭曲模型占比。
+                percent: {
+                    let total_billable = totals.input_tokens.saturating_add(totals.output_tokens);
+                    let agg_billable = agg.input_tokens.saturating_add(agg.output_tokens);
+                    if total_billable > 0 {
+                        (agg_billable as f64 / total_billable as f64) * 100.0
+                    } else {
+                        0.0
+                    }
                 },
                 avg_tokens_per_second: (agg.rate_count > 0)
                     .then_some(agg.rate_sum / agg.rate_count as f64),
@@ -848,6 +860,7 @@ mod tests {
             total_tokens: input_tokens + output_tokens + cache_create_tokens + cache_read_tokens,
             request_count: 1,
             estimated_cost: cost,
+            estimated: false,
             coverage_origin,
             status_code,
             duration_ms: None,

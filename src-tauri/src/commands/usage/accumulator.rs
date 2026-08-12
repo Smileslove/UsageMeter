@@ -28,6 +28,8 @@ pub(super) struct FactAccumulator {
     pub(super) max_ttft_ms: Option<u64>,
     pub(super) last_seen_ms: i64,
     pub(super) status_code_counts: HashMap<u16, u64>,
+    /// 标记为估算（estimated）的请求数（Reasonix telemetry 中断/失败估算）。
+    pub(super) estimated_request_count: u64,
 }
 
 impl FactAccumulator {
@@ -64,6 +66,10 @@ impl FactAccumulator {
             self.local_request_count += request_count;
         } else {
             self.proxy_request_count += request_count;
+        }
+
+        if fact.estimated {
+            self.estimated_request_count += request_count;
         }
 
         self.last_seen_ms = self.last_seen_ms.max(fact.timestamp_ms);
@@ -137,6 +143,7 @@ mod tests {
             total_tokens: 35,
             request_count: 1,
             estimated_cost: 1.25,
+            estimated: false,
             coverage_origin,
             status_code,
             duration_ms,

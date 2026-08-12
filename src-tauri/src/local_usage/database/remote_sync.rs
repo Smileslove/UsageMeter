@@ -1,23 +1,11 @@
 use crate::models::ToolFilter;
 use crate::session::{LocalRequestRecord, SessionMeta};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use std::collections::HashSet;
 
 use super::{
     LocalUsageDatabase, RemoteSyncDevice, SyncExportData, SyncExportRequest, SyncExportSession,
 };
-
-fn is_reasonix_telemetry_session(session: &SyncExportSession) -> bool {
-    session.tool == "reasonix"
-        && session.request_count > 0
-        && (session.total_input_tokens > 0
-            || session.total_output_tokens > 0
-            || session.total_cache_create_tokens > 0
-            || session.total_cache_read_tokens > 0
-            || session.total_elapsed_ms > 0
-            || session.explicit_cost.is_some()
-            || !session.usage_sources.is_empty())
-}
 
 impl LocalUsageDatabase {
     pub fn get_sync_export_data(&self) -> Result<SyncExportData, String> {
@@ -29,7 +17,7 @@ impl LocalUsageDatabase {
                         request_count, total_input_tokens, total_output_tokens,
                         total_cache_create_tokens, total_cache_read_tokens, total_tokens,
                         model_list_json, total_reasoning_tokens, total_elapsed_ms, explicit_cost,
-                        explicit_cost_currency, usage_sources_json
+                        explicit_cost_currency, usage_sources_json, estimated
                  FROM local_sessions
                  WHERE NOT EXISTS (
                      SELECT 1 FROM local_session_tombstones t
@@ -73,6 +61,7 @@ impl LocalUsageDatabase {
                     ),
                     explicit_cost: row.get(16)?,
                     explicit_cost_currency: row.get(17)?,
+                    estimated: row.get::<_, i64>(19)?.max(0) > 0,
                     usage_sources: serde_json::from_str(&usage_sources_json).unwrap_or_default(),
                     model_list: serde_json::from_str(&model_list_json).unwrap_or_default(),
                 })
@@ -115,6 +104,7 @@ impl LocalUsageDatabase {
                     total_elapsed_ms: 0,
                     explicit_cost: None,
                     explicit_cost_currency: None,
+                    estimated: false,
                     usage_sources: Default::default(),
                     model_list: Vec::new(),
                 })
@@ -369,35 +359,11 @@ impl LocalUsageDatabase {
         }
 
         for session in &data.sessions {
-            let existing_end_time = tx
-                .query_row(
-                    "SELECT end_time FROM remote_sessions
-                     WHERE origin_device_id = ?1 AND session_id = ?2
-                     LIMIT 1",
-                    params![device_id, session.session_id.as_str()],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()
-                .map_err(|e| format!("Failed to query existing remote session date: {}", e))?;
-            if session.tool == "reasonix" {
-                if let Some(old_end_time) = existing_end_time.filter(|value| *value > 0) {
-                    let old_date = crate::utils::business_time::business_date_for_timestamp(
-                        old_end_time,
-                        &settings,
-                    );
-                    if old_date < today {
-                        touched_history_dates.insert(old_date);
-                    }
-                }
-                if is_reasonix_telemetry_session(session) && session.end_time > 0 {
-                    let new_date = crate::utils::business_time::business_date_for_timestamp(
-                        session.end_time,
-                        &settings,
-                    );
-                    if new_date < today {
-                        touched_history_dates.insert(new_date);
-                    }
-                }
+            // ReasonX 本地会话链路已移除（v27）：远程同步来的 reasonix 会话摘要
+            // 不再导入（统计不展示 reasonix 会话级数据）。tombstone 仍处理，
+            // 以清除历史遗留的 reasonix 远程行。
+            if !session.deleted && session.tool == "reasonix" {
+                continue;
             }
 
             if session.deleted {
@@ -419,9 +385,9 @@ impl LocalUsageDatabase {
                     end_time, request_count, total_input_tokens, total_output_tokens,
                     total_cache_create_tokens, total_cache_read_tokens, total_tokens,
                     total_reasoning_tokens, total_elapsed_ms, explicit_cost, explicit_cost_currency,
-                    usage_sources_json, model_list_json, imported_at, export_seq
+                    estimated, usage_sources_json, model_list_json, imported_at, export_seq
                  ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                           ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+                           ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
                  ON CONFLICT(origin_device_id, session_id) DO UPDATE SET
                     tool = excluded.tool,
                     project_key = excluded.project_key,
@@ -439,6 +405,7 @@ impl LocalUsageDatabase {
                     total_elapsed_ms = excluded.total_elapsed_ms,
                     explicit_cost = excluded.explicit_cost,
                     explicit_cost_currency = excluded.explicit_cost_currency,
+                    estimated = excluded.estimated,
                     usage_sources_json = excluded.usage_sources_json,
                     model_list_json = excluded.model_list_json,
                     imported_at = excluded.imported_at,
@@ -463,6 +430,7 @@ impl LocalUsageDatabase {
                     session.total_elapsed_ms as i64,
                     session.explicit_cost,
                     session.explicit_cost_currency.as_deref(),
+                    session.estimated,
                     usage_sources_json.as_str(),
                     model_list_json.as_str(),
                     now,
@@ -684,7 +652,7 @@ impl LocalUsageDatabase {
                         request_count, total_input_tokens, total_output_tokens,
                         total_cache_create_tokens, total_cache_read_tokens, model_list_json,
                         total_reasoning_tokens, total_elapsed_ms, explicit_cost,
-                        explicit_cost_currency, usage_sources_json
+                        explicit_cost_currency, usage_sources_json, estimated
                  FROM remote_sessions";
         let mapper = |row: &rusqlite::Row<'_>| {
             let project_key: Option<String> = row.get(2)?;
@@ -731,6 +699,7 @@ impl LocalUsageDatabase {
                 explicit_cost: row.get(15)?,
                 explicit_cost_currency: row.get(16)?,
                 usage_sources: serde_json::from_str(&usage_sources_json).unwrap_or_default(),
+                estimated: row.get::<_, i64>(18)?.max(0) > 0,
             })
         };
         let mut result = Vec::new();

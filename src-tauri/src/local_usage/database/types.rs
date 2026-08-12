@@ -29,6 +29,8 @@ pub struct SyncExportSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explicit_cost_currency: Option<String>,
     #[serde(default)]
+    pub estimated: bool,
+    #[serde(default)]
     pub usage_sources: std::collections::BTreeMap<String, crate::session::SessionUsageSourceMeta>,
     pub model_list: Vec<String>,
 }
@@ -215,6 +217,7 @@ pub struct UnifiedDailyModelSummaryRow {
     pub client_error_requests: u64,
     pub server_error_requests: u64,
     pub local_only_requests: u64,
+    pub estimated_request_count: u64,
     pub rate_sum: f64,
     pub rate_count: u64,
     pub ttft_sum: f64,

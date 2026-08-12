@@ -1,11 +1,8 @@
 use super::derived_support::{project_descriptor_for_session, session_project_identity};
-use super::reasonix_support::reasonix_explicit_cost_usd;
 use crate::models::CurrencySettings;
 use crate::proxy::{ProjectStats, ProjectToolStats};
 use crate::session::{wsl_distro_from_path, SessionMeta};
 use std::collections::{HashMap, HashSet};
-
-pub(super) const REASONIX_FULL_COVERAGE_GRACE_SECS: i64 = 30;
 
 #[derive(Default)]
 pub(super) struct ProjectAggregate<'a> {
@@ -17,60 +14,24 @@ pub(super) struct ProjectAggregate<'a> {
 }
 
 pub(super) fn session_usage_fully_covered(
-    meta: Option<&SessionMeta>,
-    tool: &str,
-    proxy_backed_requests: u64,
-    unresolved_proxy_requests: u64,
-    now_sec: i64,
+    _meta: Option<&SessionMeta>,
+    _tool: &str,
+    _proxy_backed_requests: u64,
+    _unresolved_proxy_requests: u64,
+    _now_sec: i64,
 ) -> bool {
-    if tool != "reasonix" {
-        return true;
-    }
-    let Some(meta) = meta else {
-        return false;
-    };
-    if meta.message_count == 0 {
-        return false;
-    }
-    let last_activity = meta.end_time.max(meta.last_modified);
-    if last_activity <= 0
-        || now_sec.saturating_sub(last_activity) <= REASONIX_FULL_COVERAGE_GRACE_SECS
-    {
-        return false;
-    }
-    unresolved_proxy_requests == 0 && proxy_backed_requests == meta.message_count
-}
-
-pub(super) fn reasonix_uncovered_request_count(
-    local_only_requests: u64,
-    unresolved_proxy_requests: u64,
-) -> u64 {
-    local_only_requests.saturating_add(unresolved_proxy_requests)
-}
-
-pub(super) fn session_has_reasonix_coverage_gap(
-    meta: &SessionMeta,
-    proxy_backed_requests: u64,
-    unresolved_proxy_requests: u64,
-    now_sec: i64,
-) -> bool {
-    meta.tool == "reasonix"
-        && !session_usage_fully_covered(
-            Some(meta),
-            &meta.tool,
-            proxy_backed_requests,
-            unresolved_proxy_requests,
-            now_sec,
-        )
+    // ReasonX 本地会话链路已移除（v27）：不再有基于会话级 telemetry 的覆盖判定。
+    // 其它工具的会话覆盖语义维持"完整覆盖"（由逐请求事实驱动）。
+    true
 }
 
 pub(super) fn build_metadata_only_session_stats(
     meta: &SessionMeta,
-    currency_settings: &CurrencySettings,
+    _currency_settings: &CurrencySettings,
     now_sec: i64,
 ) -> crate::proxy::SessionStats {
-    let explicit_cost_usd = reasonix_explicit_cost_usd(meta, currency_settings)
-        .or(meta.explicit_estimated_cost)
+    let explicit_cost_usd = meta
+        .explicit_estimated_cost
         .filter(|cost| cost.is_finite() && *cost >= 0.0);
     crate::proxy::SessionStats {
         session_id: meta.session_id.clone(),
@@ -190,104 +151,6 @@ pub(super) fn merge_metadata_only_project<'a>(
 mod tests {
     use super::*;
     use crate::session::SessionMeta;
-
-    fn reasonix_meta(message_count: u64, last_activity_sec: i64) -> SessionMeta {
-        SessionMeta {
-            session_id: "reasonix-sess".to_string(),
-            tool: "reasonix".to_string(),
-            message_count,
-            end_time: last_activity_sec,
-            last_modified: last_activity_sec,
-            file_path: "reasonix-sess.jsonl".to_string(),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn session_usage_fully_covered_non_reasonix_tool_always_covered() {
-        // 非 reasonix 工具直接判定覆盖，无 meta 也覆盖。
-        assert!(session_usage_fully_covered(None, "codex", 0, 0, 1_000));
-        assert!(session_usage_fully_covered(
-            None,
-            "claude_code",
-            0,
-            99,
-            1_000
-        ));
-    }
-
-    #[test]
-    fn session_usage_fully_covered_missing_meta_or_zero_messages_is_uncovered() {
-        assert!(!session_usage_fully_covered(None, "reasonix", 5, 0, 1_000));
-
-        let meta = reasonix_meta(0, 100);
-        assert!(!session_usage_fully_covered(
-            Some(&meta),
-            "reasonix",
-            0,
-            0,
-            1_000
-        ));
-    }
-
-    #[test]
-    fn session_usage_fully_covered_within_grace_window_is_uncovered() {
-        // 30s 宽限：last_activity 与 now 相距 <= 30s 时视为仍在写入，不算覆盖。
-        let meta = reasonix_meta(5, 1_000);
-        assert!(!session_usage_fully_covered(
-            Some(&meta),
-            "reasonix",
-            5,
-            0,
-            1_030
-        ));
-        assert!(session_usage_fully_covered(
-            Some(&meta),
-            "reasonix",
-            5,
-            0,
-            1_031
-        ));
-
-        // last_activity <= 0 视为无时间信息，不算覆盖。
-        let no_time = reasonix_meta(5, 0);
-        assert!(!session_usage_fully_covered(
-            Some(&no_time),
-            "reasonix",
-            5,
-            0,
-            1_000
-        ));
-    }
-
-    #[test]
-    fn session_usage_fully_covered_requires_zero_unresolved_and_matching_count() {
-        let meta = reasonix_meta(5, 1_000);
-        // unresolved > 0 → 不覆盖
-        assert!(!session_usage_fully_covered(
-            Some(&meta),
-            "reasonix",
-            5,
-            1,
-            1_031
-        ));
-        // proxy_backed != message_count → 不覆盖
-        assert!(!session_usage_fully_covered(
-            Some(&meta),
-            "reasonix",
-            4,
-            0,
-            1_031
-        ));
-        // 完全覆盖
-        assert!(session_usage_fully_covered(
-            Some(&meta),
-            "reasonix",
-            5,
-            0,
-            1_031
-        ));
-    }
 
     #[test]
     fn merge_metadata_only_project_merges_multiple_sessions() {
@@ -453,15 +316,14 @@ mod tests {
     }
 
     #[test]
-    fn build_metadata_only_session_stats_uses_explicit_cost_usd_for_reasonix() {
+    fn build_metadata_only_session_stats_uses_explicit_estimated_cost() {
         let meta = SessionMeta {
             session_id: "rx-sess".to_string(),
             tool: "reasonix".to_string(),
             message_count: 5,
             end_time: 1_000,
             last_modified: 1_000,
-            explicit_cost: Some(10.0),
-            explicit_cost_currency: Some("USD".to_string()),
+            explicit_estimated_cost: Some(10.0),
             ..Default::default()
         };
         let currency = CurrencySettings::default();
@@ -469,13 +331,14 @@ mod tests {
 
         assert_eq!(stats.estimated_cost, 10.0);
         assert!(!stats.is_cost_estimated);
-        // 宽限期外且代理 0 请求 → reasonix 会话不被视为完全覆盖。
-        assert!(!stats.usage_fully_covered);
+        assert!(stats.usage_fully_covered);
         assert_eq!(stats.uncovered_requests, 5);
     }
 
     #[test]
-    fn build_metadata_only_session_stats_converts_non_usd_explicit_cost() {
+    fn build_metadata_only_session_stats_ignores_explicit_cost_without_estimated_alias() {
+        // ReasonX 本地会话链路已移除（v27）：explicit_cost + 币种换算不再参与；
+        // 只有明确的 explicit_estimated_cost（已确认 USD）才被采用。
         let meta = SessionMeta {
             session_id: "rx-sess-cny".to_string(),
             tool: "reasonix".to_string(),
@@ -489,8 +352,7 @@ mod tests {
         let mut currency = CurrencySettings::default();
         currency.exchange_rates.insert("CNY".to_string(), 7.0);
         let stats = build_metadata_only_session_stats(&meta, &currency, 1_100);
-        // 700 CNY / 7 = 100 USD
-        assert_eq!(stats.estimated_cost, 100.0);
-        assert!(!stats.is_cost_estimated);
+        assert_eq!(stats.estimated_cost, 0.0);
+        assert!(stats.is_cost_estimated);
     }
 }

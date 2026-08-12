@@ -83,16 +83,23 @@ pub(super) fn build_merged_statistics(
                 model_name: model_name.clone(),
                 request_count: acc.request_count,
                 local_request_count: acc.local_request_count,
+                estimated_request_count: acc.estimated_request_count,
                 total_tokens: acc.total_tokens,
                 input_tokens: acc.input_tokens,
                 output_tokens: acc.output_tokens,
                 cache_create_tokens: acc.cache_create_tokens,
                 cache_read_tokens: acc.cache_read_tokens,
                 cost: acc.cost,
-                percent: if total.total_tokens > 0 {
-                    (acc.total_tokens as f64 / total.total_tokens as f64) * 100.0
-                } else {
-                    0.0
+                // 占比基于「真实消耗」Token（input + output，不含缓存命中），
+                // 与模型排行主指标口径一致，避免缓存读取量级扭曲模型占比。
+                percent: {
+                    let total_billable = total.input_tokens.saturating_add(total.output_tokens);
+                    let acc_billable = acc.input_tokens.saturating_add(acc.output_tokens);
+                    if total_billable > 0 {
+                        (acc_billable as f64 / total_billable as f64) * 100.0
+                    } else {
+                        0.0
+                    }
                 },
                 avg_tokens_per_second: has_perf
                     .then_some(acc.rate_sum / acc.rate_count.max(1) as f64),
@@ -272,6 +279,7 @@ mod tests {
             total_tokens: input_tokens + output_tokens + cache_create_tokens + cache_read_tokens,
             request_count: 1,
             estimated_cost: cost,
+            estimated: false,
             coverage_origin,
             status_code,
             duration_ms: Some(1000),

@@ -2,15 +2,12 @@ use super::match_support::{
     attach_proxy_session_ids, compute_local_request_cost_cached, request_key_for_local,
     request_key_for_proxy,
 };
-use super::reasonix_support::{
-    build_reasonix_proxy_coverage_by_session, build_reasonix_telemetry_residual,
-};
 use super::types::{
     codex_orphan_pools, find_codex_fuzzy_matches, has_partial_coverage,
     session_meta_lookup_key_for_proxy, CodexFuzzyOutcome, CoverageOrigin, MergedCoverage,
     MergedRequestFact,
 };
-use crate::models::{CurrencySettings, ModelPricingConfig, SourceFilter};
+use crate::models::ModelPricingConfig;
 use crate::proxy::UsageRecord;
 use crate::session::{LocalRequestRecord, SessionMeta};
 use std::collections::{HashMap, HashSet};
@@ -22,11 +19,6 @@ pub(super) struct RealtimeMergeInput {
     pub(super) message_to_session: HashMap<String, String>,
     pub(super) raw_proxy_records: Vec<UsageRecord>,
     pub(super) raw_unfiltered_proxy_records: Option<Vec<UsageRecord>>,
-    pub(super) raw_reasonix_coverage_proxy_records: Vec<UsageRecord>,
-    pub(super) source_filter: SourceFilter,
-    pub(super) currency_settings: CurrencySettings,
-    pub(super) range_start: i64,
-    pub(super) range_end: i64,
     pub(super) include_errors: bool,
     pub(super) pricings: Vec<ModelPricingConfig>,
     pub(super) pricing_match_mode: String,
@@ -82,11 +74,6 @@ pub(super) fn merge_realtime_facts(input: RealtimeMergeInput) -> Vec<MergedReque
         message_to_session,
         raw_proxy_records,
         raw_unfiltered_proxy_records,
-        raw_reasonix_coverage_proxy_records,
-        source_filter,
-        currency_settings,
-        range_start,
-        range_end,
         include_errors,
         pricings,
         pricing_match_mode,
@@ -215,24 +202,6 @@ pub(super) fn merge_realtime_facts(input: RealtimeMergeInput) -> Vec<MergedReque
         }
     }
 
-    let mut reasonix_coverage_records = raw_reasonix_coverage_proxy_records;
-    attach_proxy_session_ids(&mut reasonix_coverage_records, &message_to_session);
-    let (reasonix_coverage_by_session, blocked_reasonix_sessions) =
-        build_reasonix_proxy_coverage_by_session(&reasonix_coverage_records, &session_meta_by_id);
-    for meta in session_meta_by_id.values() {
-        if let Some(residual) = build_reasonix_telemetry_residual(
-            meta,
-            reasonix_coverage_by_session.get(&meta.session_id),
-            blocked_reasonix_sessions.contains(&meta.session_id),
-            &source_filter,
-            &currency_settings,
-            range_start,
-            range_end,
-        ) {
-            merged.push(residual);
-        }
-    }
-
     merged.sort_by_key(|fact| fact.timestamp_ms);
     merged
 }
@@ -294,11 +263,6 @@ mod tests {
             message_to_session: HashMap::new(),
             raw_proxy_records: Vec::new(),
             raw_unfiltered_proxy_records: None,
-            raw_reasonix_coverage_proxy_records: Vec::new(),
-            source_filter: SourceFilter::All,
-            currency_settings: CurrencySettings::default(),
-            range_start: 0,
-            range_end: i64::MAX,
             include_errors: true,
             pricings: Vec::new(),
             pricing_match_mode: "fuzzy".to_string(),

@@ -46,7 +46,10 @@ const TOOLS: &[ToolDescriptor] = &[
     ToolDescriptor {
         id: TOOL_REASONIX,
         path_prefix: "reasonix",
-        has_local_sessions: true,
+        // ReasonX 本地会话只有会话级累计 telemetry（无逐请求明细），按 end_time
+        // 整段归入统计窗口导致数据失真。已移除本地扫描链路；仅保留代理采集
+        // （supports_proxy），ReasonX 数据统一由代理/网关提供。
+        has_local_sessions: false,
         supports_proxy: true,
     },
     ToolDescriptor {

@@ -768,6 +768,7 @@ export interface StatisticsModelBreakdown {
   modelName: string
   requestCount: number
   localRequestCount: number
+  estimatedRequestCount: number
   totalTokens: number
   inputTokens: number
   outputTokens: number

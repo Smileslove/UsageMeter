@@ -11,7 +11,6 @@ use super::opencode_reader::OpenCodeSource;
 use super::qoder_cli_reader::QoderCliSource;
 use super::qoder_ide_reader::QoderIdeSource;
 use super::qoder_work_reader::QoderWorkSource;
-use super::reasonix_reader::ReasonixSource;
 use super::source::{ParsedSessionData, SessionSource, UsageSource};
 
 static CLAUDE_SOURCE: ClaudeSource = ClaudeSource;
@@ -31,10 +30,9 @@ static QODER_WORK_CN_SOURCE: QoderWorkSource = QoderWorkSource::new(
     "QoderWork CN",
     ".qoderworkcn",
 );
-static REASONIX_SOURCE: ReasonixSource = ReasonixSource;
 static GEMINI_SOURCE: GeminiSource = GeminiSource;
 
-pub fn all_sources() -> [&'static dyn SessionSource; 13] {
+pub fn all_sources() -> [&'static dyn SessionSource; 12] {
     [
         &CLAUDE_SOURCE,
         &COPILOT_CLI_SOURCE,
@@ -46,20 +44,18 @@ pub fn all_sources() -> [&'static dyn SessionSource; 13] {
         &QODER_CLI_SOURCE,
         &QODER_WORK_SOURCE,
         &QODER_WORK_CN_SOURCE,
-        &REASONIX_SOURCE,
         &GEMINI_SOURCE,
         &HERMES_SOURCE,
     ]
 }
 
-pub fn file_backed_sources() -> [&'static dyn SessionSource; 7] {
+pub fn file_backed_sources() -> [&'static dyn SessionSource; 6] {
     [
         &CLAUDE_SOURCE,
         &COPILOT_CLI_SOURCE,
         &CODEX_SOURCE,
         &OPENCLAW_SOURCE,
         &QODER_CLI_SOURCE,
-        &REASONIX_SOURCE,
         &GEMINI_SOURCE,
     ]
 }

@@ -186,28 +186,6 @@ function compactPath(path: string | null | undefined): string {
       <div class="rounded-lg border border-gray-100 bg-white px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
         <div class="flex items-start gap-2">
           <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 dark:bg-neutral-800">
-            <LobeIcon :slug="TOOL_LOBE_ICONS.reasonix" :size="15" @error="() => {}" />
-          </div>
-          <div class="min-w-0">
-            <div class="flex items-center gap-1.5">
-              <span class="text-[10.5px] font-medium leading-none text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.localScanReasonix') }}</span>
-              <span class="rounded px-1 py-px text-[9px] font-medium bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300">
-                {{ t(store.settings.locale, 'settings.localScanRequestOnlyBadge') }}
-              </span>
-            </div>
-            <div class="mt-0.5 break-all font-mono text-[9px] leading-tight text-gray-400 dark:text-gray-500">
-              {{ t(store.settings.locale, 'settings.localScanReasonixPath') }}
-            </div>
-            <div class="mt-1 text-[9px] leading-relaxed text-sky-600 dark:text-sky-400">
-              {{ t(store.settings.locale, 'settings.localScanReasonixWarning') }}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="rounded-lg border border-gray-100 bg-white px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
-        <div class="flex items-start gap-2">
-          <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 dark:bg-neutral-800">
             <LobeIcon :slug="TOOL_LOBE_ICONS.gemini" :size="15" @error="() => {}" />
           </div>
           <div class="min-w-0">

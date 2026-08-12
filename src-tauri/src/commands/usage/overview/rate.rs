@@ -150,6 +150,7 @@ mod tests {
             total_tokens: output_tokens,
             request_count: 1,
             estimated_cost: 0.0,
+            estimated: false,
             coverage_origin: CoverageOrigin::ProxyOnly,
             status_code: Some(200),
             duration_ms,
