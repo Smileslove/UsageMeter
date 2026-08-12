@@ -187,6 +187,14 @@ pub fn open_desktop_window(
     }
     let _ = window.set_focus();
 
+    // 窗口不存在（首次创建/WebView 重建）时，pending 中只可能是残留的旧深链：
+    // 无导航意图则清空，避免前端 mount 后误导航；有 target 时由下方覆盖写入。
+    // 注意不能在"已存在窗口"分支做此清空——那会误丢 WebView 加载期间到达的新深链。
+    if target.is_none() {
+        let pending = app.state::<PendingDesktopNavigation>();
+        *pending.0.lock().unwrap_or_else(|err| err.into_inner()) = None;
+    }
+
     // 新窗口首次加载期间暂存导航目标，前端 DesktopApp mount 后取走。
     if let Some(target) = target {
         let pending = app.state::<PendingDesktopNavigation>();
