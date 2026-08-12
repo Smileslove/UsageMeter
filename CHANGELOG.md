@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.3] - 2026-08-13
+
+### Added
+
+- **Test Coverage & CI**: 200+ new Rust and frontend tests, and CI now runs the full test suites on every change
+
+### Changed
+
+- **ReasonX Local Scan Removed**: Usage from ReasonX local session files is no longer scanned — session-level totals were bucketed by session end time, too coarse to reflect real usage windows and distorting the statistics; per-request data captured by the proxy is unaffected and keeps counting, and previously collected ReasonX local sessions have been cleaned up
+- **Faster Statistics Loading**: After a long gap, opening the statistics view no longer waits for a full recompute — existing data shows immediately, the rest is recomputed in the background, and the view refreshes itself when done
+
+### Fixed
+
+- **Scan Cache Deadlock**: Rescanning could deadlock on the session scan cache
+- **Model Price Over-Matching**: Model price lookup could match unrelated models
+- **Gemini Config `export` Prefix**: Rewriting Gemini config lost the `export` prefix
+- **Daily Summary Date Bounds**: Daily summary date ranges were computed wrong, forcing a slow full check on the first query after startup
+- **Statistics Loading State**: The statistics view could stay stuck loading; it now refreshes automatically once background updates finish
+
+---
+
+### 新增
+
+- **测试覆盖与 CI**：新增 200+ 条 Rust 与前端测试用例，CI 现在每次变更都会完整运行测试套件
+
+### 变更
+
+- **移除 ReasonX 本地会话统计**：不再扫描 ReasonX 本地会话文件——会话级累计数据按会话结束时间整段计入统计窗口，粒度太粗导致数据失真；代理采集的逐请求数据不受影响、继续统计，历史 ReasonX 本地会话数据已一并清理
+- **统计页打开更快**：长时间未使用后再次打开统计页，不再等待一次性全量重算——先展示已有数据，其余在后台补齐，完成后页面自动刷新
+
+### 修复
+
+- **扫描缓存死锁**：修复重扫时可能因会话扫描缓存而死锁的问题
+- **模型价格误匹配**：修复模型价格查询可能匹配到无关模型的问题
+- **Gemini 配置丢失 `export` 前缀**：修复重写 Gemini 配置时丢失 `export` 前缀的问题
+- **日汇总日期边界**：修复日汇总数据范围计算错误，冷启动首次查询不再被迫全量检查
+- **统计页加载状态**：修复统计页可能一直停在加载中的问题，后台更新完成后会自动刷新
+
+---
+
 ## [0.11.2] - 2026-08-09
 
 ### Added
@@ -971,6 +1011,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.11.3]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.3
 [0.11.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.2
 [0.11.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.1
 [0.11.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.0
