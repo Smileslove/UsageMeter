@@ -336,7 +336,7 @@ onUnmounted(() => {
           <button @click="openDesktop()" class="theme-icon-button p-1.5 rounded-full transition-all select-none" :aria-label="t(store.settings.locale, 'desktop.open')" :title="t(store.settings.locale, 'desktop.open')">
             <PanelTopOpen class="w-3.5 h-3.5" />
           </button>
-          <button @click="store.refreshUsageAndSessionViews()" class="theme-icon-button p-1.5 rounded-full transition-all select-none" :title="t(store.settings.locale, 'common.refresh')">
+          <button @click="store.refreshUsageAndSessionViews()" class="theme-icon-button p-1.5 rounded-full transition-all select-none" :aria-label="t(store.settings.locale, 'common.refresh')" :title="t(store.settings.locale, 'common.refresh')">
             <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': store.loading }" />
           </button>
 

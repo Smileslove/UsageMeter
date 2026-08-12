@@ -59,7 +59,8 @@ import type {
   ProjectStats,
   StatisticsMetric,
   StatisticsSummary,
-  StatisticsTrendPoint
+  StatisticsTrendPoint,
+  WindowName
 } from '../../types'
 import { WINDOW_ORDER } from '../../types'
 
@@ -618,6 +619,16 @@ function applyPendingFilters() {
   }
   if (filters.tool && filters.tool !== store.settings.clientTools.activeToolFilter) {
     void store.setActiveToolFilter(filters.tool)
+  }
+  // window/metric/view 属于分析页局部状态（设计 3.5）：仅接受合法值，非法忽略。
+  if (filters.window && (WINDOW_ORDER as readonly string[]).includes(filters.window)) {
+    analytics.analyticsWindow = filters.window as WindowName
+  }
+  if (filters.metric && ['cost', 'requests', 'tokens'].includes(filters.metric)) {
+    analytics.analyticsMetric = filters.metric as StatisticsMetric
+  }
+  if (filters.view && ['trend', 'composition', 'activity', 'performance'].includes(filters.view)) {
+    analytics.analyticsView = filters.view as AnalyticsView
   }
 }
 

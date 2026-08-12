@@ -93,7 +93,12 @@ impl DesktopNavigationTarget {
             ("view", self.view.as_deref()),
         ] {
             if let Some(value) = value {
-                if value.chars().count() > DESKTOP_TARGET_FIELD_MAX_LEN {
+                // trim 后为空（空串/纯空白）视为非法，避免把无意义字段写进路由。
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    return Err(format!("field {name} must not be blank"));
+                }
+                if trimmed.chars().count() > DESKTOP_TARGET_FIELD_MAX_LEN {
                     return Err(format!(
                         "field {name} exceeds {DESKTOP_TARGET_FIELD_MAX_LEN} chars"
                     ));
@@ -114,7 +119,8 @@ pub struct PendingDesktopNavigation(Mutex<Option<DesktopNavigationTarget>>);
 /// 打开或聚焦桌面主窗口（单例，label 固定为 "desktop"）。
 ///
 /// - 已存在：show -> unminimize -> set_focus，并向窗口 emit `desktop-navigation`
-///   （payload 为 target，可能为 None 表示仅聚焦）；
+///   （payload 为 target，可能为 None 表示仅聚焦）；WebView 可能仍在加载（监听
+///   未注册）导致事件丢失，因此 target 为 Some 时同时写入 pending 通道；
 /// - 不存在：按规格新建；若传入 target 则暂存为 pending，供前端 mount 后取走。
 #[tauri::command]
 pub fn open_desktop_window(
@@ -132,7 +138,11 @@ pub fn open_desktop_window(
         let _ = window.unminimize();
         let _ = window.set_focus();
         if let Some(target) = target {
+            // WebView 可能仍在加载（前端监听未注册），仅 emit 会丢事件；与新建
+            // 分支一致同时写入 pending 通道，前端两个通道都会拿到，属幂等。
             let _ = window.emit("desktop-navigation", &target);
+            let pending = app.state::<PendingDesktopNavigation>();
+            *pending.0.lock().unwrap_or_else(|err| err.into_inner()) = Some(target);
         }
         return Ok(());
     }
@@ -538,6 +548,39 @@ mod tests {
         let mut boundary = target("overview");
         boundary.session_key = Some("x".repeat(DESKTOP_TARGET_FIELD_MAX_LEN));
         assert!(boundary.validate().is_ok());
+    }
+
+    #[test]
+    fn target_rejects_blank_optional_fields() {
+        // 空串与纯空白都必须被拒绝（trim 后为空视为非法）。
+        for (field, value) in [
+            ("window", Some("   ".to_string())),
+            ("sourceId", Some("   ".to_string())),
+            ("tool", Some("   ".to_string())),
+            ("sessionKey", Some("   ".to_string())),
+            ("metric", Some("   ".to_string())),
+            ("view", Some("   ".to_string())),
+            ("window", Some(String::new())),
+            ("sourceId", Some(String::new())),
+            ("tool", Some(String::new())),
+            ("sessionKey", Some(String::new())),
+            ("metric", Some(String::new())),
+            ("view", Some(String::new())),
+        ] {
+            let mut t = target("overview");
+            match field {
+                "window" => t.window = value.clone(),
+                "sourceId" => t.source_id = value.clone(),
+                "tool" => t.tool = value.clone(),
+                "sessionKey" => t.session_key = value.clone(),
+                "metric" => t.metric = value.clone(),
+                _ => t.view = value.clone(),
+            };
+            assert!(
+                t.validate().is_err(),
+                "blank/empty field {field} should be rejected"
+            );
+        }
     }
 
     #[test]

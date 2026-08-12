@@ -379,6 +379,11 @@ onMounted(async () => {
   if (pending?.tool && store.settings.clientTools.activeToolFilter !== pending.tool) {
     await store.setActiveToolFilter(pending.tool)
   }
+  // 深链携带 sessionKey 时直接打开对应会话工作区（复用 openSession 的 hash/恢复逻辑；
+  // 已处于该工作区则不重复导航；view 字段由 sessionKey 决定，忽略）
+  if (pending?.sessionKey && !nav.activeSessionKey) {
+    nav.openSession(pending.sessionKey)
+  }
   // 从工作区返回时恢复滚动位置
   const restored = nav.consumePreviousSessionsQuery()
   if (restored) {

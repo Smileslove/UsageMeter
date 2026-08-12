@@ -49,6 +49,7 @@ import {
   formatTokenValue
 } from '../../utils/format'
 import { formatToolDisplayName } from '../../utils/toolDisplay'
+import { WINDOW_ORDER } from '../../types'
 import type {
   OverviewBreakdownItem,
   QuotaTier,
@@ -56,6 +57,7 @@ import type {
   StatisticsTrendPoint,
   SubscriptionQuota,
   SurvivalConfidence,
+  WindowName,
   WindowUsage
 } from '../../types'
 
@@ -760,7 +762,7 @@ function refreshWindowData() {
   void store.fetchStatisticsSummary(trendQuery.value)
 }
 
-/** 深链：消费 pendingFilters 中的 sourceId/tool 并应用到全局筛选（window/metric/view 暂无通道，见遗留说明）。 */
+/** 深链：消费 pendingFilters 并应用——sourceId/tool 进全局筛选，window/metric 进概览页局部状态（仅接受合法值）。 */
 function applyPendingFilters() {
   const filters = nav.consumePendingFilters()
   if (!filters) return
@@ -769,6 +771,12 @@ function applyPendingFilters() {
   }
   if (filters.tool && filters.tool !== store.settings.clientTools.activeToolFilter) {
     void store.setActiveToolFilter(filters.tool)
+  }
+  if (filters.window && (WINDOW_ORDER as readonly string[]).includes(filters.window)) {
+    analytics.overviewWindow = filters.window as WindowName
+  }
+  if (filters.metric && ['cost', 'requests', 'tokens'].includes(filters.metric)) {
+    analytics.analyticsMetric = filters.metric as StatisticsMetric
   }
 }
 
