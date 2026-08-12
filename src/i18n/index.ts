@@ -10,6 +10,30 @@ const messages = {
       name: 'UsageMeter',
       subtitle: 'Usage Monitor'
     },
+    desktop: {
+      open: '打开主窗口',
+      viewInDesktop: '在主窗口查看',
+      nav: {
+        overview: '概览',
+        analytics: '分析',
+        sessions: '会话',
+        activity: '活动',
+        gateway: '网关',
+        settings: '设置'
+      },
+      collapseSidebar: '收起侧栏',
+      expandSidebar: '展开侧栏',
+      updatedAt: '数据已更新',
+      refresh: '刷新',
+      moreMenu: '更多菜单',
+      moreMenuPlaceholder: '更多操作将在后续版本提供',
+      allSources: '全部来源',
+      allTools: '全部工具',
+      activityNotAvailable: '深度活动能力尚未启用',
+      activityNotAvailableDesc: '当前仅提供聚合数据；会话级工具调用与子代理活动将在后续版本中提供。',
+      manageDataSources: '管理数据源',
+      emptyPlaceholder: '该页面正在开发中，将在后续版本中提供完整内容。'
+    },
     common: {
       refresh: '刷新',
       toggleAppearance: '切换外观',
@@ -1069,6 +1093,30 @@ const messages = {
       name: 'UsageMeter',
       subtitle: 'Usage Monitor'
     },
+    desktop: {
+      open: '開啟主視窗',
+      viewInDesktop: '在主視窗查看',
+      nav: {
+        overview: '概覽',
+        analytics: '分析',
+        sessions: '會話',
+        activity: '活動',
+        gateway: '閘道',
+        settings: '設定'
+      },
+      collapseSidebar: '收起側欄',
+      expandSidebar: '展開側欄',
+      updatedAt: '資料已更新',
+      refresh: '重新整理',
+      moreMenu: '更多選單',
+      moreMenuPlaceholder: '更多操作將在後續版本提供',
+      allSources: '全部來源',
+      allTools: '全部工具',
+      activityNotAvailable: '深度活動能力尚未啟用',
+      activityNotAvailableDesc: '目前僅提供彙總資料；工作階段層級的工具呼叫與子代理活動將在後續版本提供。',
+      manageDataSources: '管理資料來源',
+      emptyPlaceholder: '此頁面正在開發中，將在後續版本提供完整內容。'
+    },
     common: {
       refresh: '重新整理',
       toggleAppearance: '切換外觀',
@@ -2024,6 +2072,30 @@ const messages = {
     app: {
       name: 'UsageMeter',
       subtitle: 'Usage Monitor'
+    },
+    desktop: {
+      open: 'Open Main Window',
+      viewInDesktop: 'View in main window',
+      nav: {
+        overview: 'Overview',
+        analytics: 'Analytics',
+        sessions: 'Sessions',
+        activity: 'Activity',
+        gateway: 'Gateway',
+        settings: 'Settings'
+      },
+      collapseSidebar: 'Collapse sidebar',
+      expandSidebar: 'Expand sidebar',
+      updatedAt: 'Data updated',
+      refresh: 'Refresh',
+      moreMenu: 'More menu',
+      moreMenuPlaceholder: 'More actions will be available in a later release',
+      allSources: 'All sources',
+      allTools: 'All tools',
+      activityNotAvailable: 'Deep activity is not enabled yet',
+      activityNotAvailableDesc: 'Only aggregate data is available right now. Session-level tool calls and subagent activity will arrive in a later release.',
+      manageDataSources: 'Manage data sources',
+      emptyPlaceholder: 'This page is under development. Full content will arrive in a later release.'
     },
     common: {
       refresh: 'Refresh',

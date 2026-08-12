@@ -2,9 +2,11 @@ import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
 import ShareWindow from './ShareWindow.vue'
+import DesktopApp from './apps/DesktopApp.vue'
 import './styles.css'
 
-const Root = window.location.hash.startsWith('#/share') ? ShareWindow : App
+const hash = window.location.hash
+const Root = hash.startsWith('#/desktop') ? DesktopApp : hash.startsWith('#/share') ? ShareWindow : App
 
 const app = createApp(Root)
 app.config.errorHandler = (error, _instance, info) => {

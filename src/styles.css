@@ -1124,3 +1124,19 @@ body {
 :root[data-appearance='dark'] .trend-seg__item--on {
   box-shadow: 0 2px 8px color-mix(in srgb, var(--theme-accent-primary) 35%, transparent);
 }
+
+/* 桌面主窗口语义 token（设计文档 5.3 表）。
+   通过 color-mix 引用现有 --theme-* 变量，自动跟随各 palette 与亮/暗外观。 */
+:root {
+  --theme-bg-workspace: var(--theme-bg-app);
+  --theme-bg-sidebar: color-mix(in srgb, var(--theme-bg-chrome) 88%, var(--theme-bg-app) 12%);
+  --theme-bg-table-row-hover: color-mix(in srgb, var(--theme-text-primary) 4%, transparent);
+  --theme-bg-selection: color-mix(in srgb, var(--theme-accent-primary) 10%, transparent);
+}
+
+:root[data-appearance='dark'] {
+  --theme-bg-workspace: var(--theme-bg-app);
+  --theme-bg-sidebar: color-mix(in srgb, var(--theme-bg-chrome) 88%, var(--theme-bg-app) 12%);
+  --theme-bg-table-row-hover: rgba(255, 255, 255, 0.06);
+  --theme-bg-selection: color-mix(in srgb, var(--theme-accent-primary) 15%, transparent);
+}

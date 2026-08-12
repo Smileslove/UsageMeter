@@ -935,3 +935,16 @@ export interface CopilotAuthStatus {
   username?: string | null
   migrationError?: string | null
 }
+
+export type DesktopPage = 'overview' | 'analytics' | 'sessions' | 'activity' | 'gateway' | 'settings'
+
+/** 主窗口深链导航目标（camelCase 字段与 Rust serde 对齐）。 */
+export interface DesktopNavigationTarget {
+  page: DesktopPage
+  window?: string
+  sourceId?: string
+  tool?: string
+  sessionKey?: string
+  metric?: string
+  view?: string
+}

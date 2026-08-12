@@ -30,11 +30,11 @@ use tauri::{PhysicalPosition, PhysicalSize, Position, Rect, Size, WindowEvent};
 #[cfg(target_os = "macos")]
 use tauri::ActivationPolicy;
 
-fn menu_labels(locale: &str) -> (&'static str, &'static str) {
+fn menu_labels(locale: &str) -> (&'static str, &'static str, &'static str) {
     if locale == "en-US" {
-        ("Open Panel", "Quit")
+        ("Open Panel", "Open Main Window", "Quit")
     } else {
-        ("打开面板", "退出")
+        ("打开面板", "打开主窗口", "退出")
     }
 }
 
@@ -231,18 +231,27 @@ pub fn run() {
         .manage(commands::UpdaterState::default())
         .manage(commands::CopilotAuthState(copilot_auth.clone()))
         .manage(subscription::SubscriptionState::new_with_copilot(copilot_auth))
+        .manage(commands::PendingDesktopNavigation::default())
         .on_window_event(|window, event| match event {
             WindowEvent::Focused(false) => {
                 if window.label() == "main" {
                     let _ = window.hide();
                 }
             }
-            WindowEvent::CloseRequested { api, .. } => {
-                if window.label() == "main" {
+            WindowEvent::CloseRequested { api, .. } => match window.label() {
+                "main" => {
                     api.prevent_close();
                     let _ = window.hide();
                 }
-            }
+                // 关闭主窗口 = 隐藏（后台采集、网关、托盘继续运行）；
+                // 位置/尺寸/最大化状态先落盘，下次打开时恢复。
+                "desktop" => {
+                    commands::persist_desktop_window_state(window);
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                _ => {}
+            },
             _ => {}
         })
         .setup(|app| {
@@ -403,11 +412,13 @@ pub fn run() {
             let locale = initial_settings
                 .map(|s| s.locale)
                 .unwrap_or_else(models::default_locale);
-            let (show_label, quit_label) = menu_labels(&locale);
+            let (show_label, open_desktop_label, quit_label) = menu_labels(&locale);
 
             let show_item = MenuItem::with_id(app, "show", show_label, true, None::<&str>)?;
+            let open_desktop_item =
+                MenuItem::with_id(app, "open_desktop", open_desktop_label, true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", quit_label, true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&show_item, &open_desktop_item, &quit_item])?;
             #[cfg(target_os = "macos")]
             let tray_menu = menu.clone();
             let tray_builder = TrayIconBuilder::with_id("main-tray")
@@ -420,6 +431,9 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         show_main_window(app, None);
+                    }
+                    "open_desktop" => {
+                        let _ = commands::open_desktop_window(app.clone(), None);
                     }
                     "quit" => {
                         // 发送事件给前端，让前端处理清理后再退出
@@ -630,6 +644,8 @@ pub fn run() {
             commands::skip_update_version,
             // 窗口命令
             commands::open_share_window,
+            commands::open_desktop_window,
+            commands::take_pending_desktop_navigation,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

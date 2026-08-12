@@ -17,6 +17,7 @@ dist-ssr
 
 # Rust build output (IMPORTANT!)
 src-tauri/target/
+src-tauri/src/.cargo-target/
 
 # Tauri generated schemas
 src-tauri/gen/schemas
