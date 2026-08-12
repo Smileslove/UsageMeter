@@ -24,10 +24,14 @@ export interface SessionsListQuery {
   tool?: string | null
 }
 
-/** 深链携带的全局筛选上下文（待对应页面消费）。 */
+/** 深链携带的全局筛选上下文（待对应页面消费；与 DesktopNavigationTarget 全字段对齐）。 */
 export interface DesktopNavigationFilters {
   sourceId?: string | null
   tool?: string | null
+  window?: string | null
+  metric?: string | null
+  view?: string | null
+  sessionKey?: string | null
 }
 
 export function parseDesktopHash(hash: string): { page: DesktopPage; sessionKey: string | null } {
@@ -60,7 +64,9 @@ export const useDesktopNavigationStore = defineStore('desktopNavigation', {
     activeSessionKey: null as string | null,
     sidebarCollapsed: false,
     previousSessionsQuery: null as SessionsListQuery | null,
-    pendingFilters: null as DesktopNavigationFilters | null
+    pendingFilters: null as DesktopNavigationFilters | null,
+    /** 会话列表视图当前滚动位置（由 DesktopSessions 滚动时上报；openSession 时作为恢复值）。 */
+    sessionListScrollTop: 0
   }),
   actions: {
     /** 从当前 location.hash 解析并同步路由状态（hashchange 监听回调）。 */
@@ -84,15 +90,23 @@ export const useDesktopNavigationStore = defineStore('desktopNavigation', {
     navigate(page: DesktopPage) {
       this.writeHash(desktopHashFor(page))
     },
-    /** 打开会话详情：进入前保存会话列表恢复信息（scrollTop + 当前全局筛选）。 */
+    /** 打开会话详情：进入前保存会话列表恢复信息（真实滚动位置 + 当前全局筛选）。 */
     openSession(sessionKey: string) {
       const monitor = useMonitorStore()
       this.previousSessionsQuery = {
-        scrollTop: 0,
+        scrollTop: this.sessionListScrollTop,
         sourceId: monitor.settings.sourceAware.activeSourceFilter,
         tool: monitor.settings.clientTools.activeToolFilter
       }
       this.writeHash(desktopSessionHash(sessionKey))
+    },
+    /** 会话列表滚动上报（DesktopSessions 节流调用；仅列表视图滚动时）。 */
+    reportSessionListScrollTop(scrollTop: number) {
+      this.sessionListScrollTop = scrollTop
+    },
+    /** 恢复滚动后清零（由会话列表视图在消费恢复值后调用）。 */
+    clearSessionScrollTop() {
+      this.sessionListScrollTop = 0
     },
     /** 从会话详情返回列表（恢复信息保留在 previousSessionsQuery 供列表视图消费）。 */
     backToSessions() {
@@ -105,11 +119,15 @@ export const useDesktopNavigationStore = defineStore('desktopNavigation', {
       this.previousSessionsQuery = null
       return query
     },
-    /** 应用深链/事件导航目标：先暂存筛选上下文，再按 sessionKey 或 page 导航。 */
+    /** 应用深链/事件导航目标：先暂存全字段筛选上下文，再按 sessionKey 或 page 导航。 */
     applyNavigationTarget(target: DesktopNavigationTarget) {
       this.pendingFilters = {
         sourceId: target.sourceId ?? null,
-        tool: target.tool ?? null
+        tool: target.tool ?? null,
+        window: target.window ?? null,
+        metric: target.metric ?? null,
+        view: target.view ?? null,
+        sessionKey: target.sessionKey ?? null
       }
       if (target.sessionKey) {
         this.openSession(target.sessionKey)

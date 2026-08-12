@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { openShareWindow } from './api/appApi'
+import { openDesktopWindow, openShareWindow } from './api/appApi'
+import type { DesktopNavigationTarget } from './types'
 import { resolveTakeoverConflict as resolveTakeoverConflictRequest } from './api/proxyApi'
 import { useMonitorStore } from './stores/monitor'
 import { useUpdaterStore } from './stores/updater'
@@ -16,7 +17,7 @@ import SourceSelector from './components/SourceSelector.vue'
 import ToolSelector from './components/ToolSelector.vue'
 import ThemeSelector from './components/ThemeSelector.vue'
 import { applyResolvedTheme } from './theme'
-import { RefreshCw, ArrowLeftRight, Share2 } from 'lucide-vue-next'
+import { RefreshCw, ArrowLeftRight, Share2, PanelTopOpen, MoreHorizontal, ArrowUpRight } from 'lucide-vue-next'
 import { t } from './i18n'
 import { formatToolDisplayName } from './utils/toolDisplay'
 import { quitApplication } from './utils/appExit'
@@ -25,6 +26,8 @@ const store = useMonitorStore()
 const updaterStore = useUpdaterStore()
 
 const currentView = ref('overview')
+/** 顶栏“更多”菜单展开状态（低频操作收纳：分享窗口等）。 */
+const moreMenuOpen = ref(false)
 const navItems = [
   { id: 'overview', key: 'common.dashboard' },
   { id: 'statistics', key: 'common.statistics' },
@@ -143,7 +146,44 @@ async function forceReclaimFromExternalManager() {
 }
 
 async function openSharePanel() {
+  moreMenuOpen.value = false
   await openShareWindow()
+}
+
+/** 打开（或聚焦）主窗口，不带深链目标。 */
+async function openDesktop() {
+  try {
+    await openDesktopWindow()
+  } catch (error) {
+    console.error('[App] Failed to open desktop window:', error)
+  }
+}
+
+/** 当前视图对应的主窗口深链目标（overview / statistics / sessions 提供“在主窗口查看”）。 */
+const desktopTarget = computed<DesktopNavigationTarget | null>(() => {
+  switch (currentView.value) {
+    case 'overview':
+      return { page: 'overview', window: store.settings.summaryWindow }
+    case 'statistics':
+      // 面板统计视图的窗口/指标是 Statistics.vue 组件局部状态（store 无通道），
+      // 这里沿用汇总窗口并取默认指标（费用），主窗口可在此基础上继续下钻。
+      return { page: 'analytics', window: store.settings.summaryWindow, metric: 'cost' }
+    case 'sessions':
+      return { page: 'sessions' }
+    default:
+      return null
+  }
+})
+
+/** 深链：携带当前视图上下文打开主窗口。 */
+async function openInDesktop() {
+  const target = desktopTarget.value
+  if (!target) return
+  try {
+    await openDesktopWindow(target)
+  } catch (error) {
+    console.error('[App] Failed to open desktop window with target:', error)
+  }
 }
 
 async function resolveTakeoverConflict(action: 'force_reclaim' | 'pause' | 'disable_takeover') {
@@ -292,14 +332,47 @@ onUnmounted(() => {
         <div class="flex items-center gap-1 shrink-0 drag-region-none" style="-webkit-app-region: no-drag; app-region: no-drag">
           <SourceSelector />
           <ToolSelector />
-          <button @click="openSharePanel()" class="theme-icon-button p-1.5 rounded-full transition-all select-none" :title="t(store.settings.locale, 'statistics.share')">
-            <Share2 class="w-3.5 h-3.5" />
+          <!-- 打开主窗口（设计 3.2：入口按钮；低频“分享”已移入更多菜单，设计 3.6） -->
+          <button @click="openDesktop()" class="theme-icon-button p-1.5 rounded-full transition-all select-none" :aria-label="t(store.settings.locale, 'desktop.open')" :title="t(store.settings.locale, 'desktop.open')">
+            <PanelTopOpen class="w-3.5 h-3.5" />
           </button>
           <button @click="store.refreshUsageAndSessionViews()" class="theme-icon-button p-1.5 rounded-full transition-all select-none" :title="t(store.settings.locale, 'common.refresh')">
             <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': store.loading }" />
           </button>
 
           <ThemeSelector />
+
+          <!-- 更多菜单（收纳低频操作：分享窗口） -->
+          <div class="relative">
+            <button
+              @click="moreMenuOpen = !moreMenuOpen"
+              class="theme-icon-button p-1.5 rounded-full transition-all select-none"
+              :aria-label="t(store.settings.locale, 'desktop.moreMenu')"
+              :title="t(store.settings.locale, 'desktop.moreMenu')"
+              :aria-expanded="moreMenuOpen"
+            >
+              <MoreHorizontal class="w-3.5 h-3.5" />
+            </button>
+            <!-- 点击遮罩关闭菜单 -->
+            <div v-if="moreMenuOpen" class="fixed inset-0 z-30" @click="moreMenuOpen = false"></div>
+            <Transition name="fade">
+              <div
+                v-if="moreMenuOpen"
+                class="absolute right-0 top-full z-40 mt-1.5 min-w-36 rounded-xl border border-[var(--theme-border-default)] bg-[var(--theme-bg-elevated)] p-1 shadow-lg backdrop-blur-xl"
+                role="menu"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)]"
+                  @click="openSharePanel()"
+                >
+                  <Share2 class="h-3.5 w-3.5" />
+                  {{ t(store.settings.locale, 'desktop.shareWindow') }}
+                </button>
+              </div>
+            </Transition>
+          </div>
         </div>
       </div>
 
@@ -326,6 +399,19 @@ onUnmounted(() => {
       <Sessions v-else-if="currentView === 'sessions'" />
       <Gateway v-else-if="currentView === 'gateway'" />
       <Settings v-else-if="currentView === 'settings'" />
+
+      <!-- 深链：在主窗口查看（设计 3.2；仅概览 / 统计 / 会话三页提供） -->
+      <div v-if="desktopTarget" class="flex justify-center pt-1">
+        <button
+          type="button"
+          @click="openInDesktop()"
+          class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-[var(--theme-text-tertiary)] transition-colors hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)]"
+          :aria-label="t(store.settings.locale, 'desktop.viewInDesktop')"
+        >
+          <ArrowUpRight class="h-3.5 w-3.5" />
+          {{ t(store.settings.locale, 'desktop.viewInDesktop') }}
+        </button>
+      </div>
     </div>
     <div class="app-shell__fade-top pointer-events-none absolute inset-x-0 top-[78px] z-10 h-2"></div>
     <div class="app-shell__fade-bottom pointer-events-none absolute inset-x-0 bottom-0 z-10 h-9"></div>
