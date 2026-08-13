@@ -969,6 +969,13 @@ pub struct AppSettings {
     pub skipped_update_version: String,
     #[serde(default)]
     pub wsl_scan: WslScanSettings,
+    /// 深度事件索引级别（"off"|"structured"|"ondemand"；fulltext 留 M3）。
+    /// 见设计文档 11.3。
+    #[serde(default = "default_deep_index_level")]
+    pub deep_index_level: String,
+    /// 深度事件索引保留天数（结构化事件默认 90 天）。
+    #[serde(default = "default_deep_index_retention_days")]
+    pub deep_index_retention_days: i64,
 }
 
 /// WSL 被动扫描设置（仅在 Windows 上生效）。
@@ -1157,6 +1164,14 @@ pub fn default_number_format() -> String {
     "international".to_string()
 }
 
+pub fn default_deep_index_level() -> String {
+    "off".to_string()
+}
+
+pub fn default_deep_index_retention_days() -> i64 {
+    90
+}
+
 pub fn default_theme() -> ThemeSettings {
     ThemeSettings::default()
 }
@@ -1183,6 +1198,8 @@ impl Default for AppSettings {
             auto_check_update: default_auto_check_update(),
             skipped_update_version: String::new(),
             wsl_scan: WslScanSettings::default(),
+            deep_index_level: default_deep_index_level(),
+            deep_index_retention_days: default_deep_index_retention_days(),
         }
     }
 }

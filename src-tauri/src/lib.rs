@@ -3,6 +3,9 @@
 //! 一款用于实时监控 Claude Code 使用情况的系统托盘应用。
 
 mod app_config;
+// 深度活动索引领域模块（M2）：pub 暴露供集成测试/后续子代理直接使用；
+// 其中 commands 子模块（commands/activity.rs）挂到 invoke_handler。
+pub mod activity;
 mod commands;
 mod copilot;
 mod domain;
@@ -646,6 +649,15 @@ pub fn run() {
             commands::open_share_window,
             commands::open_desktop_window,
             commands::take_pending_desktop_navigation,
+            // 深度活动索引命令（M2）
+            activity::commands::get_activity_capabilities,
+            activity::commands::get_session_activity_summary,
+            activity::commands::get_session_events,
+            activity::commands::get_session_agents,
+            activity::commands::get_session_tool_summary,
+            activity::commands::get_session_event_payload,
+            activity::commands::rebuild_session_activity_index,
+            activity::commands::purge_session_activity_content,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

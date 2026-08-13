@@ -7,6 +7,7 @@ impl LocalUsageDatabase {
         Self::create_cache_tables(conn)?;
         Self::create_sync_v2_tables(conn)?;
         Self::create_unified_materialized_tables(conn)?;
+        Self::create_activity_tables(conn)?;
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS local_sync_state (
@@ -574,5 +575,28 @@ impl LocalUsageDatabase {
         )
         .map_err(|e| format!("Failed to create sync V2 tables: {}", e))?;
         Ok(())
+    }
+
+    /// 深度活动索引 5 张表（M2/v28；设计文档 12.4）。
+    ///
+    /// 建表 SQL 与 `activity::db::ACTIVITY_TABLES_DDL` 同一来源，防止漂移；
+    /// 供新库建表（create_tables）与老库迁移（v28）共用，`IF NOT EXISTS`
+    /// 幂等。
+    pub(super) fn create_activity_tables(conn: &Connection) -> Result<(), String> {
+        conn.execute_batch(crate::activity::db::ACTIVITY_TABLES_DDL)
+            .map_err(|e| format!("Failed to create session activity tables: {}", e))?;
+        Ok(())
+    }
+
+    /// 在互斥锁保护下执行数据库操作（供 `activity::db` 等跨模块读写复用）。
+    pub(crate) fn with_conn<R>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock local usage DB: {}", e))?;
+        f(&mut conn)
     }
 }

@@ -20,7 +20,7 @@ impl LocalUsageDatabase {
 
     pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 27 {
+        if schema_version >= 28 {
             return Ok(());
         }
         let mut cleared_runtime_caches = false;
@@ -978,6 +978,30 @@ impl LocalUsageDatabase {
             tx.commit()
                 .map_err(|e| format!("Failed to commit v27 schema migration: {}", e))?;
             cleared_runtime_caches = true;
+        }
+
+        if schema_version < 28 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v28 schema migration: {}", e))?;
+
+            // v28：深度活动索引 5 张表（M2；设计文档 12.4）。
+            // 与既有迁移幂等兼容：新库直接建表（create_tables 已含 activity 表），
+            // 老库升级到此块补建；v2 迁移的 DROP 三表历史逻辑不涉及这些新表。
+            Self::create_activity_tables(&tx)?;
+
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '28', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v28 schema version: {}", e))?;
+
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v28 schema migration: {}", e))?;
         }
 
         if cleared_runtime_caches {
