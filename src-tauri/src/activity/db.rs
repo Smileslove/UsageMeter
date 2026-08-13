@@ -16,6 +16,7 @@ use crate::activity::model::{
     SessionEventFilter, SessionEventKind, SessionEventListItem, ToolInvocationSummary,
     ToolSummaryRow,
 };
+use crate::activity::redact_home_path;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use std::collections::HashMap;
 
@@ -390,11 +391,33 @@ pub fn write_activity_batch(
     entry: &ActivityIndexEntry,
     batch: &ActivityIndexBatch,
 ) -> Result<(), String> {
+    // 全量替换语义：先清该会话旧的派生行（agents/tools/links），
+    // 避免源文件删除后残留幽灵代理/工具行；events 由 replace_session_events
+    // 全量替换。清理失败则整体失败，库保持旧状态（幂等可重试）。
+    clear_session_derived_rows(conn, &batch.session_key)?;
     upsert_session_activity_index(conn, entry)?;
     replace_session_events(conn, &batch.session_key, &batch.events)?;
     upsert_agents(conn, &batch.session_key, &batch.agents)?;
     upsert_tool_invocations(conn, &batch.session_key, &batch.tool_invocations)?;
     upsert_event_request_links(conn, &batch.session_key, &batch.request_links)?;
+    Ok(())
+}
+
+/// 删除单会话的 agents/tools/links 派生行（index 与 events 不受影响）。
+fn clear_session_derived_rows(conn: &Connection, session_key: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM session_event_request_links
+         WHERE event_key IN (SELECT event_key FROM session_events WHERE session_key = ?1)",
+        params![session_key],
+    )
+    .map_err(|e| format!("ERR_ACTIVITY_CLEAR_LINKS: {e}"))?;
+    for table in ["session_tool_invocations", "session_agents"] {
+        conn.execute(
+            &format!("DELETE FROM {table} WHERE session_key = ?1"),
+            params![session_key],
+        )
+        .map_err(|e| format!("ERR_ACTIVITY_CLEAR_ROWS: {e}"))?;
+    }
     Ok(())
 }
 
@@ -574,7 +597,8 @@ pub fn query_events(
                 request_links: Vec::new(),
                 source_ref: SafeSourceRef {
                     source_file_id: row.get(10)?,
-                    source_file_path: row.get::<_, String>(11)?,
+                    // 查询出口脱敏用户名（P2 路径脱敏）；on-demand 读取用 DB 原值，不受影响。
+                    source_file_path: redact_home_path(&row.get::<_, String>(11)?),
                     source_offset: row.get(12)?,
                     fingerprint: row.get(13)?,
                 },
