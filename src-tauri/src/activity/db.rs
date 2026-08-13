@@ -391,8 +391,9 @@ pub fn write_activity_batch(
     entry: &ActivityIndexEntry,
     batch: &ActivityIndexBatch,
 ) -> Result<(), String> {
-    // 全量替换语义：先清该会话旧的 agents/tools 派生行，避免源文件删除后
-    // 残留幽灵代理/工具行；links 由 upsert_event_request_links 内部清理，
+    // 全量替换语义：先清该会话旧的 agents/tools/links 派生行，避免源文件
+    // 删除或事件收缩后残留幽灵行（links 必须基于旧 events 集清理——
+    // upsert_event_request_links 内部的 DELETE 只覆盖新 events 集）。
     // events 由 replace_session_events 全量替换。各步独立提交：中途失败时
     // 库可能处于部分替换的中间态，但索引任务可重试收敛（幂等）。
     clear_session_derived_rows(conn, &batch.session_key)?;
@@ -404,8 +405,16 @@ pub fn write_activity_batch(
     Ok(())
 }
 
-/// 删除单会话的 agents/tools 派生行（index/events/links 不受影响）。
+/// 删除单会话的 agents/tools/links 派生行（index 与 events 不受影响）。
+/// links 无自有 session_key 列，按旧 events 集子查询清理（须在
+/// replace_session_events 之前执行，否则收缩场景下旧事件 links 会残留）。
 fn clear_session_derived_rows(conn: &Connection, session_key: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM session_event_request_links
+         WHERE event_key IN (SELECT event_key FROM session_events WHERE session_key = ?1)",
+        params![session_key],
+    )
+    .map_err(|e| format!("ERR_ACTIVITY_CLEAR_LINKS: {e}"))?;
     for table in ["session_tool_invocations", "session_agents"] {
         conn.execute(
             &format!("DELETE FROM {table} WHERE session_key = ?1"),
@@ -1149,6 +1158,15 @@ mod tests {
         second_inv.invocation_key = "inv-2-1".to_string();
         second_inv.event_key = "evt-2".to_string();
         big.tool_invocations.push(second_inv);
+        // 旧事件 evt-2（含工具事件行）关联一条 link，验证事件收缩时 links 被清除。
+        let mut second_event = big.events[1].clone();
+        second_event.event_key = "evt-2".to_string();
+        big.events.push(second_event);
+        big.request_links.push(NewEventRequestLink {
+            event_key: "evt-2".to_string(),
+            request_key: "req-2".to_string(),
+            strength: RequestLinkStrength::TimeWindow,
+        });
         write_activity_batch(&conn, &entry, &big).expect("write big batch");
         assert_eq!(
             count_rows(&conn, "session_agents", session_key),
@@ -1173,6 +1191,20 @@ mod tests {
             count_rows(&conn, "session_tool_invocations", session_key),
             1,
             "ghost tool must be cleared"
+        );
+
+        // 事件收缩场景：旧事件（evt-2）的 links 必须被清除——upsert 内部
+        // 的 DELETE 只覆盖新 events 集，旧事件 links 依赖批次前置清理。
+        let link_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_event_request_links",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count links after shrink");
+        assert_eq!(
+            link_count, 1,
+            "links of removed events must be cleared (only sample link remains)"
         );
     }
 
