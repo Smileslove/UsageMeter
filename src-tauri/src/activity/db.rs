@@ -391,9 +391,10 @@ pub fn write_activity_batch(
     entry: &ActivityIndexEntry,
     batch: &ActivityIndexBatch,
 ) -> Result<(), String> {
-    // 全量替换语义：先清该会话旧的派生行（agents/tools/links），
-    // 避免源文件删除后残留幽灵代理/工具行；events 由 replace_session_events
-    // 全量替换。清理失败则整体失败，库保持旧状态（幂等可重试）。
+    // 全量替换语义：先清该会话旧的 agents/tools 派生行，避免源文件删除后
+    // 残留幽灵代理/工具行；links 由 upsert_event_request_links 内部清理，
+    // events 由 replace_session_events 全量替换。各步独立提交：中途失败时
+    // 库可能处于部分替换的中间态，但索引任务可重试收敛（幂等）。
     clear_session_derived_rows(conn, &batch.session_key)?;
     upsert_session_activity_index(conn, entry)?;
     replace_session_events(conn, &batch.session_key, &batch.events)?;
@@ -403,14 +404,8 @@ pub fn write_activity_batch(
     Ok(())
 }
 
-/// 删除单会话的 agents/tools/links 派生行（index 与 events 不受影响）。
+/// 删除单会话的 agents/tools 派生行（index/events/links 不受影响）。
 fn clear_session_derived_rows(conn: &Connection, session_key: &str) -> Result<(), String> {
-    conn.execute(
-        "DELETE FROM session_event_request_links
-         WHERE event_key IN (SELECT event_key FROM session_events WHERE session_key = ?1)",
-        params![session_key],
-    )
-    .map_err(|e| format!("ERR_ACTIVITY_CLEAR_LINKS: {e}"))?;
     for table in ["session_tool_invocations", "session_agents"] {
         conn.execute(
             &format!("DELETE FROM {table} WHERE session_key = ?1"),
@@ -1138,6 +1133,56 @@ mod tests {
             )
             .expect("count links");
         assert_eq!(link_count, 1);
+    }
+
+    #[test]
+    fn shrinking_batch_clears_ghost_agents_and_tools() {
+        let conn = test_conn();
+        let session_key = "sess-1";
+        let entry = sample_entry(session_key);
+        let mut big = sample_batch(session_key);
+        // 构造含 2 个代理与 2 个工具调用的批次（工具事件额外 append 一个）。
+        let mut second_agent = big.agents[0].clone();
+        second_agent.agent_key = "agent-2".to_string();
+        big.agents.push(second_agent);
+        let mut second_inv = big.tool_invocations[0].clone();
+        second_inv.invocation_key = "inv-2-1".to_string();
+        second_inv.event_key = "evt-2".to_string();
+        big.tool_invocations.push(second_inv);
+        write_activity_batch(&conn, &entry, &big).expect("write big batch");
+        assert_eq!(
+            count_rows(&conn, "session_agents", session_key),
+            2,
+            "big batch has 2 agents"
+        );
+        assert_eq!(
+            count_rows(&conn, "session_tool_invocations", session_key),
+            2,
+            "big batch has 2 tools"
+        );
+
+        // 缩小的批次（1 代理 1 工具）重写后，旧派生行必须被清除。
+        let small = sample_batch(session_key);
+        write_activity_batch(&conn, &entry, &small).expect("write small batch");
+        assert_eq!(
+            count_rows(&conn, "session_agents", session_key),
+            1,
+            "ghost agent must be cleared"
+        );
+        assert_eq!(
+            count_rows(&conn, "session_tool_invocations", session_key),
+            1,
+            "ghost tool must be cleared"
+        );
+    }
+
+    fn count_rows(conn: &Connection, table: &str, session_key: &str) -> i64 {
+        conn.query_row(
+            &format!("SELECT COUNT(*) FROM {table} WHERE session_key = ?1"),
+            params![session_key],
+            |row| row.get(0),
+        )
+        .expect("count rows")
     }
 
     #[test]
