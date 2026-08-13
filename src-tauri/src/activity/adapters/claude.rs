@@ -450,8 +450,8 @@ impl SessionActivityAdapter for ClaudeAdapter {
             extract_section_text(&json, section)?
         };
         let redacted = redact_text(&text);
-        // cursor 偏移超界（> 文本长度）→ Unavailable，不 panic。
-        if from > redacted.len() {
+        // cursor 偏移超界或落在 UTF-8 多字节字符中间 → Unavailable，不 panic。
+        if from > redacted.len() || !redacted.is_char_boundary(from) {
             return Ok(RedactedPayloadPage {
                 content: String::new(),
                 truncated: false,

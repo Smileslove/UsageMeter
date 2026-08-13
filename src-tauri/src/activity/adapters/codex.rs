@@ -502,7 +502,7 @@ impl SessionActivityAdapter for CodexAdapter {
         };
         let redacted = redact_text(&text);
         // cursor 偏移超界（> 文本长度）→ Unavailable，不 panic。
-        if from > redacted.len() {
+        if from > redacted.len() || !redacted.is_char_boundary(from) {
             return Ok(RedactedPayloadPage {
                 content: String::new(),
                 truncated: false,
