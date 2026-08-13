@@ -1286,6 +1286,28 @@ mod tests {
         assert!(!page.truncated);
         assert!(page.content.contains("\"cmd\":\"pwd\""));
 
+        // 非字符边界 cursor（多字节内容 B1）→ Unavailable，不 panic。
+        let zh_fixture = vec![json!({"type": "event_msg", "payload": {
+            "type": "user_message", "message": "中文摘要内容"
+        }})];
+        let (_zh_dir, zh_path) = write_fixture(&zh_fixture);
+        let zh_ref = SafeSourceRef {
+            source_file_id: None,
+            source_file_path: zh_path,
+            source_offset: Some(1),
+            fingerprint: None,
+        };
+        let page = adapter
+            .read_payload(
+                &zh_ref,
+                "summary",
+                DEFAULT_MAX_BYTES,
+                Some("B1".to_string()),
+            )
+            .expect("non-boundary cursor page is not an error");
+        assert_eq!(page.content_state, ContentState::Unavailable);
+        assert!(page.content.is_empty());
+
         // 小 max_bytes 截断（按字节安全截断）
         let page = adapter
             .read_payload(&call_ref, "input", 8, None)

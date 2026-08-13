@@ -1155,6 +1155,31 @@ mod tests {
         assert!(!page.content.contains("abcdefgh12345678"));
         assert!(page.content.contains("sk-[redacted]"));
 
+        // 非字符边界 cursor（中文内容 B1）→ Unavailable，不 panic。
+        let zh_fixture = vec![
+            json!({"timestamp": 1747000000.0, "type": "user", "message": {
+                "role": "user", "id": "msg-zh",
+                "content": [{"type": "text", "text": "中文摘要内容"}]
+            }}),
+        ];
+        let (_zh_dir, zh_path) = write_fixture(&zh_fixture);
+        let zh_ref = SafeSourceRef {
+            source_file_id: None,
+            source_file_path: zh_path,
+            source_offset: Some(1),
+            fingerprint: None,
+        };
+        let page = adapter
+            .read_payload(
+                &zh_ref,
+                "summary",
+                DEFAULT_MAX_BYTES,
+                Some("B1".to_string()),
+            )
+            .expect("non-boundary cursor page is not an error");
+        assert_eq!(page.content_state, ContentState::Unavailable);
+        assert!(page.content.is_empty());
+
         // 文件不可读 → Unavailable + 空内容（不是错误）。
         let missing_ref = SafeSourceRef {
             source_file_id: None,
