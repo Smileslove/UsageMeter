@@ -370,6 +370,52 @@ pub struct RedactedPayloadPage {
     pub content_state: ContentState,
 }
 
+/// 活动导出选项（M3；21.5：正文与工具 payload 默认不导出，前端负责
+/// 范围预览确认，后端只执行选项）。
+///
+/// 所有字段 serde 默认缺省即取 [`ExportOptions::default`] 值，前端可只传
+/// 需要覆盖的字段。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ExportOptions {
+    /// 导出格式："json" | "csv"。
+    pub format: String,
+    /// 是否包含事件脱敏摘要（summary_redacted 已脱敏）。
+    pub include_summaries: bool,
+    /// 是否包含工具调用摘要（工具名/族/耗时/大小/入参 key）。
+    pub include_tool_summaries: bool,
+    /// 是否包含事件-请求关联。
+    pub include_request_links: bool,
+    /// 是否包含脱敏 payload（高风险内容；默认 false，前端预览确认后显式开启）。
+    pub include_payloads: bool,
+}
+
+impl Default for ExportOptions {
+    fn default() -> Self {
+        Self {
+            format: "json".to_string(),
+            include_summaries: true,
+            include_tool_summaries: true,
+            include_request_links: true,
+            include_payloads: false,
+        }
+    }
+}
+
+/// 活动导出结果。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportResult {
+    /// 导出文件绝对路径（`~/.usagemeter/exports/activity-*.{json|csv}`）。
+    pub file_path: String,
+    /// 导出的事件行数。
+    pub row_count: i64,
+    /// 是否实际写入了脱敏 payload（include_payloads 且读取到内容）。
+    pub payload_included: bool,
+    /// 是否因累计 payload 超过上限（50MB）提前停止读取而截断。
+    pub truncated: bool,
+}
+
 /// 深度索引重建结果。
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

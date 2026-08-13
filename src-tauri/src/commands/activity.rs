@@ -6,20 +6,31 @@
 //! 查询路径先做单会话懒索引（同步、失败不阻断查询，深度解析失败
 //! 不影响既有统计）。
 
+use crate::activity::adapter::SessionActivityAdapter;
 use crate::activity::db;
 use crate::activity::indexer;
+use crate::activity::maintenance;
 use crate::activity::model::{
-    AgentNodeDto, ContentState, EventsPage, RebuildResult, RedactedPayloadPage, SafeSourceRef,
-    SessionActivityCapability, SessionActivitySummary, SessionEventFilter, ToolSummaryRow,
+    AgentNodeDto, ContentState, EventStatus, EventsPage, ExportOptions, ExportResult,
+    RebuildResult, RedactedPayloadPage, RequestEventLink, RequestLinkStrength, SafeSourceRef,
+    SessionActivityCapability, SessionActivitySummary, SessionEventFilter, SessionEventKind,
+    ToolInvocationSummary, ToolSummaryRow,
 };
 use crate::activity::registry::AdapterRegistry;
 use crate::models::AppSettings;
-use rusqlite::OptionalExtension;
+use rusqlite::{params, params_from_iter, OptionalExtension};
+use std::collections::HashMap;
 
 /// 事件列表页上限（12.6：列表默认 100 事件一页；命令层 clamp 1..=200）。
 const EVENTS_PAGE_MAX_LIMIT: i64 = 200;
 /// payload 默认读取上限（字节；与适配器默认值一致）。
 const PAYLOAD_DEFAULT_MAX_BYTES: usize = 262_144;
+/// 导出：单事件 payload 读取上限（字节）。
+const EXPORT_EVENT_PAYLOAD_MAX_BYTES: usize = 64 * 1024;
+/// 导出：全部事件 payload 累计上限（字节；超过停止读取并置 truncated=true）。
+const EXPORT_TOTAL_PAYLOAD_MAX_BYTES: usize = 50 * 1024 * 1024;
+/// 导出文件名中 session_key 的消毒后最大长度。
+const EXPORT_FILE_KEY_MAX_CHARS: usize = 80;
 
 fn registry() -> AdapterRegistry {
     AdapterRegistry::new()
@@ -89,6 +100,7 @@ pub async fn get_session_activity_summary(
         return Ok(None);
     }
     activity_db(|conn| {
+        let _ = maintenance::maybe_auto_purge(conn, settings.deep_index_retention_days);
         lazy_ensure_indexed(conn, &session_key);
         db::query_activity_summary(conn, &session_key)
     })
@@ -114,6 +126,7 @@ pub async fn get_session_events(
     let limit = limit.clamp(1, EVENTS_PAGE_MAX_LIMIT);
     let offset = offset.max(0);
     activity_db(|conn| {
+        let _ = maintenance::maybe_auto_purge(conn, settings.deep_index_retention_days);
         lazy_ensure_indexed(conn, &session_key);
         db::query_events(conn, &session_key, filter.as_ref(), offset, limit)
     })
@@ -157,12 +170,17 @@ pub async fn get_session_tool_summary(
 /// → local_sessions.tool → 注册表适配器 `read_payload`。事件不存在报
 /// `ERR_ACTIVITY_EVENT_NOT_FOUND`；会话/适配器缺失或深度索引关闭时诚实
 /// 返回 `content_state=Unavailable` 空页，不伪造内容。
+///
+/// `cursor`：上一页返回的 `next_cursor`（`"B{n}"` 行内字节偏移），
+/// `None` 从头读取；`max_bytes` 为单页上限（默认 256KB，适配器内部
+/// clamp 1..=1MB）。
 #[tauri::command]
 pub async fn get_session_event_payload(
     _app: tauri::AppHandle,
     event_key: String,
     section: String,
     max_bytes: Option<usize>,
+    cursor: Option<String>,
     settings: AppSettings,
 ) -> Result<RedactedPayloadPage, String> {
     if deep_index_disabled(&settings) {
@@ -211,7 +229,7 @@ pub async fn get_session_event_payload(
             fingerprint: payload_hash,
         };
         adapter
-            .read_payload(&source_ref, section, max_bytes)
+            .read_payload(&source_ref, section, max_bytes, cursor)
             .map_err(|error| error.to_string())
     })
 }
@@ -251,6 +269,533 @@ pub async fn purge_session_activity_content(
     _settings: AppSettings,
 ) -> Result<usize, String> {
     activity_db(|conn| indexer::purge_scope(conn, &scope))
+}
+
+// ---------------------------------------------------------------------------
+// 导出（M3；21.5：默认不含正文与工具 payload，前端范围预览确认后显式开启）
+// ---------------------------------------------------------------------------
+
+/// 会话元信息（local_sessions 聚合行；导出头）。
+#[derive(Debug, Clone)]
+struct ExportSessionMeta {
+    session_key: String,
+    tool: String,
+    topic: Option<String>,
+    session_name: Option<String>,
+    project: Option<String>,
+}
+
+/// 导出用事件行（含 payload 定位信息；内容全部来自已脱敏字段）。
+struct ExportEventRow {
+    event_key: String,
+    sequence: i64,
+    timestamp_ms: Option<i64>,
+    kind: SessionEventKind,
+    status: Option<EventStatus>,
+    summary: Option<String>,
+    source_file_path: String,
+    source_offset: Option<i64>,
+    tool: Option<ToolInvocationSummary>,
+    request_links: Vec<RequestEventLink>,
+    /// include_payloads 时填充 `{section: 脱敏文本}`，否则 Null。
+    payload: serde_json::Value,
+}
+
+/// 会话元信息查询；local_sessions 无该会话返回 None。
+/// 行元组：(tool, topic, session_name, project_name, project_key)。
+type ExportSessionMetaRow = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+fn query_export_session_meta(
+    conn: &rusqlite::Connection,
+    session_key: &str,
+) -> Result<Option<ExportSessionMeta>, String> {
+    let row: Option<ExportSessionMetaRow> = conn
+        .query_row(
+            "SELECT tool, topic, session_name, project_name, project_key
+             FROM local_sessions WHERE session_id = ?1",
+            params![session_key],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("ERR_ACTIVITY_EXPORT_QUERY_SESSION: {error}"))?;
+    Ok(row.map(
+        |(tool, topic, session_name, project_name, project_key)| ExportSessionMeta {
+            session_key: session_key.to_string(),
+            tool,
+            topic,
+            session_name,
+            // project 取 project_name，缺失回退 project_key。
+            project: project_name.or(project_key),
+        },
+    ))
+}
+
+/// 按 sequence 升序查询会话全部事件（含工具调用摘要与 payload 定位信息；
+/// 使用原始 source_file_path，不做 ~ 显示脱敏——读取路径来自 DB 定位链）。
+fn query_export_events(
+    conn: &rusqlite::Connection,
+    session_key: &str,
+) -> Result<Vec<ExportEventRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT e.event_key, e.sequence, e.timestamp_ms, e.kind, e.status,
+                    e.summary_redacted, e.source_file_path, e.source_offset,
+                    ti.invocation_key, ti.tool_name, ti.family, ti.duration_ms,
+                    ti.input_bytes, ti.output_bytes, ti.input_keys_json, ti.result_kind
+             FROM session_events e
+             LEFT JOIN session_tool_invocations ti ON ti.event_key = e.event_key
+             WHERE e.session_key = ?1
+             ORDER BY e.sequence ASC",
+        )
+        .map_err(|error| format!("ERR_ACTIVITY_EXPORT_PREPARE_EVENTS: {error}"))?;
+    let rows = stmt
+        .query_map(params![session_key], |row| {
+            let invocation_key: Option<String> = row.get(8)?;
+            let tool = match &invocation_key {
+                Some(invocation_key) => {
+                    let raw_name: String = row.get(9)?;
+                    let input_keys_json: String = row.get(14)?;
+                    Some(ToolInvocationSummary {
+                        invocation_key: invocation_key.clone(),
+                        raw_name: raw_name.clone(),
+                        normalized_name: raw_name,
+                        family: row.get(10)?,
+                        duration_ms: row.get(11)?,
+                        input_bytes: row.get(12)?,
+                        output_bytes: row.get(13)?,
+                        input_keys: serde_json::from_str(&input_keys_json).unwrap_or_default(),
+                        result_kind: row.get(15)?,
+                    })
+                }
+                None => None,
+            };
+            Ok(ExportEventRow {
+                event_key: row.get(0)?,
+                sequence: row.get(1)?,
+                timestamp_ms: row.get(2)?,
+                kind: SessionEventKind::parse_db(&row.get::<_, String>(3)?),
+                status: row
+                    .get::<_, Option<String>>(4)?
+                    .as_deref()
+                    .map(EventStatus::parse_db),
+                summary: row.get(5)?,
+                source_file_path: row.get(6)?,
+                source_offset: row.get(7)?,
+                tool,
+                request_links: Vec::new(),
+                payload: serde_json::Value::Null,
+            })
+        })
+        .map_err(|error| format!("ERR_ACTIVITY_EXPORT_QUERY_EVENTS: {error}"))?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row.map_err(|error| format!("ERR_ACTIVITY_EXPORT_READ_EVENT: {error}"))?);
+    }
+    Ok(events)
+}
+
+/// 批量挂载事件-请求关联（一次 IN 查询，避免 N+1）。
+fn attach_export_request_links(
+    conn: &rusqlite::Connection,
+    events: &mut [ExportEventRow],
+) -> Result<(), String> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    let keys: Vec<String> = events.iter().map(|event| event.event_key.clone()).collect();
+    let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT event_key, request_key, strength FROM session_event_request_links
+         WHERE event_key IN ({placeholders})"
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|error| format!("ERR_ACTIVITY_EXPORT_PREPARE_LINKS: {error}"))?;
+    let link_rows = stmt
+        .query_map(params_from_iter(keys.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                RequestEventLink {
+                    request_key: row.get(1)?,
+                    strength: RequestLinkStrength::parse_db(&row.get::<_, String>(2)?),
+                },
+            ))
+        })
+        .map_err(|error| format!("ERR_ACTIVITY_EXPORT_QUERY_LINKS: {error}"))?;
+    let mut by_event: HashMap<String, Vec<RequestEventLink>> = HashMap::new();
+    for link_row in link_rows {
+        let (event_key, link) =
+            link_row.map_err(|error| format!("ERR_ACTIVITY_EXPORT_READ_LINK: {error}"))?;
+        by_event.entry(event_key).or_default().push(link);
+    }
+    for event in events.iter_mut() {
+        event.request_links = by_event.remove(&event.event_key).unwrap_or_default();
+    }
+    Ok(())
+}
+
+/// 读取单个事件的完整脱敏 payload（cursor 循环翻页；单事件预算
+/// [`EXPORT_EVENT_PAYLOAD_MAX_BYTES`] 字节）。返回 `(payload 对象, 已读字节)`；
+/// 内容不可用（Unavailable）时返回空对象，不报错。
+fn read_event_payload(
+    adapter: &dyn SessionActivityAdapter,
+    source_ref: &SafeSourceRef,
+    kind: SessionEventKind,
+    include_summaries: bool,
+) -> Result<(serde_json::Map<String, serde_json::Value>, usize), String> {
+    let sections: &[&str] = match kind {
+        SessionEventKind::ToolInvocation => &["input", "output"],
+        SessionEventKind::ToolResult => &["output"],
+        // 普通消息事件读正文摘要（与 include_summaries 联动，避免导出
+        // 关闭摘要时仍通过 payload 通道带出正文）。
+        _ => {
+            if include_summaries {
+                &["summary"]
+            } else {
+                &[]
+            }
+        }
+    };
+    let mut out = serde_json::Map::new();
+    let mut total = 0usize;
+    for section in sections {
+        let mut cursor: Option<String> = None;
+        let mut collected = String::new();
+        loop {
+            let budget = EXPORT_EVENT_PAYLOAD_MAX_BYTES.saturating_sub(collected.len());
+            if budget == 0 {
+                break;
+            }
+            let page = adapter
+                .read_payload(source_ref, section, budget, cursor.clone())
+                .map_err(|error| error.to_string())?;
+            if page.content_state != ContentState::Available {
+                break;
+            }
+            collected.push_str(&page.content);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        if !collected.is_empty() {
+            total += collected.len();
+            out.insert(section.to_string(), serde_json::Value::String(collected));
+        }
+    }
+    Ok((out, total))
+}
+
+/// session_key → 文件名字段：只保留 `[A-Za-z0-9._-]`，其余替换为 `_`，
+/// 超长截断到 80 字符（消毒后全 ASCII，字节截断安全）；空结果回退 "session"。
+fn sanitize_session_key(session_key: &str) -> String {
+    let mut out = String::with_capacity(session_key.len());
+    for ch in session_key.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.len() > EXPORT_FILE_KEY_MAX_CHARS {
+        out.truncate(EXPORT_FILE_KEY_MAX_CHARS);
+    }
+    if out.is_empty() {
+        out.push_str("session");
+    }
+    out
+}
+
+/// 事件 → JSON 对象（选项关闭的字段直接省略）。
+fn event_to_json(event: &ExportEventRow, options: &ExportOptions) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("sequence".to_string(), serde_json::json!(event.sequence));
+    obj.insert("kind".to_string(), serde_json::json!(event.kind.as_str()));
+    if let Some(status) = &event.status {
+        obj.insert("status".to_string(), serde_json::json!(status.as_str()));
+    }
+    if let Some(timestamp_ms) = event.timestamp_ms {
+        obj.insert("timestampMs".to_string(), serde_json::json!(timestamp_ms));
+    }
+    if options.include_summaries {
+        if let Some(summary) = &event.summary {
+            obj.insert("summary".to_string(), serde_json::json!(summary));
+        }
+    }
+    if options.include_tool_summaries {
+        if let Some(tool) = &event.tool {
+            let mut tool_obj = serde_json::Map::new();
+            tool_obj.insert(
+                "invocationKey".to_string(),
+                serde_json::json!(tool.invocation_key),
+            );
+            tool_obj.insert(
+                "toolName".to_string(),
+                serde_json::json!(tool.normalized_name),
+            );
+            tool_obj.insert("family".to_string(), serde_json::json!(tool.family));
+            tool_obj.insert(
+                "durationMs".to_string(),
+                serde_json::json!(tool.duration_ms),
+            );
+            tool_obj.insert(
+                "inputBytes".to_string(),
+                serde_json::json!(tool.input_bytes),
+            );
+            tool_obj.insert(
+                "outputBytes".to_string(),
+                serde_json::json!(tool.output_bytes),
+            );
+            tool_obj.insert("inputKeys".to_string(), serde_json::json!(tool.input_keys));
+            tool_obj.insert(
+                "resultKind".to_string(),
+                serde_json::json!(tool.result_kind),
+            );
+            obj.insert("tool".to_string(), serde_json::Value::Object(tool_obj));
+        }
+    }
+    if options.include_request_links && !event.request_links.is_empty() {
+        let links: Vec<serde_json::Value> = event
+            .request_links
+            .iter()
+            .map(|link| {
+                serde_json::json!({
+                    "requestKey": link.request_key,
+                    "strength": link.strength.as_str(),
+                })
+            })
+            .collect();
+        obj.insert("requestLinks".to_string(), serde_json::Value::Array(links));
+    }
+    if options.include_payloads && !event.payload.is_null() {
+        obj.insert("payload".to_string(), event.payload.clone());
+    }
+    serde_json::Value::Object(obj)
+}
+
+fn render_json_export(
+    meta: &ExportSessionMeta,
+    events: &[ExportEventRow],
+    options: &ExportOptions,
+) -> String {
+    let mut session = serde_json::Map::new();
+    session.insert(
+        "sessionKey".to_string(),
+        serde_json::json!(meta.session_key),
+    );
+    session.insert("tool".to_string(), serde_json::json!(meta.tool));
+    if let Some(topic) = &meta.topic {
+        session.insert("topic".to_string(), serde_json::json!(topic));
+    }
+    if let Some(session_name) = &meta.session_name {
+        session.insert("sessionName".to_string(), serde_json::json!(session_name));
+    }
+    if let Some(project) = &meta.project {
+        session.insert("project".to_string(), serde_json::json!(project));
+    }
+    let mut root = serde_json::Map::new();
+    root.insert("session".to_string(), serde_json::Value::Object(session));
+    root.insert(
+        "events".to_string(),
+        serde_json::Value::Array(
+            events
+                .iter()
+                .map(|event| event_to_json(event, options))
+                .collect(),
+        ),
+    );
+    serde_json::to_string_pretty(&serde_json::Value::Object(root))
+        .unwrap_or_else(|_| "{}".to_string())
+}
+
+/// CSV 字段转义（RFC 4180：含逗号/引号/换行时双引号包裹，内部引号加倍）。
+fn csv_escape(field: &str) -> String {
+    if field.contains(',') || field.contains('"') || field.contains('\n') || field.contains('\r') {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
+fn render_csv_export(
+    _meta: &ExportSessionMeta,
+    events: &[ExportEventRow],
+    options: &ExportOptions,
+) -> String {
+    let mut out = String::new();
+    let mut header = vec![
+        "sequence",
+        "kind",
+        "status",
+        "timestamp_ms",
+        "summary",
+        "tool_name",
+        "family",
+        "request_links",
+    ];
+    if options.include_payloads {
+        header.push("payload");
+    }
+    out.push_str(&header.join(","));
+    out.push('\n');
+    for event in events {
+        let mut row: Vec<String> = Vec::with_capacity(header.len());
+        row.push(event.sequence.to_string());
+        row.push(event.kind.as_str().to_string());
+        row.push(
+            event
+                .status
+                .map(|status| status.as_str().to_string())
+                .unwrap_or_default(),
+        );
+        row.push(
+            event
+                .timestamp_ms
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+        );
+        row.push(if options.include_summaries {
+            event.summary.clone().unwrap_or_default()
+        } else {
+            String::new()
+        });
+        let (tool_name, family) = match (&event.tool, options.include_tool_summaries) {
+            (Some(tool), true) => (tool.normalized_name.clone(), tool.family.clone()),
+            _ => (String::new(), String::new()),
+        };
+        row.push(tool_name);
+        row.push(family);
+        row.push(if options.include_request_links {
+            event
+                .request_links
+                .iter()
+                .map(|link| format!("{}:{}", link.request_key, link.strength.as_str()))
+                .collect::<Vec<_>>()
+                .join("; ")
+        } else {
+            String::new()
+        });
+        if options.include_payloads {
+            row.push(if event.payload.is_null() {
+                String::new()
+            } else {
+                serde_json::to_string(&event.payload).unwrap_or_default()
+            });
+        }
+        let escaped: Vec<String> = row.iter().map(|field| csv_escape(field)).collect();
+        out.push_str(&escaped.join(","));
+        out.push('\n');
+    }
+    out
+}
+
+/// 导出核心实现（与 Tauri 解耦，便于单元测试）：查询已脱敏的会话事件、
+/// 可选按需读取脱敏 payload（cursor 翻页读全，单事件 64KB、累计 50MB），
+/// 写入 `~/.usagemeter/exports/activity-{sanitized}-{ts}.{json|csv}`。
+///
+/// 隐私铁律：导出内容全部来自已脱敏字段（summary_redacted 已脱敏；
+/// payload 经适配器脱敏）；`include_payloads` 默认 false，后端只执行选项。
+pub(crate) fn export_session_activity_impl(
+    conn: &rusqlite::Connection,
+    session_key: &str,
+    options: &ExportOptions,
+) -> Result<ExportResult, String> {
+    let meta = query_export_session_meta(conn, session_key)?.ok_or_else(|| {
+        "ERR_ACTIVITY_EXPORT_SESSION_NOT_FOUND: session not found in local sessions".to_string()
+    })?;
+    let mut events = query_export_events(conn, session_key)?;
+    attach_export_request_links(conn, &mut events)?;
+
+    let mut payload_included = false;
+    let mut truncated = false;
+    let mut payload_total = 0usize;
+    if options.include_payloads {
+        if let Some(adapter) = registry().get_adapter(&meta.tool) {
+            for event in &mut events {
+                if payload_total >= EXPORT_TOTAL_PAYLOAD_MAX_BYTES {
+                    truncated = true;
+                    break;
+                }
+                let source_ref = SafeSourceRef {
+                    source_file_id: None,
+                    source_file_path: event.source_file_path.clone(),
+                    source_offset: event.source_offset,
+                    fingerprint: None,
+                };
+                let (payload, bytes) = read_event_payload(
+                    adapter,
+                    &source_ref,
+                    event.kind,
+                    options.include_summaries,
+                )?;
+                if !payload.is_empty() {
+                    payload_included = true;
+                    event.payload = serde_json::Value::Object(payload);
+                    payload_total += bytes;
+                }
+            }
+        }
+    }
+
+    let format = options.format.trim().to_ascii_lowercase();
+    let (content, ext) = match format.as_str() {
+        "json" => (render_json_export(&meta, &events, options), "json"),
+        "csv" => (render_csv_export(&meta, &events, options), "csv"),
+        other => {
+            return Err(format!(
+                "ERR_ACTIVITY_EXPORT_FORMAT: unsupported format: {other}"
+            ));
+        }
+    };
+
+    let export_dir = crate::utils::usagemeter_dir()?.join("exports");
+    std::fs::create_dir_all(&export_dir)
+        .map_err(|error| format!("ERR_ACTIVITY_EXPORT_MKDIR: {error}"))?;
+    let file_name = format!(
+        "activity-{}-{}.{ext}",
+        sanitize_session_key(session_key),
+        chrono::Utc::now().timestamp()
+    );
+    let file_path = export_dir.join(file_name);
+    std::fs::write(&file_path, content)
+        .map_err(|error| format!("ERR_ACTIVITY_EXPORT_WRITE: {error}"))?;
+    Ok(ExportResult {
+        file_path: file_path.to_string_lossy().to_string(),
+        row_count: events.len() as i64,
+        payload_included,
+        truncated,
+    })
+}
+
+/// 导出会话深度活动（M3；21.5：导出高风险内容前前端负责范围预览，
+/// 默认不选择正文与工具 payload）。
+///
+/// 深度索引关闭时返回明确错误（不导出不存在/残留的深度数据）。
+#[tauri::command]
+pub async fn export_session_activity(
+    _app: tauri::AppHandle,
+    session_key: String,
+    options: ExportOptions,
+    settings: AppSettings,
+) -> Result<ExportResult, String> {
+    if deep_index_disabled(&settings) {
+        return Err("ERR_ACTIVITY_EXPORT_DISABLED: deep index is off".to_string());
+    }
+    activity_db(|conn| export_session_activity_impl(conn, &session_key, &options))
 }
 
 // ---------------------------------------------------------------------------

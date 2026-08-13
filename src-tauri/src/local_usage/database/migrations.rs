@@ -20,7 +20,7 @@ impl LocalUsageDatabase {
 
     pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 28 {
+        if schema_version >= 29 {
             return Ok(());
         }
         let mut cleared_runtime_caches = false;
@@ -1002,6 +1002,34 @@ impl LocalUsageDatabase {
 
             tx.commit()
                 .map_err(|e| format!("Failed to commit v28 schema migration: {}", e))?;
+        }
+
+        if schema_version < 29 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v29 schema migration: {}", e))?;
+
+            // v29：FTS5 全文索引虚拟表 `session_event_fts`（M3；设计文档 12.4
+            // 「可选全文表」）。建表 SQL 与 `activity::db::ACTIVITY_TABLES_DDL`
+            // 同一来源，`CREATE VIRTUAL TABLE IF NOT EXISTS` 幂等；新库建表
+            // 已含该表（create_tables → create_activity_tables），老库升级到此
+            // 块补建。索引数据不在此迁移回填：由 `write_activity_batch` 的
+            // FTS 同步路径（activity::fts::sync_events_to_fts）在下次会话写入
+            // 或 rebuild 时自动填充，存量会话无需一次性全量建索引。
+            Self::create_activity_tables(&tx)?;
+
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '29', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v29 schema version: {}", e))?;
+
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v29 schema migration: {}", e))?;
         }
 
         if cleared_runtime_caches {

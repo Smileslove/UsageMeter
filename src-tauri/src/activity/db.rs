@@ -20,7 +20,8 @@ use crate::activity::redact_home_path;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use std::collections::HashMap;
 
-/// 深度活动索引 5 张表的建表 SQL（schema.rs 与 v28 迁移共用，保持单一来源）。
+/// 深度活动索引建表 SQL：5 张结构化表 + 1 张 FTS5 虚拟表（全文搜索，M3/v29）。
+/// schema.rs 的 `create_activity_tables` 与 v28/v29 迁移共用，保持单一来源。
 pub const ACTIVITY_TABLES_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS session_activity_index (
     session_key TEXT PRIMARY KEY,
@@ -108,6 +109,17 @@ CREATE TABLE IF NOT EXISTS session_event_request_links (
     strength TEXT NOT NULL,
     matcher_id TEXT,
     PRIMARY KEY(event_key, request_key)
+);
+
+-- M3 全文搜索（v29）：只索引已脱敏摘要与工具名，绝不索引正文/payload。
+-- 数据与 session_events 同步维护（activity::fts::sync_events_to_fts），
+-- 删除路径同步清理；隐私面等价于结构化事件，不新增持久化内容。
+CREATE VIRTUAL TABLE IF NOT EXISTS session_event_fts USING fts5(
+    event_key UNINDEXED,
+    session_key UNINDEXED,
+    kind UNINDEXED,
+    summary,
+    tool_name
 );
 "#;
 
@@ -402,6 +414,10 @@ pub fn write_activity_batch(
     upsert_agents(conn, &batch.session_key, &batch.agents)?;
     upsert_tool_invocations(conn, &batch.session_key, &batch.tool_invocations)?;
     upsert_event_request_links(conn, &batch.session_key, &batch.request_links)?;
+    // FTS 同步必须在 upsert_tool_invocations 之后（FTS 行要带工具名，
+    // 而旧工具行已被 clear_session_derived_rows 清掉）。失败时整体报错，
+    // 由索引任务重试收敛（幂等）。
+    crate::activity::fts::sync_events_to_fts(conn, &batch.session_key)?;
     Ok(())
 }
 
@@ -518,6 +534,93 @@ fn parse_input_keys(json: &str) -> Vec<String> {
     serde_json::from_str(json).unwrap_or_default()
 }
 
+/// 事件查询公共列布局（见 [`query_events`] 的 SELECT）→ 列表项。
+/// [`query_events`] 与 [`query_events_by_keys`] 共用，保证两处字段解析一致。
+fn row_to_event_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionEventListItem> {
+    let tool_invocation_key: Option<String> = row.get(14)?;
+    let tool = match &tool_invocation_key {
+        Some(invocation_key) => {
+            let raw_name: String = row.get(15)?;
+            let family: String = row.get(16)?;
+            let input_keys: String = row.get(20)?;
+            Some(ToolInvocationSummary {
+                invocation_key: invocation_key.clone(),
+                // M2 schema 单列 tool_name：raw 与 normalized 暂同值，
+                // 规范化映射由后续解析层（M3）细化。
+                raw_name: raw_name.clone(),
+                normalized_name: raw_name,
+                family,
+                duration_ms: row.get(17)?,
+                input_bytes: row.get(18)?,
+                output_bytes: row.get(19)?,
+                input_keys: parse_input_keys(&input_keys),
+                result_kind: row.get(21)?,
+            })
+        }
+        None => None,
+    };
+    Ok(SessionEventListItem {
+        event_key: row.get(0)?,
+        session_key: row.get(1)?,
+        sequence: row.get(2)?,
+        timestamp_ms: row.get(3)?,
+        kind: SessionEventKind::parse_db(&row.get::<_, String>(4)?),
+        status: row
+            .get::<_, Option<String>>(5)?
+            .as_deref()
+            .map(EventStatus::parse_db),
+        actor_agent_key: row.get(6)?,
+        parent_event_key: row.get(7)?,
+        summary: row.get(8)?,
+        content_state: ContentState::parse_db(&row.get::<_, String>(9)?),
+        tool,
+        request_links: Vec::new(),
+        source_ref: SafeSourceRef {
+            source_file_id: row.get(10)?,
+            // 查询出口脱敏用户名（P2 路径脱敏）；on-demand 读取用 DB 原值，不受影响。
+            source_file_path: redact_home_path(&row.get::<_, String>(11)?),
+            source_offset: row.get(12)?,
+            fingerprint: row.get(13)?,
+        },
+    })
+}
+
+/// 批量加载事件的 request links（一次 IN 查询，避免 N+1）；
+/// 返回 event_key → links 映射。
+fn load_request_links(
+    conn: &Connection,
+    keys: &[String],
+) -> Result<HashMap<String, Vec<RequestEventLink>>, String> {
+    if keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let link_sql = format!(
+        "SELECT event_key, request_key, strength FROM session_event_request_links
+         WHERE event_key IN ({placeholders})"
+    );
+    let mut stmt = conn
+        .prepare(&link_sql)
+        .map_err(|e| format!("ERR_ACTIVITY_PREPARE_QUERY_LINKS: {e}"))?;
+    let link_rows = stmt
+        .query_map(params_from_iter(keys.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                RequestEventLink {
+                    request_key: row.get(1)?,
+                    strength: RequestLinkStrength::parse_db(&row.get::<_, String>(2)?),
+                },
+            ))
+        })
+        .map_err(|e| format!("ERR_ACTIVITY_QUERY_LINKS: {e}"))?;
+    let mut by_event: HashMap<String, Vec<RequestEventLink>> = HashMap::new();
+    for link_row in link_rows {
+        let (event_key, link) = link_row.map_err(|e| format!("ERR_ACTIVITY_READ_LINK: {e}"))?;
+        by_event.entry(event_key).or_default().push(link);
+    }
+    Ok(by_event)
+}
+
 /// 分页查询会话事件（按 sequence 升序；limit 由调用方 clamp 1..=200）。
 pub fn query_events(
     conn: &Connection,
@@ -560,54 +663,7 @@ pub fn query_events(
         .prepare(&sql)
         .map_err(|e| format!("ERR_ACTIVITY_PREPARE_QUERY_EVENTS: {e}"))?;
     let rows = stmt
-        .query_map(params_from_iter(values.iter()), |row| {
-            let tool_invocation_key: Option<String> = row.get(14)?;
-            let tool = match &tool_invocation_key {
-                Some(invocation_key) => {
-                    let raw_name: String = row.get(15)?;
-                    let family: String = row.get(16)?;
-                    let input_keys: String = row.get(20)?;
-                    Some(ToolInvocationSummary {
-                        invocation_key: invocation_key.clone(),
-                        // M2 schema 单列 tool_name：raw 与 normalized 暂同值，
-                        // 规范化映射由后续解析层（M3）细化。
-                        raw_name: raw_name.clone(),
-                        normalized_name: raw_name,
-                        family,
-                        duration_ms: row.get(17)?,
-                        input_bytes: row.get(18)?,
-                        output_bytes: row.get(19)?,
-                        input_keys: parse_input_keys(&input_keys),
-                        result_kind: row.get(21)?,
-                    })
-                }
-                None => None,
-            };
-            Ok(SessionEventListItem {
-                event_key: row.get(0)?,
-                session_key: row.get(1)?,
-                sequence: row.get(2)?,
-                timestamp_ms: row.get(3)?,
-                kind: SessionEventKind::parse_db(&row.get::<_, String>(4)?),
-                status: row
-                    .get::<_, Option<String>>(5)?
-                    .as_deref()
-                    .map(EventStatus::parse_db),
-                actor_agent_key: row.get(6)?,
-                parent_event_key: row.get(7)?,
-                summary: row.get(8)?,
-                content_state: ContentState::parse_db(&row.get::<_, String>(9)?),
-                tool,
-                request_links: Vec::new(),
-                source_ref: SafeSourceRef {
-                    source_file_id: row.get(10)?,
-                    // 查询出口脱敏用户名（P2 路径脱敏）；on-demand 读取用 DB 原值，不受影响。
-                    source_file_path: redact_home_path(&row.get::<_, String>(11)?),
-                    source_offset: row.get(12)?,
-                    fingerprint: row.get(13)?,
-                },
-            })
-        })
+        .query_map(params_from_iter(values.iter()), row_to_event_item)
         .map_err(|e| format!("ERR_ACTIVITY_QUERY_EVENTS: {e}"))?;
 
     let mut items: Vec<SessionEventListItem> = Vec::new();
@@ -618,30 +674,7 @@ pub fn query_events(
     // 批量加载本页 request links（一次 IN 查询，避免 N+1）。
     if !items.is_empty() {
         let keys: Vec<String> = items.iter().map(|item| item.event_key.clone()).collect();
-        let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        let link_sql = format!(
-            "SELECT event_key, request_key, strength FROM session_event_request_links
-             WHERE event_key IN ({placeholders})"
-        );
-        let mut stmt = conn
-            .prepare(&link_sql)
-            .map_err(|e| format!("ERR_ACTIVITY_PREPARE_QUERY_LINKS: {e}"))?;
-        let link_rows = stmt
-            .query_map(params_from_iter(keys.iter()), |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    RequestEventLink {
-                        request_key: row.get(1)?,
-                        strength: RequestLinkStrength::parse_db(&row.get::<_, String>(2)?),
-                    },
-                ))
-            })
-            .map_err(|e| format!("ERR_ACTIVITY_QUERY_LINKS: {e}"))?;
-        let mut by_event: HashMap<String, Vec<RequestEventLink>> = HashMap::new();
-        for link_row in link_rows {
-            let (event_key, link) = link_row.map_err(|e| format!("ERR_ACTIVITY_READ_LINK: {e}"))?;
-            by_event.entry(event_key).or_default().push(link);
-        }
+        let mut by_event = load_request_links(conn, &keys)?;
         for item in &mut items {
             item.request_links = by_event.remove(&item.event_key).unwrap_or_default();
         }
@@ -653,6 +686,55 @@ pub fn query_events(
         total,
         has_more,
     })
+}
+
+/// 按 event_key 列表批量查询事件，**保持 keys 顺序**（全文搜索命中回填用：
+/// FTS 返回的 bm25 相关性顺序即展示顺序）。
+///
+/// 每事件至多返回一行（FTS 与 events 同步维护，理论上不会缺键；防御性
+/// 跳过缺失键，不报错）。request_links 与 tool 摘要同 [`query_events`]。
+pub fn query_events_by_keys(
+    conn: &Connection,
+    keys: &[String],
+) -> Result<Vec<SessionEventListItem>, String> {
+    if keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = keys.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT e.event_key, e.session_key, e.sequence, e.timestamp_ms, e.kind, e.status,
+                e.actor_agent_key, e.parent_event_key, e.summary_redacted, e.content_state,
+                e.source_file_id, e.source_file_path, e.source_offset, e.payload_hash,
+                ti.invocation_key, ti.tool_name, ti.family, ti.duration_ms, ti.input_bytes,
+                ti.output_bytes, ti.input_keys_json, ti.result_kind
+         FROM session_events e
+         LEFT JOIN session_tool_invocations ti ON ti.event_key = e.event_key
+         WHERE e.event_key IN ({placeholders})"
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("ERR_ACTIVITY_PREPARE_QUERY_BY_KEYS: {e}"))?;
+    let rows = stmt
+        .query_map(params_from_iter(keys.iter()), row_to_event_item)
+        .map_err(|e| format!("ERR_ACTIVITY_QUERY_BY_KEYS: {e}"))?;
+    let mut by_key: HashMap<String, SessionEventListItem> = HashMap::new();
+    for row in rows {
+        let item = row.map_err(|e| format!("ERR_ACTIVITY_READ_EVENT: {e}"))?;
+        by_key.insert(item.event_key.clone(), item);
+    }
+    // 按请求顺序组装（保持 FTS 命中顺序）。
+    let mut items: Vec<SessionEventListItem> = Vec::with_capacity(keys.len());
+    for key in keys {
+        if let Some(item) = by_key.remove(key) {
+            items.push(item);
+        }
+    }
+    let link_keys: Vec<String> = items.iter().map(|item| item.event_key.clone()).collect();
+    let mut by_event = load_request_links(conn, &link_keys)?;
+    for item in &mut items {
+        item.request_links = by_event.remove(&item.event_key).unwrap_or_default();
+    }
+    Ok(items)
 }
 
 /// 查询会话代理树节点（按 started_at_ms 升序，child_count 由子查询计算）。
@@ -851,7 +933,8 @@ pub fn query_activity_summary(
 // 清理
 // ---------------------------------------------------------------------------
 
-/// 删除单会话全部深度活动数据；返回受影响行数（5 表之和）。
+/// 删除单会话全部深度活动数据；返回受影响行数（5 张结构化表之和，
+/// FTS 虚拟表行同步删除但不计入该计数）。
 /// `purge_payload`：M2 payload 不落库，该参数为 M3 “同时删除源文件内容”预留语义，
 /// 当前对深度表删除无差别。
 pub fn delete_session_activity(
@@ -896,6 +979,8 @@ pub fn delete_session_activity(
             params![session_key],
         )
         .map_err(|e| format!("ERR_ACTIVITY_DELETE_INDEX: {e}"))?;
+    // FTS 虚拟表同步清理（防全文索引残留；不计入 removed 计数）。
+    crate::activity::fts::delete_session_fts(&tx, session_key)?;
     tx.commit()
         .map_err(|e| format!("ERR_ACTIVITY_TX_COMMIT: {e}"))?;
     Ok(removed)

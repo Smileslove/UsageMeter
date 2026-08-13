@@ -8,6 +8,92 @@ use crate::activity::model::{
     AgentRelationLevel, ContentState, EventStatus, RedactedPayloadPage, RequestLinkStrength,
     SafeSourceRef, SessionActivityCapability, SessionEventKind,
 };
+use std::io::{BufRead, BufReader};
+use std::path::Path;
+
+/// payload 源文件大小上限（字节；21.5 安全验收：超过不读取，直接 Unavailable）。
+pub(crate) const PAYLOAD_MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
+
+/// 解析分页 cursor：`"B{n}"` → 行内脱敏文本字节偏移；`None` 表示从头读。
+/// 非法格式（非 `B` 前缀、空、负数、非数字）返回 `None`，调用方按
+/// `Unavailable` 处理（不 panic、不读取）。
+pub(crate) fn parse_payload_cursor(cursor: Option<&str>) -> Option<usize> {
+    let text = cursor?;
+    let digits = text.strip_prefix('B')?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<usize>().ok()
+}
+
+/// payload 路径安全校验（21.5：payload reader 不能读取任意文件）：
+/// 扩展名必须为 `.jsonl`（大小写不敏感），且文件大小 ≤ 512MB。任一不满足
+/// 返回 `Err`（调用方按 `content_state=Unavailable` 响应，不读取内容）。
+pub(crate) fn validate_payload_path(path: &str) -> Result<(), ()> {
+    let ext_ok = Path::new(path)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"));
+    if !ext_ok {
+        return Err(());
+    }
+    let size_ok = std::fs::metadata(path)
+        .map(|meta| meta.len() <= PAYLOAD_MAX_FILE_BYTES)
+        .unwrap_or(false);
+    if !size_ok {
+        return Err(());
+    }
+    Ok(())
+}
+
+/// 打开源文件并定位到第 `line_no` 行（1-based）。文件不存在或行号超过
+/// 文件长度返回 `Ok(None)`（Unavailable 语义）；IO 失败返回 `Err`。
+pub(crate) fn read_payload_line(
+    path: &str,
+    line_no: usize,
+) -> Result<Option<String>, ActivityError> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return Ok(None),
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    for _ in 0..line_no {
+        line.clear();
+        let read = reader
+            .read_line(&mut line)
+            .map_err(|_| ActivityError::Io("failed to read payload source line".to_string()))?;
+        if read == 0 {
+            return Ok(None);
+        }
+    }
+    Ok(Some(line))
+}
+
+/// 从脱敏文本的字节偏移 `from` 起截取最多 `max` 字节（安全处理 UTF-8 边界）。
+/// 返回 `(内容, 是否截断, 下一页 cursor)`；剩余内容时
+/// `next_cursor = Some("B{新偏移}")`，读完为 `None`。
+pub(crate) fn slice_payload_page(
+    redacted: &str,
+    from: usize,
+    max: usize,
+) -> (String, bool, Option<String>) {
+    if from >= redacted.len() {
+        return (String::new(), false, None);
+    }
+    let rest = &redacted[from..];
+    if rest.len() <= max {
+        return (rest.to_string(), false, None);
+    }
+    let mut end = max;
+    while end > 0 && !redacted.is_char_boundary(from + end) {
+        end -= 1;
+    }
+    (
+        redacted[from..from + end].to_string(),
+        true,
+        Some(format!("B{}", from + end)),
+    )
+}
 
 /// 深度事件索引的来源会话引用。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -126,10 +212,15 @@ pub trait SessionActivityAdapter: Send + Sync {
         -> Result<ActivityIndexBatch, ActivityError>;
 
     /// 按需读取（脱敏后的）payload 分页。
+    ///
+    /// `cursor`：上一页返回的 `next_cursor`（`"B{n}"` = 行内脱敏文本字节
+    /// 偏移），`None` 表示从头读取；每页最多返回 `max_bytes` 字节，还有
+    /// 剩余时 `next_cursor = Some("B{新偏移}")`，读完为 `None`。
     fn read_payload(
         &self,
         source_ref: &SafeSourceRef,
         section: &str,
         max_bytes: usize,
+        cursor: Option<String>,
     ) -> Result<RedactedPayloadPage, ActivityError>;
 }

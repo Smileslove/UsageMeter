@@ -658,6 +658,8 @@ pub fn run() {
             activity::commands::get_session_event_payload,
             activity::commands::rebuild_session_activity_index,
             activity::commands::purge_session_activity_content,
+            activity::commands_search::search_session_activity,
+            activity::commands_search::search_activity_global,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -17,6 +17,7 @@
 //! 不伪装精确匹配。
 
 use crate::activity::adapter::{
+    parse_payload_cursor, read_payload_line, slice_payload_page, validate_payload_path,
     ActivityError, ActivityIndexBatch, NewAgentNode, NewEventRequestLink, NewSessionEvent,
     NewToolInvocation, SessionActivityAdapter, SessionSourceRef,
 };
@@ -446,6 +447,7 @@ impl SessionActivityAdapter for CodexAdapter {
         source_ref: &SafeSourceRef,
         section: &str,
         max_bytes: usize,
+        cursor: Option<String>,
     ) -> Result<RedactedPayloadPage, ActivityError> {
         // 0 表示调用方未指定，走默认上限。
         let max = if max_bytes == 0 {
@@ -453,52 +455,66 @@ impl SessionActivityAdapter for CodexAdapter {
         } else {
             max_bytes.clamp(1, MAX_BYTES_CAP)
         };
+        // cursor：None 表示首次读取（从头）；非 "B{n}" 格式视为非法 →
+        // Unavailable，不读取不 panic。
+        let from = match cursor.as_deref() {
+            None => 0,
+            Some(raw) => match parse_payload_cursor(Some(raw)) {
+                Some(offset) => offset,
+                None => {
+                    return Ok(RedactedPayloadPage {
+                        content: String::new(),
+                        truncated: false,
+                        next_cursor: None,
+                        content_state: ContentState::Unavailable,
+                    });
+                }
+            },
+        };
         let offset = source_ref
             .source_offset
             .filter(|value| *value >= 1)
             .unwrap_or(1) as usize;
-
-        let file = match fs::File::open(&source_ref.source_file_path) {
-            Ok(file) => file,
-            Err(_) => {
-                return Ok(RedactedPayloadPage {
-                    content: String::new(),
-                    truncated: false,
-                    next_cursor: None,
-                    content_state: ContentState::Unavailable,
-                });
-            }
-        };
-        let mut reader = BufReader::new(file);
-        let mut line = String::new();
-        for _ in 0..offset {
-            line.clear();
-            let read = reader
-                .read_line(&mut line)
-                .map_err(|_| ActivityError::Io("failed to read payload source line".to_string()))?;
-            if read == 0 {
-                return Ok(RedactedPayloadPage {
-                    content: String::new(),
-                    truncated: false,
-                    next_cursor: None,
-                    content_state: ContentState::Unavailable,
-                });
-            }
+        // 21.5 路径安全：只读 .jsonl、大小 ≤ 512MB，否则 Unavailable。
+        if validate_payload_path(&source_ref.source_file_path).is_err() {
+            return Ok(RedactedPayloadPage {
+                content: String::new(),
+                truncated: false,
+                next_cursor: None,
+                content_state: ContentState::Unavailable,
+            });
         }
-
+        // 文件不可读或行号超文件长度 → Unavailable（诚实响应，不伪造内容）。
+        let Some(line) = read_payload_line(&source_ref.source_file_path, offset)? else {
+            return Ok(RedactedPayloadPage {
+                content: String::new(),
+                truncated: false,
+                next_cursor: None,
+                content_state: ContentState::Unavailable,
+            });
+        };
         let json: Value = serde_json::from_str(&line)
             .map_err(|_| ActivityError::Parse("invalid json line for payload".to_string()))?;
         let text = if section == "raw" {
             line.trim_end().to_string()
         } else {
-            extract_section_text(&json, section)
+            extract_section_text(&json, section)?
         };
         let redacted = redact_text(&text);
-        let (content, truncated) = truncate_bytes(&redacted, max);
+        // cursor 偏移超界（> 文本长度）→ Unavailable，不 panic。
+        if from > redacted.len() {
+            return Ok(RedactedPayloadPage {
+                content: String::new(),
+                truncated: false,
+                next_cursor: None,
+                content_state: ContentState::Unavailable,
+            });
+        }
+        let (content, truncated, next_cursor) = slice_payload_page(&redacted, from, max);
         Ok(RedactedPayloadPage {
             content,
             truncated,
-            next_cursor: None,
+            next_cursor,
             content_state: ContentState::Available,
         })
     }
@@ -630,14 +646,15 @@ fn top_level_keys(arguments: &str) -> Vec<String> {
     }
 }
 
-/// 按 payload 结构与 section 提取文本（供 on-demand payload 读取）。
-fn extract_section_text(json: &Value, section: &str) -> String {
+/// 按 payload 结构与 section 提取文本（供 on-demand payload 读取）；
+/// 未知 section 报 Unsupported（与 claude 适配器语义一致）。
+fn extract_section_text(json: &Value, section: &str) -> Result<String, ActivityError> {
     let Some(payload) = json.get("payload") else {
-        return String::new();
+        return Ok(String::new());
     };
     let inner = payload.get("type").and_then(Value::as_str).unwrap_or("");
     match section {
-        "input" | "summary" => match inner {
+        "input" | "summary" => Ok(match inner {
             "message" => extract_response_item_text(payload).unwrap_or_default(),
             "function_call" => payload
                 .get("arguments")
@@ -655,16 +672,18 @@ fn extract_section_text(json: &Value, section: &str) -> String {
                 .unwrap_or("")
                 .to_string(),
             _ => String::new(),
-        },
-        "output" => match inner {
+        }),
+        "output" => Ok(match inner {
             "function_call_output" | "custom_tool_call_output" => payload
                 .get("output")
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string(),
             _ => String::new(),
-        },
-        _ => String::new(),
+        }),
+        _ => Err(ActivityError::Unsupported(format!(
+            "unsupported payload section: {section}"
+        ))),
     }
 }
 
@@ -798,18 +817,6 @@ fn extract_timestamp(json: &Value) -> Option<i64> {
 /// 按字符截断（保证 ≤ max 字符；超长时不追加省略号，避免越界）。
 fn truncate_chars(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
-}
-
-/// 按字节截断（安全处理 UTF-8 边界），返回 (内容, 是否截断)。
-fn truncate_bytes(text: &str, max: usize) -> (String, bool) {
-    if text.len() <= max {
-        return (text.to_string(), false);
-    }
-    let mut end = max;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    (text[..end].to_string(), true)
 }
 
 // ── Token 差分（与 codex_reader 同源语义）─────────────────────────────────────
@@ -1273,7 +1280,7 @@ mod tests {
             fingerprint: None,
         };
         let page = adapter
-            .read_payload(&call_ref, "input", DEFAULT_MAX_BYTES)
+            .read_payload(&call_ref, "input", DEFAULT_MAX_BYTES, None)
             .expect("read payload");
         assert_eq!(page.content_state, ContentState::Available);
         assert!(!page.truncated);
@@ -1281,7 +1288,7 @@ mod tests {
 
         // 小 max_bytes 截断（按字节安全截断）
         let page = adapter
-            .read_payload(&call_ref, "input", 8)
+            .read_payload(&call_ref, "input", 8, None)
             .expect("read payload truncated");
         assert!(page.truncated);
         assert!(page.content.len() <= 8);
@@ -1294,7 +1301,7 @@ mod tests {
             fingerprint: None,
         };
         let page = adapter
-            .read_payload(&output_ref, "output", DEFAULT_MAX_BYTES)
+            .read_payload(&output_ref, "output", DEFAULT_MAX_BYTES, None)
             .expect("read output");
         assert_eq!(page.content, "/tmp\n");
 
@@ -1306,7 +1313,7 @@ mod tests {
             fingerprint: None,
         };
         let page = adapter
-            .read_payload(&raw_ref, "raw", DEFAULT_MAX_BYTES)
+            .read_payload(&raw_ref, "raw", DEFAULT_MAX_BYTES, None)
             .expect("read raw");
         assert!(!page.content.contains("abcdefgh12345678"));
         assert!(page.content.contains("user_message"));
@@ -1322,7 +1329,7 @@ mod tests {
             fingerprint: None,
         };
         let page = adapter
-            .read_payload(&source_ref, "input", DEFAULT_MAX_BYTES)
+            .read_payload(&source_ref, "input", DEFAULT_MAX_BYTES, None)
             .expect("unavailable page is not an error");
         assert_eq!(page.content_state, ContentState::Unavailable);
         assert!(page.content.is_empty());

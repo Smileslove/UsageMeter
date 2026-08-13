@@ -7,7 +7,9 @@
 pub mod adapter;
 pub mod adapters;
 pub mod db;
+pub mod fts;
 pub mod indexer;
+pub mod maintenance;
 pub mod model;
 pub mod redact;
 pub mod registry;
@@ -17,6 +19,9 @@ pub mod registry;
 // 避免侵入 commands/mod.rs 的既有导出面。
 #[path = "../commands/activity.rs"]
 pub mod commands;
+// M3 全文搜索命令（commands/activity_search.rs），同一挂载模式。
+#[path = "../commands/activity_search.rs"]
+pub mod commands_search;
 
 pub use adapter::*;
 pub use db::{ActivityIndexEntry, ACTIVITY_TABLES_DDL};
