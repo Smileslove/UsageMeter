@@ -448,9 +448,10 @@ fn attach_export_request_links(
     Ok(())
 }
 
-/// 读取单个事件的完整脱敏 payload（cursor 循环翻页；单事件预算
-/// [`EXPORT_EVENT_PAYLOAD_MAX_BYTES`] 字节）。返回 `(payload 对象, 已读字节)`；
-/// 内容不可用（Unavailable）时返回空对象，不报错。
+/// 读取单个事件的完整脱敏 payload（cursor 循环翻页；每个 section 预算
+/// [`EXPORT_EVENT_PAYLOAD_MAX_BYTES`] 字节，工具事件 input+output 各计
+/// 一次）。返回 `(payload 对象, 已读字节)`；内容不可用或读取失败时返回
+/// 空对象，不报错。
 fn read_event_payload(
     adapter: &dyn SessionActivityAdapter,
     source_ref: &SafeSourceRef,
@@ -480,9 +481,15 @@ fn read_event_payload(
             if budget == 0 {
                 break;
             }
-            let page = adapter
-                .read_payload(source_ref, section, budget, cursor.clone())
-                .map_err(|error| error.to_string())?;
+            let page = match adapter.read_payload(source_ref, section, budget, cursor.clone()) {
+                Ok(page) => page,
+                Err(error) => {
+                    // 单事件 payload 读取失败（如源行损坏）按不可用跳过，
+                    // 不因单个事件中断整个导出。
+                    eprintln!("[activity-export] payload read skipped: {error}");
+                    break;
+                }
+            };
             if page.content_state != ContentState::Available {
                 break;
             }

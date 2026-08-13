@@ -887,7 +887,7 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
     }
     drop(db);
 
-    let reopened = LocalUsageDatabase::new_with_path(&path).expect("migrate v20 database to v27");
+    let reopened = LocalUsageDatabase::new_with_path(&path).expect("migrate v20 database to v29");
     let conn = reopened.conn.lock().unwrap();
     let schema_version: String = conn
         .query_row(

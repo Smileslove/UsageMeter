@@ -77,7 +77,9 @@ pub(crate) fn slice_payload_page(
     from: usize,
     max: usize,
 ) -> (String, bool, Option<String>) {
-    if from >= redacted.len() {
+    // cursor 偏移必须是 UTF-8 字符边界：非边界（多字节字符中间）切片会
+    // panic，视为非法 cursor 返回空页（调用方转 Unavailable，不 panic）。
+    if from >= redacted.len() || !redacted.is_char_boundary(from) {
         return (String::new(), false, None);
     }
     let rest = &redacted[from..];
@@ -223,4 +225,40 @@ pub trait SessionActivityAdapter: Send + Sync {
         max_bytes: usize,
         cursor: Option<String>,
     ) -> Result<RedactedPayloadPage, ActivityError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slice_respects_utf8_char_boundaries() {
+        // 中文摘要：字节偏移 1 落在多字节字符中间，必须安全返回空页（不 panic）。
+        let text = "中文摘要内容";
+        let (content, truncated, next) = slice_payload_page(text, 1, 64);
+        assert_eq!(content, "");
+        assert!(!truncated);
+        assert!(next.is_none());
+
+        // 合法边界偏移正常分页且 next_cursor 指向下一字符边界。
+        let (first, truncated, next) = slice_payload_page(text, 0, 3);
+        assert!(truncated);
+        let next = next.expect("next cursor");
+        let offset: usize = next.strip_prefix('B').unwrap().parse().unwrap();
+        assert!(text.is_char_boundary(offset));
+        let (second, _, _) = slice_payload_page(text, offset, 64);
+        assert_eq!(format!("{first}{second}"), text);
+    }
+
+    #[test]
+    fn cursor_parsing_accepts_only_b_prefix_digits() {
+        assert_eq!(parse_payload_cursor(None), None);
+        assert_eq!(parse_payload_cursor(Some("B0")), Some(0));
+        assert_eq!(parse_payload_cursor(Some("B1024")), Some(1024));
+        assert_eq!(parse_payload_cursor(Some("b1")), None);
+        assert_eq!(parse_payload_cursor(Some("B-1")), None);
+        assert_eq!(parse_payload_cursor(Some("B")), None);
+        assert_eq!(parse_payload_cursor(Some("1")), None);
+        assert_eq!(parse_payload_cursor(Some("B1x")), None);
+    }
 }
