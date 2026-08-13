@@ -1095,3 +1095,41 @@ export interface RebuildResult {
   eventsWritten: number
   errors: string[]
 }
+
+// ============ M3 深度上下文 DTO（字段 camelCase，与 src-tauri/src/commands/activity.rs 对齐） ============
+
+/** 会话活动导出选项（后端 serde(default) 兼容缺省字段；payload 默认不包含，前端双保险）。 */
+export interface ExportOptions {
+  format: 'json' | 'csv'
+  includeSummaries: boolean
+  includeToolSummaries: boolean
+  includeRequestLinks: boolean
+  includePayloads: boolean
+}
+
+/** 会话活动导出结果。 */
+export interface ExportResult {
+  filePath: string
+  rowCount: number
+  payloadIncluded: boolean
+  truncated: boolean
+}
+
+/** 跨会话全文搜索单条命中（内容均为后端脱敏字段）。 */
+export interface GlobalSearchHit {
+  sessionKey: string
+  sessionTitle?: string | null
+  eventKey: string
+  kind: string
+  status?: string | null
+  summary?: string | null
+  timestampMs?: number | null
+  toolName?: string | null
+}
+
+/** 跨会话全文搜索分页结果。 */
+export interface GlobalSearchPage {
+  items: GlobalSearchHit[]
+  total: number
+  hasMore: boolean
+}

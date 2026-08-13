@@ -53,7 +53,7 @@ const activeSection = ref<SettingsSection>('app')
 type PricingSubView = 'main' | 'model-pricing' | 'currency'
 const pricingSubView = ref<PricingSubView>('main')
 
-// —— 深度索引（M2：radio 生效；fulltext 为 M3 未开放） ——
+// —— 深度索引（M2/M3：radio 生效；fulltext 支持会话内与跨会话搜索） ——
 type DeepIndexLevel = 'off' | 'structured' | 'fulltext' | 'ondemand'
 const deepIndexLevel = ref<DeepIndexLevel>(
   (store.settings.deepIndexLevel as DeepIndexLevel) || 'off'
@@ -70,7 +70,6 @@ const purgeResult = ref('')
 const purgeDialogOpen = ref(false)
 
 const selectDeepIndexLevel = async (level: DeepIndexLevel) => {
-  if (level === 'fulltext') return // M3 未开放，不可选
   deepIndexLevel.value = level
   store.settings.deepIndexLevel = level
   try {
@@ -226,14 +225,12 @@ const confirmQuit = async () => {
               v-for="option in deepIndexOptions"
               :key="option.id"
               class="flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-3 py-2.5"
-              :class="option.id === 'fulltext' ? 'cursor-not-allowed opacity-60' : ''"
             >
               <input
                 type="radio"
                 name="deep-index-level"
                 class="mt-0.5 h-3.5 w-3.5 accent-[var(--theme-accent-primary)]"
                 :checked="deepIndexLevel === option.id"
-                :disabled="option.id === 'fulltext'"
                 :aria-label="t(locale, option.labelKey)"
                 @change="selectDeepIndexLevel(option.id)"
               />

@@ -18,21 +18,23 @@
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
-  ChevronDown, ChevronRight, CircleHelp, Copy, Eye, EyeOff, FileOutput, GitBranch,
-  Info, Link2, Loader2, MessagesSquare, PanelLeft, RefreshCw, Search, Shrink, TriangleAlert,
-  User, Wrench, X, FolderOpen, Bot, Clock, Layers
+  CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Copy, Download,
+  Eye, EyeOff, FileOutput, GitBranch, Globe, Info, Link2, Loader2, MessagesSquare,
+  PanelLeft, RefreshCw, Search, Shrink, TriangleAlert, User, Wrench, X, FolderOpen, Bot, Clock, Layers
 } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { useDesktopNavigationStore } from '../../desktop/stores/desktopNavigation'
 import { t, backendErrorLabel } from '../../i18n'
 import { formatDurationMs } from '../../utils/format'
 import {
-  getSessionActivitySummary, getSessionEvents, getSessionAgents, getSessionToolSummary,
-  getSessionEventPayload, rebuildSessionActivityIndex
+  exportSessionActivity, getSessionActivitySummary, getSessionAgents, getSessionEvents,
+  getSessionEventPayload, getSessionToolSummary, rebuildSessionActivityIndex,
+  searchActivityGlobal, searchSessionActivity
 } from '../../api/activityApi'
 import type {
-  AgentNodeDto, RedactedPayloadPage, SessionActivitySummary, SessionEventFilter,
-  SessionEventKind, SessionEventListItem, SessionStats, ToolSummaryRow
+  AgentNodeDto, ExportResult, GlobalSearchHit, RedactedPayloadPage,
+  SessionActivitySummary, SessionEventFilter, SessionEventKind, SessionEventListItem,
+  SessionStats, ToolSummaryRow
 } from '../../types'
 
 const props = defineProps<{
@@ -129,7 +131,6 @@ const error = ref('')
 const viewState = ref<ViewState>('no-session')
 
 const selectedKinds = ref<Set<SessionEventKind>>(new Set(ALL_KINDS))
-const searchQuery = ref('')
 const activeAgentKey = ref<string | null>(null)
 
 let eventsOffset = 0
@@ -161,19 +162,206 @@ const badgeMeta = computed<{ label: string; cls: string } | null>(() => {
   }
 })
 
-/** 已过滤事件（关键词只搜已加载事件，设计 9.8：明确“仅搜索已加载内容”）。 */
-const filteredEvents = computed(() => {
-  const query = searchQuery.value.trim().toLowerCase()
-  if (!query) return events.value
-  return events.value.filter(event =>
-    (event.summary ?? '').toLowerCase().includes(query)
-    || (event.tool?.normalizedName ?? '').toLowerCase().includes(query)
-    || (event.tool?.rawName ?? '').toLowerCase().includes(query)
-  )
+/** 全文索引档启用（M3：会话内与跨会话搜索仅 fulltext 档可用，其余档位禁用搜索执行）。 */
+const fulltextEnabled = computed(() => store.settings.deepIndexLevel === 'fulltext')
+
+// ============ 会话内全文搜索（设计 9.8：命中列表 + 上一项/下一项；清除回到时间线） ============
+const searchInput = ref('')
+const searchMode = ref(false)
+const searchResults = ref<SessionEventListItem[]>([])
+const searchTotal = ref(0)
+const searchHasMore = ref(false)
+const searchLoading = ref(false)
+const searchError = ref('')
+const searchActiveIndex = ref(-1)
+let searchOffset = 0
+let searchGeneration = 0
+let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+const runSearch = async (reset: boolean) => {
+  const key = activeSessionKey.value
+  const query = searchInput.value.trim()
+  if (!key || !fulltextEnabled.value || !query) return
+  const generation = ++searchGeneration
+  if (reset) {
+    searchOffset = 0
+    searchResults.value = []
+    searchTotal.value = 0
+    searchHasMore.value = false
+    searchError.value = ''
+    searchActiveIndex.value = -1
+    searchMode.value = true
+  }
+  searchLoading.value = true
+  try {
+    const page = await searchSessionActivity(store.settings, key, query, searchOffset, 100)
+    if (generation !== searchGeneration) return
+    searchResults.value = reset ? page.items : [...searchResults.value, ...page.items]
+    searchTotal.value = page.total
+    searchHasMore.value = page.hasMore
+    searchOffset += page.items.length
+  } catch (e) {
+    if (generation !== searchGeneration) return
+    searchError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (generation === searchGeneration) searchLoading.value = false
+  }
+}
+
+const clearSearch = () => {
+  searchGeneration += 1
+  searchInput.value = ''
+  searchMode.value = false
+  searchResults.value = []
+  searchTotal.value = 0
+  searchHasMore.value = false
+  searchLoading.value = false
+  searchError.value = ''
+  searchActiveIndex.value = -1
+  searchOffset = 0
+}
+
+/** 回车立即搜索；输入防抖自动搜索（400ms）。 */
+const triggerSearch = () => {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+  if (!searchInput.value.trim()) {
+    clearSearch()
+    return
+  }
+  void runSearch(true)
+}
+
+watch(searchInput, () => {
+  if (!fulltextEnabled.value) return
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
+  searchDebounceTimer = setTimeout(() => {
+    searchDebounceTimer = null
+    if (!searchInput.value.trim()) {
+      clearSearch()
+      return
+    }
+    void runSearch(true)
+  }, 400)
 })
-const filteredTotal = computed(() =>
-  searchQuery.value.trim() ? filteredEvents.value.length : total.value
-)
+
+/** 上一项/下一项导航（循环），选中并滚动到可见区。 */
+const searchStep = (delta: number) => {
+  const n = searchResults.value.length
+  if (n === 0) return
+  const base = searchActiveIndex.value < 0 ? (delta > 0 ? -1 : 0) : searchActiveIndex.value
+  const next = (base + delta + n) % n
+  searchActiveIndex.value = next
+  selectEvent(searchResults.value[next])
+  requestAnimationFrame(() => {
+    document.getElementById(`search-hit-${next}`)?.scrollIntoView({ block: 'nearest' })
+  })
+}
+
+// ============ 跨会话全文搜索（9.8：入口在会话选择器旁，结果跳转该会话活动页） ============
+const globalSearchOpen = ref(false)
+const globalQuery = ref('')
+const globalResults = ref<GlobalSearchHit[]>([])
+const globalTotal = ref(0)
+const globalHasMore = ref(false)
+const globalLoading = ref(false)
+const globalError = ref('')
+let globalOffset = 0
+let globalGeneration = 0
+
+const runGlobalSearch = async (reset: boolean) => {
+  const query = globalQuery.value.trim()
+  if (!query) return
+  const generation = ++globalGeneration
+  if (reset) {
+    globalOffset = 0
+    globalResults.value = []
+    globalTotal.value = 0
+    globalHasMore.value = false
+    globalError.value = ''
+  }
+  globalLoading.value = true
+  try {
+    const page = await searchActivityGlobal(store.settings, query, globalOffset, 50)
+    if (generation !== globalGeneration) return
+    globalResults.value = reset ? page.items : [...globalResults.value, ...page.items]
+    globalTotal.value = page.total
+    globalHasMore.value = page.hasMore
+    globalOffset += page.items.length
+  } catch (e) {
+    if (generation !== globalGeneration) return
+    globalError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (generation === globalGeneration) globalLoading.value = false
+  }
+}
+
+const triggerGlobalSearch = () => {
+  if (globalQuery.value.trim()) void runGlobalSearch(true)
+}
+
+/** 点击命中：跳转到该会话的活动页（#/desktop/activity/<key>，由下方 nav.activeSessionKey watch 消费）。 */
+const jumpToSession = (hit: GlobalSearchHit) => {
+  globalSearchOpen.value = false
+  nav.openActivity(hit.sessionKey)
+}
+
+const hitKind = (kind: string): SessionEventKind =>
+  kind in KIND_META ? (kind as SessionEventKind) : 'unknown'
+
+// ============ 导出会话活动（15.3 / 21.5：范围预览，默认不勾选正文与工具 payload） ============
+const exportDialogOpen = ref(false)
+const exportFormat = ref<'json' | 'csv'>('json')
+const exportIncludeSummaries = ref(true)
+const exportIncludeToolSummaries = ref(true)
+const exportIncludeRequestLinks = ref(true)
+const exportIncludePayloads = ref(false)
+const exportBusy = ref(false)
+const exportError = ref('')
+const exportResult = ref<ExportResult | null>(null)
+const exportCopiedFlash = ref(false)
+let exportCopiedTimer: ReturnType<typeof setTimeout> | null = null
+
+const openExportDialog = () => {
+  exportDialogOpen.value = true
+  exportResult.value = null
+  exportError.value = ''
+}
+const closeExportDialog = () => {
+  if (exportBusy.value) return
+  exportDialogOpen.value = false
+}
+const runExport = async () => {
+  const key = activeSessionKey.value
+  if (!key || exportBusy.value) return
+  exportBusy.value = true
+  exportError.value = ''
+  exportResult.value = null
+  try {
+    exportResult.value = await exportSessionActivity(store.settings, key, {
+      format: exportFormat.value,
+      includeSummaries: exportIncludeSummaries.value,
+      includeToolSummaries: exportIncludeToolSummaries.value,
+      includeRequestLinks: exportIncludeRequestLinks.value,
+      includePayloads: exportIncludePayloads.value
+    })
+  } catch (e) {
+    exportError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    exportBusy.value = false
+  }
+}
+const copyExportPath = async () => {
+  if (!exportResult.value) return
+  try {
+    await navigator.clipboard.writeText(exportResult.value.filePath)
+    exportCopiedFlash.value = true
+    if (exportCopiedTimer) clearTimeout(exportCopiedTimer)
+    exportCopiedTimer = setTimeout(() => { exportCopiedFlash.value = false }, 1400)
+  } catch { /* 剪贴板不可用时静默失败 */ }
+}
 
 const buildFilter = (): SessionEventFilter | null => {
   const kinds = [...selectedKinds.value]
@@ -230,6 +418,7 @@ const loadEvents = async (reset: boolean) => {
 const loadSession = async (key: string | null) => {
   loadGeneration += 1
   activeSessionKey.value = key
+  clearSearch()
   resetData()
   if (!key) {
     viewState.value = 'no-session'
@@ -489,6 +678,23 @@ const loadPayload = async () => {
   }
 }
 
+/** M3 payload 分页（设计 12.5：nextCursor 非空时续读，append 到内容区）。 */
+const loadMorePayload = async () => {
+  const event = selectedEvent.value
+  const page = payload.value
+  if (!event || !page || !page.nextCursor || payloadLoading.value) return
+  payloadLoading.value = true
+  payloadError.value = ''
+  try {
+    const next = await getSessionEventPayload(store.settings, event.eventKey, payloadSection.value, undefined, page.nextCursor)
+    payload.value = { ...next, content: page.content + next.content }
+  } catch (e) {
+    payloadError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    payloadLoading.value = false
+  }
+}
+
 watch(selectedEvent, event => {
   payload.value = null
   payloadError.value = ''
@@ -549,6 +755,9 @@ onMounted(() => {
 
   if (props.fixedSessionKey) {
     void loadSession(props.fixedSessionKey)
+  } else if (nav.activeSessionKey) {
+    // 深链/跨会话搜索跳转：#/desktop/activity/<key>
+    void loadSession(nav.activeSessionKey)
   } else {
     void ensureSessions()
   }
@@ -558,10 +767,19 @@ watch(() => props.fixedSessionKey, key => {
   if (key) void loadSession(key)
 })
 
+// 自由模式：消费 hash 路由携带的会话（跨会话搜索结果跳转、#/desktop/activity/<key> 深链）。
+watch(() => nav.activeSessionKey, key => {
+  if (!props.fixedSessionKey && key && key !== activeSessionKey.value) {
+    void loadSession(key)
+  }
+})
+
 onUnmounted(() => {
   observer?.disconnect()
   wideQuery.removeEventListener('change', onWideChange)
   if (copiedTimer) clearTimeout(copiedTimer)
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
+  if (exportCopiedTimer) clearTimeout(exportCopiedTimer)
 })
 
 // 固定模式：无会话选择器，但仍在顶部展示能力徽标
@@ -633,6 +851,106 @@ const showPicker = computed(() => !props.fixedSessionKey)
         </div>
       </div>
       <div v-else class="min-w-0 flex-1" />
+
+      <!-- 跨会话搜索（9.8：fulltext 档可用；结果跳转该会话活动页） -->
+      <div v-if="showPicker" class="relative shrink-0">
+        <button
+          type="button"
+          class="theme-button-secondary inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-[12px] font-semibold"
+          :aria-label="t(locale, 'desktop.activity.globalSearch')"
+          :title="t(locale, 'desktop.activity.globalSearch')"
+          :aria-expanded="globalSearchOpen"
+          @click="globalSearchOpen = !globalSearchOpen"
+        >
+          <Globe class="h-3.5 w-3.5" aria-hidden="true" />
+          <span class="hidden md:inline">{{ t(locale, 'desktop.activity.globalSearch') }}</span>
+        </button>
+
+        <div
+          v-if="globalSearchOpen"
+          class="theme-surface-elevated absolute right-0 top-11 z-50 w-[min(560px,90vw)] rounded-xl border p-2 shadow-lg"
+          :aria-label="t(locale, 'desktop.activity.globalSearch')"
+        >
+          <div class="flex items-center gap-2 rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-2.5 py-1.5">
+            <Search class="h-3.5 w-3.5 shrink-0 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
+            <input
+              v-model="globalQuery"
+              type="text"
+              class="min-w-0 flex-1 bg-transparent text-[12px] text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]"
+              :placeholder="t(locale, 'desktop.activity.globalSearchPlaceholder')"
+              @keydown.enter="triggerGlobalSearch"
+            />
+            <button
+              type="button"
+              class="rounded p-1 text-[var(--theme-text-tertiary)] transition-colors hover:bg-[var(--theme-bg-hover)]"
+              :aria-label="t(locale, 'desktop.activity.globalSearch')"
+              :disabled="globalLoading"
+              @click="triggerGlobalSearch"
+            >
+              <Loader2 v-if="globalLoading" class="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              <Search v-else class="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </div>
+          <div class="mt-1.5 max-h-72 overflow-y-auto">
+            <div v-if="globalLoading && globalResults.length === 0" class="py-6 text-center text-[11px] text-[var(--theme-text-tertiary)]">
+              {{ t(locale, 'desktop.activity.timelineLoading') }}
+            </div>
+            <div v-else-if="globalError" class="px-2.5 py-4 text-center">
+              <p class="break-all text-[10.5px] text-rose-500">{{ backendErrorLabel(locale, globalError) }}</p>
+              <button
+                type="button"
+                class="theme-button-secondary mt-2 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold"
+                @click="triggerGlobalSearch"
+              >
+                <RefreshCw class="h-3 w-3" aria-hidden="true" />
+                {{ t(locale, 'desktop.activity.retry') }}
+              </button>
+            </div>
+            <div v-else-if="globalResults.length === 0 && globalQuery.trim()" class="px-2.5 py-6 text-center text-[11px] text-[var(--theme-text-tertiary)]">
+              {{ t(locale, 'desktop.activity.globalSearchEmpty') }}
+            </div>
+            <template v-else>
+              <div v-if="globalTotal > 0" class="px-2 pt-1 text-[10px] font-semibold text-[var(--theme-accent-primary)]">
+                {{ t(locale, 'desktop.activity.searchHitCount', { count: globalTotal }) }}
+              </div>
+              <button
+                v-for="hit in globalResults"
+                :key="hit.eventKey"
+                type="button"
+                class="flex w-full flex-col gap-1 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-[var(--theme-bg-hover)]"
+                @click="jumpToSession(hit)"
+              >
+                <span class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                  <span class="min-w-0 flex-1 truncate text-[11px] font-semibold text-[var(--theme-text-primary)]">{{ hit.sessionTitle || t(locale, 'sessions.untitled') }}</span>
+                  <span class="shrink-0 rounded px-1.5 py-px text-[9px] font-bold leading-none" :class="KIND_META[hitKind(hit.kind)].cls">
+                    {{ t(locale, KIND_META[hitKind(hit.kind)].labelKey) }}
+                  </span>
+                  <span v-if="hit.toolName" class="shrink-0 inline-flex items-center gap-1 rounded bg-[var(--theme-border-subtle)] px-1.5 py-px font-mono text-[9px] text-[var(--theme-text-tertiary)]">
+                    <Wrench class="h-2.5 w-2.5" aria-hidden="true" />
+                    {{ hit.toolName }}
+                  </span>
+                  <span v-if="hit.timestampMs != null" class="ml-auto shrink-0 text-[9.5px] text-[var(--theme-text-quaternary)]">{{ formatRelTime(hit.timestampMs) }}</span>
+                </span>
+                <span v-if="hit.summary" class="line-clamp-2 break-words text-[11px] leading-relaxed text-[var(--theme-text-secondary)]">{{ hit.summary }}</span>
+                <span class="inline-flex items-center gap-0.5 text-[9.5px] font-semibold text-[var(--theme-accent-primary)]">
+                  {{ t(locale, 'desktop.activity.globalSearchJump') }}
+                  <ChevronRight class="h-3 w-3" aria-hidden="true" />
+                </span>
+              </button>
+              <button
+                v-if="globalHasMore"
+                type="button"
+                class="mt-1 flex w-full items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10.5px] font-semibold text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]"
+                :disabled="globalLoading"
+                @click="runGlobalSearch(false)"
+              >
+                <Loader2 v-if="globalLoading" class="h-3 w-3 animate-spin" aria-hidden="true" />
+                {{ t(locale, 'desktop.activity.loadMore') }}
+              </button>
+            </template>
+          </div>
+        </div>
+      </div>
 
       <!-- 能力状态徽标 -->
       <span
@@ -760,6 +1078,22 @@ const showPicker = computed(() => !props.fixedSessionKey)
       </button>
     </div>
 
+    <!-- 非 fulltext 档：会话内搜索不可用提示（9.8：不静默降级为本地过滤） -->
+    <div
+      v-if="viewState === 'ready' && !fulltextEnabled"
+      class="flex flex-wrap items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2"
+    >
+      <TriangleAlert class="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden="true" />
+      <span class="min-w-0 flex-1 text-[11px] text-amber-600 dark:text-amber-300">{{ t(locale, 'desktop.activity.searchFtsDisabled') }}</span>
+      <button
+        type="button"
+        class="shrink-0 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-[10.5px] font-semibold text-amber-600 transition-colors hover:bg-amber-500/15 dark:text-amber-300"
+        @click="nav.openSettingsSection('privacy')"
+      >
+        {{ t(locale, 'desktop.activity.openSettings') }}
+      </button>
+    </div>
+
     <!-- ============ 三栏布局（设计 9.2） ============ -->
     <div v-else-if="viewState === 'ready'" class="relative flex min-h-0 min-w-0 flex-1 items-stretch gap-4">
       <!-- 左栏：章节与代理树（240px；窄屏 overlay） -->
@@ -783,22 +1117,6 @@ const showPicker = computed(() => !props.fixedSessionKey)
           </button>
         </div>
         <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
-          <!-- 搜索（设计 9.8：仅搜索已加载内容） -->
-          <div>
-            <div class="flex items-center gap-1.5 rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-2.5 py-1.5">
-              <Search class="h-3.5 w-3.5 shrink-0 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-              <input
-                v-model="searchQuery"
-                type="text"
-                class="min-w-0 flex-1 bg-transparent text-[11.5px] text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]"
-                :placeholder="t(locale, 'desktop.activity.searchPlaceholder')"
-              />
-            </div>
-            <p v-if="searchQuery.trim()" class="mt-1 px-0.5 text-[10px] text-[var(--theme-text-quaternary)]">
-              {{ t(locale, 'desktop.activity.searchLocalHint') }}
-            </p>
-          </div>
-
           <!-- 事件类型过滤（复选） -->
           <div class="space-y-1">
             <span class="px-0.5 text-[10.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.activity.filtersLabel') }}</span>
@@ -904,105 +1222,261 @@ const showPicker = computed(() => !props.fixedSessionKey)
 
       <!-- 中栏：活动脉络时间线（min 480px） -->
       <main class="theme-surface flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border" :aria-label="t(locale, 'desktop.activity.timelineLabel')">
-        <div class="flex shrink-0 items-center justify-between border-b border-[var(--theme-border-subtle)] px-4 py-2">
-          <span class="text-[10.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.activity.timelineLabel') }}</span>
-          <span class="text-[10.5px] text-[var(--theme-text-quaternary)]">
-            {{ t(locale, 'desktop.activity.eventsCount', { count: filteredTotal }) }}
+        <div class="flex shrink-0 items-center gap-2 border-b border-[var(--theme-border-subtle)] px-4 py-2">
+          <span class="shrink-0 text-[10.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.activity.timelineLabel') }}</span>
+
+          <!-- 会话内搜索（M3 FTS；非 fulltext 档禁用执行，9.8） -->
+          <div class="ml-1 flex min-w-0 max-w-xs flex-1 items-center gap-1.5 rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-2.5 py-1">
+            <Search class="h-3 w-3 shrink-0 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
+            <input
+              v-model="searchInput"
+              type="text"
+              class="min-w-0 flex-1 bg-transparent text-[11px] text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)] disabled:opacity-50"
+              :placeholder="t(locale, 'desktop.activity.searchPlaceholder')"
+              :disabled="!fulltextEnabled"
+              @keydown.enter="triggerSearch"
+            />
+            <button
+              v-if="searchInput.trim()"
+              type="button"
+              class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:bg-[var(--theme-bg-hover)]"
+              :aria-label="t(locale, 'desktop.activity.searchClear')"
+              :title="t(locale, 'desktop.activity.searchClear')"
+              @click="clearSearch"
+            >
+              <X class="h-3 w-3" aria-hidden="true" />
+            </button>
+          </div>
+
+          <span class="ml-auto shrink-0 text-[10.5px] text-[var(--theme-text-quaternary)]">
+            {{ t(locale, 'desktop.activity.eventsCount', { count: total }) }}
             <span v-if="activeAgentKey" class="ml-1.5 text-[var(--theme-accent-primary)]">{{ t(locale, 'desktop.activity.filterActive', { label: activeAgentKey }) }}</span>
           </span>
+
+          <!-- 导出（15.3：范围预览对话框，默认不勾选 payload） -->
+          <button
+            type="button"
+            class="theme-button-secondary inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-semibold"
+            :aria-label="t(locale, 'desktop.activity.exportButton')"
+            :title="t(locale, 'desktop.activity.exportButton')"
+            @click="openExportDialog"
+          >
+            <Download class="h-3 w-3" aria-hidden="true" />
+            <span class="hidden sm:inline">{{ t(locale, 'desktop.activity.exportButton') }}</span>
+          </button>
+        </div>
+
+        <!-- 搜索模式控制条：命中数 + 上一项/下一项 + 清除（设计 9.8） -->
+        <div
+          v-if="searchMode"
+          class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-4 py-1.5"
+        >
+          <span class="text-[10.5px] font-semibold text-[var(--theme-accent-primary)]">{{ t(locale, 'desktop.activity.searchHitCount', { count: searchTotal }) }}</span>
+          <span v-if="searchResults.length > 0 && searchActiveIndex >= 0" class="font-mono text-[10px] text-[var(--theme-text-quaternary)]">
+            {{ t(locale, 'desktop.activity.searchPosition', { current: searchActiveIndex + 1, total: searchResults.length }) }}
+          </span>
+          <div class="ml-auto flex items-center gap-1">
+            <button
+              type="button"
+              class="rounded p-1 text-[var(--theme-text-tertiary)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:opacity-40"
+              :aria-label="t(locale, 'desktop.activity.searchPrev')"
+              :title="t(locale, 'desktop.activity.searchPrev')"
+              :disabled="searchLoading || searchResults.length === 0"
+              @click="searchStep(-1)"
+            >
+              <ChevronLeft class="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              class="rounded p-1 text-[var(--theme-text-tertiary)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:opacity-40"
+              :aria-label="t(locale, 'desktop.activity.searchNext')"
+              :title="t(locale, 'desktop.activity.searchNext')"
+              :disabled="searchLoading || searchResults.length === 0"
+              @click="searchStep(1)"
+            >
+              <ChevronRight class="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              class="ml-1 rounded px-1.5 py-0.5 text-[10.5px] font-semibold text-[var(--theme-accent-primary)] hover:underline"
+              @click="clearSearch"
+            >
+              {{ t(locale, 'desktop.activity.searchClear') }}
+            </button>
+          </div>
         </div>
 
         <div class="min-h-0 flex-1 overflow-y-auto p-3" style="max-height: 62vh">
-          <!-- 空态 -->
-          <div v-if="!loading && filteredEvents.length === 0" class="flex flex-col items-center justify-center px-6 py-16 text-center">
-            <Search v-if="searchQuery.trim() || selectedKinds.size !== ALL_KINDS.length || activeAgentKey" class="h-6 w-6 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-            <FileOutput v-else class="h-6 w-6 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-            <p class="mt-2 text-[11.5px] text-[var(--theme-text-tertiary)]">
-              {{ (searchQuery.trim() || selectedKinds.size !== ALL_KINDS.length || activeAgentKey) ? t(locale, 'desktop.activity.timelineEmpty') : t(locale, 'desktop.activity.timelineNoEvents') }}
-            </p>
-          </div>
-
-          <!-- 事件流（按 sequence 升序） -->
-          <div v-else class="space-y-1.5">
-            <button
-              v-for="event in filteredEvents"
-              :key="event.eventKey"
-              type="button"
-              class="block w-full rounded-xl border px-3 py-2.5 text-left transition-colors"
-              :class="selectedEvent?.eventKey === event.eventKey
-                ? 'border-[var(--theme-accent-primary)] bg-[var(--theme-accent-soft)]'
-                : 'border-[var(--theme-border-subtle)] hover:bg-[var(--theme-bg-hover)]'"
-              @click="selectEvent(event)"
-            >
-              <div class="flex items-start gap-2.5">
-                <span
-                  class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
-                  :class="KIND_META[event.kind].cls"
-                >
-                  <component :is="KIND_META[event.kind].icon" class="h-3.5 w-3.5" aria-hidden="true" />
-                </span>
-                <span class="min-w-0 flex-1">
-                  <span class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                    <span class="text-[11px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, KIND_META[event.kind].labelKey) }}</span>
-                    <span class="text-[10px] text-[var(--theme-text-tertiary)]" :title="event.timestampMs != null ? formatAbsTime(event.timestampMs) : undefined">
-                      {{ event.timestampMs != null ? formatRelTime(event.timestampMs) : t(locale, 'desktop.activity.timeUnknown') }}
-                    </span>
-                    <span
-                      v-if="statusMeta(event.status)"
-                      class="inline-flex items-center rounded-full px-1.5 py-px text-[9px] font-bold leading-none"
-                      :class="statusMeta(event.status)!.cls"
-                    >
-                      {{ t(locale, statusMeta(event.status)!.labelKey) }}
-                    </span>
-                    <span v-if="event.actorAgentKey" class="inline-flex items-center gap-0.5 rounded bg-slate-500/10 px-1.5 py-px font-mono text-[9px] text-slate-500 dark:text-slate-300">
-                      <Bot class="h-2.5 w-2.5" aria-hidden="true" />
-                      {{ shortAgentId(event.actorAgentKey) }}
-                    </span>
-                  </span>
-                  <!-- 摘要（最多 2 行截断，默认折叠长文本） -->
-                  <span v-if="event.summary" class="mt-1 line-clamp-2 block break-words text-[11.5px] leading-relaxed text-[var(--theme-text-secondary)]">
-                    {{ event.summary }}
-                  </span>
-                </span>
-                <ChevronRight class="mt-1 h-3.5 w-3.5 shrink-0 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-              </div>
-
-              <!-- 工具调用卡（设计 9.5） -->
-              <div
-                v-if="event.tool"
-                class="mt-2 ml-9 flex flex-wrap items-center gap-1.5 rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-2.5 py-2"
-              >
-                <span class="font-mono text-[11px] font-semibold text-[var(--theme-text-primary)]">{{ event.tool.normalizedName || event.tool.rawName }}</span>
-                <span v-if="event.tool.family" class="rounded bg-cyan-500/10 px-1.5 py-px text-[9px] font-bold text-cyan-600 dark:text-cyan-300">{{ event.tool.family }}</span>
-                <span v-if="event.tool.durationMs != null" class="inline-flex items-center gap-0.5 text-[10px] text-[var(--theme-text-tertiary)]">
-                  <Clock class="h-3 w-3" aria-hidden="true" />
-                  {{ formatDuration(event.tool.durationMs) }}
-                </span>
-                <span
-                  v-for="key in event.tool.inputKeys.slice(0, 6)"
-                  :key="key"
-                  class="max-w-28 truncate rounded bg-[var(--theme-border-subtle)] px-1.5 py-px font-mono text-[9px] text-[var(--theme-text-tertiary)]"
-                  :title="key"
-                >
-                  {{ key }}
-                </span>
-                <span v-if="event.tool.inputKeys.length > 6" class="text-[9px] text-[var(--theme-text-quaternary)]">+{{ event.tool.inputKeys.length - 6 }}</span>
-                <span class="ml-auto inline-flex items-center gap-0.5 text-[9.5px] font-semibold text-[var(--theme-accent-primary)]">
-                  {{ t(locale, 'desktop.activity.expand') }}
-                  <ChevronDown class="h-3 w-3" aria-hidden="true" />
-                </span>
-              </div>
-            </button>
-
-            <!-- 分页 sentinel + 底部状态 -->
-            <div ref="sentinel" class="flex items-center justify-center py-2">
-              <span v-if="loadingMore" class="inline-flex items-center gap-1.5 text-[10.5px] text-[var(--theme-text-tertiary)]">
-                <Loader2 class="h-3 w-3 animate-spin" aria-hidden="true" />
-                {{ t(locale, 'desktop.activity.timelineLoading') }}
-              </span>
-              <span v-else-if="!hasMore" class="text-[10.5px] text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.noMore') }}</span>
+          <!-- ===== 搜索模式：命中列表（替代时间线，设计 9.8） ===== -->
+          <template v-if="searchMode">
+            <div v-if="searchLoading && searchResults.length === 0" class="flex items-center justify-center gap-1.5 py-8 text-[10.5px] text-[var(--theme-text-tertiary)]">
+              <Loader2 class="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              {{ t(locale, 'desktop.activity.timelineLoading') }}
             </div>
-          </div>
+            <div v-else-if="searchError" class="flex flex-col items-center justify-center px-6 py-16 text-center">
+              <TriangleAlert class="h-6 w-6 text-rose-500" aria-hidden="true" />
+              <p class="mt-2 max-w-md break-all text-[11px] leading-relaxed text-rose-500">{{ backendErrorLabel(locale, searchError) }}</p>
+              <button
+                type="button"
+                class="theme-button-secondary mt-4 inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-[11px] font-semibold"
+                @click="runSearch(true)"
+              >
+                <RefreshCw class="h-3 w-3" aria-hidden="true" />
+                {{ t(locale, 'desktop.activity.retry') }}
+              </button>
+            </div>
+            <div v-else-if="searchResults.length === 0" class="flex flex-col items-center justify-center px-6 py-16 text-center">
+              <Search class="h-6 w-6 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
+              <p class="mt-2 text-[11.5px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.activity.timelineEmpty') }}</p>
+            </div>
+            <div v-else class="space-y-1.5">
+              <button
+                v-for="(event, index) in searchResults"
+                :id="`search-hit-${index}`"
+                :key="event.eventKey"
+                type="button"
+                class="block w-full rounded-xl border px-3 py-2.5 text-left transition-colors"
+                :class="selectedEvent?.eventKey === event.eventKey
+                  ? 'border-[var(--theme-accent-primary)] bg-[var(--theme-accent-soft)]'
+                  : 'border-[var(--theme-border-subtle)] hover:bg-[var(--theme-bg-hover)]'"
+                @click="selectEvent(event)"
+              >
+                <div class="flex items-start gap-2.5">
+                  <span class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" :class="KIND_META[event.kind].cls">
+                    <component :is="KIND_META[event.kind].icon" class="h-3.5 w-3.5" aria-hidden="true" />
+                  </span>
+                  <span class="min-w-0 flex-1">
+                    <span class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span class="text-[11px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, KIND_META[event.kind].labelKey) }}</span>
+                      <span class="text-[10px] text-[var(--theme-text-tertiary)]" :title="event.timestampMs != null ? formatAbsTime(event.timestampMs) : undefined">
+                        {{ event.timestampMs != null ? formatRelTime(event.timestampMs) : t(locale, 'desktop.activity.timeUnknown') }}
+                      </span>
+                      <span
+                        v-if="statusMeta(event.status)"
+                        class="inline-flex items-center rounded-full px-1.5 py-px text-[9px] font-bold leading-none"
+                        :class="statusMeta(event.status)!.cls"
+                      >
+                        {{ t(locale, statusMeta(event.status)!.labelKey) }}
+                      </span>
+                      <span v-if="event.tool" class="inline-flex items-center gap-0.5 rounded bg-cyan-500/10 px-1.5 py-px font-mono text-[9px] text-cyan-600 dark:text-cyan-300">
+                        <Wrench class="h-2.5 w-2.5" aria-hidden="true" />
+                        {{ event.tool.normalizedName || event.tool.rawName }}
+                      </span>
+                    </span>
+                    <span v-if="event.summary" class="mt-1 line-clamp-2 block break-words text-[11.5px] leading-relaxed text-[var(--theme-text-secondary)]">
+                      {{ event.summary }}
+                    </span>
+                  </span>
+                  <ChevronRight class="mt-1 h-3.5 w-3.5 shrink-0 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
+                </div>
+              </button>
+              <div v-if="searchHasMore" class="flex items-center justify-center py-2">
+                <button
+                  type="button"
+                  class="theme-button-secondary inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[10.5px] font-semibold disabled:opacity-60"
+                  :disabled="searchLoading"
+                  @click="runSearch(false)"
+                >
+                  <Loader2 v-if="searchLoading" class="h-3 w-3 animate-spin" aria-hidden="true" />
+                  {{ t(locale, 'desktop.activity.loadMore') }}
+                </button>
+              </div>
+            </div>
+          </template>
+
+          <!-- ===== 常规时间线 ===== -->
+          <template v-else>
+            <!-- 空态 -->
+            <div v-if="!loading && events.length === 0" class="flex flex-col items-center justify-center px-6 py-16 text-center">
+              <Search v-if="selectedKinds.size !== ALL_KINDS.length || activeAgentKey" class="h-6 w-6 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
+              <FileOutput v-else class="h-6 w-6 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
+              <p class="mt-2 text-[11.5px] text-[var(--theme-text-tertiary)]">
+                {{ (selectedKinds.size !== ALL_KINDS.length || activeAgentKey) ? t(locale, 'desktop.activity.timelineEmpty') : t(locale, 'desktop.activity.timelineNoEvents') }}
+              </p>
+            </div>
+
+            <!-- 事件流（按 sequence 升序） -->
+            <div v-else class="space-y-1.5">
+              <button
+                v-for="event in events"
+                :key="event.eventKey"
+                type="button"
+                class="block w-full rounded-xl border px-3 py-2.5 text-left transition-colors"
+                :class="selectedEvent?.eventKey === event.eventKey
+                  ? 'border-[var(--theme-accent-primary)] bg-[var(--theme-accent-soft)]'
+                  : 'border-[var(--theme-border-subtle)] hover:bg-[var(--theme-bg-hover)]'"
+                @click="selectEvent(event)"
+              >
+                <div class="flex items-start gap-2.5">
+                  <span
+                    class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
+                    :class="KIND_META[event.kind].cls"
+                  >
+                    <component :is="KIND_META[event.kind].icon" class="h-3.5 w-3.5" aria-hidden="true" />
+                  </span>
+                  <span class="min-w-0 flex-1">
+                    <span class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span class="text-[11px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, KIND_META[event.kind].labelKey) }}</span>
+                      <span class="text-[10px] text-[var(--theme-text-tertiary)]" :title="event.timestampMs != null ? formatAbsTime(event.timestampMs) : undefined">
+                        {{ event.timestampMs != null ? formatRelTime(event.timestampMs) : t(locale, 'desktop.activity.timeUnknown') }}
+                      </span>
+                      <span
+                        v-if="statusMeta(event.status)"
+                        class="inline-flex items-center rounded-full px-1.5 py-px text-[9px] font-bold leading-none"
+                        :class="statusMeta(event.status)!.cls"
+                      >
+                        {{ t(locale, statusMeta(event.status)!.labelKey) }}
+                      </span>
+                      <span v-if="event.actorAgentKey" class="inline-flex items-center gap-0.5 rounded bg-slate-500/10 px-1.5 py-px font-mono text-[9px] text-slate-500 dark:text-slate-300">
+                        <Bot class="h-2.5 w-2.5" aria-hidden="true" />
+                        {{ shortAgentId(event.actorAgentKey) }}
+                      </span>
+                    </span>
+                    <!-- 摘要（最多 2 行截断，默认折叠长文本） -->
+                    <span v-if="event.summary" class="mt-1 line-clamp-2 block break-words text-[11.5px] leading-relaxed text-[var(--theme-text-secondary)]">
+                      {{ event.summary }}
+                    </span>
+                  </span>
+                  <ChevronRight class="mt-1 h-3.5 w-3.5 shrink-0 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
+                </div>
+
+                <!-- 工具调用卡（设计 9.5） -->
+                <div
+                  v-if="event.tool"
+                  class="mt-2 ml-9 flex flex-wrap items-center gap-1.5 rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-2.5 py-2"
+                >
+                  <span class="font-mono text-[11px] font-semibold text-[var(--theme-text-primary)]">{{ event.tool.normalizedName || event.tool.rawName }}</span>
+                  <span v-if="event.tool.family" class="rounded bg-cyan-500/10 px-1.5 py-px text-[9px] font-bold text-cyan-600 dark:text-cyan-300">{{ event.tool.family }}</span>
+                  <span v-if="event.tool.durationMs != null" class="inline-flex items-center gap-0.5 text-[10px] text-[var(--theme-text-tertiary)]">
+                    <Clock class="h-3 w-3" aria-hidden="true" />
+                    {{ formatDuration(event.tool.durationMs) }}
+                  </span>
+                  <span
+                    v-for="key in event.tool.inputKeys.slice(0, 6)"
+                    :key="key"
+                    class="max-w-28 truncate rounded bg-[var(--theme-border-subtle)] px-1.5 py-px font-mono text-[9px] text-[var(--theme-text-tertiary)]"
+                    :title="key"
+                  >
+                    {{ key }}
+                  </span>
+                  <span v-if="event.tool.inputKeys.length > 6" class="text-[9px] text-[var(--theme-text-quaternary)]">+{{ event.tool.inputKeys.length - 6 }}</span>
+                  <span class="ml-auto inline-flex items-center gap-0.5 text-[9.5px] font-semibold text-[var(--theme-accent-primary)]">
+                    {{ t(locale, 'desktop.activity.expand') }}
+                    <ChevronDown class="h-3 w-3" aria-hidden="true" />
+                  </span>
+                </div>
+              </button>
+
+              <!-- 分页 sentinel + 底部状态 -->
+              <div ref="sentinel" class="flex items-center justify-center py-2">
+                <span v-if="loadingMore" class="inline-flex items-center gap-1.5 text-[10.5px] text-[var(--theme-text-tertiary)]">
+                  <Loader2 class="h-3 w-3 animate-spin" aria-hidden="true" />
+                  {{ t(locale, 'desktop.activity.timelineLoading') }}
+                </span>
+                <span v-else-if="!hasMore" class="text-[10.5px] text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.noMore') }}</span>
+              </div>
+            </div>
+          </template>
         </div>
       </main>
 
@@ -1156,6 +1630,17 @@ const showPicker = computed(() => !props.fixedSessionKey)
                   <p v-else class="py-4 text-center text-[10.5px] text-[var(--theme-text-quaternary)]">
                     {{ payload.contentState === 'unavailable' ? t(locale, 'desktop.activity.payloadUnavailable') : t(locale, 'desktop.activity.payloadEmpty') }}
                   </p>
+                  <!-- M3 payload 分页（设计 12.5：nextCursor 续读 append） -->
+                  <button
+                    v-if="payload.nextCursor"
+                    type="button"
+                    class="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--theme-border-subtle)] px-2.5 py-1.5 text-[10.5px] font-semibold text-[var(--theme-text-tertiary)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:opacity-60"
+                    :disabled="payloadLoading"
+                    @click="loadMorePayload"
+                  >
+                    <Loader2 v-if="payloadLoading" class="h-3 w-3 animate-spin" aria-hidden="true" />
+                    {{ t(locale, 'desktop.activity.payloadLoadMore') }}
+                  </button>
                 </template>
               </div>
             </div>
@@ -1197,6 +1682,129 @@ const showPicker = computed(() => !props.fixedSessionKey)
       <div class="theme-surface-elevated flex items-center gap-2 rounded-xl border px-4 py-3 text-[12px] font-medium text-[var(--theme-text-secondary)] shadow-xl">
         <Loader2 class="h-4 w-4 animate-spin" aria-hidden="true" />
         {{ t(locale, 'desktop.activity.buildingIndex') }}
+      </div>
+    </div>
+
+    <!-- 导出对话框（15.3 / 21.5：范围预览，默认不勾选正文与工具 payload；成功显示路径可复制） -->
+    <div
+      v-if="exportDialogOpen"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="t(locale, 'desktop.activity.exportDialogTitle')"
+    >
+      <div class="absolute inset-0 bg-black/40" @click="closeExportDialog"></div>
+      <div class="theme-surface-elevated relative w-full max-w-md rounded-xl border p-4 shadow-xl">
+        <div class="flex items-center justify-between gap-2">
+          <h3 class="text-[13px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'desktop.activity.exportDialogTitle') }}</h3>
+          <button
+            type="button"
+            class="rounded p-1 text-[var(--theme-text-quaternary)] hover:bg-[var(--theme-bg-hover)]"
+            :aria-label="t(locale, 'common.close')"
+            :title="t(locale, 'common.close')"
+            @click="closeExportDialog"
+          >
+            <X class="h-4 w-4" aria-hidden="true" />
+          </button>
+        </div>
+
+        <!-- 范围预览 -->
+        <div class="mt-3 space-y-2">
+          <div class="flex items-center gap-2">
+            <span class="w-24 shrink-0 text-[10.5px] font-semibold text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.activity.exportFormat') }}</span>
+            <label class="flex cursor-pointer items-center gap-1.5 text-[11.5px] text-[var(--theme-text-secondary)]">
+              <input
+                v-model="exportFormat"
+                type="radio"
+                value="json"
+                class="h-3.5 w-3.5 accent-[var(--theme-accent-primary)]"
+              />
+              {{ t(locale, 'desktop.activity.exportFormatJson') }}
+            </label>
+            <label class="flex cursor-pointer items-center gap-1.5 text-[11.5px] text-[var(--theme-text-secondary)]">
+              <input
+                v-model="exportFormat"
+                type="radio"
+                value="csv"
+                class="h-3.5 w-3.5 accent-[var(--theme-accent-primary)]"
+              />
+              {{ t(locale, 'desktop.activity.exportFormatCsv') }}
+            </label>
+          </div>
+
+          <div class="space-y-1.5 rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-3 py-2.5">
+            <div class="text-[10px] font-semibold uppercase tracking-wide text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.exportScopePreview') }}</div>
+            <label class="flex cursor-pointer items-center gap-2">
+              <input v-model="exportIncludeSummaries" type="checkbox" class="h-3.5 w-3.5 accent-[var(--theme-accent-primary)]" />
+              <span class="text-[11.5px] text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.activity.exportIncludeSummaries') }}</span>
+            </label>
+            <label class="flex cursor-pointer items-center gap-2">
+              <input v-model="exportIncludeToolSummaries" type="checkbox" class="h-3.5 w-3.5 accent-[var(--theme-accent-primary)]" />
+              <span class="text-[11.5px] text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.activity.exportIncludeToolSummaries') }}</span>
+            </label>
+            <label class="flex cursor-pointer items-center gap-2">
+              <input v-model="exportIncludeRequestLinks" type="checkbox" class="h-3.5 w-3.5 accent-[var(--theme-accent-primary)]" />
+              <span class="text-[11.5px] text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.activity.exportIncludeRequestLinks') }}</span>
+            </label>
+            <label class="flex cursor-pointer items-center gap-2">
+              <input v-model="exportIncludePayloads" type="checkbox" class="h-3.5 w-3.5 accent-[var(--theme-accent-primary)]" />
+              <span class="text-[11.5px] text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.activity.exportIncludePayloads') }}</span>
+            </label>
+            <p
+              v-if="exportIncludePayloads"
+              class="flex items-start gap-1.5 rounded-lg border border-amber-500/20 bg-amber-500/5 px-2.5 py-2 text-[10.5px] leading-relaxed text-amber-600 dark:text-amber-300"
+            >
+              <TriangleAlert class="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
+              {{ t(locale, 'desktop.activity.exportPayloadWarning') }}
+            </p>
+          </div>
+        </div>
+
+        <!-- 结果 / 错误 -->
+        <div class="mt-3">
+          <p v-if="exportError" class="break-all text-[10.5px] leading-relaxed text-rose-500">{{ backendErrorLabel(locale, exportError) }}</p>
+          <div v-else-if="exportResult" class="rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-2.5 py-2">
+            <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10.5px] text-[var(--theme-text-tertiary)]">
+              <CheckCircle2 class="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-300" aria-hidden="true" />
+              <span>{{ t(locale, 'desktop.activity.exportSuccess') }}: {{ t(locale, 'desktop.activity.exportRows', { count: exportResult.rowCount }) }}</span>
+              <span v-if="exportResult.truncated" class="text-amber-600 dark:text-amber-300">{{ t(locale, 'desktop.activity.exportTruncated') }}</span>
+            </div>
+            <div class="mt-1.5 flex items-center gap-1.5">
+              <span class="min-w-0 flex-1 truncate font-mono text-[10px] text-[var(--theme-text-secondary)]" :title="exportResult.filePath">{{ exportResult.filePath }}</span>
+              <button
+                type="button"
+                class="rounded p-1 text-[var(--theme-text-tertiary)] transition-colors hover:bg-[var(--theme-bg-hover)]"
+                :aria-label="t(locale, 'desktop.activity.exportCopyPath')"
+                :title="t(locale, 'desktop.activity.exportCopyPath')"
+                @click="copyExportPath"
+              >
+                <Copy class="h-3 w-3" aria-hidden="true" />
+              </button>
+              <span v-if="exportCopiedFlash" class="text-[10px] font-medium text-emerald-600 dark:text-emerald-300">{{ t(locale, 'desktop.activity.copied') }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 操作 -->
+        <div class="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            class="theme-button-secondary inline-flex h-8 items-center rounded-lg px-3 text-[11.5px] font-semibold disabled:opacity-60"
+            :disabled="exportBusy"
+            @click="closeExportDialog"
+          >
+            {{ t(locale, 'common.cancel') }}
+          </button>
+          <button
+            type="button"
+            class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--theme-accent-primary)] px-3.5 text-[11.5px] font-semibold text-[var(--theme-accent-contrast)] transition-opacity hover:opacity-90 disabled:opacity-60"
+            :disabled="exportBusy"
+            @click="runExport"
+          >
+            <Loader2 v-if="exportBusy" class="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            {{ exportBusy ? t(locale, 'desktop.activity.exportBusy') : t(locale, 'desktop.activity.exportButton') }}
+          </button>
+        </div>
       </div>
     </div>
   </section>
