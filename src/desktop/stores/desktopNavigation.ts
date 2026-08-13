@@ -47,6 +47,14 @@ export function parseDesktopHash(hash: string): { page: DesktopPage; sessionKey:
       sessionKey = parts[2]
     }
   }
+  // 活动页二级路由：与 #/desktop/sessions/session/<key> 同模式（设计文档 4.2）。
+  if (parts[0] === 'activity' && parts[1]) {
+    try {
+      sessionKey = decodeURIComponent(parts[1])
+    } catch {
+      sessionKey = parts[1]
+    }
+  }
   return { page, sessionKey }
 }
 
@@ -58,6 +66,11 @@ export function desktopSessionHash(sessionKey: string): string {
   return `${DESKTOP_HASH_PREFIX}/sessions/session/${encodeURIComponent(sessionKey)}`
 }
 
+/** 活动页二级路由（设计文档 4.2：#/activity/:opaqueSessionKey）。 */
+export function desktopActivityHash(sessionKey: string): string {
+  return `${DESKTOP_HASH_PREFIX}/activity/${encodeURIComponent(sessionKey)}`
+}
+
 export const useDesktopNavigationStore = defineStore('desktopNavigation', {
   state: () => ({
     currentPage: 'overview' as DesktopPage,
@@ -65,6 +78,8 @@ export const useDesktopNavigationStore = defineStore('desktopNavigation', {
     sidebarCollapsed: false,
     previousSessionsQuery: null as SessionsListQuery | null,
     pendingFilters: null as DesktopNavigationFilters | null,
+    /** 设置页待定位的左侧分组（由活动页“打开设置”跳转时写入，设置页消费后清空）。 */
+    settingsTargetSection: null as string | null,
     /** 会话列表视图当前滚动位置（由 DesktopSessions 滚动时上报；openSession 时作为恢复值）。 */
     sessionListScrollTop: 0
   }),
@@ -112,6 +127,15 @@ export const useDesktopNavigationStore = defineStore('desktopNavigation', {
     backToSessions() {
       this.activeSessionKey = null
       this.writeHash(desktopHashFor('sessions'))
+    },
+    /** 打开活动页并固定到指定会话（#/desktop/activity/<key>）。 */
+    openActivity(sessionKey: string) {
+      this.writeHash(desktopActivityHash(sessionKey))
+    },
+    /** 跳到设置页并定位到指定分组（如 privacy）；设置页消费 settingsTargetSection。 */
+    openSettingsSection(section: string) {
+      this.settingsTargetSection = section
+      this.navigate('settings')
     },
     /** 消费并清空会话列表恢复信息（由会话列表视图在挂载时调用）。 */
     consumePreviousSessionsQuery(): SessionsListQuery | null {

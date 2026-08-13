@@ -6,13 +6,14 @@
  * 返回列表调用 desktopNavigation.backToSessions()（列表恢复筛选与滚动由 DesktopSessions 消费）。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowLeft, Copy, FileQuestionMark, Folder, Globe, MoreHorizontal, RefreshCw, X } from 'lucide-vue-next'
+import { ArrowLeft, Copy, FileQuestionMark, Folder, MoreHorizontal, RefreshCw, X } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { useDesktopNavigationStore } from '../../desktop/stores/desktopNavigation'
 import { t } from '../../i18n'
 import type { RequestRecord } from '../../types'
 import { useSessionDisplay } from '../../composables/useSessionDisplay'
 import LobeIcon from '../../components/LobeIcon.vue'
+import DesktopActivity from './DesktopActivity.vue'
 
 const props = defineProps<{
   sessionKey: string
@@ -428,12 +429,8 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- ============ 活动 tab（M2 占位） ============ -->
-      <div v-else-if="activeTab === 'activity'" class="theme-surface flex flex-col items-center justify-center rounded-xl border px-6 py-16 text-center">
-        <Globe class="h-7 w-7 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-        <h3 class="mt-3 text-[13px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'desktop.workspace.activityComingSoon') }}</h3>
-        <p class="mt-1.5 max-w-md text-[11.5px] leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.activityComingSoonDesc') }}</p>
-      </div>
+      <!-- ============ 活动 tab（M2：内嵌活动工作区，固定该会话） ============ -->
+      <DesktopActivity v-else-if="activeTab === 'activity'" :fixed-session-key="props.sessionKey" />
 
       <!-- ============ 请求 tab ============ -->
       <div v-else-if="activeTab === 'requests'" class="space-y-2">

@@ -9,11 +9,12 @@
  * 各组件自行保存（store.saveSettings）；「会话与隐私」深度索引为 M2 功能，显示 i18n 占位说明。
  */
 import { computed, onMounted, ref } from 'vue'
-import { ExternalLink, RefreshCw, Settings2 } from 'lucide-vue-next'
+import { ExternalLink, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { useUpdaterStore } from '../../stores/updater'
 import { t } from '../../i18n'
 import { quitApplication } from '../../utils/appExit'
+import { purgeSessionActivityContent } from '../../api/activityApi'
 import GeneralSettingsPanel from '../../components/settings/GeneralSettingsPanel.vue'
 import DataNavigationPanel from '../../components/settings/DataNavigationPanel.vue'
 import LocalCachePanel from '../../components/settings/LocalCachePanel.vue'
@@ -52,15 +53,64 @@ const activeSection = ref<SettingsSection>('app')
 type PricingSubView = 'main' | 'model-pricing' | 'currency'
 const pricingSubView = ref<PricingSubView>('main')
 
-// —— 深度索引（M2 占位，radio group 展示但禁用） ——
+// —— 深度索引（M2：radio 生效；fulltext 为 M3 未开放） ——
 type DeepIndexLevel = 'off' | 'structured' | 'fulltext' | 'ondemand'
-const deepIndexLevel = ref<DeepIndexLevel>('off')
+const deepIndexLevel = ref<DeepIndexLevel>(
+  (store.settings.deepIndexLevel as DeepIndexLevel) || 'off'
+)
 const deepIndexOptions: Array<{ id: DeepIndexLevel; labelKey: string; descKey: string }> = [
   { id: 'off', labelKey: 'desktop.settings.deepIndexOff', descKey: 'desktop.settings.deepIndexOffDesc' },
   { id: 'structured', labelKey: 'desktop.settings.deepIndexStructured', descKey: 'desktop.settings.deepIndexStructuredDesc' },
   { id: 'fulltext', labelKey: 'desktop.settings.deepIndexFullText', descKey: 'desktop.settings.deepIndexFullTextDesc' },
   { id: 'ondemand', labelKey: 'desktop.settings.deepIndexOnDemand', descKey: 'desktop.settings.deepIndexOnDemandDesc' }
 ]
+const retentionDays = ref<number>(store.settings.deepIndexRetentionDays ?? 90)
+const purgeBusy = ref(false)
+const purgeResult = ref('')
+const purgeDialogOpen = ref(false)
+
+const selectDeepIndexLevel = async (level: DeepIndexLevel) => {
+  if (level === 'fulltext') return // M3 未开放，不可选
+  deepIndexLevel.value = level
+  store.settings.deepIndexLevel = level
+  try {
+    await store.saveSettings()
+  } catch {
+    // 保存失败保留本地选择，错误由 store.error 呈现
+  }
+}
+
+const saveRetentionDays = async () => {
+  const clamped = Math.min(3650, Math.max(1, Math.round(retentionDays.value || 90)))
+  retentionDays.value = clamped
+  store.settings.deepIndexRetentionDays = clamped
+  try {
+    await store.saveSettings()
+  } catch {
+    // 同上
+  }
+}
+
+const runPurge = async () => {
+  purgeDialogOpen.value = false
+  purgeBusy.value = true
+  purgeResult.value = ''
+  try {
+    const removed = await purgeSessionActivityContent(store.settings, 'all')
+    purgeResult.value = t(locale.value, 'desktop.settings.purgeDone', { count: String(removed) })
+  } catch {
+    purgeResult.value = t(locale.value, 'desktop.settings.purgeFailed')
+  } finally {
+    purgeBusy.value = false
+  }
+}
+const openPurgeDialog = () => {
+  purgeResult.value = ''
+  purgeDialogOpen.value = true
+}
+const closePurgeDialog = () => {
+  purgeDialogOpen.value = false
+}
 
 // —— 关于与更新 ——
 const appVersion = ref('')
@@ -168,22 +218,24 @@ const confirmQuit = async () => {
           <p class="px-1 text-[11px] leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionPrivacyDesc') }}</p>
         </div>
 
-        <!-- 深度索引级别：不能用单个开关混淆多种风险，使用 radio group（M2 前禁用） -->
+        <!-- 深度索引级别：不能用单个开关混淆多种风险，使用 radio group -->
         <div class="space-y-1.5">
           <h4 class="px-1 text-[12px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'desktop.settings.deepIndexLevel') }}</h4>
           <div class="space-y-2">
             <label
               v-for="option in deepIndexOptions"
               :key="option.id"
-              class="flex cursor-not-allowed items-start gap-3 rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-3 py-2.5 opacity-70"
+              class="flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-3 py-2.5"
+              :class="option.id === 'fulltext' ? 'cursor-not-allowed opacity-60' : ''"
             >
               <input
                 type="radio"
                 name="deep-index-level"
                 class="mt-0.5 h-3.5 w-3.5 accent-[var(--theme-accent-primary)]"
                 :checked="deepIndexLevel === option.id"
-                :disabled="true"
+                :disabled="option.id === 'fulltext'"
                 :aria-label="t(locale, option.labelKey)"
+                @change="selectDeepIndexLevel(option.id)"
               />
               <span class="min-w-0">
                 <span class="block text-[12px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, option.labelKey) }}</span>
@@ -191,20 +243,39 @@ const confirmQuit = async () => {
               </span>
             </label>
           </div>
-          <!-- M2 功能占位说明 -->
-          <div class="flex items-start gap-2 rounded-lg border border-[var(--theme-border-default)] bg-[var(--theme-bg-surface)] px-3 py-2.5">
-            <Settings2 class="mt-0.5 h-4 w-4 shrink-0 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-            <div class="text-[11px] leading-relaxed text-[var(--theme-text-tertiary)]">
-              <p class="font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.settings.privacyComingSoon') }}</p>
-              <p class="mt-1">{{ t(locale, 'desktop.settings.privacyComingSoonDesc') }}</p>
-            </div>
-          </div>
         </div>
 
-        <!-- 内容保存范围（M2 占位说明） -->
+        <!-- 保留期限与清理 -->
         <div class="space-y-1.5">
           <h4 class="px-1 text-[12px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'desktop.settings.privacyRetention') }}</h4>
           <p class="px-1 text-[11px] leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.privacyRetentionDesc') }}</p>
+          <div class="flex flex-wrap items-center gap-2 px-1">
+            <label class="flex items-center gap-2 text-[11px] text-[var(--theme-text-secondary)]">
+              {{ t(locale, 'desktop.settings.retentionDaysLabel') }}
+              <input
+                v-model.number="retentionDays"
+                type="number"
+                min="1"
+                max="3650"
+                class="w-20 rounded-md border border-[var(--theme-border-default)] bg-[var(--theme-bg-surface)] px-2 py-1 text-[12px] text-[var(--theme-text-primary)] outline-none focus:ring-2 focus:ring-[var(--theme-accent-primary)]"
+                @change="saveRetentionDays()"
+              />
+              {{ t(locale, 'desktop.settings.retentionDaysUnit') }}
+            </label>
+            <button
+              type="button"
+              class="inline-flex items-center gap-1.5 rounded-md border border-[var(--theme-border-default)] px-2.5 py-1 text-[11px] font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:opacity-60"
+              :disabled="purgeBusy"
+              @click="openPurgeDialog()"
+            >
+              <Trash2 v-if="!purgeBusy" class="h-3.5 w-3.5" :aria-hidden="true" />
+              <RefreshCw v-else class="h-3.5 w-3.5 animate-spin" :aria-hidden="true" />
+              {{ t(locale, 'desktop.settings.purgeNow') }}
+            </button>
+          </div>
+          <p v-if="purgeResult" class="px-1 text-[11px]" role="status">
+            {{ purgeResult }}
+          </p>
         </div>
       </section>
 
@@ -340,5 +411,17 @@ const confirmQuit = async () => {
     tone="danger"
     @cancel="closeQuitDialog"
     @confirm="confirmQuit"
+  />
+
+  <ConfirmDialog
+    :open="purgeDialogOpen"
+    :title="t(locale, 'desktop.settings.purgeConfirmTitle')"
+    :body="t(locale, 'desktop.settings.purgeConfirmBody')"
+    :confirm-label="t(locale, 'desktop.settings.purgeNow')"
+    :cancel-label="t(locale, 'common.cancel')"
+    :busy="purgeBusy"
+    tone="danger"
+    @cancel="closePurgeDialog"
+    @confirm="runPurge"
   />
 </template>

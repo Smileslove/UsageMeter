@@ -48,7 +48,8 @@ export function createDefaultSettings(): AppSettings {
     gateway: { profiles: [] }, theme: createDefaultTheme(), modelPricing: createDefaultModelPricing(), autoStart: false,
     sourceAware: createDefaultSourceAware(), clientTools: createDefaultClientTools(), currency: createDefaultCurrency(),
     sync: createDefaultSync(), networkProxy: createDefaultNetworkProxy(), autoCheckUpdate: true, skippedUpdateVersion: '',
-    wslScan: createDefaultWslScan()
+    wslScan: createDefaultWslScan(),
+    deepIndexLevel: 'off', deepIndexRetentionDays: 90
   }
 }
 

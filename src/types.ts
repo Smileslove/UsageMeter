@@ -206,6 +206,8 @@ export interface AppSettings {
   autoCheckUpdate: boolean              // 启动时自动检查更新
   skippedUpdateVersion: string          // 已跳过的版本号（空字符串表示不跳过）
   wslScan: WslScanSettings              // WSL 被动扫描设置
+  deepIndexLevel: string                // 深度索引级别：'off' | 'structured' | 'fulltext' | 'ondemand'
+  deepIndexRetentionDays: number        // 深度索引保留期限（天，默认 90）
 }
 
 export type DayBoundaryMode = AppSettings['dayBoundaryMode']
@@ -947,4 +949,149 @@ export interface DesktopNavigationTarget {
   sessionKey?: string
   metric?: string
   view?: string
+}
+
+// ============ M2 深度会话活动 DTO（字段 camelCase，与 src-tauri/src/activity/model.rs 对齐） ============
+
+export type ActivityCapabilityLevel = 'none' | 'metadata' | 'structured' | 'fullContent'
+
+export type AgentRelationLevel = 'none' | 'flagOnly' | 'rootGrouped' | 'fullTree'
+
+export interface SessionActivityCapability {
+  level: ActivityCapabilityLevel
+  messages: boolean
+  toolInvocations: boolean
+  toolResults: boolean
+  requestLinks: boolean
+  agentRelations: AgentRelationLevel
+  contentSearch: boolean
+  sourceContentAvailable: boolean
+  parserId: string
+  parserVersion: number
+}
+
+export type SessionEventKind =
+  | 'userMessage'
+  | 'assistantMessage'
+  | 'toolInvocation'
+  | 'toolResult'
+  | 'agentStarted'
+  | 'agentFinished'
+  | 'systemEvent'
+  | 'compaction'
+  | 'error'
+  | 'unknown'
+
+export type EventStatus = 'pending' | 'running' | 'success' | 'error' | 'cancelled' | 'unknown'
+
+export type ContentState = 'none' | 'available' | 'redacted' | 'truncated' | 'unavailable'
+
+export type RequestLinkStrength = 'exact' | 'sourceExplicit' | 'timeWindow'
+
+export interface RequestEventLink {
+  requestKey: string
+  strength: RequestLinkStrength
+}
+
+export interface ToolInvocationSummary {
+  invocationKey: string
+  rawName: string
+  normalizedName: string
+  family: string
+  durationMs: number | null
+  inputBytes: number | null
+  outputBytes: number | null
+  inputKeys: string[]
+  resultKind: string | null
+}
+
+/** 安全来源引用（sourceFilePath 已由后端脱敏：home → ~）。 */
+export interface SafeSourceRef {
+  sourceFileId: number | null
+  sourceFilePath: string
+  sourceOffset: number | null
+  fingerprint: string | null
+}
+
+export interface SessionEventListItem {
+  eventKey: string
+  sessionKey: string
+  sequence: number
+  timestampMs: number | null
+  kind: SessionEventKind
+  status: EventStatus | null
+  actorAgentKey: string | null
+  parentEventKey: string | null
+  summary: string | null
+  contentState: ContentState
+  tool: ToolInvocationSummary | null
+  requestLinks: RequestEventLink[]
+  sourceRef: SafeSourceRef
+}
+
+export interface AgentNodeDto {
+  agentKey: string
+  sessionKey: string
+  parentAgentKey: string | null
+  relationLevel: AgentRelationLevel
+  displayKind: string | null
+  taskSummary: string | null
+  startedAtMs: number | null
+  endedAtMs: number | null
+  status: EventStatus
+  requestCount: number | null
+  totalTokens: number | null
+  estimatedCost: number | null
+  childCount: number
+}
+
+export interface SessionActivitySummary {
+  sessionKey: string
+  capability: SessionActivityCapability
+  eventCounts: Record<string, number>
+  agentCounts: Record<string, number>
+  toolCounts: Array<[string, number]>
+  coverage: string
+}
+
+export interface SessionEventFilter {
+  kinds?: SessionEventKind[] | null
+  toolNames?: string[] | null
+  agents?: string[] | null
+  statuses?: EventStatus[] | null
+  search?: string | null
+  minSequence?: number | null
+  maxSequence?: number | null
+}
+
+export interface EventsPage {
+  items: SessionEventListItem[]
+  total: number
+  hasMore: boolean
+}
+
+export interface ToolSummaryRow {
+  toolName: string
+  family: string
+  invocationCount: number
+  successCount: number
+  errorCount: number
+  totalDurationMs: number
+  avgDurationMs: number
+  inputBytesTotal: number
+  outputBytesTotal: number
+}
+
+export interface RedactedPayloadPage {
+  content: string
+  truncated: boolean
+  nextCursor: string | null
+  contentState: ContentState
+}
+
+export interface RebuildResult {
+  sessionsIndexed: number
+  sessionsFailed: number
+  eventsWritten: number
+  errors: string[]
 }
