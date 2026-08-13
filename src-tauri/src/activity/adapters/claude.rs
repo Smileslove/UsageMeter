@@ -87,7 +87,8 @@ impl SessionActivityAdapter for ClaudeAdapter {
         let root_session_id = derive_root_session_id_from_path(&source.primary_file_path);
         let actor_agent_key = if is_subagent_path(&source.primary_file_path) {
             Some(format!(
-                "subagent:{}",
+                "{}:subagent:{}",
+                source.session_id,
                 subagent_file_stem(&source.primary_file_path)
             ))
         } else {
@@ -169,7 +170,7 @@ impl SessionActivityAdapter for ClaudeAdapter {
                                     .unwrap_or(false);
                                 sequence += 1;
                                 let event_key = event_key_for(
-                                    &root_session_id,
+                                    &source.session_id,
                                     message_id.as_deref(),
                                     Some(block_idx),
                                     tool_use_id,
@@ -207,7 +208,7 @@ impl SessionActivityAdapter for ClaudeAdapter {
                         sequence += 1;
                         events.push(NewSessionEvent {
                             event_key: event_key_for(
-                                &root_session_id,
+                                &source.session_id,
                                 message_id.as_deref(),
                                 text_block_idx,
                                 "",
@@ -244,7 +245,7 @@ impl SessionActivityAdapter for ClaudeAdapter {
                                 }
                                 sequence += 1;
                                 let event_key = event_key_for(
-                                    &root_session_id,
+                                    &source.session_id,
                                     message_id.as_deref(),
                                     Some(block_idx),
                                     "",
@@ -295,7 +296,7 @@ impl SessionActivityAdapter for ClaudeAdapter {
                                 });
                                 sequence += 1;
                                 let event_key = event_key_for(
-                                    &root_session_id,
+                                    &source.session_id,
                                     message_id.as_deref(),
                                     Some(block_idx),
                                     tool_use_id,
@@ -840,11 +841,10 @@ mod tests {
         assert!(inv.input_bytes.is_some_and(|bytes| bytes > 0));
         assert_eq!(inv.status, Some(EventStatus::Success));
 
-        // 事件键格式：claude:{root}:{message_id}:{block_idx}；root 由文件 stem
-        // 推导（fixture 文件名为 claude-test.jsonl）。
+        // 事件键格式：claude:{session_id}:{message_id}:{block_idx}（会话唯一前缀）。
         assert!(assistant_event
             .event_key
-            .starts_with("claude:claude-test:msg-assistant-1:0"));
+            .starts_with("claude:proj::sess-1:msg-assistant-1:0"));
         assert!(invocation.event_key.contains(":toolu_01"));
         // 无父代理。
         assert!(batch.agents.is_empty());
@@ -943,7 +943,7 @@ mod tests {
         // 行号回退 key 唯一（无 message.id 的坏行不产出事件，不受影响）。
         assert_eq!(
             batch.events[1].event_key,
-            "claude:claude-test:msg-2:0:toolu_x"
+            "claude:proj::sess-4:msg-2:0:toolu_x"
         );
     }
 
@@ -1025,7 +1025,10 @@ mod tests {
 
         assert_eq!(batch.agents.len(), 1);
         let agent = &batch.agents[0];
-        assert_eq!(agent.agent_key, "subagent:sub-1".to_string());
+        assert_eq!(
+            agent.agent_key,
+            "proj::sess-root::sub-1:subagent:sub-1".to_string()
+        );
         assert_eq!(agent.relation_level, AgentRelationLevel::RootGrouped);
         assert_eq!(agent.display_kind.as_deref(), Some("subagent"));
         assert_eq!(agent.status, Some(EventStatus::Success));
@@ -1036,10 +1039,12 @@ mod tests {
         assert_eq!(agent.started_at_ms, Some(1747000000000));
         assert_eq!(agent.ended_at_ms, Some(1747000001000));
 
-        // 全部事件归到该代理；事件键用根会话 id（subagents 前一 component）。
+        // 全部事件归到该代理；事件键用会话唯一前缀（session_id）。
         assert!(batch.events.iter().all(|event| {
-            event.actor_agent_key.as_deref() == Some("subagent:sub-1")
-                && event.event_key.starts_with("claude:sess-root:")
+            event.actor_agent_key.as_deref() == Some("proj::sess-root::sub-1:subagent:sub-1")
+                && event
+                    .event_key
+                    .starts_with("claude:proj::sess-root::sub-1:")
         }));
     }
 

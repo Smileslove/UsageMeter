@@ -5,7 +5,9 @@
 //! SQLite 读写（db）。
 
 pub mod adapter;
+pub mod adapters;
 pub mod db;
+pub mod indexer;
 pub mod model;
 pub mod redact;
 pub mod registry;

@@ -1,71 +1,14 @@
 //! 会话活动适配器注册表（与 `session::registry` 风格一致）。
 //!
-//! M2 阶段只注册 Claude Code 与 Codex 两个占位适配器（能力为 none、
-//! `index_session` 返回 Unsupported），真实解析实现由后续子代理填充。
+//! M2 阶段注册 Claude Code 与 Codex 两个真实解析适配器（`adapters/claude.rs`
+//! 与 `adapters/codex.rs`），能力由各适配器诚实上报；无占位、无伪数据。
 
-use crate::activity::adapter::{ActivityError, ActivityIndexBatch, SessionActivityAdapter};
-use crate::activity::model::{
-    ActivityCapabilityLevel, AgentRelationLevel, RedactedPayloadPage, SafeSourceRef,
-    SessionActivityCapability,
-};
+use crate::activity::adapter::SessionActivityAdapter;
+use crate::activity::adapters::claude::ClaudeAdapter;
+use crate::activity::adapters::codex::CodexAdapter;
 
-/// 未实现解析的占位适配器：诚实上报“无能力”，不伪造数据。
-struct PlaceholderAdapter {
-    tool: &'static str,
-    parser_id: &'static str,
-}
-
-impl SessionActivityAdapter for PlaceholderAdapter {
-    fn tool_name(&self) -> &'static str {
-        self.tool
-    }
-
-    fn capability(&self) -> SessionActivityCapability {
-        SessionActivityCapability {
-            level: ActivityCapabilityLevel::None,
-            messages: false,
-            tool_invocations: false,
-            tool_results: false,
-            request_links: false,
-            agent_relations: AgentRelationLevel::None,
-            content_search: false,
-            source_content_available: false,
-            parser_id: self.parser_id.to_string(),
-            parser_version: 0,
-        }
-    }
-
-    fn index_session(
-        &self,
-        _source: &crate::activity::adapter::SessionSourceRef,
-    ) -> Result<ActivityIndexBatch, ActivityError> {
-        Err(ActivityError::Unsupported(format!(
-            "deep activity indexing not implemented for tool {}",
-            self.tool
-        )))
-    }
-
-    fn read_payload(
-        &self,
-        _source_ref: &SafeSourceRef,
-        _section: &str,
-        _max_bytes: usize,
-    ) -> Result<RedactedPayloadPage, ActivityError> {
-        Err(ActivityError::Unsupported(format!(
-            "deep activity payload reading not implemented for tool {}",
-            self.tool
-        )))
-    }
-}
-
-static CLAUDE_CODE_ADAPTER: PlaceholderAdapter = PlaceholderAdapter {
-    tool: "claude_code",
-    parser_id: "claude_code_placeholder",
-};
-static CODEX_ADAPTER: PlaceholderAdapter = PlaceholderAdapter {
-    tool: "codex",
-    parser_id: "codex_placeholder",
-};
+static CLAUDE_CODE_ADAPTER: ClaudeAdapter = ClaudeAdapter;
+static CODEX_ADAPTER: CodexAdapter = CodexAdapter;
 
 /// 会话活动适配器注册表。
 #[derive(Default)]
@@ -107,38 +50,62 @@ impl AdapterRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::activity::model::{ActivityCapabilityLevel, AgentRelationLevel};
 
     #[test]
-    fn registry_contains_placeholder_adapters() {
+    fn registry_contains_real_adapters() {
         let registry = AdapterRegistry::new();
         let claude = registry
             .get_adapter("claude_code")
             .expect("claude_code adapter registered");
         assert_eq!(claude.tool_name(), "claude_code");
-        assert_eq!(claude.capability().level, ActivityCapabilityLevel::None);
-        assert!(!claude.capability().source_content_available);
+        // 真实 Claude 适配器：结构化能力 + 根归组子代理关系 + 源内容可用。
+        assert_eq!(
+            claude.capability().level,
+            ActivityCapabilityLevel::Structured
+        );
+        assert_eq!(
+            claude.capability().agent_relations,
+            AgentRelationLevel::RootGrouped
+        );
+        assert!(claude.capability().source_content_available);
+        assert!(claude.capability().tool_invocations);
+        assert!(claude.capability().request_links);
 
         let codex = registry
             .get_adapter("codex")
             .expect("codex adapter registered");
         assert_eq!(codex.tool_name(), "codex");
+        assert_eq!(
+            codex.capability().level,
+            ActivityCapabilityLevel::Structured
+        );
+        assert_eq!(
+            codex.capability().agent_relations,
+            AgentRelationLevel::FlagOnly
+        );
 
         assert!(registry.get_adapter("unknown_tool").is_none());
         assert_eq!(registry.adapters().len(), 2);
     }
 
     #[test]
-    fn placeholder_index_session_returns_unsupported() {
+    fn real_index_session_reports_io_error_without_path() {
+        // 真实适配器已接线：对不存在的源文件返回 IO 错误（而非 Unsupported）。
         let registry = AdapterRegistry::new();
         let claude = registry.get_adapter("claude_code").unwrap();
         let source = crate::activity::adapter::SessionSourceRef {
             session_id: "s1".to_string(),
             tool: "claude_code".to_string(),
-            primary_file_path: "/tmp/s.jsonl".to_string(),
+            primary_file_path: "/nonexistent/claude-x.jsonl".to_string(),
             source_file_id: None,
         };
         let err = claude.index_session(&source).unwrap_err();
-        assert!(err.to_string().starts_with("ERR_ACTIVITY_UNSUPPORTED"));
+        assert!(err.to_string().starts_with("ERR_ACTIVITY_IO"));
+        assert!(
+            !err.to_string().contains("nonexistent"),
+            "error must not leak path"
+        );
     }
 
     #[test]

@@ -113,7 +113,7 @@ impl SessionActivityAdapter for CodexAdapter {
         let mut line_index: u64 = 0;
 
         let actor_agent_key = if identity.is_subagent {
-            let agent_key = format!("subagent:{}", identity.thread_id);
+            let agent_key = format!("{}:subagent:{}", source.session_id, identity.thread_id);
             agents.push(NewAgentNode {
                 agent_key: agent_key.clone(),
                 parent_agent_key: None,
@@ -1202,14 +1202,16 @@ mod tests {
 
         assert_eq!(batch.agents.len(), 1);
         let agent = &batch.agents[0];
-        assert_eq!(agent.agent_key, "subagent:sub-uuid-1".to_string());
+        assert_eq!(
+            agent.agent_key,
+            "codex::sub-uuid-1:subagent:sub-uuid-1".to_string()
+        );
         assert_eq!(agent.relation_level, AgentRelationLevel::FlagOnly);
         assert_eq!(agent.display_kind.as_deref(), Some("subagent"));
 
-        assert!(batch
-            .events
-            .iter()
-            .all(|event| { event.actor_agent_key.as_deref() == Some("subagent:sub-uuid-1") }));
+        assert!(batch.events.iter().all(|event| {
+            event.actor_agent_key.as_deref() == Some("codex::sub-uuid-1:subagent:sub-uuid-1")
+        }));
     }
 
     #[test]
