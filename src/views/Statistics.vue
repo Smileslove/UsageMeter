@@ -3,7 +3,17 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useMonitorStore } from '../stores/monitor'
 import { fetchMonthActivityAction, fetchYearActivityAction } from '../stores/monitorDomains'
-import type { ActivityMaterializationDone, DayActivity, StatisticsBucket, StatisticsMetric, StatisticsRangePreset } from '../types'
+import {
+  loadStatisticsViewState,
+  saveStatisticsViewState
+} from '../stores/statisticsViewState'
+import type {
+  ActivityMaterializationDone,
+  DayActivity,
+  StatisticsBucket,
+  StatisticsMetric,
+  StatisticsRangePreset
+} from '../types'
 import ActivityGrid from '../components/statistics/ActivityGrid.vue'
 import StatisticsRangePicker from '../components/statistics/StatisticsRangePicker.vue'
 import StatisticsMetricCards from '../components/statistics/StatisticsMetricCards.vue'
@@ -12,14 +22,16 @@ import StatisticsModelList from '../components/statistics/StatisticsModelList.vu
 import { backendErrorLabel } from '../i18n'
 
 const store = useMonitorStore()
-const preset = ref<StatisticsRangePreset>('today')
-const monthMetric = ref<StatisticsMetric>('cost')
-const analysisMetric = ref<StatisticsMetric>('cost')
+// 切页卸载/重挂后恢复上次范围与指标（模块级持久化 statisticsViewState）
+const initialStatsView = loadStatisticsViewState()
+const preset = ref<StatisticsRangePreset>(initialStatsView?.preset ?? 'today')
+const monthMetric = ref<StatisticsMetric>(initialStatsView?.monthMetric ?? 'cost')
+const analysisMetric = ref<StatisticsMetric>(initialStatsView?.analysisMetric ?? 'cost')
 const currentMonth = ref(new Date())
-const activityView = ref<'month' | 'year'>('month')
-const selectedDate = ref('')
-const customStart = ref(toDateTimeInput(startOfLocalDay(new Date())))
-const customEnd = ref(toDateTimeInput(new Date()))
+const activityView = ref<'month' | 'year'>(initialStatsView?.activityView ?? 'month')
+const selectedDate = ref(initialStatsView?.selectedDate ?? '')
+const customStart = ref(initialStatsView?.customStart ?? toDateTimeInput(startOfLocalDay(new Date())))
+const customEnd = ref(initialStatsView?.customEnd ?? toDateTimeInput(new Date()))
 // 标记是否已经初始化完成，用于区分用户操作和初始化
 const initialized = ref(false)
 let customRangeTimer: ReturnType<typeof setTimeout> | null = null
@@ -271,6 +283,16 @@ onUnmounted(() => {
   }
   unlistenActivityMaterialization?.()
   unlistenActivityMaterialization = null
+  // 切页卸载前持久化统计页 UI 状态（范围/指标/日期），重挂后恢复
+  saveStatisticsViewState({
+    preset: preset.value,
+    monthMetric: monthMetric.value,
+    analysisMetric: analysisMetric.value,
+    activityView: activityView.value,
+    selectedDate: selectedDate.value,
+    customStart: customStart.value,
+    customEnd: customEnd.value
+  })
 })
 
 </script>

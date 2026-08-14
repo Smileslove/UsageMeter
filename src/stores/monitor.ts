@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
 import { setNumberFormatMode } from '../utils/format'
+import { pickEffectiveWindow } from '../utils/windowFallback'
 import type { AppSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SubscriptionQueryResult, SubscriptionQuota, LimitSurvivalSnapshot, SourceQuotaBindingConfig, CopilotAuthStatus, SourceQuotaBindingRuntimeState, SourceQuotaProfileDescriptor } from '../types'
 import { createDefaultSettings } from './monitorDefaults'
 import {
@@ -220,8 +221,11 @@ export const useMonitorStore = defineStore('monitor', {
         this.limitSurvival = bundle.limitSurvival
 
         this.lastUpdatedEpoch = this.snapshot.generatedAtEpoch
-        const summaryWindow = this.settings.summaryWindow
-        void this.fetchOverviewDeferredBundle(summaryWindow)
+        // deferred 包（排行/速率）按「生效窗口」拉取：当前所选窗口无数据时
+        // 回退到有数据的长窗口，避免概览排行与速率区空白（SummaryPanel 的
+        // 回退展示与之一致；用户显式切换窗口走 selectWindow 拉所选窗口）。
+        const effective = pickEffectiveWindow(this.snapshot.windows, this.settings.summaryWindow)
+        void this.fetchOverviewDeferredBundle(effective.window ?? this.settings.summaryWindow)
       } catch (e) {
         this.error = errorMessage(e)
       } finally {

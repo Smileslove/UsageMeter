@@ -1,56 +1,30 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import { t, windowNameLabel } from '../i18n'
 import { MessageSquare, Sigma, CircleDollarSign, Database } from 'lucide-vue-next'
 import { formatRequestCount, formatTokenValue, formatCost } from '../utils/format'
-import { WINDOW_ORDER, type WindowName, type WindowUsage } from '../types'
+import { WINDOW_ORDER, type WindowName } from '../types'
+import { pickEffectiveWindow } from '../utils/windowFallback'
 import LimitSurvivalCard from './overview/LimitSurvivalCard.vue'
 
 const store = useMonitorStore()
 
-// 获取当前选择的汇总窗口数据
-const currentSummaryWindowData = computed(() => {
-  const windowName = store.settings.summaryWindow
-  return store.windows.find(w => w.window === windowName) ?? null
-})
-
-function hasAnyWindowUsage(data: WindowUsage | null): boolean {
-  if (!data) return false
-  return (
-    (data.requestUsed ?? 0) > 0 ||
-    (data.tokenUsed ?? 0) > 0 ||
-    (data.cost ?? 0) > 0
-  )
-}
-
-// 模块级缓存（WebView 生命周期内保留，跨组件卸载/重挂不丢）：
-// 只缓存「有真实用量」的窗口，当前窗口暂无数据（today/24h 等）时
-// 回退显示最近一个有数据的窗口，避免切页后概览变成空白/全 0。
-let lastSummaryWindowData: WindowUsage | null = null
-
-watch(
-  currentSummaryWindowData,
-  data => {
-    if (hasAnyWindowUsage(data)) {
-      lastSummaryWindowData = data
-    }
-  },
-  { immediate: true }
+// 实际生效窗口：当前窗口有真实用量则用当前窗口，否则按数据覆盖最全的
+// 长窗口优先回退（30d → current_month → 7d → …）。实时计算自 store.windows，
+// 不依赖组件缓存——面板切页卸载/重挂后回退依然生效。
+const effectivePick = computed(() =>
+  pickEffectiveWindow(store.windows, store.settings.summaryWindow as WindowName)
 )
 
-// 新窗口数据未返回沿上一份数据渲染，保持面板结构稳定不塌陷；
-// 当前窗口存在但全 0（无数据）时同样回退到上一有数据窗口
 const summaryWindowData = computed(() => {
-  const current = currentSummaryWindowData.value
-  if (hasAnyWindowUsage(current)) return current
-  return current ?? lastSummaryWindowData
+  const name = effectivePick.value.window
+  if (!name) return null
+  return store.windows.find(w => w.window === name) ?? null
 })
 
-// 当前所选窗口的数据尚在加载或暂无数据（正展示上一窗口数据）
-const isWindowDataPending = computed(
-  () => !hasAnyWindowUsage(currentSummaryWindowData.value) && !!lastSummaryWindowData
-)
+// 当前所选窗口暂无数据（正展示回退窗口）
+const isWindowDataPending = computed(() => effectivePick.value.isFallback)
 
 // 计算总输入 Token（包含缓存读取）
 const totalInputTokens = computed(() => {
