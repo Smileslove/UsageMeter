@@ -61,6 +61,20 @@ const {
 // —— 会话工作区（全页面） ——
 const workspaceKey = computed(() => nav.activeSessionKey)
 
+// —— 从工作区返回列表时恢复滚动位置与筛选 ——
+// openSession 保存的恢复信息原本只在 onMounted 消费，但列表/工作区切换不重挂载组件，
+// 深链进入时还会把恢复值错误地消费在错误时机（空上下文）；改为返回瞬间消费。
+watch(workspaceKey, async (key, prevKey) => {
+  if (key != null || prevKey == null) return
+  const restored = nav.consumePreviousSessionsQuery()
+  if (!restored) return
+  restoredScrollTop.value = restored.scrollTop
+  if (restored.sourceId) await store.setActiveSourceFilter(restored.sourceId)
+  if (restored.tool) await store.setActiveToolFilter(restored.tool)
+  await nextTick()
+  applyScrollRestore()
+})
+
 // —— 列表恢复信息（openSession 前保存的 scrollTop + 全局筛选） ——
 const restoredScrollTop = ref(0)
 const applyScrollRestore = () => {
@@ -370,27 +384,36 @@ watch(filteredRequests, list => {
 // 可选列（错误/时长，默认隐藏；设计文档 8.3）
 const showOptionalColumns = ref(false)
 
-onMounted(async () => {
-  // 深链/事件导航带来的全局筛选上下文（sourceId/tool）先应用
+/** 深链/事件导航带来的全局筛选上下文（sourceId/tool）应用；sessionKey 走 hash 路由
+ *  （openSession 会写 hash，hashchange 同步 activeSessionKey 后工作区自动切换）。 */
+async function applyPendingFilters() {
   const pending = nav.consumePendingFilters()
-  if (pending?.sourceId && store.settings.sourceAware.activeSourceFilter !== pending.sourceId) {
+  if (!pending) return
+  if (pending.sourceId && store.settings.sourceAware.activeSourceFilter !== pending.sourceId) {
     await store.setActiveSourceFilter(pending.sourceId)
   }
-  if (pending?.tool && store.settings.clientTools.activeToolFilter !== pending.tool) {
+  if (pending.tool && store.settings.clientTools.activeToolFilter !== pending.tool) {
     await store.setActiveToolFilter(pending.tool)
   }
   // 深链携带 sessionKey 时直接打开对应会话工作区（复用 openSession 的 hash/恢复逻辑；
   // 已处于该工作区则不重复导航；view 字段由 sessionKey 决定，忽略）
-  if (pending?.sessionKey && !nav.activeSessionKey) {
+  if (pending.sessionKey && !nav.activeSessionKey) {
     nav.openSession(pending.sessionKey)
   }
-  // 从工作区返回时恢复滚动位置
-  const restored = nav.consumePreviousSessionsQuery()
-  if (restored) {
-    restoredScrollTop.value = restored.scrollTop
-    if (restored.sourceId) await store.setActiveSourceFilter(restored.sourceId)
-    if (restored.tool) await store.setActiveToolFilter(restored.tool)
+}
+
+// 同页深链：hash 相同页面不重挂载，onMounted 消费路径不执行；
+// pendingConsumeTick 变化时若本页激活则补消费（跨页场景由 onMounted 覆盖，这里幂等）。
+watch(
+  () => nav.pendingConsumeTick,
+  () => {
+    if (nav.currentPage === 'sessions') void applyPendingFilters()
   }
+)
+
+onMounted(async () => {
+  // 深链/事件导航带来的全局筛选上下文（sourceId/tool）先应用
+  await applyPendingFilters()
   await initializeSessionView()
   await nextTick()
   applyScrollRestore()

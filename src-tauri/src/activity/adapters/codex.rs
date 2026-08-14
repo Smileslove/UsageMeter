@@ -112,6 +112,40 @@ impl SessionActivityAdapter for CodexAdapter {
         let mut calls: HashMap<String, (String, usize)> = HashMap::new();
         let mut bad_lines: u64 = 0;
         let mut line_index: u64 = 0;
+        // 第一遍扫描：call_id -> 结果状态（function_call_output 保守 Success；
+        // custom_tool_call_output 按 exit_code 判定）。调用出现在结果之前，
+        // 单遍解析无法预知结果；结果未知时标记 Pending（不虚报 Success）。
+        // fork replay 区间的结果不采集（对应调用事件也不会生成）。
+        let mut call_result_status: HashMap<String, EventStatus> = HashMap::new();
+        if let Ok(file) = fs::File::open(&source.primary_file_path) {
+            for line in BufReader::new(file).lines().map_while(Result::ok) {
+                let Ok(json) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if is_fork_replay(&identity, extract_timestamp(&json)) {
+                    continue;
+                }
+                if json.get("type").and_then(Value::as_str) != Some("response_item") {
+                    continue;
+                }
+                let Some(payload) = json.get("payload") else {
+                    continue;
+                };
+                let inner = payload.get("type").and_then(Value::as_str).unwrap_or("");
+                if inner != "function_call_output" && inner != "custom_tool_call_output" {
+                    continue;
+                }
+                let Some(call_id) = payload.get("call_id").and_then(Value::as_str) else {
+                    continue;
+                };
+                let status = if inner == "custom_tool_call_output" {
+                    output_exit_status(payload.get("output").and_then(Value::as_str).unwrap_or(""))
+                } else {
+                    EventStatus::Success
+                };
+                call_result_status.insert(call_id.to_string(), status);
+            }
+        }
 
         let actor_agent_key = if identity.is_subagent {
             let agent_key = format!("{}:subagent:{}", source.session_id, identity.thread_id);
@@ -324,7 +358,15 @@ impl SessionActivityAdapter for CodexAdapter {
                                 .and_then(Value::as_str)
                                 .map(str::to_string);
                             let invocation_key = call_id.clone().unwrap_or_else(|| {
-                                format!("codex:{}:line:{}", source.session_id, line_index)
+                                // call_id 缺失回退到行号；同一会话有多个 rollout
+                                // 文件（fork/子代理）时同号行会互相覆盖，回退键
+                                // 必须带来源文件标识保证跨文件唯一。
+                                format!(
+                                    "codex:{}:{}:line:{}",
+                                    source.session_id,
+                                    source_file_tag(&source.primary_file_path),
+                                    line_index
+                                )
                             });
                             // custom_tool_call 的入参在 `input` 字段（可为 diff 文本，
                             // 不一定是 JSON）；function_call 的入参是 JSON 字符串。
@@ -345,13 +387,31 @@ impl SessionActivityAdapter for CodexAdapter {
                                 (arguments.to_string(), top_level_keys(arguments))
                             };
                             let status = if is_custom {
+                                // custom_tool_call 的显式 status 字段是调用自身
+                                // 状态的权威声明（completed/failed/pending/cancelled）；
+                                // 缺失时按结果映射判定（有结果 → Success/Error，
+                                // 无结果 → Pending）。
                                 payload
                                     .get("status")
                                     .and_then(Value::as_str)
                                     .map(custom_call_status)
-                                    .unwrap_or(EventStatus::Success)
+                                    .or_else(|| {
+                                        call_id
+                                            .as_deref()
+                                            .and_then(|cid| call_result_status.get(cid))
+                                            .copied()
+                                    })
+                                    .unwrap_or(EventStatus::Pending)
                             } else {
-                                EventStatus::Success
+                                // function_call 无显式状态：结果映射判定
+                                // （function_call_output 保守 Success；
+                                // custom_tool_call_output 按 exit_code 判 Error；
+                                // 无结果 → Pending，不虚报 Success）。
+                                call_id
+                                    .as_deref()
+                                    .and_then(|cid| call_result_status.get(cid))
+                                    .copied()
+                                    .unwrap_or(EventStatus::Pending)
                             };
                             let event = NewSessionEvent {
                                 event_key: event_key.clone(),
@@ -432,7 +492,10 @@ impl SessionActivityAdapter for CodexAdapter {
             }
         }
 
-        let _ = bad_lines;
+        // 解析失败行只计数量（不含行内容，避免把正文/密钥写进日志）。
+        if bad_lines > 0 {
+            eprintln!("[UsageMeter] codex activity index: skipped {bad_lines} unparseable line(s)");
+        }
         Ok(ActivityIndexBatch {
             session_key: source.session_id.clone(),
             events,
@@ -601,6 +664,23 @@ fn is_fork_replay(identity: &RolloutIdentity, ts: Option<i64>) -> bool {
 
 fn codex_event_key(session_id: &str, line_index: u64) -> String {
     format!("codex:{session_id}:{line_index}")
+}
+
+/// 来源文件的稳定短标识（供 call_id 缺失时回退键去冲突）：取路径最后两个
+/// component 拼 `_`（如 `sessions/rollout-1.jsonl` → `sessions_rollout-1.jsonl`），
+/// 空路径回退 `unknown`。同一会话的多个 rollout 文件路径尾段不同 → 键唯一。
+fn source_file_tag(path: &str) -> String {
+    let components: Vec<&str> = path
+        .split(['/', '\\'])
+        .filter(|component| !component.is_empty())
+        .collect();
+    let start = components.len().saturating_sub(2);
+    let tag = components[start..].join("_");
+    if tag.is_empty() {
+        "unknown".to_string()
+    } else {
+        tag
+    }
 }
 
 // ── 文本提取 ──────────────────────────────────────────────────────────────────
@@ -1365,5 +1445,78 @@ mod tests {
         let message = err.to_string();
         assert!(message.starts_with("ERR_ACTIVITY_IO"));
         assert!(!message.contains("nonexistent"), "error must not leak path");
+    }
+
+    #[test]
+    fn tool_invocation_status_comes_from_call_output() {
+        // function_call 无 output → Pending（结果未知不虚报 Success）。
+        let pending_fixture = vec![
+            json!({"timestamp": "2026-05-09T10:00:01Z", "type": "response_item", "payload": {
+                "type": "function_call", "name": "exec_command", "arguments": "{}", "call_id": "c-pending"
+            }}),
+        ];
+        let (_dir, path) = write_fixture(&pending_fixture);
+        let batch = CodexAdapter
+            .index_session(&make_source("codex::sess-pending", &path))
+            .expect("index");
+        assert_eq!(batch.events.len(), 1);
+        assert_eq!(batch.events[0].status, Some(EventStatus::Pending));
+        assert_eq!(batch.tool_invocations[0].status, Some(EventStatus::Pending));
+
+        // custom_tool_call 无显式 status + custom_tool_call_output exit_code=1
+        // → 调用与结果事件均为 Error。
+        let error_fixture = vec![
+            json!({"timestamp": "2026-05-09T10:00:01Z", "type": "response_item", "payload": {
+                "type": "custom_tool_call", "name": "apply_patch", "input": "patch", "call_id": "c-err"
+            }}),
+            json!({"timestamp": "2026-05-09T10:00:02Z", "type": "response_item", "payload": {
+                "type": "custom_tool_call_output", "call_id": "c-err",
+                "output": "{\"output\":\"oops\",\"metadata\":{\"exit_code\":2}}"
+            }}),
+        ];
+        let (_dir2, path2) = write_fixture(&error_fixture);
+        let batch = CodexAdapter
+            .index_session(&make_source("codex::sess-err", &path2))
+            .expect("index");
+        assert_eq!(batch.events.len(), 2);
+        assert_eq!(batch.events[0].status, Some(EventStatus::Error));
+        assert_eq!(batch.events[1].status, Some(EventStatus::Error));
+        assert_eq!(batch.tool_invocations[0].status, Some(EventStatus::Error));
+    }
+
+    #[test]
+    fn call_id_fallback_key_is_unique_across_rollout_files() {
+        // 同一会话的两个 rollout 文件，各自第 2 行都是无 call_id 的
+        // function_call：回退键必须带来源文件标识，跨文件不互相覆盖。
+        let lines = [
+            json!({"timestamp": "2026-05-09T10:00:01Z", "type": "event_msg", "payload": {
+                "type": "user_message", "message": "go"
+            }}),
+            json!({"timestamp": "2026-05-09T10:00:02Z", "type": "response_item", "payload": {
+                "type": "function_call", "name": "exec_command", "arguments": "{}"
+            }}),
+        ];
+        let (dir, path_a) = write_fixture(&lines);
+        let path_b = {
+            let copy_path = dir.path().join("rollout-2.jsonl");
+            fs::copy(&path_a, &copy_path).expect("copy fixture");
+            copy_path.to_string_lossy().to_string()
+        };
+
+        let adapter = CodexAdapter;
+        let batch_a = adapter
+            .index_session(&make_source("codex::sess-multi", &path_a))
+            .expect("index a");
+        let batch_b = adapter
+            .index_session(&make_source("codex::sess-multi", &path_b))
+            .expect("index b");
+        let key_a = &batch_a.tool_invocations[0].invocation_key;
+        let key_b = &batch_b.tool_invocations[0].invocation_key;
+        assert_ne!(
+            key_a, key_b,
+            "fallback invocation keys must be unique across rollout files"
+        );
+        assert!(key_a.contains("rollout-test"), "key a: {key_a}");
+        assert!(key_b.contains("rollout-2"), "key b: {key_b}");
     }
 }

@@ -78,6 +78,10 @@ export const useDesktopNavigationStore = defineStore('desktopNavigation', {
     sidebarCollapsed: false,
     previousSessionsQuery: null as SessionsListQuery | null,
     pendingFilters: null as DesktopNavigationFilters | null,
+    /** 深链筛选写入代数：applyNavigationTarget 每写入一次 pendingFilters 自增。
+     *  已挂载的视图监听它消费 pendingFilters——hash 相同时页面不重挂载，
+     *  onMounted 消费路径不会再次执行，同页深链靠此令牌补上。 */
+    pendingConsumeTick: 0,
     /** 设置页待定位的左侧分组（由活动页“打开设置”跳转时写入，设置页消费后清空）。 */
     settingsTargetSection: null as string | null,
     /** 会话列表视图当前滚动位置（由 DesktopSessions 滚动时上报；openSession 时作为恢复值）。 */
@@ -153,6 +157,7 @@ export const useDesktopNavigationStore = defineStore('desktopNavigation', {
         view: target.view ?? null,
         sessionKey: target.sessionKey ?? null
       }
+      this.pendingConsumeTick += 1
       if (target.sessionKey) {
         this.openSession(target.sessionKey)
       } else {

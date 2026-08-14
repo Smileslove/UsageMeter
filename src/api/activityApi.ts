@@ -45,28 +45,21 @@ export function getSessionEvents(
   return invoke('get_session_events', { sessionKey, filter, offset, limit, settings })
 }
 
-export function getSessionAgents(
-  settings: AppSettings,
-  sessionKey: string
-): Promise<AgentNodeDto[]> {
-  return invoke('get_session_agents', { sessionKey, settings })
+export function getSessionAgents(sessionKey: string): Promise<AgentNodeDto[]> {
+  return invoke('get_session_agents', { sessionKey })
 }
 
-export function getSessionToolSummary(
-  settings: AppSettings,
-  sessionKey: string
-): Promise<ToolSummaryRow[]> {
-  return invoke('get_session_tool_summary', { sessionKey, settings })
+export function getSessionToolSummary(sessionKey: string): Promise<ToolSummaryRow[]> {
+  return invoke('get_session_tool_summary', { sessionKey })
 }
 
 export function getSessionEventPayload(
-  settings: AppSettings,
   eventKey: string,
   section: string,
   maxBytes?: number,
   cursor?: string | null
 ): Promise<RedactedPayloadPage> {
-  return invoke('get_session_event_payload', { eventKey, section, maxBytes, cursor, settings })
+  return invoke('get_session_event_payload', { eventKey, section, maxBytes, cursor })
 }
 
 /** M3：会话内全文搜索（仅 deep_index_level='fulltext' 返回命中，其余档位返回空页）。 */
@@ -92,18 +85,14 @@ export function searchActivityGlobal(
 
 /** M3：导出会话活动（范围预览由前端对话框确认；payload 默认不包含，后端 serde(default) 双保险）。 */
 export function exportSessionActivity(
-  settings: AppSettings,
   sessionKey: string,
   options: ExportOptions
 ): Promise<ExportResult> {
-  return invoke('export_session_activity', { sessionKey, options, settings })
+  return invoke('export_session_activity', { sessionKey, options })
 }
 
-export function rebuildSessionActivityIndex(
-  settings: AppSettings,
-  scope: string
-): Promise<RebuildResult> {
-  return invoke('rebuild_session_activity_index', { scope, settings })
+export function rebuildSessionActivityIndex(scope: string): Promise<RebuildResult> {
+  return invoke('rebuild_session_activity_index', { scope })
 }
 
 export function purgeSessionActivityContent(

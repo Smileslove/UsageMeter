@@ -4,7 +4,7 @@
  * 在一个屏幕内回答：用了多少 / 额度是否有风险 / 消耗来自哪里 / 是否有异常。
  * 数据口径与快速面板一致：monitor store 的 snapshot / limitSurvival / overviewBreakdown / rateSummary。
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 import { LineChart } from 'echarts/charts'
@@ -50,6 +50,7 @@ import {
   formatTokenValue
 } from '../../utils/format'
 import { formatToolDisplayName } from '../../utils/toolDisplay'
+import { pickEffectiveWindow } from '../../utils/windowFallback'
 import { WINDOW_ORDER } from '../../types'
 import type {
   OverviewBreakdownItem,
@@ -71,36 +72,17 @@ const locale = computed(() => store.settings.locale)
 
 // ============ 数据口径 ============
 
-/** 当前概览窗口对应的窗口数据（缺失时回退到第一个可用窗口）。 */
-function hasAnyUsage(d: WindowUsage | null | undefined): boolean {
-  if (!d) return false
-  return (
-    (d.requestUsed ?? 0) > 0 ||
-    (d.tokenUsed ?? 0) > 0 ||
-    (d.cost ?? 0) > 0
-  )
-}
-
-/** 当前窗口无数据时的回退优先级（优先数据覆盖最全的长窗口）。 */
-const FALLBACK_WINDOW_ORDER = ['30d', 'current_month', '7d', '24h', 'today', '5h'] as const
-
+/** 当前概览窗口对应的窗口数据（缺失时回退到第一个可用窗口；回退逻辑见 utils/windowFallback）。 */
 const windowData = computed<WindowUsage | null>(() => {
   const windows = store.snapshot?.windows ?? []
-  const preferred = windows.find(w => w.window === analytics.overviewWindow) ?? null
-  if (hasAnyUsage(preferred)) return preferred
-  // 当前窗口暂无数据：回退到最近一个有数据的窗口，避免概览空白
-  for (const name of FALLBACK_WINDOW_ORDER) {
-    const candidate = windows.find(w => w.window === name)
-    if (candidate && hasAnyUsage(candidate)) return candidate
-  }
-  return preferred ?? windows[0] ?? null
+  const pick = pickEffectiveWindow(windows, analytics.overviewWindow)
+  return windows.find(w => w.window === pick.window) ?? null
 })
 
 /** 是否正在显示回退窗口（当前所选时间范围暂无数据）。 */
 const isWindowFallback = computed(() => {
-  const preferred = store.snapshot?.windows.find(w => w.window === analytics.overviewWindow)
-  const shown = windowData.value
-  return !!preferred && !!shown && preferred.window !== shown.window
+  const pick = pickEffectiveWindow(store.snapshot?.windows ?? [], analytics.overviewWindow)
+  return pick.isFallback
 })
 
 /** 实际生效的窗口（含回退）：KPI/趋势/排行/速率统一跟随。 */
@@ -795,10 +777,17 @@ const fatalError = computed(() => !!store.error && !store.snapshot)
 
 // ============ 数据加载 ============
 
+/** 防抖窗口数据请求：overviewWindow 与 effectiveWindow（回退切回）等多个来源
+ *  可能在同一 tick 内触发刷新，合并为一次请求；store 侧已有请求序号守卫保证最新落地。 */
+let refreshTimer: ReturnType<typeof setTimeout> | null = null
 /** 窗口数据 + 趋势数据（范围变化或挂载时调用）。 */
 function refreshWindowData() {
-  void store.fetchOverviewDeferredBundle(effectiveWindow.value)
-  void store.fetchStatisticsSummary(trendQuery.value)
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null
+    void store.fetchOverviewDeferredBundle(effectiveWindow.value)
+    void store.fetchStatisticsSummary(trendQuery.value)
+  }, 60)
 }
 
 /** 深链：消费 pendingFilters 并应用——sourceId/tool 进全局筛选，window/metric 进概览页局部状态（仅接受合法值）。 */
@@ -819,10 +808,22 @@ function applyPendingFilters() {
   }
 }
 
+// 实际生效窗口（含回退）变化 → 刷新窗口数据与趋势。
+// 覆盖两条路径：① overviewWindow 切换；② 回退态数据到达后 effectiveWindow 切回用户所选窗口。
+// 窗口数据相同（回退窗口未变）时 effectiveWindow 不变，不会重复请求。
 watch(
-  () => analytics.overviewWindow,
+  () => effectiveWindow.value,
   () => {
     if (store.snapshot) refreshWindowData()
+  }
+)
+
+// 同页深链：hash 相同页面不重挂载，onMounted 消费路径不执行；
+// pendingConsumeTick 变化时若本页激活则补消费（跨页场景由 onMounted 覆盖，这里幂等）。
+watch(
+  () => nav.pendingConsumeTick,
+  () => {
+    if (nav.currentPage === 'overview') applyPendingFilters()
   }
 )
 
@@ -842,6 +843,11 @@ onMounted(() => {
   applyPendingFilters()
   void store.fetchSessions(30, 0, false)
   if (store.snapshot) refreshWindowData()
+})
+
+onUnmounted(() => {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = null
 })
 </script>
 

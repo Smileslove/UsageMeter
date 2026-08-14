@@ -306,7 +306,10 @@ pub fn redact_home_path(path: &str) -> String {
         let boundary_ok = after >= path.len()
             || matches!(
                 bytes[after],
-                b'/' | b' '
+                // `/` 与 `\`（Windows 风格 `C:\Users\name\...`）都是路径分隔符；
+                // 其余为空白/引号/括号/分隔符等常见边界。
+                b'/' | b'\\'
+                    | b' '
                     | b'\t'
                     | b'\n'
                     | b'\r'
@@ -331,7 +334,17 @@ pub fn redact_home_path(path: &str) -> String {
             rest = &path[search_from..];
             continue;
         }
-        search_from = abs + 1;
+        // 边界校验拒绝：保留原文（含被拒匹配片段，避免推进时丢字符）。
+        // 推进位置必须对齐 UTF-8 字符边界——home 前缀含非 ASCII（如
+        // `/Users/张三`）且本次匹配被拒时，`abs + 1` 可能落在多字节字符
+        // 内部，直接 `&path[search_from..]` 切片会 panic（此函数在查询
+        // 出口每行调用，崩溃直达 IPC）。
+        let mut next = abs + 1;
+        while next < path.len() && !path.is_char_boundary(next) {
+            next += 1;
+        }
+        out.push_str(&path[search_from..next]);
+        search_from = next;
         rest = &path[search_from..];
     }
     out.push_str(&path[search_from..]);
@@ -472,6 +485,45 @@ mod tests {
         // 非 home 前缀路径不受影响
         let other = "/tmp/not-home/file.txt".to_string();
         assert_eq!(redact_home_path(&other), other);
+    }
+
+    #[test]
+    fn redacts_home_path_with_backslash_boundary() {
+        let home = dirs::home_dir().expect("home dir in test env");
+        let home_str = home.to_string_lossy().to_string();
+        // Windows 风格路径分隔符 `\` 也是合法边界（C:\Users\name\... 形态）。
+        let input = format!("{home_str}\\foo\\bar");
+        assert_eq!(redact_home_path(&input), format!("~\\foo\\bar"));
+    }
+
+    #[test]
+    fn redacts_home_path_rejected_match_keeps_text_without_panicking() {
+        let home = dirs::home_dir().expect("home dir in test env");
+        let home_str = home.to_string_lossy().to_string();
+        // 边界校验拒绝（home 后紧跟词内字符 X）：推进不得丢字符、不得 panic，
+        // 原文原样返回。
+        let rejected = format!("prefix {home_str}X/suffix");
+        assert_eq!(redact_home_path(&rejected), rejected);
+    }
+
+    #[test]
+    fn redacts_home_path_with_non_ascii_home_without_panicking() {
+        let _guard = crate::test_support::env_lock();
+        let previous_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", "/Users/张三");
+        // home 含多字节字符且匹配被拒（home 后紧跟非边界字节 X）：推进
+        // search_from 时对齐字符边界，不得 panic，原文原样返回。
+        let rejected = "/Users/张三X/notes";
+        assert_eq!(redact_home_path(rejected), rejected);
+        // 正常匹配：整个 home 前缀替换为 ~。
+        assert_eq!(redact_home_path("/Users/张三/notes"), "~/notes");
+        // 文本中间出现 home 且被拒：前后文本都保留。
+        let mid = "cwd=/Users/张三X/app";
+        assert_eq!(redact_home_path(mid), mid);
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
     }
 
     #[test]

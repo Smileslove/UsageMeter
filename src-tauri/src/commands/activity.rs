@@ -44,8 +44,13 @@ fn activity_db<R>(
 }
 
 /// 隐私门：深度索引关闭时不新增任何正文持久化（设计 15.2）。
-fn deep_index_disabled(settings: &AppSettings) -> bool {
-    settings.deep_index_level == "off"
+///
+/// 档位取**持久化设置**（[`crate::settings::service::persisted_deep_index_level`]），
+/// 不信任 IPC 传入的 settings——任意调用方不得以 `"structured"` 等值伪造
+/// 开启，绕过隐私关闭（`"off"`）。IPC settings 仍用于其它非门控参数
+/// （如 `deep_index_retention_days`）。
+fn deep_index_disabled() -> bool {
+    crate::settings::persisted_deep_index_level() == "off"
 }
 
 /// 内容不可用的诚实响应（不伪造内容）。
@@ -96,7 +101,7 @@ pub async fn get_session_activity_summary(
     session_key: String,
     settings: AppSettings,
 ) -> Result<Option<SessionActivitySummary>, String> {
-    if deep_index_disabled(&settings) {
+    if deep_index_disabled() {
         return Ok(None);
     }
     activity_db(|conn| {
@@ -116,7 +121,7 @@ pub async fn get_session_events(
     limit: i64,
     settings: AppSettings,
 ) -> Result<EventsPage, String> {
-    if deep_index_disabled(&settings) {
+    if deep_index_disabled() {
         return Ok(EventsPage {
             items: Vec::new(),
             total: 0,
@@ -137,9 +142,8 @@ pub async fn get_session_events(
 pub async fn get_session_agents(
     _app: tauri::AppHandle,
     session_key: String,
-    settings: AppSettings,
 ) -> Result<Vec<AgentNodeDto>, String> {
-    if deep_index_disabled(&settings) {
+    if deep_index_disabled() {
         return Ok(Vec::new());
     }
     activity_db(|conn| {
@@ -153,9 +157,8 @@ pub async fn get_session_agents(
 pub async fn get_session_tool_summary(
     _app: tauri::AppHandle,
     session_key: String,
-    settings: AppSettings,
 ) -> Result<Vec<ToolSummaryRow>, String> {
-    if deep_index_disabled(&settings) {
+    if deep_index_disabled() {
         return Ok(Vec::new());
     }
     activity_db(|conn| {
@@ -181,9 +184,8 @@ pub async fn get_session_event_payload(
     section: String,
     max_bytes: Option<usize>,
     cursor: Option<String>,
-    settings: AppSettings,
 ) -> Result<RedactedPayloadPage, String> {
-    if deep_index_disabled(&settings) {
+    if deep_index_disabled() {
         return Ok(unavailable_page());
     }
     let section = if section.trim().is_empty() {
@@ -244,9 +246,8 @@ pub async fn get_session_event_payload(
 pub async fn rebuild_session_activity_index(
     _app: tauri::AppHandle,
     scope: String,
-    settings: AppSettings,
 ) -> Result<RebuildResult, String> {
-    if deep_index_disabled(&settings) {
+    if deep_index_disabled() {
         return Ok(RebuildResult::default());
     }
     tauri::async_runtime::spawn_blocking(move || {
@@ -797,9 +798,8 @@ pub async fn export_session_activity(
     _app: tauri::AppHandle,
     session_key: String,
     options: ExportOptions,
-    settings: AppSettings,
 ) -> Result<ExportResult, String> {
-    if deep_index_disabled(&settings) {
+    if deep_index_disabled() {
         return Err("ERR_ACTIVITY_EXPORT_DISABLED: deep index is off".to_string());
     }
     activity_db(|conn| export_session_activity_impl(conn, &session_key, &options))
@@ -824,21 +824,41 @@ mod tests {
     }
 
     #[test]
-    fn deep_index_disabled_matches_off_value() {
-        let settings = AppSettings {
-            deep_index_level: "off".to_string(),
-            ..AppSettings::default()
-        };
-        assert!(deep_index_disabled(&settings));
-        for level in ["structured", "fulltext", "ondemand"] {
-            let settings = AppSettings {
-                deep_index_level: level.to_string(),
-                ..AppSettings::default()
-            };
-            assert!(
-                !deep_index_disabled(&settings),
-                "level {level} enables deep index"
-            );
+    fn deep_index_gate_uses_persisted_level_not_ipc_settings() {
+        use crate::test_support::env_lock;
+        let _guard = env_lock();
+        let previous_home = std::env::var_os("HOME");
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("HOME", dir.path());
+        let settings_dir = dir.path().join(".usagemeter");
+        std::fs::create_dir_all(&settings_dir).expect("create settings dir");
+
+        // 无任何持久化设置：默认 off → 深度索引关闭。
+        assert!(deep_index_disabled());
+
+        // 持久化档位 structured（偏好文件为权威落点）→ 门控打开。
+        std::fs::write(
+            settings_dir.join("settings.json"),
+            serde_json::json!({ "settingsVersion": 3, "deepIndexLevel": "structured" }).to_string(),
+        )
+        .expect("write preferences");
+        assert!(
+            !deep_index_disabled(),
+            "persisted structured level must open the gate"
+        );
+
+        // 持久化档位 off → 门控关闭（IPC settings 不再参与判定，任意调用方
+        // 无法以传参伪造开启）。
+        std::fs::write(
+            settings_dir.join("settings.json"),
+            serde_json::json!({ "settingsVersion": 3, "deepIndexLevel": "off" }).to_string(),
+        )
+        .expect("write preferences");
+        assert!(deep_index_disabled());
+
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
         }
     }
 

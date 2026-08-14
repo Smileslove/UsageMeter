@@ -8,10 +8,11 @@
  * NetworkProxyPanel / SyncSettingsPanel / LocalCachePanel / LocalCacheManagementPanel。
  * 各组件自行保存（store.saveSettings）；「会话与隐私」深度索引为 M2 功能，显示 i18n 占位说明。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ExternalLink, RefreshCw, Trash2 } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { useUpdaterStore } from '../../stores/updater'
+import { useDesktopNavigationStore } from '../stores/desktopNavigation'
 import { t } from '../../i18n'
 import { quitApplication } from '../../utils/appExit'
 import { purgeSessionActivityContent } from '../../api/activityApi'
@@ -31,6 +32,7 @@ import CurrencySettings from '../../components/CurrencySettings.vue'
 
 const store = useMonitorStore()
 const updaterStore = useUpdaterStore()
+const nav = useDesktopNavigationStore()
 const locale = computed(() => store.settings.locale)
 
 // —— 左侧二级目录 ——
@@ -116,7 +118,31 @@ const appVersion = ref('')
 const checkUpdateFlash = ref(false)
 let checkUpdateFlashTimer: ReturnType<typeof setTimeout> | null = null
 
+// —— 外部定位分组（openSettingsSection 写入；同页深链时页面不重挂载，需 watch 补消费） ——
+const sectionFlash = ref<SettingsSection | null>(null)
+let sectionFlashTimer: ReturnType<typeof setTimeout> | null = null
+
+function consumeSettingsTargetSection() {
+  const target = nav.settingsTargetSection
+  if (!target) return
+  if (sections.some(s => s.id === target)) {
+    activeSection.value = target as SettingsSection
+    // 短暂高亮提示定位到该分组
+    sectionFlash.value = target as SettingsSection
+    if (sectionFlashTimer) clearTimeout(sectionFlashTimer)
+    sectionFlashTimer = setTimeout(() => { sectionFlash.value = null }, 1400)
+  }
+  // 无论是否合法都清空，防残留（下次进入设置页不再重复定位）
+  nav.settingsTargetSection = null
+}
+
+watch(
+  () => nav.settingsTargetSection,
+  () => consumeSettingsTargetSection()
+)
+
 onMounted(async () => {
+  consumeSettingsTargetSection()
   try {
     const { getVersion } = await import('@tauri-apps/api/app')
     appVersion.value = await getVersion()
@@ -187,7 +213,10 @@ const confirmQuit = async () => {
     </nav>
 
     <!-- 右侧内容区（普通分隔区块，不套卡片） -->
-    <div class="min-w-0 flex-1 space-y-5">
+    <div
+      class="min-w-0 flex-1 space-y-5"
+      :class="sectionFlash ? 'settings-section-flash' : ''"
+    >
       <!-- 应用 -->
       <section v-if="activeSection === 'app'" class="space-y-1.5">
         <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.sectionApp') }}</h3>
@@ -422,3 +451,20 @@ const confirmQuit = async () => {
     @confirm="runPurge"
   />
 </template>
+
+<style scoped>
+/* 外部定位分组（openSettingsSection）后的短暂高亮提示 */
+.settings-section-flash {
+  border-radius: 0.75rem;
+  animation: settings-section-flash 1.2s ease-out;
+}
+
+@keyframes settings-section-flash {
+  0% {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-accent-primary) 40%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
+</style>

@@ -559,9 +559,7 @@ mod tests {
         // db 层：直接可搜（门控在命令层，隐私面由命令层保证）。
         let (_, total) = search_session(&conn, "sess-1", "budget", 0, 10).expect("db search");
         assert_eq!(total, 1);
-        // 命令层门控逻辑（纯函数）在 commands_search::tests 中验证。
-        assert!(crate::activity::commands_search::fulltext_disabled(
-            &crate::models::AppSettings::default()
-        ));
+        // 命令层门控（fulltext_disabled 读持久化档位）在 commands_search::tests
+        // 中以临时 HOME 覆盖验证，此处不重复断言（避免依赖真实用户档位）。
     }
 }

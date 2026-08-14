@@ -646,6 +646,15 @@ watch(
   { immediate: true }
 )
 
+// 同页深链：hash 相同页面不重挂载，onMounted 消费路径不执行；
+// pendingConsumeTick 变化时若本页激活则补消费（跨页场景由 onMounted 覆盖，这里幂等）。
+watch(
+  () => nav.pendingConsumeTick,
+  () => {
+    if (nav.currentPage === 'analytics') applyPendingFilters()
+  }
+)
+
 onMounted(() => {
   applyPendingFilters()
   void store.fetchOverviewBreakdown(analytics.analyticsWindow)

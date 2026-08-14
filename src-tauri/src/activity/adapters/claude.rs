@@ -101,6 +101,40 @@ impl SessionActivityAdapter for ClaudeAdapter {
         let mut bad_lines: u64 = 0;
         // tool_use.id -> 对应 ToolInvocation 事件 key（tool_result 关联用）。
         let mut tool_use_keys: HashMap<String, String> = HashMap::new();
+        // 第一遍扫描：tool_use_id -> is_error（结果状态），供 ToolInvocation
+        // 事件状态判定。tool_use 出现在结果之前，单遍解析无法预知结果；
+        // 结果未知时标记 Pending（不虚报 Success/Error）。
+        let mut tool_result_status: HashMap<String, bool> = HashMap::new();
+        if let Ok(file) = fs::File::open(&source.primary_file_path) {
+            for line in BufReader::new(file).lines().map_while(Result::ok) {
+                let Ok(json) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                let msg_type = json.get("type").and_then(Value::as_str).unwrap_or("");
+                if msg_type != "user" && msg_type != "human" {
+                    continue;
+                }
+                let Some(message) = json.get("message") else {
+                    continue;
+                };
+                let Some(content) = message.get("content").and_then(Value::as_array) else {
+                    continue;
+                };
+                for block in content {
+                    if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                        continue;
+                    }
+                    let Some(tool_use_id) = block.get("tool_use_id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let is_error = block
+                        .get("is_error")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    tool_result_status.insert(tool_use_id.to_string(), is_error);
+                }
+            }
+        }
 
         // 子代理节点元数据（首条 user 消息摘要、首/末行时间）。
         let mut first_user_summary: Option<String> = None;
@@ -310,12 +344,25 @@ impl SessionActivityAdapter for ClaudeAdapter {
                                     tool_use_keys
                                         .insert(tool_use_id.to_string(), event_key.clone());
                                 }
+                                // 结果状态来源：第一遍扫描的 tool_result 映射
+                                // （is_error → Error，否则 Success）；无结果 →
+                                // Pending（结果未知不虚报 Success）。
+                                let status = tool_result_status
+                                    .get(tool_use_id)
+                                    .map(|is_error| {
+                                        if *is_error {
+                                            EventStatus::Error
+                                        } else {
+                                            EventStatus::Success
+                                        }
+                                    })
+                                    .unwrap_or(EventStatus::Pending);
                                 events.push(NewSessionEvent {
                                     event_key: event_key.clone(),
                                     sequence,
                                     timestamp_ms: ts_ms,
                                     kind: SessionEventKind::ToolInvocation,
-                                    status: Some(EventStatus::Success),
+                                    status: Some(status),
                                     actor_agent_key: actor_agent_key.clone(),
                                     parent_event_key: None,
                                     summary_redacted: Some(truncate_chars(
@@ -338,7 +385,7 @@ impl SessionActivityAdapter for ClaudeAdapter {
                                     tool_name: normalize_tool_name(name),
                                     family: tool_family(name).to_string(),
                                     duration_ms: None,
-                                    status: Some(EventStatus::Success),
+                                    status: Some(status),
                                     input_bytes,
                                     output_bytes: None,
                                     input_keys,
@@ -367,7 +414,12 @@ impl SessionActivityAdapter for ClaudeAdapter {
             }
         }
 
-        let _ = bad_lines;
+        // 解析失败行只计数量（不含行内容，避免把正文/密钥写进日志）。
+        if bad_lines > 0 {
+            eprintln!(
+                "[UsageMeter] claude activity index: skipped {bad_lines} unparseable line(s)"
+            );
+        }
 
         if let Some(agent_key) = actor_agent_key {
             agents.push(NewAgentNode {
@@ -1192,5 +1244,46 @@ mod tests {
             .expect("unavailable page is not an error");
         assert_eq!(page.content_state, ContentState::Unavailable);
         assert!(page.content.is_empty());
+    }
+
+    #[test]
+    fn tool_invocation_status_comes_from_tool_result() {
+        // 无 tool_result 的调用 → Pending（结果未知不虚报 Success）。
+        let pending_fixture = vec![
+            json!({"timestamp": 1747000000.0, "type": "assistant", "message": {
+                "role": "assistant", "id": "msg-1",
+                "content": [{"type": "tool_use", "id": "toolu_pending", "name": "Bash",
+                    "input": {"command": "ls"}}]
+            }}),
+        ];
+        let (_dir, path) = write_fixture(&pending_fixture);
+        let batch = ClaudeAdapter
+            .index_session(&make_source("proj::sess-pending", &path))
+            .expect("index");
+        assert_eq!(batch.events.len(), 1);
+        assert_eq!(batch.events[0].status, Some(EventStatus::Pending));
+        assert_eq!(batch.tool_invocations[0].status, Some(EventStatus::Pending));
+
+        // tool_result is_error=true → 调用与结果事件均为 Error。
+        let error_fixture = vec![
+            json!({"timestamp": 1747000000.0, "type": "assistant", "message": {
+                "role": "assistant", "id": "msg-2",
+                "content": [{"type": "tool_use", "id": "toolu_err", "name": "Read",
+                    "input": {"file_path": "/x"}}]
+            }}),
+            json!({"timestamp": 1747000001.0, "type": "user", "message": {
+                "role": "user", "id": "msg-3",
+                "content": [{"type": "tool_result", "tool_use_id": "toolu_err",
+                    "content": "boom", "is_error": true}]
+            }}),
+        ];
+        let (_dir2, path2) = write_fixture(&error_fixture);
+        let batch = ClaudeAdapter
+            .index_session(&make_source("proj::sess-err", &path2))
+            .expect("index");
+        assert_eq!(batch.events.len(), 2);
+        assert_eq!(batch.events[0].status, Some(EventStatus::Error));
+        assert_eq!(batch.events[1].status, Some(EventStatus::Error));
+        assert_eq!(batch.tool_invocations[0].status, Some(EventStatus::Error));
     }
 }

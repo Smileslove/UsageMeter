@@ -340,7 +340,7 @@ const runExport = async () => {
   exportError.value = ''
   exportResult.value = null
   try {
-    exportResult.value = await exportSessionActivity(store.settings, key, {
+    exportResult.value = await exportSessionActivity(key, {
       format: exportFormat.value,
       includeSummaries: exportIncludeSummaries.value,
       includeToolSummaries: exportIncludeToolSummaries.value,
@@ -437,7 +437,7 @@ const loadSession = async (key: string | null) => {
     if (!s) {
       building.value = true
       try {
-        await rebuildSessionActivityIndex(store.settings, `session:${key}`)
+        await rebuildSessionActivityIndex(`session:${key}`)
         if (generation !== loadGeneration) return
         s = await getSessionActivitySummary(store.settings, key)
       } finally {
@@ -456,10 +456,10 @@ const loadSession = async (key: string | null) => {
     }
     viewState.value = 'ready'
     void Promise.all([
-      getSessionAgents(store.settings, key).then(list => {
+      getSessionAgents(key).then(list => {
         if (generation === loadGeneration) agents.value = list
       }).catch(() => {}),
-      getSessionToolSummary(store.settings, key).then(list => {
+      getSessionToolSummary(key).then(list => {
         if (generation === loadGeneration) toolSummary.value = list
       }).catch(() => {})
     ])
@@ -479,7 +479,7 @@ const rebuildAndReload = async () => {
   building.value = true
   error.value = ''
   try {
-    await rebuildSessionActivityIndex(store.settings, `session:${key}`)
+    await rebuildSessionActivityIndex(`session:${key}`)
     await loadSession(key)
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
@@ -670,7 +670,7 @@ const loadPayload = async () => {
   payloadError.value = ''
   payload.value = null
   try {
-    payload.value = await getSessionEventPayload(store.settings, event.eventKey, payloadSection.value)
+    payload.value = await getSessionEventPayload(event.eventKey, payloadSection.value)
   } catch (e) {
     payloadError.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -686,7 +686,7 @@ const loadMorePayload = async () => {
   payloadLoading.value = true
   payloadError.value = ''
   try {
-    const next = await getSessionEventPayload(store.settings, event.eventKey, payloadSection.value, undefined, page.nextCursor)
+    const next = await getSessionEventPayload(event.eventKey, payloadSection.value, undefined, page.nextCursor)
     payload.value = { ...next, content: page.content + next.content }
   } catch (e) {
     payloadError.value = e instanceof Error ? e.message : String(e)

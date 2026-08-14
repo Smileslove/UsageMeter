@@ -75,6 +75,29 @@ fn load_preferences_file() -> Result<Option<AppSettings>, String> {
     Ok(Some(settings))
 }
 
+/// 只读获取持久化的深度索引档位（`"off"|"structured"|"ondemand"|"fulltext"`），
+/// 供隐私门控（`deep_index_disabled` / `fulltext_disabled`）使用。
+///
+/// 合并顺序：偏好文件优先（`deep_index_level` 的权威落点——保存路径只把该
+/// 字段写入 settings.json，`save_settings` 仅落实体文档），DB 兜底覆盖
+/// 0.10.x 全字段存储形态。**不写盘**——`load_settings_blocking` 有重新落盘
+/// 副作用，门控热路径复用会无谓改写文件。读取失败或档位非法一律按默认
+/// `"off"` 处理（隐私优先：门控读取出错不得意外开启深度索引/全文搜索）。
+pub fn persisted_deep_index_level() -> String {
+    let level = with_config_database(|database| {
+        if let Some(settings) = load_preferences_file()? {
+            return Ok(settings.deep_index_level);
+        }
+        Ok(database
+            .load_settings()?
+            .map(|settings| settings.deep_index_level)
+            .unwrap_or_else(crate::models::default_deep_index_level))
+    });
+    level
+        .map(|value| normalize_deep_index_level(&value))
+        .unwrap_or_else(|_| crate::models::default_deep_index_level())
+}
+
 /// 读取偏好文件的 `settingsVersion`。文件缺失或无法解析时按 1（旧版）处理：
 /// 这样 settings.json 缺失、仅 app_config.db 存有旧设置的路径（0.10.x 全字段
 /// 存储形态）同样进入存量迁移判定。
@@ -315,7 +338,25 @@ fn normalize_settings(settings: &mut AppSettings) -> Result<(), String> {
     migrate_sync(settings)?;
     migrate_day_boundary(settings);
     migrate_gateway(settings);
+    migrate_deep_index_level(settings);
     Ok(())
+}
+
+/// 深度索引档位归一：仅接受 `off`/`structured`/`ondemand`/`fulltext`，
+/// 其余一律按 `off`（隐私优先：未知/误写档位不得开启深度索引或全文搜索）。
+///
+/// 历史值（`"OFF"`、`"disabled"`、`"fullText"` 等）因此不再绕过隐私门控
+/// （`deep_index_disabled` 判定 `== "off"`、`fulltext_disabled` 判定
+/// `!= "fulltext"`，非法值归一后都落在关闭侧）。
+pub(crate) fn normalize_deep_index_level(level: &str) -> String {
+    match level {
+        "off" | "structured" | "ondemand" | "fulltext" => level.to_string(),
+        _ => crate::models::default_deep_index_level(),
+    }
+}
+
+fn migrate_deep_index_level(settings: &mut AppSettings) {
+    settings.deep_index_level = normalize_deep_index_level(&settings.deep_index_level);
 }
 
 /// Older builds may have written a local-key metadata record without its
@@ -915,5 +956,116 @@ mod tests {
         assert!(migrated);
         assert!(settings.model_pricing.pricings.is_empty());
         assert_eq!(pricing.unwrap().output_price, 2.0);
+    }
+
+    #[test]
+    fn normalize_settings_normalizes_invalid_deep_index_level() {
+        // 历史/误写档位一律归一为 off：隐私门控（== "off" 关闭）不被绕过，
+        // 也不误开全文（!= "fulltext"）。
+        for bad in ["OFF", "disabled", "fullText", "structured ", "Unknown"] {
+            let mut settings = AppSettings::default();
+            settings.deep_index_level = bad.to_string();
+            normalize_settings(&mut settings).unwrap();
+            assert_eq!(
+                settings.deep_index_level, "off",
+                "level {bad:?} must normalize to off"
+            );
+        }
+        // 合法档位保持不变。
+        for good in ["off", "structured", "ondemand", "fulltext"] {
+            let mut settings = AppSettings::default();
+            settings.deep_index_level = good.to_string();
+            normalize_settings(&mut settings).unwrap();
+            assert_eq!(settings.deep_index_level, good);
+        }
+    }
+
+    #[test]
+    fn persisted_deep_index_level_reads_preferences_first_without_rewrite() {
+        let _guard = crate::test_support::env_lock();
+        let previous_home = std::env::var_os("HOME");
+        let dir = tempdir().expect("tempdir");
+        std::env::set_var("HOME", dir.path());
+        let settings_dir = dir.path().join(".usagemeter");
+
+        let result = (|| -> Result<Vec<String>, String> {
+            let mut observed = Vec::new();
+            // 1) 无文件无 DB → 默认 off（隐私优先）。
+            observed.push(persisted_deep_index_level());
+            // 2) 偏好文件 deepIndexLevel=fulltext → fulltext。
+            fs::create_dir_all(&settings_dir).map_err(|e| e.to_string())?;
+            let file_path = settings_dir.join("settings.json");
+            let file_content =
+                serde_json::json!({ "settingsVersion": 3, "deepIndexLevel": "fulltext" })
+                    .to_string();
+            fs::write(&file_path, &file_content).map_err(|e| e.to_string())?;
+            observed.push(persisted_deep_index_level());
+            // 3) DB 实体文档存在不影响：该字段权威落点是偏好文件（保存路径
+            //    只把 deep_index_level 写 settings.json，save_settings 仅落实体文档）。
+            let mut settings = AppSettings::default();
+            settings.deep_index_level = "structured".to_string();
+            crate::app_config::with_config_database(|database| database.save_settings(&settings))
+                .map_err(|e| e.to_string())?;
+            observed.push(persisted_deep_index_level());
+            // 4) 只读：门控读取不得重写偏好文件（load_settings_blocking 会重写）。
+            let before = fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
+            let _ = persisted_deep_index_level();
+            let after = fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
+            assert_eq!(before, after, "preferences file must not be rewritten");
+            Ok(observed)
+        })();
+
+        restore_home(previous_home);
+        assert_eq!(result.unwrap(), vec!["off", "fulltext", "fulltext"]);
+    }
+
+    #[test]
+    fn persisted_deep_index_level_normalizes_invalid_preference() {
+        let _guard = crate::test_support::env_lock();
+        let previous_home = std::env::var_os("HOME");
+        let dir = tempdir().expect("tempdir");
+        std::env::set_var("HOME", dir.path());
+        let result = (|| -> Result<String, String> {
+            let settings_dir = dir.path().join(".usagemeter");
+            fs::create_dir_all(&settings_dir).map_err(|e| e.to_string())?;
+            fs::write(
+                settings_dir.join("settings.json"),
+                serde_json::json!({ "settingsVersion": 3, "deepIndexLevel": "OFF" }).to_string(),
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(persisted_deep_index_level())
+        })();
+        restore_home(previous_home);
+        // 非法档位归一为 off：隐私关闭不被 "OFF" 绕过。
+        assert_eq!(result.unwrap(), "off");
+    }
+
+    #[test]
+    fn persisted_deep_index_level_falls_back_to_legacy_db_document() {
+        let _guard = crate::test_support::env_lock();
+        let previous_home = std::env::var_os("HOME");
+        let dir = tempdir().expect("tempdir");
+        std::env::set_var("HOME", dir.path());
+        let result = (|| -> Result<String, String> {
+            let settings_dir = dir.path().join(".usagemeter");
+            fs::create_dir_all(&settings_dir).map_err(|e| e.to_string())?;
+            // 建库（含 schema），再直插 0.10.x 全字段形态文档（无偏好文件）。
+            // 文档 key 为 AppSettings 字段的 camelCase 名（与 legacy proxy
+            // 文档同形态），payload 为该字段的 JSON 值。
+            crate::app_config::with_config_database(|_| Ok(()))?;
+            let db_path = settings_dir.join("app_config.db");
+            let conn = rusqlite::Connection::open(&db_path)
+                .map_err(|e| format!("ERR_OPEN_TEST_DB: {e}"))?;
+            conn.execute(
+                "INSERT INTO config_documents (document_key, payload_json, revision, updated_at)
+                 VALUES ('deepIndexLevel', ?1, 1, 0)",
+                rusqlite::params![serde_json::json!("structured").to_string()],
+            )
+            .map_err(|e| format!("ERR_INSERT_TEST_DOCUMENT: {e}"))?;
+            drop(conn);
+            Ok(persisted_deep_index_level())
+        })();
+        restore_home(previous_home);
+        assert_eq!(result.unwrap(), "structured");
     }
 }

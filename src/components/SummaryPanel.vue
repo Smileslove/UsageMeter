@@ -391,6 +391,11 @@ function detailPairSizeClass(first: string, second: string): string {
       </div>
     </div>
 
+    <!-- 当前时间范围暂无数据：沿用最近可用窗口数据并提示（与主窗口回退提示条同口径） -->
+    <p v-if="isWindowDataPending" class="summary-fallback-hint" role="note">
+      {{ t(store.settings.locale, 'overview.summaryFallbackHint') }}
+    </p>
+
     <!-- 限额生存卡（真实配额 T1 + 燃烧速率 / 会话锚定块 / 历史基线） -->
     <LimitSurvivalCard />
   </div>
@@ -460,6 +465,13 @@ function detailPairSizeClass(first: string, second: string): string {
 .summary-grid-pending {
   opacity: 0.5;
   pointer-events: none;
+}
+
+/* 回退提示行（当前范围暂无数据，正显示最近可用数据） */
+.summary-fallback-hint {
+  font-size: 10px;
+  line-height: 1rem;
+  color: var(--theme-text-tertiary);
 }
 
 /* Metric card styles - aligned with StatisticsMetricCards */

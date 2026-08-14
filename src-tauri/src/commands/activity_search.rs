@@ -55,8 +55,13 @@ fn activity_db<R>(
 /// FTS 门控：只有「本地全文索引」档位（`"fulltext"`）允许全文搜索；
 /// `"off"`/`"structured"`/`"ondemand"` 一律返回空结果（设计 21.3
 /// 用户显式开启 + 11.3 档位语义）。
-pub fn fulltext_disabled(settings: &AppSettings) -> bool {
-    settings.deep_index_level != "fulltext"
+///
+/// 档位取**持久化设置**（[`crate::settings::service::persisted_deep_index_level`]），
+/// 不信任 IPC 传入的 settings——任意调用方不得以 `"fulltext"` 伪造开启；
+/// 非法值经归一后落在 `"off"`，同样关闭。`_settings` 参数仅保留历史
+/// 签名兼容（外部测试仍按旧签名调用），其值不参与判定。
+pub fn fulltext_disabled(_settings: &AppSettings) -> bool {
+    crate::settings::persisted_deep_index_level() != "fulltext"
 }
 
 fn empty_events_page() -> EventsPage {
@@ -334,22 +339,43 @@ mod tests {
     }
 
     #[test]
-    fn fulltext_gate_requires_explicit_fulltext_level() {
+    fn fulltext_gate_uses_persisted_level_and_requires_fulltext() {
+        use crate::test_support::env_lock;
+        let _guard = env_lock();
+        let previous_home = std::env::var_os("HOME");
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("HOME", dir.path());
+        let settings_dir = dir.path().join(".usagemeter");
+        std::fs::create_dir_all(&settings_dir).expect("create settings dir");
+        let write_level = |level: &str| {
+            std::fs::write(
+                settings_dir.join("settings.json"),
+                serde_json::json!({ "settingsVersion": 3, "deepIndexLevel": level }).to_string(),
+            )
+            .expect("write preferences");
+        };
+
+        // 无任何持久化设置：默认 off → 全文搜索关闭。
+        assert!(fulltext_disabled(&AppSettings::default()));
+        // off/structured/ondemand 一律关闭（语义不变：只有 fulltext 允许）。
         for level in ["off", "structured", "ondemand"] {
-            let settings = AppSettings {
-                deep_index_level: level.to_string(),
-                ..AppSettings::default()
-            };
+            write_level(level);
             assert!(
-                fulltext_disabled(&settings),
+                fulltext_disabled(&AppSettings::default()),
                 "level {level} must disable fulltext search"
             );
         }
-        let settings = AppSettings {
-            deep_index_level: "fulltext".to_string(),
-            ..AppSettings::default()
-        };
-        assert!(!fulltext_disabled(&settings));
+        // 持久化档位 fulltext（偏好文件为权威落点）→ 开启。
+        write_level("fulltext");
+        assert!(!fulltext_disabled(&AppSettings::default()));
+        // 非法值（如 "fullText"）归一为 off → 关闭，不误开全文。
+        write_level("fullText");
+        assert!(fulltext_disabled(&AppSettings::default()));
+
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
     }
 
     #[test]
