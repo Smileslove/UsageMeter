@@ -7,6 +7,7 @@ import { useDesktopNavigationStore } from '../desktop/stores/desktopNavigation'
 import { applyResolvedTheme } from '../theme'
 import type { DesktopNavigationTarget } from '../types'
 import DesktopShell from '../desktop/layout/DesktopShell.vue'
+import DesktopPageBoundary from '../desktop/components/DesktopPageBoundary.vue'
 import DesktopOverview from '../desktop/views/DesktopOverview.vue'
 import DesktopAnalytics from '../desktop/views/DesktopAnalytics.vue'
 import DesktopSessions from '../desktop/views/DesktopSessions.vue'
@@ -82,12 +83,25 @@ onUnmounted(() => {
 <template>
   <DesktopShell>
     <Transition name="desktop-page-fade" mode="out-in">
-      <DesktopOverview v-if="nav.currentPage === 'overview'" key="overview" />
-      <DesktopAnalytics v-else-if="nav.currentPage === 'analytics'" key="analytics" />
-      <DesktopSessions v-else-if="nav.currentPage === 'sessions'" key="sessions" />
-      <DesktopActivity v-else-if="nav.currentPage === 'activity'" key="activity" />
-      <DesktopGateway v-else-if="nav.currentPage === 'gateway'" key="gateway" />
-      <DesktopSettings v-else key="settings" />
+      <!-- 每个视图外包渲染错误边界：任一视图抛错时显示可诊断错误卡片而非空白 -->
+      <DesktopPageBoundary v-if="nav.currentPage === 'overview'" key="overview">
+        <DesktopOverview />
+      </DesktopPageBoundary>
+      <DesktopPageBoundary v-else-if="nav.currentPage === 'analytics'" key="analytics">
+        <DesktopAnalytics />
+      </DesktopPageBoundary>
+      <DesktopPageBoundary v-else-if="nav.currentPage === 'sessions'" key="sessions">
+        <DesktopSessions />
+      </DesktopPageBoundary>
+      <DesktopPageBoundary v-else-if="nav.currentPage === 'activity'" key="activity">
+        <DesktopActivity />
+      </DesktopPageBoundary>
+      <DesktopPageBoundary v-else-if="nav.currentPage === 'gateway'" key="gateway">
+        <DesktopGateway />
+      </DesktopPageBoundary>
+      <DesktopPageBoundary v-else key="settings">
+        <DesktopSettings />
+      </DesktopPageBoundary>
     </Transition>
   </DesktopShell>
 </template>
