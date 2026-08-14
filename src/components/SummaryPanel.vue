@@ -12,29 +12,44 @@ const store = useMonitorStore()
 // 获取当前选择的汇总窗口数据
 const currentSummaryWindowData = computed(() => {
   const windowName = store.settings.summaryWindow
-  return store.windows.find(w => w.window === windowName)
+  return store.windows.find(w => w.window === windowName) ?? null
 })
 
-const lastSummaryWindowData = ref<WindowUsage | null>(null)
+function hasAnyWindowUsage(data: WindowUsage | null): boolean {
+  if (!data) return false
+  return (
+    (data.requestUsed ?? 0) > 0 ||
+    (data.tokenUsed ?? 0) > 0 ||
+    (data.cost ?? 0) > 0
+  )
+}
+
+// 模块级缓存（WebView 生命周期内保留，跨组件卸载/重挂不丢）：
+// 只缓存「有真实用量」的窗口，当前窗口暂无数据（today/24h 等）时
+// 回退显示最近一个有数据的窗口，避免切页后概览变成空白/全 0。
+let lastSummaryWindowData: WindowUsage | null = null
 
 watch(
   currentSummaryWindowData,
   data => {
-    if (data) {
-      lastSummaryWindowData.value = data
+    if (hasAnyWindowUsage(data)) {
+      lastSummaryWindowData = data
     }
   },
   { immediate: true }
 )
 
-// 新窗口数据未返回前沿用上一份数据渲染，保持面板结构稳定不塌陷
+// 新窗口数据未返回沿上一份数据渲染，保持面板结构稳定不塌陷；
+// 当前窗口存在但全 0（无数据）时同样回退到上一有数据窗口
 const summaryWindowData = computed(() => {
-  return currentSummaryWindowData.value ?? lastSummaryWindowData.value
+  const current = currentSummaryWindowData.value
+  if (hasAnyWindowUsage(current)) return current
+  return current ?? lastSummaryWindowData
 })
 
-// 当前所选窗口的数据尚在加载（正展示旧窗口数据）
+// 当前所选窗口的数据尚在加载或暂无数据（正展示上一窗口数据）
 const isWindowDataPending = computed(
-  () => !currentSummaryWindowData.value && !!lastSummaryWindowData.value
+  () => !hasAnyWindowUsage(currentSummaryWindowData.value) && !!lastSummaryWindowData
 )
 
 // 计算总输入 Token（包含缓存读取）

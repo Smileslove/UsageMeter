@@ -185,7 +185,7 @@ describe('mergeDeferredOverviewSnapshot', () => {
     expect(mergeDeferredOverviewSnapshot(null, {} as OverviewDeferredBundle)).toBeNull()
   })
 
-  it('deduplicates_window_with_same_id_replacing_old_entry', () => {
+  it('keeps_global_summary_and_model_distribution_when_merging_window', () => {
     const snapshot = makeSnapshot([{ window: '24h' }, { window: '7d' }])
     const windowUsage = { window: '24h', marker: 'new' } as unknown as WindowUsage
     const bundle = {
@@ -200,8 +200,11 @@ describe('mergeDeferredOverviewSnapshot', () => {
     expect(windows).toHaveLength(2)
     expect(windows.map(w => w.window)).toEqual(['7d', '24h'])
     expect(windows.find(w => w.window === '24h')).toBe(windowUsage)
-    expect((result as unknown as { summary: unknown }).summary).toBe(bundle.usageSummary)
-    expect((result as unknown as { modelDistribution: unknown }).modelDistribution).toBe(bundle.modelDistribution)
+    // 全局口径不被单窗口覆盖：当前窗口无数据时概览不应被误判为空
+    expect((result as unknown as { summary: unknown }).summary).toBe(snapshot.summary)
+    expect((result as unknown as { modelDistribution: unknown }).modelDistribution).toBe(
+      snapshot.modelDistribution
+    )
   })
 
   it('does_not_mutate_original_snapshot', () => {

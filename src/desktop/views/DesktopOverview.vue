@@ -20,6 +20,7 @@ import {
   Clock,
   Database,
   Gauge,
+  Info,
   Layers3,
   LayoutGrid,
   MessageSquare,
@@ -39,7 +40,7 @@ import {
   useDesktopAnalyticsStore,
   withAlpha
 } from '../stores/desktopAnalytics'
-import { t } from '../../i18n'
+import { t, windowNameLabel } from '../../i18n'
 import {
   formatCost,
   formatDurationMs,
@@ -71,9 +72,47 @@ const locale = computed(() => store.settings.locale)
 // ============ 数据口径 ============
 
 /** 当前概览窗口对应的窗口数据（缺失时回退到第一个可用窗口）。 */
+function hasAnyUsage(d: WindowUsage | null | undefined): boolean {
+  if (!d) return false
+  return (
+    (d.requestUsed ?? 0) > 0 ||
+    (d.tokenUsed ?? 0) > 0 ||
+    (d.cost ?? 0) > 0
+  )
+}
+
+/** 当前窗口无数据时的回退优先级（优先数据覆盖最全的长窗口）。 */
+const FALLBACK_WINDOW_ORDER = ['30d', 'current_month', '7d', '24h', 'today', '5h'] as const
+
 const windowData = computed<WindowUsage | null>(() => {
   const windows = store.snapshot?.windows ?? []
-  return windows.find(w => w.window === analytics.overviewWindow) ?? windows[0] ?? null
+  const preferred = windows.find(w => w.window === analytics.overviewWindow) ?? null
+  if (hasAnyUsage(preferred)) return preferred
+  // 当前窗口暂无数据：回退到最近一个有数据的窗口，避免概览空白
+  for (const name of FALLBACK_WINDOW_ORDER) {
+    const candidate = windows.find(w => w.window === name)
+    if (candidate && hasAnyUsage(candidate)) return candidate
+  }
+  return preferred ?? windows[0] ?? null
+})
+
+/** 是否正在显示回退窗口（当前所选时间范围暂无数据）。 */
+const isWindowFallback = computed(() => {
+  const preferred = store.snapshot?.windows.find(w => w.window === analytics.overviewWindow)
+  const shown = windowData.value
+  return !!preferred && !!shown && preferred.window !== shown.window
+})
+
+/** 实际生效的窗口（含回退）：KPI/趋势/排行/速率统一跟随。 */
+const effectiveWindow = computed<WindowName>(
+  () => (windowData.value?.window ?? analytics.overviewWindow) as WindowName
+)
+
+/** 回退窗口名（用于提示条文案）。 */
+const fallbackWindowName = computed(() => {
+  const shown = windowData.value
+  if (!shown || !isWindowFallback.value) return ''
+  return windowNameLabel(locale.value, shown.window)
 })
 
 const rateSummary = computed(() => store.rateSummary)
@@ -205,7 +244,7 @@ const kpis = computed<KpiItem[]>(() => {
 /** 当前概览窗口 → 统计查询（5h/24h/today 小时粒度，7d/30d/本月 天粒度）。 */
 const trendQuery = computed(() =>
   rangeQueryForWindow(
-    analytics.overviewWindow,
+    effectiveWindow.value,
     store.settings.timezone,
     store.settings.dayBoundaryMode === 'night_owl' ? 4 : 0
   )
@@ -758,7 +797,7 @@ const fatalError = computed(() => !!store.error && !store.snapshot)
 
 /** 窗口数据 + 趋势数据（范围变化或挂载时调用）。 */
 function refreshWindowData() {
-  void store.fetchOverviewDeferredBundle(analytics.overviewWindow)
+  void store.fetchOverviewDeferredBundle(effectiveWindow.value)
   void store.fetchStatisticsSummary(trendQuery.value)
 }
 
@@ -808,6 +847,17 @@ onMounted(() => {
 
 <template>
   <section class="flex flex-col gap-5">
+    <!-- 当前时间范围暂无数据时的回退提示（设计：概览不因窗口无数据而空白） -->
+    <div
+      v-if="isWindowFallback"
+      class="flex items-center gap-2 rounded-lg border border-[var(--theme-border-default)] bg-[var(--theme-bg-surface)] px-3 py-2 text-[11px] text-[var(--theme-text-secondary)]"
+      role="note"
+    >
+      <Info :size="14" class="shrink-0 text-[var(--theme-text-tertiary)]" aria-hidden="true" />
+      <span>
+        {{ t(locale, 'desktop.overview.windowFallbackHint', { fallback: fallbackWindowName }) }}
+      </span>
+    </div>
     <!-- 加载失败：页面内错误 + 重试（设计 6.9） -->
     <div
       v-if="fatalError"

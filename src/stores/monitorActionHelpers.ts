@@ -27,12 +27,14 @@ export function mergeDeferredOverviewSnapshot(
   bundle: OverviewDeferredBundle
 ): UsageSnapshot | null {
   if (!snapshot) return snapshot
+  // 只替换对应窗口条目，保留 refresh_usage_bundle 的全量口径：
+  // 全局 summary/modelDistribution 是「所有窗口合计」的权威值，
+  // 不能被单窗口（可能无数据）的 deferred 结果覆盖，否则当前窗口
+  // 无数据时概览会被误判为完全无数据（空态/全 0）。
   const existingWindows = snapshot.windows.filter(item => item.window !== bundle.windowUsage.window)
   return {
     ...snapshot,
-    windows: [...existingWindows, bundle.windowUsage],
-    summary: bundle.usageSummary,
-    modelDistribution: bundle.modelDistribution
+    windows: [...existingWindows, bundle.windowUsage]
   }
 }
 
