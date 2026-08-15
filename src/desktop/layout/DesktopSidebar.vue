@@ -16,9 +16,9 @@ interface NavItem {
 const navItems: NavItem[] = [
   { id: 'overview', icon: LayoutDashboard, key: 'desktop.nav.overview' },
   { id: 'analytics', icon: ChartSpline, key: 'desktop.nav.analytics' },
+  { id: 'requests', icon: ListChecks, key: 'desktop.nav.requests' },
   { id: 'sessions', icon: List, key: 'desktop.nav.sessions' },
   { id: 'projects', icon: FolderKanban, key: 'desktop.nav.projects' },
-  { id: 'requests', icon: ListChecks, key: 'desktop.nav.requests' },
   { id: 'activity', icon: Activity, key: 'desktop.nav.activity' },
   { id: 'gateway', icon: Network, key: 'desktop.nav.gateway' },
   { id: 'settings', icon: Settings, key: 'desktop.nav.settings' }

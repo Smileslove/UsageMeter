@@ -43,17 +43,22 @@ function applyNavigationTarget(target: DesktopNavigationTarget) {
 }
 
 onMounted(async () => {
+  // hash 路由先注册：即使下方 initialize 失败（网络/权限等），hash 导航与深链同步仍可用。
+  window.addEventListener('hashchange', handleHashChange)
+  nav.syncFromHash()
+
   // 初始化 monitor store（参考 App.vue；跨 WebView 各自初始化，后端操作幂等）
-  await store.initialize()
+  try {
+    await store.initialize()
+  } catch (error) {
+    // 初始化失败不阻塞 UI：数据区显示空态，导航与页面骨架仍可操作
+    console.error('[DesktopApp] store.initialize 失败（导航与骨架仍可用）:', error)
+  }
   await nextTick()
   applyResolvedTheme(store.settings.theme)
 
   mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
   mediaQuery.addEventListener('change', handleSystemThemeChange)
-
-  // hash 路由：hashchange -> store 同步；store 写入 hash 走 writeHash（防循环）
-  window.addEventListener('hashchange', handleHashChange)
-  nav.syncFromHash()
 
   // 深链一：窗口已存在时，Rust 通过事件投递导航目标
   try {

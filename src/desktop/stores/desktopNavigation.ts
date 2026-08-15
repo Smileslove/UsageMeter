@@ -98,12 +98,13 @@ export const useDesktopNavigationStore = defineStore('desktopNavigation', {
         this.activeSessionKey = sessionKey
       }
     },
-    /** 比较后再写 hash，避免与 hashchange 回调形成循环；写入后同步状态保证 UI 即时响应。 */
+    /** 比较后再写 hash，避免与 hashchange 回调形成循环；写入后同步状态保证 UI 即时响应。
+     *  注意：hash 相同时也必须 syncFromHash——深链/残留 hash 可能让 currentPage 与 hash 脱节，
+     *  若提前 return 会导致点击同页导航项"无反应"（writeHash 是唯一可靠的同步入口）。 */
     writeHash(next: string) {
-      if (window.location.hash === next) {
-        return
+      if (window.location.hash !== next) {
+        window.location.hash = next
       }
-      window.location.hash = next
       this.syncFromHash()
     },
     navigate(page: DesktopPage) {
