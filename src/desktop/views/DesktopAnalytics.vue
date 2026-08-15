@@ -20,7 +20,7 @@ import {
 } from '../stores/desktopAnalytics'
 import { t } from '../../i18n'
 import { WINDOW_ORDER } from '../../types'
-import type { StatisticsMetric, StatisticsSummary, WindowName } from '../../types'
+import type { StatisticsMetric, StatisticsSummary, StatisticsTrendPoint, WindowName } from '../../types'
 import AnalyticsToolbar from './analytics/AnalyticsToolbar.vue'
 import TrendView from './analytics/TrendView.vue'
 import BreakdownView from './analytics/BreakdownView.vue'
@@ -68,8 +68,39 @@ async function fetchTrend() {
   }
 }
 
-const trendPoints = computed(() => store.statisticsSummary?.trend ?? [])
-const prevPoints = computed(() => prevSummary.value?.trend ?? [])
+/**
+ * 趋势点按模型筛选（设计 7.3 筛选摘要）：后端按模型返回趋势序列（statisticsSummary.models[].trend），
+ * 前端按选中模型合并时间桶求和。模型级趋势缺失时退回全量（口径受限，见筛选摘要说明）。
+ */
+function filterTrendByModels(summary: StatisticsSummary | null, models: string[]): StatisticsTrendPoint[] {
+  if (!summary) return []
+  if (models.length === 0) return summary.trend ?? []
+  const selected = new Set(models)
+  const byEpoch = new Map<number, StatisticsTrendPoint>()
+  for (const model of summary.models) {
+    if (!selected.has(model.modelName)) continue
+    for (const p of model.trend) {
+      const acc = byEpoch.get(p.startEpoch)
+      if (acc) {
+        acc.requestCount += p.requestCount
+        acc.totalTokens += p.totalTokens
+        acc.inputTokens += p.inputTokens
+        acc.outputTokens += p.outputTokens
+        acc.cacheCreateTokens += p.cacheCreateTokens
+        acc.cacheReadTokens += p.cacheReadTokens
+        acc.cost += p.cost
+        acc.avgTokensPerSecond = null
+      } else {
+        byEpoch.set(p.startEpoch, { ...p })
+      }
+    }
+  }
+  if (byEpoch.size === 0) return summary.trend ?? []
+  return [...byEpoch.values()].sort((a, b) => a.startEpoch - b.startEpoch)
+}
+
+const trendPoints = computed(() => filterTrendByModels(store.statisticsSummary, analytics.analyticsModelFilter))
+const prevPoints = computed(() => filterTrendByModels(prevSummary.value, analytics.analyticsModelFilter))
 
 watch(
   () => [analytics.analyticsWindow, analytics.analyticsGranularity, analytics.analyticsCompare] as const,

@@ -126,8 +126,23 @@ const compositionData = computed<CompositionRow[]>(() => {
   const b = store.overviewBreakdown
   if (dimension.value === 'source') return rowsFromItems(b?.sourceRanking ?? [])
   if (dimension.value === 'tool') return rowsFromItems(b?.toolRanking ?? [])
-  if (dimension.value === 'model') return rowsFromItems(b?.modelRanking ?? [])
-  return rowsFromProjects(store.projectStats)
+  if (dimension.value === 'model') {
+    const modelFilter = analytics.analyticsModelFilter
+    const items = (b?.modelRanking ?? []).filter(i => modelFilter.length === 0 || modelFilter.includes(i.id))
+    return rowsFromItems(items)
+  }
+  const projectFilter = analytics.analyticsProjectFilter
+  const projects = store.projectStats.filter(
+    p => projectFilter.length === 0 || projectFilter.includes(p.projectKey ?? p.name)
+  )
+  return rowsFromProjects(projects)
+})
+
+/** 当前维度是否被筛选摘要过滤（用于空态区分与占比口径提示）。 */
+const dimensionFiltered = computed(() => {
+  if (dimension.value === 'model') return analytics.analyticsModelFilter.length > 0
+  if (dimension.value === 'project') return analytics.analyticsProjectFilter.length > 0
+  return false
 })
 
 // ---- 排序 ----
@@ -277,7 +292,7 @@ const hasPerformance = computed(
         v-else
         class="rounded-lg border border-dashed border-[var(--theme-border-strong)] px-4 py-10 text-center text-xs leading-5 text-[var(--theme-text-tertiary)]"
       >
-        {{ t(locale, 'desktop.analytics.compEmpty') }}
+        {{ t(locale, dimensionFiltered ? 'desktop.analytics.filterNoMatch' : 'desktop.analytics.compEmpty') }}
       </div>
     </div>
   </div>

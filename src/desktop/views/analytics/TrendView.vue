@@ -28,7 +28,7 @@ import {
   formatTokenPair,
   formatTokenValue
 } from '../../../utils/format'
-import type { StatisticsMetric, StatisticsTrendPoint } from '../../../types'
+import type { StatisticsMetric, StatisticsTotals, StatisticsTrendPoint } from '../../../types'
 
 registerChartComponents()
 
@@ -154,8 +154,50 @@ interface TotalItem {
   value: string
 }
 
+/**
+ * 总量摘要按模型筛选（设计 7.3）：模型过滤生效时对选中模型的明细求和；
+ * 后端未返回模型明细时退回全量（口径受限，见筛选摘要说明）。
+ * 注意：StatisticsModelBreakdown 无代理/本地请求拆分，proxyRequestCount 保持 0。
+ */
+const filteredTotals = computed<StatisticsTotals | null>(() => {
+  const summary = store.statisticsSummary
+  if (!summary) return null
+  const models = analytics.analyticsModelFilter
+  if (models.length === 0 || summary.models.length === 0) return summary.totals
+  const selected = new Set(models)
+  const acc: StatisticsTotals = {
+    requestCount: 0,
+    totalTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreateTokens: 0,
+    cacheReadTokens: 0,
+    cost: 0,
+    modelCount: 0,
+    localRequestCount: 0,
+    proxyRequestCount: 0,
+    successRequests: 0,
+    errorRequests: 0
+  }
+  for (const m of summary.models) {
+    if (!selected.has(m.modelName)) continue
+    acc.requestCount += m.requestCount
+    acc.totalTokens += m.totalTokens
+    acc.inputTokens += m.inputTokens
+    acc.outputTokens += m.outputTokens
+    acc.cacheCreateTokens += m.cacheCreateTokens
+    acc.cacheReadTokens += m.cacheReadTokens
+    acc.cost += m.cost
+    acc.modelCount += 1
+    acc.localRequestCount += m.localRequestCount
+    acc.successRequests = (acc.successRequests ?? 0) + (m.successRequests ?? 0)
+    acc.errorRequests = (acc.errorRequests ?? 0) + (m.errorRequests ?? 0)
+  }
+  return acc
+})
+
 const totalItems = computed<TotalItem[]>(() => {
-  const totals = store.statisticsSummary?.totals
+  const totals = filteredTotals.value
   if (!totals) return []
   const pair = formatTokenPair(totals.inputTokens, totals.outputTokens)
   return [

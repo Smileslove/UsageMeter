@@ -30,6 +30,10 @@ export const useDesktopAnalyticsStore = defineStore('desktopAnalytics', () => {
   const analyticsGranularity = ref<AnalyticsGranularity>('auto')
   /** 比较方式：无 / 上一等长周期（设计 7.3）。 */
   const analyticsCompare = ref<AnalyticsCompare>('none')
+  /** 分析页组合筛选：模型多选（空数组 = 全部；设计 7.3 筛选摘要）。 */
+  const analyticsModelFilter = ref<string[]>([])
+  /** 分析页组合筛选：项目多选（空数组 = 全部；设计 7.3 筛选摘要）。 */
+  const analyticsProjectFilter = ref<string[]>([])
 
   /** 是否已从快速面板继承过 summaryWindow（只继承一次，避免覆盖用户后续手动选择）。 */
   const overviewWindowInherited = ref(false)
@@ -51,6 +55,8 @@ export const useDesktopAnalyticsStore = defineStore('desktopAnalytics', () => {
     analyticsView,
     analyticsGranularity,
     analyticsCompare,
+    analyticsModelFilter,
+    analyticsProjectFilter,
     inheritSummaryWindowOnce
   }
 })
