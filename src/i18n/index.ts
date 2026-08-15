@@ -430,6 +430,9 @@ const messages = {
         filesUnavailable: '文件内容暂不可用',
         filesUnavailableDesc: '深度文件读取将在后续版本提供。'
       },
+      requests: {
+        openInSession: '打开会话'
+      },
       gateway: {
         lastActiveNever: '从未使用',
         lastActiveMinutes: '{count} 分钟前',
@@ -1985,6 +1988,9 @@ const messages = {
         filesUnavailable: '檔案內容暫不可用',
         filesUnavailableDesc: '深度檔案讀取將在後續版本提供。'
       },
+      requests: {
+        openInSession: '開啟會話'
+      },
       gateway: {
         lastActiveNever: '從未使用',
         lastActiveMinutes: '{count} 分鐘前',
@@ -3436,6 +3442,9 @@ const messages = {
         colRate: 'Rate',
         filesUnavailable: 'File contents unavailable',
         filesUnavailableDesc: 'Deep file reading will arrive in a later release.'
+      },
+      requests: {
+        openInSession: 'Open in session'
       },
       gateway: {
         lastActiveNever: 'Never used',

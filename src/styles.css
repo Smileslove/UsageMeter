@@ -1140,3 +1140,34 @@ body {
   --theme-bg-table-row-hover: rgba(255, 255, 255, 0.06);
   --theme-bg-selection: color-mix(in srgb, var(--theme-accent-primary) 15%, transparent);
 }
+
+/* ============================================================
+   无障碍：prefers-reduced-motion 全局降级（需求分析 P0-4 / 验收 21.3）。
+   系统开启"减少动态效果"时：
+   - 装饰性/持续性动画（animate-spin 旋转、animate-pulse 骨架脉冲、
+     settings-section-flash 等）时长归零、只保留一帧，避免持续运动
+     诱发晕动（元素仍以静态基值显示，不消失）；
+   - 位移类过渡（drawer-slide 的 transform 滑动、hover 缩放等）
+     立即完成，不做位移动画；
+   - opacity 等非位移渐变（淡入淡出、颜色过渡）保留原有时长，
+     保证状态变化仍然可见可用。
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    /* transform 等位移属性不在白名单中 → 位移过渡立即完成；
+       其余属性（含 opacity）保留原有时长，渐变仍可见可用。 */
+    transition-property: opacity, color, background-color, border-color,
+      box-shadow, filter, fill, stroke !important;
+  }
+}

@@ -5,7 +5,7 @@
  * 请求筛选：状态 / 覆盖来源 / 性能；右侧抽屉展示单条请求详情（复制 source / sessionId / requestKey）。
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { Copy, X } from 'lucide-vue-next'
+import { Copy, ExternalLink, X } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { useDesktopNavigationStore } from '../../desktop/stores/desktopNavigation'
 import { t } from '../../i18n'
@@ -97,6 +97,13 @@ const openRequestDrawer = (request: RequestRecord) => {
 const closeRequestDrawer = () => {
   requestDrawerOpen.value = false
   selectedRequest.value = null
+}
+
+// 『在会话中查看』：关闭抽屉并深链跳转到会话工作区（hash 路由由 desktopNavigation 分发）
+const openInSession = () => {
+  const sessionKey = selectedRequest.value?.sessionId
+  closeRequestDrawer()
+  if (sessionKey) nav.openSession(sessionKey)
 }
 
 // 请求 ID 折叠为短值，复制时复制完整值
@@ -240,7 +247,16 @@ const toolOptions = computed(() => {
               <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">{{ requestHasProxyPerformance(request) ? formatDuration(request.ttftMs) : '—' }}</td>
               <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">{{ requestHasProxyPerformance(request) ? formatDuration(request.durationMs) : '—' }}</td>
               <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">{{ requestHasProxyPerformance(request) && request.outputTokensPerSecond ? `${request.outputTokensPerSecond.toFixed(1)}t/s` : '—' }}</td>
-              <td class="max-w-28 truncate px-2.5 py-1.5 font-mono text-[10px] text-[var(--theme-text-tertiary)]" :title="request.sessionId">{{ shortId(request.sessionId) }}</td>
+              <td class="max-w-28 px-2.5 py-1.5 font-mono text-[10px]">
+                <!-- 会话 ID：点击/回车跳转会话工作区（stop 阻止行点击打开抽屉）；title 保留完整 ID -->
+                <button
+                  type="button"
+                  tabindex="0"
+                  class="block w-full cursor-pointer truncate text-left text-[var(--theme-text-tertiary)] transition-colors hover:text-[var(--theme-accent-primary)] focus-visible:text-[var(--theme-accent-primary)] focus-visible:outline-none"
+                  :title="request.sessionId"
+                  @click.stop="nav.openSession(request.sessionId)"
+                >{{ shortId(request.sessionId) }}</button>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -263,15 +279,26 @@ const toolOptions = computed(() => {
               <h3 class="truncate text-[13px] font-semibold text-[var(--theme-text-primary)]">{{ requestModelLabel(selectedRequest) }}</h3>
               <p class="mt-0.5 truncate text-[10px] text-[var(--theme-text-tertiary)]">{{ requestProjectLabel(selectedRequest) }} / {{ requestToolLabel(selectedRequest.tool) }} / {{ requestSourceLabel(selectedRequest) }}</p>
             </div>
-            <button
-              type="button"
-              class="shrink-0 rounded-lg p-1 transition-colors hover:bg-[var(--theme-bg-hover)]"
-              :aria-label="t(locale, 'common.close')"
-              :title="t(locale, 'common.close')"
-              @click="closeRequestDrawer"
-            >
-              <X class="h-4 w-4 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-            </button>
+            <div class="flex shrink-0 items-start gap-1">
+              <button
+                type="button"
+                class="inline-flex items-center gap-1 rounded-lg border border-[var(--theme-border-default)] px-2 py-1 text-[10px] font-semibold text-[var(--theme-text-secondary)] transition-colors hover:border-[var(--theme-accent-primary)] hover:text-[var(--theme-accent-primary)]"
+                :title="t(locale, 'desktop.requests.openInSession')"
+                @click="openInSession"
+              >
+                <ExternalLink class="h-3 w-3" aria-hidden="true" />
+                {{ t(locale, 'desktop.requests.openInSession') }}
+              </button>
+              <button
+                type="button"
+                class="shrink-0 rounded-lg p-1 transition-colors hover:bg-[var(--theme-bg-hover)]"
+                :aria-label="t(locale, 'common.close')"
+                :title="t(locale, 'common.close')"
+                @click="closeRequestDrawer"
+              >
+                <X class="h-4 w-4 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
+              </button>
+            </div>
           </div>
 
           <div class="space-y-3 p-3">
