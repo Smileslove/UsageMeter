@@ -99,6 +99,16 @@ const closeRequestDrawer = () => {
   selectedRequest.value = null
 }
 
+// 行键盘操作：Enter/Space 打开抽屉（与 click 一致；行内『在会话中查看』按钮聚焦时
+// keydown 冒泡被 target !== currentTarget 检查排除，避免同时触发抽屉与跳转）
+const handleRowKeydown = (event: KeyboardEvent, request: RequestRecord) => {
+  if (event.target !== event.currentTarget) return
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    openRequestDrawer(request)
+  }
+}
+
 // 『在会话中查看』：关闭抽屉并深链跳转到会话工作区（hash 路由由 desktopNavigation 分发）
 const openInSession = () => {
   const sessionKey = selectedRequest.value?.sessionId
@@ -220,9 +230,11 @@ const toolOptions = computed(() => {
             <tr
               v-for="request in filteredRequests"
               :key="request.requestKey"
-              class="cursor-pointer border-b border-[var(--theme-border-subtle)] transition-colors last:border-0 hover:bg-[var(--theme-bg-hover)]"
+              tabindex="0"
+              class="cursor-pointer border-b border-[var(--theme-border-subtle)] transition-colors last:border-0 hover:bg-[var(--theme-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring-focus)]"
               :class="selectedRequest?.requestKey === request.requestKey ? 'bg-[var(--theme-accent-soft)]' : ''"
               @click="openRequestDrawer(request)"
+              @keydown="handleRowKeydown($event, request)"
             >
               <td class="whitespace-nowrap px-2.5 py-1.5 text-[var(--theme-text-secondary)]">{{ formatTime(request.timestampSec) }}</td>
               <td class="px-2.5 py-1.5">
@@ -254,6 +266,7 @@ const toolOptions = computed(() => {
                   tabindex="0"
                   class="block w-full cursor-pointer truncate text-left text-[var(--theme-text-tertiary)] transition-colors hover:text-[var(--theme-accent-primary)] focus-visible:text-[var(--theme-accent-primary)] focus-visible:outline-none"
                   :title="request.sessionId"
+                  @keydown.stop
                   @click.stop="nav.openSession(request.sessionId)"
                 >{{ shortId(request.sessionId) }}</button>
               </td>

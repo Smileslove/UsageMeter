@@ -54,6 +54,16 @@ const formatLastActive = (epochMs: number | null) => {
   const days = Math.floor(hours / 24)
   return t(locale.value, 'desktop.gateway.lastActiveDays', { count: days })
 }
+
+// 行键盘操作：Enter/Space 选中 profile（与 click 一致；行内操作按钮聚焦时
+// keydown 冒泡被 target !== currentTarget 检查排除，避免误触选择）
+const handleRowKeydown = (event: KeyboardEvent, profile: GatewayProfile) => {
+  if (event.target !== event.currentTarget) return
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    emit('select', profile)
+  }
+}
 </script>
 
 <template>
@@ -85,9 +95,11 @@ const formatLastActive = (epochMs: number | null) => {
         <article
           v-for="profile in profiles"
           :key="profile.id"
-          class="cursor-pointer border-b border-[var(--theme-border-subtle)] px-3 py-2.5 transition-colors last:border-0 hover:bg-[var(--theme-bg-hover)]"
+          tabindex="0"
+          class="cursor-pointer border-b border-[var(--theme-border-subtle)] px-3 py-2.5 transition-colors last:border-0 hover:bg-[var(--theme-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring-focus)]"
           :class="selectedId === profile.id ? 'bg-[var(--theme-accent-soft)]' : ''"
           @click="emit('select', profile)"
+          @keydown="handleRowKeydown($event, profile)"
         >
           <div class="flex items-center gap-2">
             <div class="min-w-0 flex-1">

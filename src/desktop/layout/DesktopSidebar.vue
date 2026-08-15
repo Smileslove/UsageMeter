@@ -126,6 +126,7 @@ onUnmounted(() => {
             : 'text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)]'
         "
         :aria-label="t(locale, item.key)"
+        :aria-current="nav.currentPage === item.id ? 'page' : undefined"
         :title="t(locale, item.key)"
         @click="nav.navigate(item.id)"
       >

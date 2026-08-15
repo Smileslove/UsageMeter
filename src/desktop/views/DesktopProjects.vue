@@ -199,7 +199,7 @@ onUnmounted(() => {
             v-for="project in projectList"
             :key="projectKeyOf(project)"
             type="button"
-            class="flex w-full items-start gap-2 border-b border-[var(--theme-border-subtle)] px-3 py-2 text-left transition-colors last:border-0 hover:bg-[var(--theme-bg-hover)]"
+            class="flex w-full items-start gap-2 border-b border-[var(--theme-border-subtle)] px-3 py-2 text-left transition-colors last:border-0 hover:bg-[var(--theme-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring-focus)]"
             :class="selectedProjectKey === projectKeyOf(project) ? 'bg-[var(--theme-accent-soft)]' : ''"
             @click="selectProject(project)"
           >
@@ -311,9 +311,10 @@ onUnmounted(() => {
               v-for="session in sessionsOfProject"
               :key="session.sessionId"
               type="button"
-              class="flex w-full items-center gap-2 border-b border-[var(--theme-border-subtle)] px-3 py-1.5 text-left transition-colors last:border-0 hover:bg-[var(--theme-bg-hover)]"
+              tabindex="0"
+              class="flex w-full items-center gap-2 border-b border-[var(--theme-border-subtle)] px-3 py-1.5 text-left transition-colors last:border-0 hover:bg-[var(--theme-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring-focus)]"
               :title="t(locale, 'desktop.sessions.openWorkspaceHint')"
-              @dblclick="openWorkspace(session)"
+              @click="openWorkspace(session)"
             >
               <span class="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--theme-text-primary)]">{{ displaySessionTitle(session) }}</span>
               <span class="shrink-0 text-[10px] text-[var(--theme-text-tertiary)]">{{ formatTime(session.lastRequestTime) }}</span>

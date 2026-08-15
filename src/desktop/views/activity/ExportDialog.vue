@@ -4,12 +4,13 @@
  * 成功显示路径可复制）。5 个勾选项 + 格式单选 + 路径复制全部自包含；
  * 通过 props.open 控制显隐、emit('close') 请求关闭。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, ref, toRef, watch } from 'vue'
 import { CheckCircle2, Copy, Loader2, TriangleAlert, X } from 'lucide-vue-next'
 import { useMonitorStore } from '../../../stores/monitor'
 import { t, backendErrorLabel } from '../../../i18n'
 import { exportSessionActivity } from '../../../api/activityApi'
 import { useClipboard } from '../../composables/useClipboard'
+import { useFocusTrap } from '../../composables/useFocusTrap'
 import type { ExportResult } from '../../../types'
 
 const props = defineProps<{
@@ -47,6 +48,14 @@ const closeExportDialog = () => {
   emit('close')
 }
 
+// 焦点陷阱（17.1）：打开时聚焦首个可聚焦元素、Tab 循环、Esc 关闭、关闭后焦点还给触发器
+const dialogRoot = ref<HTMLElement | null>(null)
+useFocusTrap({
+  open: toRef(props, 'open'),
+  container: dialogRoot,
+  onClose: closeExportDialog
+})
+
 const runExport = async () => {
   const key = props.sessionKey
   if (!key || exportBusy.value) return
@@ -78,6 +87,7 @@ const copyExportPath = async () => {
   <!-- 导出对话框（15.3 / 21.5：范围预览，默认不勾选正文与工具 payload；成功显示路径可复制） -->
   <div
     v-if="open"
+    ref="dialogRoot"
     class="fixed inset-0 z-50 flex items-center justify-center p-4"
     role="dialog"
     aria-modal="true"
