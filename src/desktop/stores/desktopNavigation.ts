@@ -99,13 +99,20 @@ export const useDesktopNavigationStore = defineStore('desktopNavigation', {
       }
     },
     /** 比较后再写 hash，避免与 hashchange 回调形成循环；写入后同步状态保证 UI 即时响应。
-     *  注意：hash 相同时也必须 syncFromHash——深链/残留 hash 可能让 currentPage 与 hash 脱节，
-     *  若提前 return 会导致点击同页导航项"无反应"（writeHash 是唯一可靠的同步入口）。 */
+     *  注意：必须基于 next 参数直接解析状态，而不是写入后立即读 window.location.hash——
+     *  Tauri WebView 中 hash 赋值与读取可能存在时序差异（读到旧值会把页面解析回上一页，
+     *  表现为"点击请求/项目却跳转概览"）；hash 相同时也必须同步（深链残留导致状态脱节）。 */
     writeHash(next: string) {
       if (window.location.hash !== next) {
         window.location.hash = next
       }
-      this.syncFromHash()
+      const { page, sessionKey } = parseDesktopHash(next)
+      if (this.currentPage !== page) {
+        this.currentPage = page
+      }
+      if (this.activeSessionKey !== sessionKey) {
+        this.activeSessionKey = sessionKey
+      }
     },
     navigate(page: DesktopPage) {
       this.writeHash(desktopHashFor(page))
