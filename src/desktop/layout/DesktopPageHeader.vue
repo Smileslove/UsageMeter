@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Ellipsis, RefreshCw } from 'lucide-vue-next'
+import { computed } from 'vue'
+import { RefreshCw, Share2 } from 'lucide-vue-next'
 import { useDesktopNavigationStore } from '../stores/desktopNavigation'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
 import { formatToolDisplayName } from '../../utils/toolDisplay'
+import { openShareWindow } from '../../api/appApi'
 import type { DesktopPage } from '../../types'
 import SourceSelector from '../../components/SourceSelector.vue'
 import ToolSelector from '../../components/ToolSelector.vue'
+import ThemeSelector from '../../components/ThemeSelector.vue'
 
 /** 全局筛选摘要仅作用于数据受筛选影响的页面（设计文档 4.5）。 */
 const PAGES_WITH_FILTER_SUMMARY: DesktopPage[] = ['overview', 'analytics', 'sessions', 'projects', 'requests']
@@ -43,23 +45,13 @@ const toolFilterLabel = computed(() => {
 
 const filterSummary = computed(() => `${sourceFilterLabel.value} · ${toolFilterLabel.value}`)
 
-// 更多菜单（占位）
-const moreOpen = ref(false)
-const moreMenuRef = ref<HTMLElement | null>(null)
-
-function handleClickOutside(event: MouseEvent) {
-  if (moreMenuRef.value && !moreMenuRef.value.contains(event.target as Node)) {
-    moreOpen.value = false
+async function handleOpenShareWindow() {
+  try {
+    await openShareWindow()
+  } catch (error) {
+    console.error('[DesktopPageHeader] 打开分享窗口失败:', error)
   }
 }
-
-onMounted(() => {
-  document.addEventListener('click', handleClickOutside)
-})
-
-onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
-})
 </script>
 
 <template>
@@ -77,10 +69,24 @@ onUnmounted(() => {
       </p>
     </div>
 
-    <!-- 右侧：来源 → 工具 → 刷新 → 更多菜单（时间范围选择位于各页面内部工具栏） -->
+    <!-- 右侧：来源 → 工具 → 分享 → 主题 → 刷新（时间范围选择位于各页面内部工具栏） -->
     <div class="flex shrink-0 items-center gap-2">
       <SourceSelector />
       <ToolSelector />
+
+      <!-- 分享窗口：把当前统计摘要生成可分享/导出的卡片（复用快速面板分享窗口） -->
+      <button
+        type="button"
+        class="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-tertiary)] transition-colors duration-150 hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)]"
+        :title="t(locale, 'desktop.shareWindow')"
+        :aria-label="t(locale, 'desktop.shareWindow')"
+        @click="handleOpenShareWindow"
+      >
+        <Share2 :size="16" aria-hidden="true" />
+      </button>
+
+      <!-- 主题切换（与快速面板一致，设计文档 3.6：顶栏保持主题入口） -->
+      <ThemeSelector />
 
       <!-- 刷新 -->
       <button
@@ -92,38 +98,6 @@ onUnmounted(() => {
       >
         <RefreshCw :size="16" :class="{ 'animate-spin': monitor.loading }" aria-hidden="true" />
       </button>
-
-      <!-- 更多菜单（占位） -->
-      <div ref="moreMenuRef" class="relative">
-        <button
-          type="button"
-          class="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-tertiary)] transition-colors duration-150 hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)]"
-          :title="t(locale, 'desktop.moreMenu')"
-          :aria-label="t(locale, 'desktop.moreMenu')"
-          :aria-expanded="moreOpen"
-          @click="moreOpen = !moreOpen"
-        >
-          <Ellipsis :size="16" aria-hidden="true" />
-        </button>
-        <Transition
-          enter-active-class="transition ease-out duration-100"
-          enter-from-class="transform opacity-0 scale-95"
-          enter-to-class="transform opacity-100 scale-100"
-          leave-active-class="transition ease-in duration-75"
-          leave-from-class="transform opacity-100 scale-100"
-          leave-to-class="transform opacity-0 scale-95"
-        >
-          <div
-            v-if="moreOpen"
-            class="absolute right-0 top-full z-50 mt-1 w-48 rounded-lg border border-[var(--theme-border-default)] py-1 shadow-[var(--theme-shadow-inline)]"
-            style="background: var(--theme-bg-overlay)"
-          >
-            <div class="px-3 py-2 text-xs text-[var(--theme-text-tertiary)]">
-              {{ t(locale, 'desktop.moreMenuPlaceholder') }}
-            </div>
-          </div>
-        </Transition>
-      </div>
     </div>
   </header>
 </template>
