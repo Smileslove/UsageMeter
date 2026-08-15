@@ -5,13 +5,14 @@
  * 本组件只负责按 sessionKey 拉取详情并展示 5 个 tab：摘要 / 活动 / 请求 / 模型与用量 / 文件。
  * 返回列表调用 desktopNavigation.backToSessions()（列表恢复筛选与滚动由 DesktopSessions 消费）。
  */
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ArrowLeft, Copy, FileQuestionMark, Folder, MoreHorizontal, RefreshCw, X } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { useDesktopNavigationStore } from '../../desktop/stores/desktopNavigation'
 import { t } from '../../i18n'
 import type { RequestRecord } from '../../types'
 import { useSessionDisplay } from '../../composables/useSessionDisplay'
+import { useClipboard } from '../composables/useClipboard'
 import LobeIcon from '../../components/LobeIcon.vue'
 import DesktopActivity from './DesktopActivity.vue'
 
@@ -64,16 +65,7 @@ watch(() => props.sessionKey, loadDetail)
 const goBack = () => nav.backToSessions()
 
 // —— 顶部：复制 ID / 更多菜单 ——
-const copiedFlash = ref('')
-let copiedTimer: ReturnType<typeof setTimeout> | null = null
-const copyText = async (value: string, label: string) => {
-  try {
-    await navigator.clipboard.writeText(value)
-    copiedFlash.value = label
-    if (copiedTimer) clearTimeout(copiedTimer)
-    copiedTimer = setTimeout(() => { copiedFlash.value = '' }, 1400)
-  } catch { /* 剪贴板不可用时静默失败 */ }
-}
+const { copiedValue: copiedFlash, copyText } = useClipboard({ duration: 1400 })
 const moreMenuOpen = ref(false)
 
 const fullTime = (epoch?: number) => {
@@ -185,10 +177,6 @@ const closeRequestDrawer = () => {
   selectedRequest.value = null
 }
 const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…${value.slice(-4)}` : value)
-
-onUnmounted(() => {
-  if (copiedTimer) clearTimeout(copiedTimer)
-})
 </script>
 
 <template>

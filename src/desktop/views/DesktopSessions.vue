@@ -13,6 +13,7 @@ import { t } from '../../i18n'
 import type { SessionStats } from '../../types'
 import { useSessionDisplay } from '../../composables/useSessionDisplay'
 import { useSessionViewData } from '../../composables/useSessionViewData'
+import { useInfiniteScroll } from '../composables/useInfiniteScroll'
 import LobeIcon from '../../components/LobeIcon.vue'
 import SessionWorkspace from './SessionWorkspace.vue'
 
@@ -266,18 +267,16 @@ const handleRowKeydown = (event: KeyboardEvent, session: SessionStats) => {
 
 // —— 触底续载 ——
 const loadMoreTrigger = ref<HTMLElement | null>(null)
-let observer: IntersectionObserver | null = null
-let observeTimer: ReturnType<typeof setTimeout> | null = null
-
-const observeTriggers = () => {
-  if (!observer) return
-  if (loadMoreTrigger.value) observer.observe(loadMoreTrigger.value)
-}
-const scheduleObserve = () => {
-  if (observeTimer) clearTimeout(observeTimer)
-  observeTimer = setTimeout(() => { observeTimer = null; observeTriggers() }, 60)
-}
-watch(() => store.sessions.length, scheduleObserve)
+useInfiniteScroll({
+  trigger: loadMoreTrigger,
+  onLoadMore: loadMore,
+  hasMore: () => hasMore.value,
+  loading: () => loadingMore.value,
+  delay: 100,
+  rootMargin: '160px',
+  reobserve: () => store.sessions.length,
+  reobserveDelay: 60
+})
 
 // 可选列（错误/时长，默认隐藏；设计文档 8.3）
 const showOptionalColumns = ref(false)
@@ -315,16 +314,6 @@ onMounted(async () => {
   await initializeSessionView()
   await nextTick()
   applyScrollRestore()
-  setTimeout(() => {
-    observer = new IntersectionObserver(
-      entries => {
-        if (!entries[0].isIntersecting) return
-        if (entries[0].target === loadMoreTrigger.value && hasMore.value && !loadingMore.value) loadMore()
-      },
-      { root: null, rootMargin: '160px' }
-    )
-    observeTriggers()
-  }, 100)
   // 滚动上报：主滚动容器是 DesktopShell 的 <main>（与 applyScrollRestore 一致）
   document.querySelector('main')?.addEventListener('scroll', handleMainScroll, { passive: true })
 })
@@ -333,8 +322,6 @@ onUnmounted(() => {
   disposeSessionView()
   document.querySelector('main')?.removeEventListener('scroll', handleMainScroll)
   if (scrollReportTimer) clearTimeout(scrollReportTimer)
-  if (observer) observer.disconnect()
-  if (observeTimer) clearTimeout(observeTimer)
 })
 
 // —— 表格骨架行 ——

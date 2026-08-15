@@ -12,6 +12,8 @@ import { t } from '../../i18n'
 import type { RequestRecord } from '../../types'
 import { useSessionDisplay } from '../../composables/useSessionDisplay'
 import { useSessionViewData } from '../../composables/useSessionViewData'
+import { useClipboard } from '../composables/useClipboard'
+import { useInfiniteScroll } from '../composables/useInfiniteScroll'
 import LobeIcon from '../../components/LobeIcon.vue'
 
 const store = useMonitorStore()
@@ -99,16 +101,7 @@ const closeRequestDrawer = () => {
 
 // 请求 ID 折叠为短值，复制时复制完整值
 const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…${value.slice(-4)}` : value)
-const copiedValue = ref('')
-let copiedTimer: ReturnType<typeof setTimeout> | null = null
-const copyText = async (value: string, label: string) => {
-  try {
-    await navigator.clipboard.writeText(value)
-    copiedValue.value = label
-    if (copiedTimer) clearTimeout(copiedTimer)
-    copiedTimer = setTimeout(() => { copiedValue.value = '' }, 1200)
-  } catch { /* 剪贴板不可用时静默失败 */ }
-}
+const { copiedValue, copyText } = useClipboard()
 
 // 请求筛选变化时选中行可能消失，清空抽屉避免悬挂引用
 watch(filteredRequests, list => {
@@ -119,18 +112,16 @@ watch(filteredRequests, list => {
 
 // —— 触底续载（请求记录观察器） ——
 const requestLoadMoreTrigger = ref<HTMLElement | null>(null)
-let observer: IntersectionObserver | null = null
-let observeTimer: ReturnType<typeof setTimeout> | null = null
-
-const observeTriggers = () => {
-  if (!observer) return
-  if (requestLoadMoreTrigger.value) observer.observe(requestLoadMoreTrigger.value)
-}
-const scheduleObserve = () => {
-  if (observeTimer) clearTimeout(observeTimer)
-  observeTimer = setTimeout(() => { observeTimer = null; observeTriggers() }, 60)
-}
-watch(() => store.requestRecords.length, scheduleObserve)
+useInfiniteScroll({
+  trigger: requestLoadMoreTrigger,
+  onLoadMore: loadMoreRequests,
+  hasMore: () => requestHasMore.value,
+  loading: () => loadingMoreRequests.value,
+  delay: 100,
+  rootMargin: '160px',
+  reobserve: () => store.requestRecords.length,
+  reobserveDelay: 60
+})
 
 onMounted(async () => {
   // 深链/事件导航带来的全局筛选上下文（sourceId/tool）先应用
@@ -139,23 +130,10 @@ onMounted(async () => {
   await initializeSessionView()
   await reloadRequestRecords()
   await nextTick()
-  setTimeout(() => {
-    observer = new IntersectionObserver(
-      entries => {
-        if (!entries[0].isIntersecting) return
-        if (entries[0].target === requestLoadMoreTrigger.value && requestHasMore.value && !loadingMoreRequests.value) loadMoreRequests()
-      },
-      { root: null, rootMargin: '160px' }
-    )
-    observeTriggers()
-  }, 100)
 })
 
 onUnmounted(() => {
   disposeSessionView()
-  if (observer) observer.disconnect()
-  if (observeTimer) clearTimeout(observeTimer)
-  if (copiedTimer) clearTimeout(copiedTimer)
 })
 
 // —— 表格骨架行 ——
