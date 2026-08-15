@@ -74,10 +74,10 @@ async function fetchTrend() {
  */
 function filterTrendByModels(summary: StatisticsSummary | null, models: string[]): StatisticsTrendPoint[] {
   if (!summary) return []
-  if (models.length === 0) return summary.trend ?? []
+  if (models.length === 0 || !summary.models || summary.models.length === 0) return summary.trend ?? []
   const selected = new Set(models)
   const byEpoch = new Map<number, StatisticsTrendPoint>()
-  for (const model of summary.models) {
+  for (const model of summary.models ?? []) {
     if (!selected.has(model.modelName)) continue
     for (const p of model.trend) {
       const acc = byEpoch.get(p.startEpoch)

@@ -163,7 +163,7 @@ const filteredTotals = computed<StatisticsTotals | null>(() => {
   const summary = store.statisticsSummary
   if (!summary) return null
   const models = analytics.analyticsModelFilter
-  if (models.length === 0 || summary.models.length === 0) return summary.totals
+  if (models.length === 0 || !summary.models || summary.models.length === 0) return summary.totals
   const selected = new Set(models)
   const acc: StatisticsTotals = {
     requestCount: 0,
