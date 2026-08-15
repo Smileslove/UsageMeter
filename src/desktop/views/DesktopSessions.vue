@@ -14,6 +14,8 @@ import type { SessionStats } from '../../types'
 import { useSessionDisplay } from '../../composables/useSessionDisplay'
 import { useSessionViewData } from '../../composables/useSessionViewData'
 import { useInfiniteScroll } from '../composables/useInfiniteScroll'
+import { useClipboard } from '../composables/useClipboard'
+import { useFocusTrap } from '../composables/useFocusTrap'
 import LobeIcon from '../../components/LobeIcon.vue'
 import SessionWorkspace from './SessionWorkspace.vue'
 
@@ -287,6 +289,87 @@ const handleRowKeydown = (event: KeyboardEvent, session: SessionStats) => {
   }
 }
 
+// —— 会话行右键菜单（设计 8.3：仅安全操作——打开会话 / 复制会话 ID / 复制工作目录） ——
+// 「在 Finder/Explorer 显示」依赖后端命令（当前无 show_in_folder/open_path 能力），留待后端补齐。
+const { copiedValue, copyText } = useClipboard({ duration: 1400 })
+
+interface ContextMenuState {
+  session: SessionStats
+  x: number
+  y: number
+}
+const contextMenu = ref<ContextMenuState | null>(null)
+const contextMenuOpen = computed(() => contextMenu.value !== null)
+const contextMenuRef = ref<HTMLElement | null>(null)
+
+/** 打开右键菜单：菜单固定在视口内（估算尺寸，防溢出）。 */
+const openContextMenu = (clientX: number, clientY: number, session: SessionStats) => {
+  const MENU_WIDTH = 176 // w-44
+  const MENU_HEIGHT = 104 // 3 项 + padding
+  const margin = 8
+  const x = Math.max(margin, Math.min(clientX, window.innerWidth - MENU_WIDTH - margin))
+  const y = Math.max(margin, Math.min(clientY, window.innerHeight - MENU_HEIGHT - margin))
+  contextMenu.value = { session, x, y }
+}
+const closeContextMenu = () => { contextMenu.value = null }
+useFocusTrap({ open: contextMenuOpen, container: contextMenuRef, onClose: closeContextMenu })
+
+const handleRowContextMenu = (event: MouseEvent, session: SessionStats) => {
+  // 模板 @contextmenu.prevent 已阻止系统菜单；这里仅定位
+  openContextMenu(event.clientX, event.clientY, session)
+}
+const handleRowMenuKeydown = (event: KeyboardEvent, session: SessionStats) => {
+  // Shift+F10 或菜单键（键盘可达性）
+  if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
+    event.preventDefault()
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+    openContextMenu(rect.left + 32, rect.bottom - 8, session)
+  }
+}
+const handleMenuKeydown = (event: KeyboardEvent) => {
+  // 菜单内上下方向键在可用菜单项间循环移动焦点
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+  event.preventDefault()
+  const items = Array.from(contextMenuRef.value?.querySelectorAll<HTMLElement>('button[role="menuitem"]') ?? []).filter(
+    el => !(el as HTMLButtonElement).disabled
+  )
+  if (items.length === 0) return
+  const activeIndex = items.indexOf(document.activeElement as HTMLElement)
+  const next = event.key === 'ArrowDown' ? activeIndex + 1 : activeIndex - 1
+  items[(next + items.length) % items.length].focus()
+}
+const runContextAction = (action: 'open' | 'copyId' | 'copyCwd') => {
+  const state = contextMenu.value
+  if (!state) return
+  const { session } = state
+  closeContextMenu()
+  if (action === 'open') {
+    openWorkspace(session)
+  } else if (action === 'copyId') {
+    void copyText(session.sessionId, t(locale.value, 'desktop.sessions.menuCopyId'))
+  } else if (action === 'copyCwd' && session.cwd) {
+    void copyText(session.cwd, t(locale.value, 'desktop.sessions.menuCopyCwd'))
+  }
+}
+
+// 点击外部 / 滚动 / 窗口尺寸变化时关闭（scroll 用捕获阶段监听，可覆盖 main 与表格内部滚动）
+const closeMenuOnPointerDown = (event: PointerEvent) => {
+  if (contextMenuRef.value?.contains(event.target as Node)) return
+  closeContextMenu()
+}
+const closeMenuOnScroll = () => { closeContextMenu() }
+watch(contextMenuOpen, isOpen => {
+  if (isOpen) {
+    document.addEventListener('pointerdown', closeMenuOnPointerDown, true)
+    window.addEventListener('scroll', closeMenuOnScroll, true)
+    window.addEventListener('resize', closeMenuOnScroll)
+  } else {
+    document.removeEventListener('pointerdown', closeMenuOnPointerDown, true)
+    window.removeEventListener('scroll', closeMenuOnScroll, true)
+    window.removeEventListener('resize', closeMenuOnScroll)
+  }
+})
+
 // —— 触底续载 ——
 const loadMoreTrigger = ref<HTMLElement | null>(null)
 useInfiniteScroll({
@@ -349,6 +432,9 @@ onUnmounted(() => {
   disposeSessionView()
   document.querySelector('main')?.removeEventListener('scroll', handleMainScroll)
   if (scrollReportTimer) clearTimeout(scrollReportTimer)
+  document.removeEventListener('pointerdown', closeMenuOnPointerDown, true)
+  window.removeEventListener('scroll', closeMenuOnScroll, true)
+  window.removeEventListener('resize', closeMenuOnScroll)
 })
 
 // —— 表格骨架行 ——
@@ -556,7 +642,9 @@ const toolOptions = computed(() => {
             :title="t(locale, 'desktop.sessions.openWorkspaceHint')"
             @click="selectSession(session)"
             @dblclick="openWorkspace(session)"
+            @contextmenu.prevent="handleRowContextMenu($event, session)"
             @keydown.enter="handleRowKeydown($event, session)"
+            @keydown="handleRowMenuKeydown($event, session)"
           >
             <!-- 首列 sticky：标题 + 项目 badge + 工具图标 -->
             <td class="sticky left-0 z-10 max-w-72 bg-[var(--theme-bg-elevated)] px-3 py-2">
@@ -605,4 +693,51 @@ const toolOptions = computed(() => {
     </div>
     <div ref="loadMoreTrigger" class="h-1 w-full"></div>
   </div>
+
+  <!-- 会话行右键菜单（仅安全操作：打开会话 / 复制会话 ID / 复制工作目录；cwd 为空禁用复制工作目录） -->
+  <Teleport to="body">
+    <div
+      v-if="contextMenu"
+      ref="contextMenuRef"
+      role="menu"
+      class="theme-surface-elevated fixed z-[80] w-44 rounded-xl border p-1 shadow-xl"
+      :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+      @keydown="handleMenuKeydown"
+    >
+      <button
+        type="button"
+        role="menuitem"
+        class="block w-full rounded-lg px-2.5 py-1.5 text-left text-[11.5px] font-medium text-[var(--theme-text-secondary)] outline-none transition-colors hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)] focus-visible:ring-1 focus-visible:ring-[var(--theme-ring-focus)]"
+        @click="runContextAction('open')"
+      >
+        {{ t(locale, 'desktop.sessions.menuOpenSession') }}
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        class="block w-full rounded-lg px-2.5 py-1.5 text-left text-[11.5px] font-medium text-[var(--theme-text-secondary)] outline-none transition-colors hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)] focus-visible:ring-1 focus-visible:ring-[var(--theme-ring-focus)]"
+        @click="runContextAction('copyId')"
+      >
+        {{ t(locale, 'desktop.sessions.menuCopyId') }}
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        :disabled="!contextMenu.session.cwd"
+        :title="contextMenu.session.cwd ? '' : t(locale, 'desktop.sessions.menuCopyCwdDisabled')"
+        class="block w-full rounded-lg px-2.5 py-1.5 text-left text-[11.5px] font-medium text-[var(--theme-text-secondary)] outline-none transition-colors hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)] focus-visible:ring-1 focus-visible:ring-[var(--theme-ring-focus)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+        @click="runContextAction('copyCwd')"
+      >
+        {{ t(locale, 'desktop.sessions.menuCopyCwd') }}
+      </button>
+    </div>
+
+    <!-- 复制反馈轻提示（复用 useClipboard 的 copiedValue flash） -->
+    <div
+      v-if="copiedValue"
+      class="pointer-events-none fixed bottom-5 left-1/2 z-[90] -translate-x-1/2 rounded-full border border-[var(--theme-border-default)] bg-[var(--theme-bg-elevated)] px-3.5 py-1.5 text-[11px] font-medium text-emerald-600 shadow-lg dark:text-emerald-300"
+    >
+      {{ t(locale, 'desktop.sessions.copied') }}
+    </div>
+  </Teleport>
 </template>
