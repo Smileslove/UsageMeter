@@ -80,9 +80,14 @@ let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(async () => {
   await compat.refresh()
-  unlistenDetected = await listen('external_manager_detected', () => compat.refresh())
-  unlistenReleased = await listen('external_manager_released', () => compat.refresh())
-  unlistenCleaned = await listen('ccswitch_db_cleaned', () => compat.refresh())
+  try {
+    unlistenDetected = await listen('external_manager_detected', () => compat.refresh())
+    unlistenReleased = await listen('external_manager_released', () => compat.refresh())
+    unlistenCleaned = await listen('ccswitch_db_cleaned', () => compat.refresh())
+  } catch (err) {
+    // capability 未授权时降级：仅失去实时刷新，不阻塞设置页渲染
+    console.warn('[CcSwitchCompatPanel] listen 失败，降级为轮询刷新', err)
+  }
   refreshTimer = setInterval(() => compat.refresh(), 30000)
 })
 

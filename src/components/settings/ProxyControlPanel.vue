@@ -182,7 +182,12 @@ const handleGlobalKeydown = (event: KeyboardEvent) => {
 
 onMounted(async () => {
   await loadTakeoverStatuses()
-  unlistenTakeoverConflict = await listen('takeover_conflict_detected', loadTakeoverStatuses)
+  try {
+    unlistenTakeoverConflict = await listen('takeover_conflict_detected', loadTakeoverStatuses)
+  } catch (err) {
+    // capability 未授权时降级：仅失去实时冲突提示，不阻塞设置页渲染
+    console.warn('[ProxyControlPanel] listen 失败，降级为无实时冲突提示', err)
+  }
   window.addEventListener('keydown', handleGlobalKeydown)
 })
 

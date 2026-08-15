@@ -54,9 +54,14 @@ onMounted(async () => {
   nav.syncFromHash()
 
   // 深链一：窗口已存在时，Rust 通过事件投递导航目标
-  unlistenNavigation = await listen<DesktopNavigationTarget>('desktop-navigation', event => {
-    applyNavigationTarget(event.payload)
-  })
+  try {
+    unlistenNavigation = await listen<DesktopNavigationTarget>('desktop-navigation', event => {
+      applyNavigationTarget(event.payload)
+    })
+  } catch (error) {
+    // capability 未授权时降级：失去"窗口已存在"路径的实时深链，挂载时暂存导航仍可用
+    console.error('[DesktopApp] listen desktop-navigation 失败（capability 可能未授权 desktop 窗口）:', error)
+  }
 
   // 深链二：窗口加载期间 Rust 暂存的待处理导航（先注册监听再取，避免竞态）
   try {

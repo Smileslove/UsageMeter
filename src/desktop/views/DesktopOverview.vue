@@ -70,6 +70,18 @@ const nav = useDesktopNavigationStore()
 const analytics = useDesktopAnalyticsStore()
 const locale = computed(() => store.settings.locale)
 
+// ============ 页面内时间范围 ============
+
+/** 页面级时间范围选项（复用 settings.window* 文案；设计：窗口选择位于页面内部而非全局顶栏）。 */
+const RANGES: Array<{ value: WindowName; key: string }> = [
+  { value: '5h', key: 'settings.window5h' },
+  { value: '24h', key: 'settings.window24h' },
+  { value: 'today', key: 'settings.windowToday' },
+  { value: '7d', key: 'settings.window7d' },
+  { value: '30d', key: 'settings.window30d' },
+  { value: 'current_month', key: 'settings.windowCurrentMonth' }
+]
+
 // ============ 数据口径 ============
 
 /** 当前概览窗口对应的窗口数据（缺失时回退到第一个可用窗口；回退逻辑见 utils/windowFallback）。 */
@@ -778,14 +790,16 @@ const fatalError = computed(() => !!store.error && !store.snapshot)
 // ============ 数据加载 ============
 
 /** 防抖窗口数据请求：overviewWindow 与 effectiveWindow（回退切回）等多个来源
- *  可能在同一 tick 内触发刷新，合并为一次请求；store 侧已有请求序号守卫保证最新落地。 */
+ *  可能在同一 tick 内触发刷新，合并为一次请求；store 侧已有请求序号守卫保证最新落地。
+ *  拉取目标 = 用户所选窗口（快照初始仅含 summaryWindow 一个窗口，目标窗口须显式拉取）；
+ *  趋势/排行展示 = effectiveWindow（含回退，与 KPI 口径一致）。 */
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 /** 窗口数据 + 趋势数据（范围变化或挂载时调用）。 */
 function refreshWindowData() {
   if (refreshTimer) clearTimeout(refreshTimer)
   refreshTimer = setTimeout(() => {
     refreshTimer = null
-    void store.fetchOverviewDeferredBundle(effectiveWindow.value)
+    void store.fetchOverviewDeferredBundle(analytics.overviewWindow)
     void store.fetchStatisticsSummary(trendQuery.value)
   }, 60)
 }
@@ -808,13 +822,27 @@ function applyPendingFilters() {
   }
 }
 
-// 实际生效窗口（含回退）变化 → 刷新窗口数据与趋势。
-// 覆盖两条路径：① overviewWindow 切换；② 回退态数据到达后 effectiveWindow 切回用户所选窗口。
-// 窗口数据相同（回退窗口未变）时 effectiveWindow 不变，不会重复请求。
+// 用户显式切换窗口：目标窗口不在快照列表（refresh_usage_bundle 仅返回
+// summaryWindow 一个窗口）时 effectiveWindow 不变、旧 watch 不触发，
+// 必须按所选窗口显式拉取（与 SummaryPanel.selectWindow 语义一致）。
+watch(
+  () => analytics.overviewWindow,
+  () => {
+    if (store.snapshot) refreshWindowData()
+  }
+)
+
+// 实际生效窗口（含回退）变化 → 刷新趋势/排行展示态。
+// 覆盖两条路径：① 目标窗口数据到达后 effectiveWindow 跟随切换；
+// ② 回退态数据到达后 effectiveWindow 切回用户所选窗口。
+// 窗口数据已由 overviewWindow 拉取链路上达快照，这里不再重复请求，
+// 仅让趋势/排行跟随实际生效窗口（与 KPI 口径一致）。
 watch(
   () => effectiveWindow.value,
   () => {
-    if (store.snapshot) refreshWindowData()
+    if (store.snapshot) {
+      void store.fetchStatisticsSummary(trendQuery.value)
+    }
   }
 )
 
@@ -853,16 +881,40 @@ onUnmounted(() => {
 
 <template>
   <section class="flex flex-col gap-5">
-    <!-- 当前时间范围暂无数据时的回退提示（设计：概览不因窗口无数据而空白） -->
-    <div
-      v-if="isWindowFallback"
-      class="flex items-center gap-2 rounded-lg border border-[var(--theme-border-default)] bg-[var(--theme-bg-surface)] px-3 py-2 text-[11px] text-[var(--theme-text-secondary)]"
-      role="note"
-    >
-      <Info :size="14" class="shrink-0 text-[var(--theme-text-tertiary)]" aria-hidden="true" />
-      <span>
-        {{ t(locale, 'desktop.overview.windowFallbackHint', { fallback: fallbackWindowName }) }}
-      </span>
+    <!-- 页面顶部行：回退提示（如有）+ 页面内时间范围选择（窗口选择归属页面，不放全局顶栏） -->
+    <div class="flex items-center justify-between gap-3">
+      <div
+        v-if="isWindowFallback"
+        class="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-[var(--theme-border-default)] bg-[var(--theme-bg-surface)] px-3 py-2 text-[11px] text-[var(--theme-text-secondary)]"
+        role="note"
+      >
+        <Info :size="14" class="shrink-0 text-[var(--theme-text-tertiary)]" aria-hidden="true" />
+        <span class="truncate">
+          {{ t(locale, 'desktop.overview.windowFallbackHint', { fallback: fallbackWindowName }) }}
+        </span>
+      </div>
+      <span v-else class="flex-1" aria-hidden="true" />
+
+      <div
+        class="flex shrink-0 items-center rounded-lg border border-[var(--theme-border-default)] p-0.5"
+        role="group"
+        :aria-label="t(locale, 'settings.summaryWindow')"
+      >
+        <button
+          v-for="item in RANGES"
+          :key="item.value"
+          type="button"
+          class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors duration-150"
+          :class="
+            analytics.overviewWindow === item.value
+              ? 'bg-[var(--theme-accent-soft)] text-[var(--theme-accent-primary)]'
+              : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'
+          "
+          @click="analytics.overviewWindow = item.value"
+        >
+          {{ windowNameLabel(locale, item.value) }}
+        </button>
+      </div>
     </div>
     <!-- 加载失败：页面内错误 + 重试（设计 6.9） -->
     <div

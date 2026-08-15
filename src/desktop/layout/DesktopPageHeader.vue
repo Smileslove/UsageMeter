@@ -2,37 +2,22 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { Ellipsis, RefreshCw } from 'lucide-vue-next'
 import { useDesktopNavigationStore } from '../stores/desktopNavigation'
-import { useDesktopAnalyticsStore } from '../stores/desktopAnalytics'
 import { useMonitorStore } from '../../stores/monitor'
-import { t, windowNameLabel } from '../../i18n'
+import { t } from '../../i18n'
 import { formatToolDisplayName } from '../../utils/toolDisplay'
-import type { DesktopPage, WindowName } from '../../types'
+import type { DesktopPage } from '../../types'
 import SourceSelector from '../../components/SourceSelector.vue'
 import ToolSelector from '../../components/ToolSelector.vue'
 
-/** 页面时间范围（复用 settings.window* 文案）。 */
-const RANGES: Array<{ value: WindowName; key: string }> = [
-  { value: '5h', key: 'settings.window5h' },
-  { value: '24h', key: 'settings.window24h' },
-  { value: 'today', key: 'settings.windowToday' },
-  { value: '7d', key: 'settings.window7d' },
-  { value: '30d', key: 'settings.window30d' },
-  { value: 'current_month', key: 'settings.windowCurrentMonth' }
-]
-
-/** 设置/网关页不显示时间范围与全局筛选摘要。 */
-const PAGES_WITHOUT_RANGE: DesktopPage[] = ['settings', 'gateway']
 /** 全局筛选摘要仅作用于概览/分析/会话（设计文档 4.5）。 */
 const PAGES_WITH_FILTER_SUMMARY: DesktopPage[] = ['overview', 'analytics', 'sessions']
 
 const nav = useDesktopNavigationStore()
 const monitor = useMonitorStore()
-const analytics = useDesktopAnalyticsStore()
 
 const locale = computed(() => monitor.settings.locale)
 const currentPage = computed(() => nav.currentPage)
 const pageTitle = computed(() => t(locale.value, `desktop.nav.${currentPage.value}`))
-const showRange = computed(() => !PAGES_WITHOUT_RANGE.includes(currentPage.value))
 const showFilterSummary = computed(() => PAGES_WITH_FILTER_SUMMARY.includes(currentPage.value))
 
 // 全局筛选状态摘要（M1：仅单选语义，与现有 SourceSelector/ToolSelector 行为一致）
@@ -57,19 +42,6 @@ const toolFilterLabel = computed(() => {
 })
 
 const filterSummary = computed(() => `${sourceFilterLabel.value} · ${toolFilterLabel.value}`)
-
-// 页面时间范围：从 desktopAnalytics store 读写（设计 3.5 窗口局部状态）。
-// 概览页读 overviewWindow，分析页读 analyticsWindow；其余占位页沿用概览范围。
-const range = computed<WindowName>({
-  get: () => (currentPage.value === 'analytics' ? analytics.analyticsWindow : analytics.overviewWindow),
-  set: value => {
-    if (currentPage.value === 'analytics') {
-      analytics.analyticsWindow = value
-    } else {
-      analytics.overviewWindow = value
-    }
-  }
-})
 
 // 更多菜单（占位）
 const moreOpen = ref(false)
@@ -105,33 +77,10 @@ onUnmounted(() => {
       </p>
     </div>
 
-    <!-- 右侧：来源 → 工具 → 时间范围 → 刷新 → 更多菜单 -->
+    <!-- 右侧：来源 → 工具 → 刷新 → 更多菜单（时间范围选择位于各页面内部工具栏） -->
     <div class="flex shrink-0 items-center gap-2">
       <SourceSelector />
       <ToolSelector />
-
-      <!-- 页面时间范围 -->
-      <div
-        v-if="showRange"
-        class="flex items-center rounded-lg border border-[var(--theme-border-default)] p-0.5"
-        role="group"
-        :aria-label="t(locale, 'settings.summaryWindow')"
-      >
-        <button
-          v-for="item in RANGES"
-          :key="item.value"
-          type="button"
-          class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors duration-150"
-          :class="
-            range === item.value
-              ? 'bg-[var(--theme-accent-soft)] text-[var(--theme-accent-primary)]'
-              : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'
-          "
-          @click="range = item.value as WindowName"
-        >
-          {{ windowNameLabel(locale, item.value) }}
-        </button>
-      </div>
 
       <!-- 刷新 -->
       <button

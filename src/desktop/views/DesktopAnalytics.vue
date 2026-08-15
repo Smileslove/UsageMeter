@@ -2,7 +2,7 @@
 /**
  * 桌面主窗口 - 分析页（设计文档第 7 章）。
  * 四个二级视图（趋势/构成/活跃度/性能）+ 工具栏（范围/粒度/主指标/比较/导出占位）。
- * 时间范围与顶栏共享 desktopAnalytics store 的 analyticsWindow 字段（设计 6.2 顶栏统一显示）。
+ * 时间范围由页面内部工具栏读写 desktopAnalytics store 的 analyticsWindow 字段（设计 7.3）。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { use } from 'echarts/core'
@@ -691,7 +691,7 @@ onMounted(() => {
 
     <!-- 工具栏：时间范围 / 粒度 / 主指标 / 比较 / 导出占位（设计 7.3） -->
     <div class="flex flex-wrap items-center gap-2">
-      <!-- 时间范围：与顶栏共享 analyticsWindow（设计 6.2 顶栏统一显示范围） -->
+      <!-- 时间范围：页面内部工具栏读写 analyticsWindow -->
       <div
         class="flex items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
         role="group"

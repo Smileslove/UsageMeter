@@ -45,6 +45,14 @@ export function useSessionViewData(
   const proxyRefreshDebounceMs = 10000
   let proxyRefreshTimer: ReturnType<typeof setTimeout> | null = null
   let unlistenLocalUsageSynced: UnlistenFn | null = null
+  /** 事件监听失败（如自定义 capability 未授权）时降级：不崩页面，仅失去实时刷新。 */
+  async function setupLocalUsageListener() {
+    try {
+      unlistenLocalUsageSynced = await listen('local_usage_synced', () => scheduleProxyRefresh())
+    } catch (err) {
+      console.warn('[useSessionViewData] listen local_usage_synced 失败，降级为无实时刷新', err)
+    }
+  }
 
   const cacheKey = () => `${selectedTool.value ?? '__all__'}`
   const projectCacheKey = () => `projects:${selectedTool.value ?? '__all__'}`
@@ -233,7 +241,7 @@ export function useSessionViewData(
 
   const initialize = async () => {
     await reloadSessions()
-    unlistenLocalUsageSynced = await listen('local_usage_synced', () => scheduleProxyRefresh())
+    await setupLocalUsageListener()
   }
 
   const dispose = () => {
