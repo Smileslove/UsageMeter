@@ -13,7 +13,7 @@ import type { DesktopNavigationTarget, DesktopPage } from '../../types'
  * store 变更 -> hash 写入统一走 writeHash（先比较再写，天然防循环）。
  */
 
-export const DESKTOP_PAGES: DesktopPage[] = ['overview', 'analytics', 'sessions', 'activity', 'gateway', 'settings']
+export const DESKTOP_PAGES: DesktopPage[] = ['overview', 'analytics', 'sessions', 'projects', 'requests', 'activity', 'gateway', 'settings']
 
 export const DESKTOP_HASH_PREFIX = '#/desktop'
 

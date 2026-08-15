@@ -11,6 +11,8 @@ import DesktopPageBoundary from '../desktop/components/DesktopPageBoundary.vue'
 import DesktopOverview from '../desktop/views/DesktopOverview.vue'
 import DesktopAnalytics from '../desktop/views/DesktopAnalytics.vue'
 import DesktopSessions from '../desktop/views/DesktopSessions.vue'
+import DesktopProjects from '../desktop/views/DesktopProjects.vue'
+import DesktopRequests from '../desktop/views/DesktopRequests.vue'
 import DesktopActivity from '../desktop/views/DesktopActivity.vue'
 import DesktopGateway from '../desktop/views/DesktopGateway.vue'
 import DesktopSettings from '../desktop/views/DesktopSettings.vue'
@@ -97,6 +99,12 @@ onUnmounted(() => {
       </DesktopPageBoundary>
       <DesktopPageBoundary v-else-if="nav.currentPage === 'sessions'" key="sessions">
         <DesktopSessions />
+      </DesktopPageBoundary>
+      <DesktopPageBoundary v-else-if="nav.currentPage === 'projects'" key="projects">
+        <DesktopProjects />
+      </DesktopPageBoundary>
+      <DesktopPageBoundary v-else-if="nav.currentPage === 'requests'" key="requests">
+        <DesktopRequests />
       </DesktopPageBoundary>
       <DesktopPageBoundary v-else-if="nav.currentPage === 'activity'" key="activity">
         <DesktopActivity />

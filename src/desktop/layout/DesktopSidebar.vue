@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Activity, ChartSpline, ChevronsLeft, ChevronsRight, LayoutDashboard, List, Network, Settings } from 'lucide-vue-next'
+import { Activity, ChartSpline, ChevronsLeft, ChevronsRight, FolderKanban, LayoutDashboard, List, ListChecks, Network, Settings } from 'lucide-vue-next'
 import type { Component } from 'vue'
 import { useDesktopNavigationStore } from '../stores/desktopNavigation'
 import { useMonitorStore } from '../../stores/monitor'
@@ -17,6 +17,8 @@ const navItems: NavItem[] = [
   { id: 'overview', icon: LayoutDashboard, key: 'desktop.nav.overview' },
   { id: 'analytics', icon: ChartSpline, key: 'desktop.nav.analytics' },
   { id: 'sessions', icon: List, key: 'desktop.nav.sessions' },
+  { id: 'projects', icon: FolderKanban, key: 'desktop.nav.projects' },
+  { id: 'requests', icon: ListChecks, key: 'desktop.nav.requests' },
   { id: 'activity', icon: Activity, key: 'desktop.nav.activity' },
   { id: 'gateway', icon: Network, key: 'desktop.nav.gateway' },
   { id: 'settings', icon: Settings, key: 'desktop.nav.settings' }

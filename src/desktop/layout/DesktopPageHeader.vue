@@ -9,8 +9,8 @@ import type { DesktopPage } from '../../types'
 import SourceSelector from '../../components/SourceSelector.vue'
 import ToolSelector from '../../components/ToolSelector.vue'
 
-/** 全局筛选摘要仅作用于概览/分析/会话（设计文档 4.5）。 */
-const PAGES_WITH_FILTER_SUMMARY: DesktopPage[] = ['overview', 'analytics', 'sessions']
+/** 全局筛选摘要仅作用于数据受筛选影响的页面（设计文档 4.5）。 */
+const PAGES_WITH_FILTER_SUMMARY: DesktopPage[] = ['overview', 'analytics', 'sessions', 'projects', 'requests']
 
 const nav = useDesktopNavigationStore()
 const monitor = useMonitorStore()
