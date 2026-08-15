@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { useMonitorStore } from '../../stores/monitor'
-import type { DesktopNavigationTarget, DesktopPage } from '../../types'
+import type { DesktopNavigationTarget, DesktopPage, DesktopTimeRange } from '../../types'
 
 /**
  * 桌面主窗口的轻量 hash 路由状态（不引入 vue-router）。
@@ -32,6 +32,8 @@ export interface DesktopNavigationFilters {
   metric?: string | null
   view?: string | null
   sessionKey?: string | null
+  /** 趋势峰值下钻携带的时间桶范围（会话页消费为自定义时间筛选）。 */
+  timeRange?: DesktopTimeRange | null
 }
 
 export function parseDesktopHash(hash: string): { page: DesktopPage; sessionKey: string | null } {
@@ -163,7 +165,8 @@ export const useDesktopNavigationStore = defineStore('desktopNavigation', {
         window: target.window ?? null,
         metric: target.metric ?? null,
         view: target.view ?? null,
-        sessionKey: target.sessionKey ?? null
+        sessionKey: target.sessionKey ?? null,
+        timeRange: target.timeRange ?? null
       }
       this.pendingConsumeTick += 1
       if (target.sessionKey) {

@@ -940,6 +940,12 @@ export interface CopilotAuthStatus {
 
 export type DesktopPage = 'overview' | 'analytics' | 'sessions' | 'projects' | 'requests' | 'activity' | 'gateway' | 'settings'
 
+/** 时间桶过滤范围（秒级 epoch，半开区间 [startEpoch, endEpoch)，与统计趋势点/会话 lastRequestTime 口径一致）。 */
+export interface DesktopTimeRange {
+  startEpoch: number
+  endEpoch: number
+}
+
 /** 主窗口深链导航目标（camelCase 字段与 Rust serde 对齐）。 */
 export interface DesktopNavigationTarget {
   page: DesktopPage
@@ -949,6 +955,8 @@ export interface DesktopNavigationTarget {
   sessionKey?: string
   metric?: string
   view?: string
+  /** 趋势下钻携带的时间桶范围（可选；Rust 侧 serde 忽略未知字段，深链载荷不传此字段）。 */
+  timeRange?: DesktopTimeRange
 }
 
 // ============ M2 深度会话活动 DTO（字段 camelCase，与 src-tauri/src/activity/model.rs 对齐） ============

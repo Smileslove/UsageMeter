@@ -94,12 +94,15 @@ const searchQuery = ref('')
 // —— 筛选（chips 可删；来源由顶栏全局筛选承担，子代理/深度活动 M1 无数据） ——
 type CoverageFilter = 'all' | 'full' | 'partial' | 'uncovered'
 interface LocalFilters {
-  time: string            // 'all' | 'today' | '7d' | '30d'（运行时字面量，模板 select 赋值放宽为 string）
+  /** 'all' | 'today' | '7d' | '30d' | 'custom'（custom 由趋势峰值下钻的 timeRange 填充，模板赋值放宽为 string） */
+  time: string
+  /** 趋势下钻携带的自定义时间桶（秒级半开区间 [startEpoch, endEpoch)，无则 null） */
+  customRange: { startEpoch: number; endEpoch: number } | null
   project: string | null  // 项目名（含系统分组标记 global/unknown）
   model: string | null
   coverage: CoverageFilter
 }
-const filters = reactive<LocalFilters>({ time: 'all', project: null, model: null, coverage: 'all' })
+const filters = reactive<LocalFilters>({ time: 'all', customRange: null, project: null, model: null, coverage: 'all' })
 const filterMenuOpen = ref(false)
 
 const projectOptions = computed(() => {
@@ -136,10 +139,18 @@ const chips = computed<Chip[]>(() => {
   const timeLabels: Record<string, string> = {
     today: t(locale.value, 'desktop.sessions.filterTimeToday'),
     '7d': t(locale.value, 'desktop.sessions.filterTime7d'),
-    '30d': t(locale.value, 'desktop.sessions.filterTime30d')
+    '30d': t(locale.value, 'desktop.sessions.filterTime30d'),
+    custom: t(locale.value, 'desktop.sessions.filterTimeCustom')
   }
   if (filters.time !== 'all') {
-    result.push({ id: 'time', label: timeLabels[filters.time], remove: () => { filters.time = 'all' } })
+    result.push({
+      id: 'time',
+      label: timeLabels[filters.time],
+      remove: () => {
+        filters.time = 'all'
+        filters.customRange = null
+      }
+    })
   }
   if (selectedTool.value) {
     result.push({ id: 'tool', label: requestToolLabel(selectedTool.value), remove: () => { selectedTool.value = null } })
@@ -167,6 +178,7 @@ const chipsCollapsed = ref(true)
 
 const clearAllFilters = () => {
   filters.time = 'all'
+  filters.customRange = null
   filters.project = null
   filters.model = null
   filters.coverage = 'all'
@@ -209,12 +221,22 @@ const matchesSearch = (session: SessionStats): boolean => {
 
 const matchesTime = (session: SessionStats): boolean => {
   if (filters.time === 'all') return true
+  if (filters.time === 'custom') {
+    const range = filters.customRange
+    if (!range) return true
+    const ts = session.lastRequestTime || 0
+    return ts >= range.startEpoch && ts < range.endEpoch
+  }
   const now = Date.now()
   const horizon = filters.time === 'today' ? 24 * 3600e3 : filters.time === '7d' ? 7 * 24 * 3600e3 : 30 * 24 * 3600e3
   return (session.lastRequestTime || 0) * 1000 >= now - horizon
 }
 
-const setTimeFilter = (value: string) => { filters.time = value }
+const setTimeFilter = (value: string) => {
+  // custom 需要先有趋势下钻携带的时间桶（无范围时手动点击不生效）
+  if (value === 'custom' && !filters.customRange) return
+  filters.time = value
+}
 
 const sessionCoverageKind = (session: SessionStats): CoverageFilter => {
   if (session.usageFullyCovered) return 'full'
@@ -291,6 +313,11 @@ async function applyPendingFilters() {
   }
   if (pending.tool && store.settings.clientTools.activeToolFilter !== pending.tool) {
     await store.setActiveToolFilter(pending.tool)
+  }
+  // 趋势峰值下钻：携带时间桶过滤（筛选菜单显示为「自定义」范围）
+  if (pending.timeRange) {
+    filters.time = 'custom'
+    filters.customRange = pending.timeRange
   }
   // 深链携带 sessionKey 时直接打开对应会话工作区（复用 openSession 的 hash/恢复逻辑；
   // 已处于该工作区则不重复导航；view 字段由 sessionKey 决定，忽略）
@@ -377,7 +404,7 @@ const toolOptions = computed(() => {
           <!-- 时间范围 -->
           <div class="px-2 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.filterTime') }}</div>
           <div class="grid grid-cols-2 gap-1 px-1">
-            <button v-for="option in [['all', 'desktop.sessions.filterTimeAll'], ['today', 'desktop.sessions.filterTimeToday'], ['7d', 'desktop.sessions.filterTime7d'], ['30d', 'desktop.sessions.filterTime30d']] as const" :key="option[0]" type="button" class="rounded-md px-2 py-1 text-left text-[11px] font-medium" :class="filters.time === option[0] ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]'" @click="setTimeFilter(option[0])">
+                        <button v-for="option in [['all', 'desktop.sessions.filterTimeAll'], ['today', 'desktop.sessions.filterTimeToday'], ['7d', 'desktop.sessions.filterTime7d'], ['30d', 'desktop.sessions.filterTime30d'], ['custom', 'desktop.sessions.filterTimeCustom']] as const" :key="option[0]" type="button" class="rounded-md px-2 py-1 text-left text-[11px] font-medium" :class="filters.time === option[0] ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]'" @click="setTimeFilter(option[0])">
               {{ t(locale, option[1]) }}
             </button>
           </div>

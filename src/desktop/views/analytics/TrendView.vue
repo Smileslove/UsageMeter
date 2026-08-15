@@ -28,7 +28,7 @@ import {
   formatTokenPair,
   formatTokenValue
 } from '../../../utils/format'
-import type { StatisticsTrendPoint } from '../../../types'
+import type { StatisticsMetric, StatisticsTrendPoint } from '../../../types'
 
 registerChartComponents()
 
@@ -61,19 +61,51 @@ function changePercent(cur: number, prev: number): number | null {
   return ((cur - prev) / prev) * 100
 }
 
+// ---- 主趋势子序列切换（设计 7.4：主指标之外可下钻到 Token 细分口径） ----
+
+type TrendSubSeries = 'total' | 'input' | 'output' | 'cacheCreate' | 'cacheRead'
+const subSeries = ref<TrendSubSeries>('total')
+const subSeriesOptions: { value: TrendSubSeries; labelKey: string }[] = [
+  { value: 'total', labelKey: 'desktop.analytics.trendSubSeries.subTotal' },
+  { value: 'input', labelKey: 'desktop.analytics.trendSubSeries.subInput' },
+  { value: 'output', labelKey: 'desktop.analytics.trendSubSeries.subOutput' },
+  { value: 'cacheCreate', labelKey: 'desktop.analytics.trendSubSeries.subCacheCreate' },
+  { value: 'cacheRead', labelKey: 'desktop.analytics.trendSubSeries.subCacheRead' }
+]
+
+/** 子序列取值：total 取 totalTokens，其余取对应 Token 细分字段（数据字段在 trendPoints 中已存在）。 */
+function subSeriesValue(point: StatisticsTrendPoint, sub: TrendSubSeries): number {
+  switch (sub) {
+    case 'input':
+      return point.inputTokens
+    case 'output':
+      return point.outputTokens
+    case 'cacheCreate':
+      return point.cacheCreateTokens
+    case 'cacheRead':
+      return point.cacheReadTokens
+    default:
+      return point.totalTokens
+  }
+}
+
 const trendChartOptions = computed(() => {
   const colors = chartTheme.value
   const points = props.points
   const prev = props.prevPoints
   const hasPrev = prev.length > 0 && props.compare === 'previous'
   const primaryColor = metricColor(analytics.analyticsMetric)
+  // 非 total 子序列时图表按 Token 口径展示：buildTrendChartOption 的 metric 仅用于 yAxis 标签格式化
+  const chartMetric: StatisticsMetric = subSeries.value === 'total' ? analytics.analyticsMetric : 'tokens'
+  const fmtValue = (value: number): string =>
+    subSeries.value === 'total' ? formatMetric(analytics.analyticsMetric, value) : formatTokenValue(value)
   // 同时显示当前周期与对比周期的精确值和变化率（设计 7.4，页面特有 tooltip）
   const tooltipFormatter = (params: any) => {
     const cur = points[params[0].dataIndex]
     if (!cur) return ''
     const prevPoint = hasPrev ? prev[params[0].dataIndex] : undefined
-    const curValue = metricValue(cur, analytics.analyticsMetric)
-    const prevValue = prevPoint ? metricValue(prevPoint, analytics.analyticsMetric) : null
+    const curValue = subSeriesValue(cur, subSeries.value)
+    const prevValue = prevPoint ? subSeriesValue(prevPoint, subSeries.value) : null
     const change = prevValue != null ? changePercent(curValue, prevValue) : null
     const changeRow =
       change != null
@@ -81,15 +113,15 @@ const trendChartOptions = computed(() => {
         : ''
     const prevRow =
       prevValue != null
-        ? `<div style="margin-top:3px;"><span style="display:inline-block;width:7px;height:7px;border-radius:999px;background:${colors.series3};margin-right:6px;"></span><span>${t(locale.value, 'desktop.analytics.trendPrevious')}: <b>${formatMetric(analytics.analyticsMetric, prevValue)}</b></span></div>`
+        ? `<div style="margin-top:3px;"><span style="display:inline-block;width:7px;height:7px;border-radius:999px;background:${colors.series3};margin-right:6px;"></span><span>${t(locale.value, 'desktop.analytics.trendPrevious')}: <b>${fmtValue(prevValue)}</b></span></div>`
         : ''
-    return `<div style="font-weight:600;margin-bottom:4px;">${cur.label}</div><div style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:7px;height:7px;border-radius:999px;background:${primaryColor};"></span><span>${t(locale.value, 'desktop.analytics.trendCurrent')}: <b>${formatMetric(analytics.analyticsMetric, curValue)}</b></span></div>${prevRow}${changeRow}`
+    return `<div style="font-weight:600;margin-bottom:4px;">${cur.label}</div><div style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:7px;height:7px;border-radius:999px;background:${primaryColor};"></span><span>${t(locale.value, 'desktop.analytics.trendCurrent')}: <b>${fmtValue(curValue)}</b></span></div>${prevRow}${changeRow}`
   }
   // 当前周期主序列（2.5 宽渐变面积）+ 上一周期对比序列（1.8 宽虚线，设计 7.4）
   const series = [
     trendLineSeries({
       name: t(locale.value, 'desktop.analytics.trendCurrent'),
-      data: points.map(p => metricValue(p, analytics.analyticsMetric)),
+      data: points.map(p => subSeriesValue(p, subSeries.value)),
       color: primaryColor,
       primary: true
     }),
@@ -97,7 +129,7 @@ const trendChartOptions = computed(() => {
       ? [
           trendLineSeries({
             name: t(locale.value, 'desktop.analytics.trendPrevious'),
-            data: prev.map(p => metricValue(p, analytics.analyticsMetric)),
+            data: prev.map(p => subSeriesValue(p, subSeries.value)),
             color: colors.series3,
             width: 1.8,
             dashed: true
@@ -107,7 +139,7 @@ const trendChartOptions = computed(() => {
   ]
   return buildTrendChartOption({
     points,
-    metric: analytics.analyticsMetric,
+    metric: chartMetric,
     colors,
     tooltipFormatter,
     series
@@ -162,6 +194,16 @@ function changeText(pct: number | null): string {
 
 const showAllTable = ref(false)
 const visiblePeakRows = computed(() => (showAllTable.value ? peakRows.value : peakRows.value.slice(0, 10)))
+
+/** 峰值表下钻（验收 21.1-7）：携带该峰值时间桶（秒级半开区间，与统计窗口/会话时间口径一致）跳转会话页。 */
+function drillToPeak(row: PeakRow): void {
+  const bucket = store.statisticsSummary?.range.bucket ?? 'hour'
+  const span = bucket === 'day' ? 86400 : 3600
+  nav.applyNavigationTarget({
+    page: 'sessions',
+    timeRange: { startEpoch: row.point.startEpoch, endEpoch: row.point.startEpoch + span }
+  })
+}
 </script>
 
 <template>
@@ -180,17 +222,33 @@ const visiblePeakRows = computed(() => (showAllTable.value ? peakRows.value : pe
     <!-- 主趋势（当前实线+面积，对比虚线）+ 数据表开关 -->
     <div class="rounded-lg border border-[var(--theme-border-default)] p-4" style="background: var(--theme-surface-gradient)">
       <div class="mb-3 flex items-center justify-between gap-2">
-        <h3 class="flex items-center gap-1.5 text-[13px] font-semibold text-[var(--theme-text-secondary)]">
-          <BarChart3 :size="14" class="shrink-0" aria-hidden="true" />
-          {{ metricLabel(analytics.analyticsMetric) }}
-          <span v-if="compare === 'previous'" class="text-[10px] font-normal text-[var(--theme-text-quaternary)]">
-            {{ t(locale, 'desktop.analytics.trendPrevHint') }}
-          </span>
-        </h3>
+        <div class="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-2">
+          <h3 class="flex items-center gap-1.5 text-[13px] font-semibold text-[var(--theme-text-secondary)]">
+            <BarChart3 :size="14" class="shrink-0" aria-hidden="true" />
+            {{ metricLabel(analytics.analyticsMetric) }}
+            <span v-if="compare === 'previous'" class="text-[10px] font-normal text-[var(--theme-text-quaternary)]">
+              {{ t(locale, 'desktop.analytics.trendPrevHint') }}
+            </span>
+          </h3>
+          <!-- 子序列切换（设计 7.4）：主指标之外可查看 Token 细分口径；total 跟随主指标 -->
+          <div v-if="points.length" class="trend-seg" role="tablist" :aria-label="t(locale, 'desktop.analytics.tabsMetric')">
+            <button
+              v-for="option in subSeriesOptions"
+              :key="option.value"
+              type="button"
+              class="trend-seg__item"
+              :class="{ 'trend-seg__item--on': subSeries === option.value }"
+              :aria-pressed="subSeries === option.value"
+              @click="subSeries = option.value"
+            >
+              <span class="trend-seg__label">{{ t(locale, option.labelKey) }}</span>
+            </button>
+          </div>
+        </div>
         <button
           v-if="peakRows.length"
           type="button"
-          class="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-[var(--theme-accent-primary)] transition-colors duration-150 hover:bg-[var(--theme-accent-soft)]"
+          class="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-[var(--theme-accent-primary)] transition-colors duration-150 hover:bg-[var(--theme-accent-soft)]"
           :aria-pressed="showAllTable"
           @click="showAllTable = !showAllTable"
         >
@@ -267,7 +325,7 @@ const visiblePeakRows = computed(() => (showAllTable.value ? peakRows.value : pe
                 <button
                   type="button"
                   class="rounded-md px-2 py-1 text-[11px] font-medium text-[var(--theme-accent-primary)] transition-colors duration-150 hover:bg-[var(--theme-accent-soft)]"
-                  @click="nav.navigate('sessions')"
+                  @click="drillToPeak(row)"
                 >
                   {{ t(locale, 'desktop.analytics.viewSessions') }}
                 </button>
