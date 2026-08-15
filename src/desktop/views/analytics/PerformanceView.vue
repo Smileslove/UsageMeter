@@ -547,9 +547,12 @@ function toggleRow(request: RequestRecord) {
               <tr
                 v-for="request in slowestRequests"
                 :key="request.requestKey"
-                class="cursor-pointer border-b border-[var(--theme-border-subtle)] transition-colors duration-150 last:border-0 hover:bg-[var(--theme-bg-hover)]"
+                class="cursor-pointer border-b border-[var(--theme-border-subtle)] transition-colors duration-150 last:border-0 hover:bg-[var(--theme-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring-focus)]"
                 :class="selectedRequestKey === request.requestKey ? 'bg-[var(--theme-accent-soft)]' : ''"
+                tabindex="0"
                 @click="toggleRow(request)"
+                @keydown.enter.prevent="toggleRow(request)"
+                @keydown.space.prevent="toggleRow(request)"
               >
                 <td class="whitespace-nowrap px-2.5 py-1.5 text-[var(--theme-text-secondary)]">{{ display.formatTime(request.timestampSec) }}</td>
                 <td class="whitespace-nowrap px-2.5 py-1.5 text-[var(--theme-text-secondary)]">{{ display.requestToolLabel(request.tool) }}</td>

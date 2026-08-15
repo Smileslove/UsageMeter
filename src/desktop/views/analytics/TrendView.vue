@@ -237,13 +237,20 @@ function changeText(pct: number | null): string {
 const showAllTable = ref(false)
 const visiblePeakRows = computed(() => (showAllTable.value ? peakRows.value : peakRows.value.slice(0, 10)))
 
-/** 峰值表下钻（验收 21.1-7）：携带该峰值时间桶（秒级半开区间，与统计窗口/会话时间口径一致）跳转会话页。 */
+/** 峰值表下钻（验收 21.1-7）：携带该峰值时间桶（秒级半开区间，与统计窗口/会话时间口径一致）跳转会话页。
+ *  桶宽优先用相邻趋势点 startEpoch 差值推导（DST 时区日桶为 82800/90000 秒，固定 86400 会错位 1 小时）。 */
 function drillToPeak(row: PeakRow): void {
   const bucket = store.statisticsSummary?.range.bucket ?? 'hour'
-  const span = bucket === 'day' ? 86400 : 3600
+  let span = bucket === 'day' ? 86400 : 3600
+  const point = row.point
+  const idx = props.points.findIndex(p => p.startEpoch === point.startEpoch)
+  const next = idx >= 0 ? props.points[idx + 1] : undefined
+  if (next && next.startEpoch > point.startEpoch) {
+    span = next.startEpoch - point.startEpoch
+  }
   nav.applyNavigationTarget({
     page: 'sessions',
-    timeRange: { startEpoch: row.point.startEpoch, endEpoch: row.point.startEpoch + span }
+    timeRange: { startEpoch: point.startEpoch, endEpoch: point.startEpoch + span }
   })
 }
 </script>
