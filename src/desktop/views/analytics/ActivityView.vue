@@ -209,7 +209,7 @@ function monthCalendarTooltip(day: DayActivity): string {
         </div>
       </div>
 
-      <!-- 月历：完整周标题 + 日期 + 精确 tooltip（设计 7.6） -->
+      <!-- 月历：完整周标题 + 日期 + 精确 tooltip（设计 7.6）；格子固定紧凑高度，保证整月一屏可见 -->
       <div class="grid grid-cols-7 gap-1.5">
         <div
           v-for="wd in weekDayLabels"
@@ -221,7 +221,7 @@ function monthCalendarTooltip(day: DayActivity): string {
         <div
           v-for="cell in calendarCells"
           :key="cell.key"
-          class="grid aspect-square place-items-center"
+          class="grid h-9 place-items-center"
         >
           <button
             v-if="cell.day"
