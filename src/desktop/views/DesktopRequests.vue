@@ -32,7 +32,6 @@ const {
   requestProjectLabel,
   requestSourceLabel,
   requestToolLabel,
-  requestCacheTokens,
   requestHasProxyPerformance,
   getToolIcon,
 } = useSessionDisplay(store)
@@ -201,22 +200,16 @@ const toolOptions = computed(() => {
     <div class="flex min-h-0 gap-3">
       <!-- 请求表格 -->
       <div class="theme-surface min-w-0 flex-1 overflow-x-auto rounded-xl border">
-        <table class="w-full min-w-[900px] border-collapse text-[11.5px]">
+        <table class="w-full min-w-[640px] border-collapse text-[11.5px]">
           <thead>
             <tr class="border-b border-[var(--theme-border-default)] text-[10px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
               <th class="px-2.5 py-2 text-left">{{ t(locale, 'desktop.sessions.columnTime') }}</th>
               <th class="px-2.5 py-2 text-left">{{ t(locale, 'desktop.sessions.columnTool') }}</th>
-              <th class="px-2.5 py-2 text-left">{{ t(locale, 'desktop.sessions.columnSource') }}</th>
               <th class="px-2.5 py-2 text-left">{{ t(locale, 'desktop.sessions.columnModel') }}</th>
               <th class="px-2.5 py-2 text-left">{{ t(locale, 'desktop.sessions.columnStatus') }}</th>
-              <th class="px-2.5 py-2 text-right">{{ t(locale, 'desktop.sessions.columnInput') }}</th>
-              <th class="px-2.5 py-2 text-right">{{ t(locale, 'desktop.sessions.columnOutput') }}</th>
-              <th class="px-2.5 py-2 text-right">{{ t(locale, 'desktop.sessions.columnCache') }}</th>
               <th class="px-2.5 py-2 text-right">{{ t(locale, 'desktop.sessions.columnTotalTokens') }}</th>
               <th class="px-2.5 py-2 text-right">{{ t(locale, 'desktop.sessions.columnCost') }}</th>
-              <th class="px-2.5 py-2 text-right">{{ t(locale, 'desktop.sessions.columnTtft') }}</th>
               <th class="px-2.5 py-2 text-right">{{ t(locale, 'desktop.sessions.columnDuration') }}</th>
-              <th class="px-2.5 py-2 text-right">{{ t(locale, 'desktop.sessions.columnRate') }}</th>
               <th class="px-2.5 py-2 text-left">{{ t(locale, 'desktop.sessions.columnSession') }}</th>
             </tr>
           </thead>
@@ -244,21 +237,15 @@ const toolOptions = computed(() => {
                   <span class="max-w-20 truncate text-[var(--theme-text-secondary)]">{{ requestToolLabel(request.tool) }}</span>
                 </span>
               </td>
-              <td class="max-w-28 truncate px-2.5 py-1.5 text-[var(--theme-text-secondary)]" :title="requestSourceLabel(request)">{{ requestSourceLabel(request) }}</td>
               <td class="max-w-36 truncate px-2.5 py-1.5 font-mono text-[10.5px] text-[var(--theme-text-secondary)]" :title="request.model">{{ requestModelLabel(request) }}</td>
               <td class="px-2.5 py-1.5">
                 <!-- 本地-only 记录不展示不存在的状态值 -->
                 <span v-if="request.coverageOrigin === 'local_only'" class="text-[10px] text-[var(--theme-text-quaternary)]">—</span>
                 <span v-else class="inline-flex items-center rounded-full border px-1.5 py-px text-[9.5px] font-bold leading-none" :class="requestStatusClasses(request)">{{ requestStatusLabel(request) }}</span>
               </td>
-              <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(request.inputTokens) }}</td>
-              <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(request.outputTokens) }}</td>
-              <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(requestCacheTokens(request)) }}</td>
               <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono font-semibold text-[var(--theme-text-primary)]">{{ formatTokens(request.totalTokens) }}</td>
               <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-chart-cost)]">{{ formatCost(request.estimatedCost) }}</td>
-              <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">{{ requestHasProxyPerformance(request) ? formatDuration(request.ttftMs) : '—' }}</td>
               <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">{{ requestHasProxyPerformance(request) ? formatDuration(request.durationMs) : '—' }}</td>
-              <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">{{ requestHasProxyPerformance(request) && request.outputTokensPerSecond ? `${request.outputTokensPerSecond.toFixed(1)}t/s` : '—' }}</td>
               <td class="max-w-28 px-2.5 py-1.5 font-mono text-[10px]">
                 <!-- 会话 ID：点击/回车跳转会话工作区（stop 阻止行点击打开抽屉）；title 保留完整 ID -->
                 <button
