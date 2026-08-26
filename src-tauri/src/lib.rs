@@ -569,6 +569,7 @@ pub fn run() {
             commands::get_session_detail,
             commands::get_project_stats,
             commands::get_recent_request_records,
+            commands::get_request_records_page,
             // 本地缓存维护命令
             commands::get_local_usage_maintenance_stats,
             commands::purge_orphan_local_facts,

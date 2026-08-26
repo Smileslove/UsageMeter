@@ -474,7 +474,18 @@ const messages = {
         filesUnavailableDesc: '深度文件读取将在后续版本提供。'
       },
       requests: {
-        openInSession: '打开会话'
+        openInSession: '打开会话',
+        searchPlaceholder: '搜索项目/模型/会话/来源…',
+        pagePrev: '上一页',
+        pageNext: '下一页',
+        pageFirst: '第一页',
+        pageLast: '最后一页',
+        jumpTo: '跳至',
+        pageOf: '第 {current} / {total} 页',
+        totalRecords: '共 {count} 条',
+        columnConfig: '列设置',
+        columnConfigTitle: '显示列',
+        clearFilters: '清除筛选',
       },
       gateway: {
         lastActiveNever: '从未使用',
@@ -2075,7 +2086,18 @@ const messages = {
         filesUnavailableDesc: '深度檔案讀取將在後續版本提供。'
       },
       requests: {
-        openInSession: '開啟會話'
+        openInSession: '開啟會話',
+        searchPlaceholder: '搜尋專案/模型/工作階段/來源…',
+        pagePrev: '上一頁',
+        pageNext: '下一頁',
+        pageFirst: '第一頁',
+        pageLast: '最後一頁',
+        jumpTo: '跳至',
+        pageOf: '第 {current} / {total} 頁',
+        totalRecords: '共 {count} 條',
+        columnConfig: '欄位設定',
+        columnConfigTitle: '顯示欄位',
+        clearFilters: '清除篩選',
       },
       gateway: {
         lastActiveNever: '從未使用',
@@ -3573,7 +3595,18 @@ const messages = {
         filesUnavailableDesc: 'Deep file reading will arrive in a later release.'
       },
       requests: {
-        openInSession: 'Open in session'
+        openInSession: 'Open in session',
+        searchPlaceholder: 'Search project/model/session/source…',
+        pagePrev: 'Previous',
+        pageNext: 'Next',
+        pageFirst: 'First',
+        pageLast: 'Last',
+        jumpTo: 'Go to',
+        pageOf: 'Page {current} / {total}',
+        totalRecords: '{count} records',
+        columnConfig: 'Columns',
+        columnConfigTitle: 'Show columns',
+        clearFilters: 'Clear filters',
       },
       gateway: {
         lastActiveNever: 'Never used',

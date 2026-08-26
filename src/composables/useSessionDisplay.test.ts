@@ -238,7 +238,7 @@ describe('displayTokens / displayCost visibility wrappers', () => {
 
   it('formats_visible_values', () => {
     const { displayTokens, displayCost } = useSessionDisplay(makeStore())
-    expect(displayTokens(100, true)).toBe('100.00')
+    expect(displayTokens(100, true)).toBe('100')
     expect(displayCost(1.2, true)).toBe('$1.2000')
     expect(displayCost(undefined, true)).toBe('-')
   })
@@ -262,7 +262,7 @@ describe('displaySessionPrimaryValue', () => {
 
   it('shows_token_total_for_normal_sessions', () => {
     const { displaySessionPrimaryValue } = useSessionDisplay(makeStore())
-    expect(displaySessionPrimaryValue(session({ totalInputTokens: 100, totalOutputTokens: 50 }))).toBe('150.00')
+    expect(displaySessionPrimaryValue(session({ totalInputTokens: 100, totalOutputTokens: 50 }))).toBe('150')
   })
 })
 

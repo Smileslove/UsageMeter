@@ -466,7 +466,7 @@ export function formatRequestCount(value: number): string {
 
 export function formatTokenValue(value: number, unitBase?: number): string {
   const scale = pickScale(Math.abs(unitBase ?? value))
-  if (!scale) return value.toFixed(2)
+  if (!scale) return String(Math.round(value))
   return `${(value / scale.threshold).toFixed(2)}${scale.suffix()}`
 }
 

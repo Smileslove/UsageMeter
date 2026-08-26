@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { AppSettings, ProjectStats, RequestRecord, SessionStats } from '../types'
+import type { AppSettings, ProjectStats, RequestQueryParams, RequestRecordsPage, RequestRecord, SessionStats } from '../types'
 
 function withToolFilter(settings: AppSettings, toolFilter: string | null): AppSettings {
   return {
@@ -36,6 +36,26 @@ export function queryRecentRequestRecords(
 ): Promise<RequestRecord[]> {
   return invoke('get_recent_request_records', {
     query: { limit, offset },
+    settings: withToolFilter(settings, toolFilter)
+  })
+}
+
+export function queryRequestRecordsPage(
+  settings: AppSettings,
+  toolFilter: string | null,
+  params: RequestQueryParams
+): Promise<RequestRecordsPage> {
+  return invoke('get_request_records_page', {
+    query: {
+      limit: params.limit,
+      offset: params.offset,
+      search: params.search ?? null,
+      status: params.status ?? null,
+      coverage: params.coverage ?? null,
+      performance: params.performance ?? null,
+      sortField: params.sortField ?? null,
+      sortDir: params.sortDir ?? null,
+    },
     settings: withToolFilter(settings, toolFilter)
   })
 }

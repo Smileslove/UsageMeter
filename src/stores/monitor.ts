@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
 import { setNumberFormatMode } from '../utils/format'
 import { pickEffectiveWindow } from '../utils/windowFallback'
-import type { AppSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SubscriptionQueryResult, SubscriptionQuota, LimitSurvivalSnapshot, SourceQuotaBindingConfig, CopilotAuthStatus, SourceQuotaBindingRuntimeState, SourceQuotaProfileDescriptor } from '../types'
+import type { AppSettings, MonthActivity, OverviewBreakdown, ProjectStats, ProxyStatus, ProxyUsageSnapshot, RequestQueryParams, RequestRecord, SessionStats, StatisticsMetric, StatisticsQuery, StatisticsSummary, UsageRefreshBundle, UsageSnapshot, WindowRateSummary, YearActivity, SubscriptionQueryResult, SubscriptionQuota, LimitSurvivalSnapshot, SourceQuotaBindingConfig, CopilotAuthStatus, SourceQuotaBindingRuntimeState, SourceQuotaProfileDescriptor } from '../types'
 import { createDefaultSettings } from './monitorDefaults'
 import {
   applyConfiguredSourceQuotaResult,
@@ -17,6 +17,7 @@ import {
   fetchOverviewBreakdownAction,
   fetchProjectStatsAction,
   fetchRecentRequestRecordsAction,
+  fetchRequestRecordsPageAction,
   fetchSessionDetailAction,
   fetchSessionsAction,
   fetchStatisticsSummaryAction,
@@ -70,6 +71,8 @@ export const useMonitorStore = defineStore('monitor', {
     selectedSession: null as SessionStats | null,
     requestRecords: [] as RequestRecord[],
     requestRecordsLoading: false,
+    requestTotal: 0,
+    requestHasMore: false,
     // 项目统计（基于所有会话聚合，不受分页影响）
     projectStats: [] as ProjectStats[],
     projectStatsLoading: false,
@@ -352,6 +355,9 @@ export const useMonitorStore = defineStore('monitor', {
     },
     async fetchRecentRequestRecordsForTool(toolFilter: string | null, limit: number = 30, offset: number = 0, append: boolean = false) {
       return fetchRecentRequestRecordsAction(this, toolFilter, limit, offset, append)
+    },
+    async fetchRequestRecordsPage(toolFilter: string | null, params: RequestQueryParams) {
+      return fetchRequestRecordsPageAction(this, toolFilter, params)
     },
     /**
      * 获取项目统计（基于所有会话聚合，不受分页影响）

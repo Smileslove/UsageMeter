@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { ProxyStatus, StatisticsMetric, StatisticsQuery, SubscriptionQueryResult } from '../types'
+import type { ProxyStatus, RequestQueryParams, RequestRecordsPage, StatisticsMetric, StatisticsQuery, SubscriptionQueryResult } from '../types'
 import type { useMonitorStore } from './monitor'
 import {
   queryMonthActivity,
@@ -10,6 +10,7 @@ import {
 import {
   queryProjectStats,
   queryRecentRequestRecords,
+  queryRequestRecordsPage,
   querySessionDetail,
   querySessions
 } from './sessionQueries'
@@ -146,6 +147,29 @@ export async function fetchRecentRequestRecordsAction(
     console.error('Failed to fetch request records:', error)
     if (!append) context.requestRecords = []
     return 0
+  } finally {
+    context.requestRecordsLoading = false
+  }
+}
+
+export async function fetchRequestRecordsPageAction(
+  context: MonitorDomainContext,
+  toolFilter: string | null,
+  params: RequestQueryParams
+): Promise<RequestRecordsPage | null> {
+  context.requestRecordsLoading = true
+  try {
+    const page = await queryRequestRecordsPage(context.settings, toolFilter, params)
+    context.requestRecords = page.items
+    context.requestTotal = page.total
+    context.requestHasMore = page.hasMore
+    return page
+  } catch (error) {
+    console.error('Failed to fetch request records page:', error)
+    context.requestRecords = []
+    context.requestTotal = 0
+    context.requestHasMore = false
+    return null
   } finally {
     context.requestRecordsLoading = false
   }

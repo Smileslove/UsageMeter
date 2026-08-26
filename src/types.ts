@@ -711,6 +711,26 @@ export interface RequestRecord {
   ttftMs: number | null
 }
 
+export type RequestSortField = 'timestamp' | 'input' | 'output' | 'totalTokens' | 'cost' | 'duration' | 'rate' | 'ttft'
+export type RequestSortDir = 'asc' | 'desc'
+
+export interface RequestQueryParams {
+  limit: number
+  offset: number
+  search?: string | null
+  status?: string | null
+  coverage?: string | null
+  performance?: string | null
+  sortField?: RequestSortField | null
+  sortDir?: RequestSortDir | null
+}
+
+export interface RequestRecordsPage {
+  items: RequestRecord[]
+  total: number
+  hasMore: boolean
+}
+
 // 统计面板
 export type StatisticsMetric = 'cost' | 'requests' | 'tokens'
 

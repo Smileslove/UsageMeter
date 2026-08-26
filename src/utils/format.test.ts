@@ -56,10 +56,10 @@ describe('formatRequestCount / pickScale', () => {
 })
 
 describe('formatTokenValue', () => {
-  it('uses_fixed_two_decimals_when_below_threshold', () => {
-    expect(formatTokenValue(0)).toBe('0.00')
+  it('uses_integer_when_below_threshold', () => {
+    expect(formatTokenValue(0)).toBe('0')
     expect(formatTokenValue(1234)).toBe('1.23K')
-    expect(formatTokenValue(-500)).toBe('-500.00')
+    expect(formatTokenValue(-500)).toBe('-500')
   })
 
   it('promotes_units_and_keeps_sign_for_negative_input', () => {
