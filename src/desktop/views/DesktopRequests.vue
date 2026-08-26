@@ -50,6 +50,7 @@ const {
   hasActiveFilters,
   records,
   total,
+  reload,
   gotoPage,
   nextPage,
   prevPage,
@@ -125,6 +126,9 @@ const skeletonRows = [0, 1, 2, 3, 4, 5, 6, 7]
 const pageStart = computed(() => total.value === 0 ? 0 : currentPage.value * pageSize.value + 1)
 const pageEnd = computed(() => Math.min((currentPage.value + 1) * pageSize.value, total.value))
 
+const PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
+const onPageSizeChange = () => reload()
+
 const jumpPageInput = ref('')
 const jumpPage = () => {
   const num = parseInt(jumpPageInput.value, 10)
@@ -161,20 +165,20 @@ function gotoPageNumber(num: number | '...') {
 <template>
   <div class="flex h-full flex-col gap-3">
     <!-- 工具栏 -->
-    <div class="flex shrink-0 flex-wrap items-center gap-2 text-[11px]">
+    <div class="flex shrink-0 flex-wrap items-center gap-2 text-xs">
       <div class="relative">
         <Search class="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
         <input
           v-model="searchInput"
           type="text"
-          class="theme-input h-7 w-44 rounded-lg pl-7 pr-2 text-[11px] outline-none"
+          class="theme-input h-7 w-44 rounded-lg pl-7 pr-2 text-xs outline-none"
           :placeholder="t(locale, 'desktop.requests.searchPlaceholder')"
           :aria-label="t(locale, 'desktop.requests.searchPlaceholder')"
         />
       </div>
       <select
         v-model="selectedTool"
-        class="theme-input h-7 rounded-lg px-2 text-[11px] outline-none"
+        class="theme-input h-7 rounded-lg px-2 text-xs outline-none"
         :aria-label="t(locale, 'desktop.sessions.filterTool')"
       >
         <option :value="null">{{ t(locale, 'desktop.allTools') }}</option>
@@ -182,7 +186,7 @@ function gotoPageNumber(num: number | '...') {
       </select>
       <select
         v-model="statusFilter"
-        class="theme-input h-7 rounded-lg px-2 text-[11px] outline-none"
+        class="theme-input h-7 rounded-lg px-2 text-xs outline-none"
         :aria-label="t(locale, 'desktop.sessions.requestFilterStatus')"
       >
         <option value="all">{{ t(locale, 'desktop.sessions.requestFilterStatusAll') }}</option>
@@ -192,7 +196,7 @@ function gotoPageNumber(num: number | '...') {
       </select>
       <select
         v-model="coverageFilter"
-        class="theme-input h-7 rounded-lg px-2 text-[11px] outline-none"
+        class="theme-input h-7 rounded-lg px-2 text-xs outline-none"
         :aria-label="t(locale, 'desktop.sessions.requestFilterCoverage')"
       >
         <option value="all">{{ t(locale, 'desktop.sessions.requestFilterCoverageAll') }}</option>
@@ -202,7 +206,7 @@ function gotoPageNumber(num: number | '...') {
       </select>
       <select
         v-model="perfFilter"
-        class="theme-input h-7 rounded-lg px-2 text-[11px] outline-none"
+        class="theme-input h-7 rounded-lg px-2 text-xs outline-none"
         :aria-label="t(locale, 'desktop.sessions.requestFilterPerformance')"
       >
         <option value="all">{{ t(locale, 'desktop.sessions.requestFilterPerfAll') }}</option>
@@ -212,16 +216,16 @@ function gotoPageNumber(num: number | '...') {
       <button
         v-if="hasActiveFilters"
         type="button"
-        class="h-7 rounded-lg px-2 text-[10.5px] text-[var(--theme-text-tertiary)] transition-colors hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)]"
+        class="h-7 rounded-lg px-2 text-xs text-[var(--theme-text-tertiary)] transition-colors hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)]"
         @click="resetFilters"
       >{{ t(locale, 'desktop.requests.clearFilters') }}</button>
 
       <div class="ml-auto flex items-center gap-2">
-        <span class="text-[10.5px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.requests.totalRecords', { count: total }) }}</span>
+        <span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.requests.totalRecords', { count: total }) }}</span>
         <div class="relative">
           <button
             type="button"
-            class="inline-flex h-7 items-center gap-1 rounded-lg border border-[var(--theme-border-default)] px-2 text-[10.5px] font-medium text-[var(--theme-text-secondary)] transition-colors hover:border-[var(--theme-accent-primary)] hover:text-[var(--theme-accent-primary)]"
+            class="inline-flex h-7 items-center gap-1 rounded-lg border border-[var(--theme-border-default)] px-2 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:border-[var(--theme-accent-primary)] hover:text-[var(--theme-accent-primary)]"
             :aria-label="t(locale, 'desktop.requests.columnConfig')"
             :title="t(locale, 'desktop.requests.columnConfig')"
             @click="showColumnConfig = !showColumnConfig"
@@ -235,11 +239,11 @@ function gotoPageNumber(num: number | '...') {
               class="theme-surface-elevated absolute right-0 top-8 z-30 w-40 rounded-xl border p-2 shadow-lg"
               :aria-label="t(locale, 'desktop.requests.columnConfigTitle')"
             >
-              <p class="mb-1.5 px-1 text-[9.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.requests.columnConfigTitle') }}</p>
+              <p class="mb-1.5 px-1 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.requests.columnConfigTitle') }}</p>
               <label
                 v-for="col in REQUEST_COLUMNS"
                 :key="col.key"
-                class="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-[11px] text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]"
+                class="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-xs text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]"
               >
                 <input
                   type="checkbox"
@@ -258,9 +262,9 @@ function gotoPageNumber(num: number | '...') {
     <!-- 表格 + 覆盖式抽屉 -->
     <div class="relative min-h-0 flex-1">
       <div class="theme-surface h-full overflow-auto rounded-xl border">
-        <table class="w-full min-w-[720px] border-collapse text-[11px]">
+        <table class="w-full min-w-[720px] border-collapse text-xs">
           <thead class="sticky top-0 z-10">
-            <tr class="border-b border-[var(--theme-border-default)] text-[9.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
+            <tr class="whitespace-nowrap border-b border-[var(--theme-border-default)] text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
               <th
                 v-for="col in visibleCols"
                 :key="col.key"
@@ -294,7 +298,7 @@ function gotoPageNumber(num: number | '...') {
               </tr>
             </template>
             <tr v-else-if="records.length === 0">
-              <td :colspan="visibleCols.length" class="px-3 py-12 text-center text-[11.5px] text-[var(--theme-text-tertiary)]">
+              <td :colspan="visibleCols.length" class="px-3 py-12 text-center text-xs text-[var(--theme-text-tertiary)]">
                 {{ hasActiveFilters ? t(locale, 'desktop.sessions.noMatch') : t(locale, 'desktop.sessions.noRequests') }}
               </td>
             </tr>
@@ -316,10 +320,10 @@ function gotoPageNumber(num: number | '...') {
                 </span>
               </td>
               <td v-if="isColumnVisible('source')" class="max-w-24 truncate px-1.5 py-1.5 text-[var(--theme-text-secondary)]" :title="requestSourceLabel(request)">{{ requestSourceLabel(request) }}</td>
-              <td v-if="isColumnVisible('model')" class="max-w-28 truncate px-1.5 py-1.5 font-mono text-[10px] text-[var(--theme-text-secondary)]" :title="request.model">{{ requestModelLabel(request) }}</td>
+              <td v-if="isColumnVisible('model')" class="max-w-28 truncate px-1.5 py-1.5 font-mono text-xs text-[var(--theme-text-secondary)]" :title="request.model">{{ requestModelLabel(request) }}</td>
               <td v-if="isColumnVisible('status')" class="px-1.5 py-1.5">
-                <span v-if="request.coverageOrigin === 'local_only'" class="text-[10px] text-[var(--theme-text-quaternary)]">—</span>
-                <span v-else class="inline-flex items-center rounded-full border px-1.5 py-px text-[9px] font-bold leading-none" :class="requestStatusClasses(request)">{{ requestStatusLabel(request) }}</span>
+                <span v-if="request.coverageOrigin === 'local_only'" class="text-xs text-[var(--theme-text-quaternary)]">—</span>
+                <span v-else class="inline-flex items-center rounded-full border px-1.5 py-px text-xs font-bold leading-none" :class="requestStatusClasses(request)">{{ requestStatusLabel(request) }}</span>
               </td>
               <td v-if="isColumnVisible('input')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(request.inputTokens) }}</td>
               <td v-if="isColumnVisible('output')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(request.outputTokens) }}</td>
@@ -329,7 +333,7 @@ function gotoPageNumber(num: number | '...') {
               <td v-if="isColumnVisible('ttft')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">{{ requestHasProxyPerformance(request) ? formatDuration(request.ttftMs) : '—' }}</td>
               <td v-if="isColumnVisible('duration')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">{{ requestHasProxyPerformance(request) ? formatDuration(request.durationMs) : '—' }}</td>
               <td v-if="isColumnVisible('rate')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">{{ requestHasProxyPerformance(request) && request.outputTokensPerSecond ? `${request.outputTokensPerSecond.toFixed(1)}t/s` : '—' }}</td>
-              <td v-if="isColumnVisible('session')" class="max-w-24 px-1.5 py-1.5 font-mono text-[10px]">
+              <td v-if="isColumnVisible('session')" class="max-w-24 px-1.5 py-1.5 font-mono text-xs">
                 <button
                   type="button"
                   tabindex="0"
@@ -354,16 +358,16 @@ function gotoPageNumber(num: number | '...') {
             <div class="flex items-start justify-between gap-2 border-b border-[var(--theme-border-default)] px-3 py-2.5">
               <div class="min-w-0">
                 <div class="mb-1 flex items-center gap-1.5">
-                  <span v-if="selectedRequest!.coverageOrigin !== 'local_only'" class="inline-flex items-center rounded-full border px-1.5 py-px text-[9.5px] font-bold leading-none" :class="requestStatusClasses(selectedRequest!)">{{ requestStatusLabel(selectedRequest!) }}</span>
-                  <span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ formatTime(selectedRequest!.timestampSec) }}</span>
+                  <span v-if="selectedRequest!.coverageOrigin !== 'local_only'" class="inline-flex items-center rounded-full border px-1.5 py-px text-xs font-bold leading-none" :class="requestStatusClasses(selectedRequest!)">{{ requestStatusLabel(selectedRequest!) }}</span>
+                  <span class="text-xs text-[var(--theme-text-tertiary)]">{{ formatTime(selectedRequest!.timestampSec) }}</span>
                 </div>
-                <h3 class="truncate text-[13px] font-semibold text-[var(--theme-text-primary)]">{{ requestModelLabel(selectedRequest!) }}</h3>
-                <p class="mt-0.5 truncate text-[10px] text-[var(--theme-text-tertiary)]">{{ requestProjectLabel(selectedRequest!) }} / {{ requestToolLabel(selectedRequest!.tool) }} / {{ requestSourceLabel(selectedRequest!) }}</p>
+                <h3 class="truncate text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ requestModelLabel(selectedRequest!) }}</h3>
+                <p class="mt-0.5 truncate text-xs text-[var(--theme-text-tertiary)]">{{ requestProjectLabel(selectedRequest!) }} / {{ requestToolLabel(selectedRequest!.tool) }} / {{ requestSourceLabel(selectedRequest!) }}</p>
               </div>
               <div class="flex shrink-0 items-start gap-1">
                 <button
                   type="button"
-                  class="inline-flex items-center gap-1 rounded-lg border border-[var(--theme-border-default)] px-2 py-1 text-[10px] font-semibold text-[var(--theme-text-secondary)] transition-colors hover:border-[var(--theme-accent-primary)] hover:text-[var(--theme-accent-primary)]"
+                  class="inline-flex items-center gap-1 rounded-lg border border-[var(--theme-border-default)] px-2 py-1 text-xs font-semibold text-[var(--theme-text-secondary)] transition-colors hover:border-[var(--theme-accent-primary)] hover:text-[var(--theme-accent-primary)]"
                   :title="t(locale, 'desktop.requests.openInSession')"
                   @click="openInSession"
                 >
@@ -385,58 +389,58 @@ function gotoPageNumber(num: number | '...') {
             <div class="space-y-3 p-3">
               <div class="grid grid-cols-3 gap-2">
                 <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
-                  <div class="text-[9.5px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'common.totalTokens') }}</div>
-                  <div class="font-mono text-[12px] font-semibold text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest!.totalTokens) }}</div>
+                  <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'common.totalTokens') }}</div>
+                  <div class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest!.totalTokens) }}</div>
                 </div>
                 <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
-                  <div class="text-[9.5px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.cost') }}</div>
-                  <div class="font-mono text-[12px] font-semibold text-[var(--theme-chart-cost)]">{{ formatCost(selectedRequest!.estimatedCost) }}</div>
+                  <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.cost') }}</div>
+                  <div class="font-mono text-xs font-semibold text-[var(--theme-chart-cost)]">{{ formatCost(selectedRequest!.estimatedCost) }}</div>
                 </div>
                 <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
-                  <div class="text-[9.5px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.duration') }}</div>
-                  <div class="font-mono text-[12px] font-semibold text-[var(--theme-text-primary)]">{{ formatDuration(selectedRequest!.durationMs) }}</div>
+                  <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.duration') }}</div>
+                  <div class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">{{ formatDuration(selectedRequest!.durationMs) }}</div>
                 </div>
               </div>
 
               <section class="theme-surface-muted rounded-lg border px-3 py-2">
-                <div class="flex items-center justify-between py-1"><span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.input') }}</span><span class="font-mono text-[11px] text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest!.inputTokens) }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.output') }}</span><span class="font-mono text-[11px] text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest!.outputTokens) }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheCreate') }}</span><span class="font-mono text-[11px] text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest!.cacheCreateTokens) }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheRead') }}</span><span class="font-mono text-[11px] text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest!.cacheReadTokens) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.input') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest!.inputTokens) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.output') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest!.outputTokens) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheCreate') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest!.cacheCreateTokens) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheRead') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest!.cacheReadTokens) }}</span></div>
               </section>
 
               <section class="theme-surface-muted rounded-lg border px-3 py-2">
-                <div class="flex items-center justify-between py-1"><span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.ttft') }}</span><span class="font-mono text-[11px] text-[var(--theme-text-primary)]">{{ requestHasProxyPerformance(selectedRequest!) ? formatDuration(selectedRequest!.ttftMs) : '—' }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'metrics.tokensPerSecond') }}</span><span class="font-mono text-[11px] text-[var(--theme-text-primary)]">{{ requestHasProxyPerformance(selectedRequest!) && selectedRequest!.outputTokensPerSecond ? `${selectedRequest!.outputTokensPerSecond.toFixed(1)}t/s` : '—' }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.status') }}</span><span class="font-mono text-[11px] text-[var(--theme-text-primary)]">{{ selectedRequest!.statusCode || '—' }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.requestCoverage') }}</span><span class="font-mono text-[11px] text-[var(--theme-text-primary)]">{{ requestCoverageLabel(selectedRequest!.coverageOrigin) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.ttft') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ requestHasProxyPerformance(selectedRequest!) ? formatDuration(selectedRequest!.ttftMs) : '—' }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'metrics.tokensPerSecond') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ requestHasProxyPerformance(selectedRequest!) && selectedRequest!.outputTokensPerSecond ? `${selectedRequest!.outputTokensPerSecond.toFixed(1)}t/s` : '—' }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.status') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ selectedRequest!.statusCode || '—' }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.requestCoverage') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ requestCoverageLabel(selectedRequest!.coverageOrigin) }}</span></div>
               </section>
 
               <section class="theme-surface-muted rounded-lg border px-3 py-2">
                 <div class="flex items-center justify-between gap-2 py-1">
-                  <span class="shrink-0 text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'common.source') }}</span>
+                  <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'common.source') }}</span>
                   <span class="flex min-w-0 items-center gap-1">
-                    <span class="truncate font-mono text-[10.5px] text-[var(--theme-text-secondary)]">{{ requestSourceLabel(selectedRequest!) }}</span>
+                    <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]">{{ requestSourceLabel(selectedRequest!) }}</span>
                     <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.copySource')" :title="t(locale, 'desktop.sessions.copySource')" @click="copyText(requestSourceLabel(selectedRequest!), 'source')"><Copy class="h-3 w-3" aria-hidden="true" /></button>
                   </span>
                 </div>
                 <div class="flex items-center justify-between gap-2 py-1">
-                  <span class="shrink-0 text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.sessionId') }}</span>
+                  <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.sessionId') }}</span>
                   <span class="flex min-w-0 items-center gap-1">
-                    <span class="truncate font-mono text-[10.5px] text-[var(--theme-text-secondary)]" :title="selectedRequest!.sessionId">{{ shortId(selectedRequest!.sessionId) }}</span>
+                    <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedRequest!.sessionId">{{ shortId(selectedRequest!.sessionId) }}</span>
                     <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.copyId')" :title="t(locale, 'desktop.sessions.copyId')" @click="copyText(selectedRequest!.sessionId, 'id')"><Copy class="h-3 w-3" aria-hidden="true" /></button>
                   </span>
                 </div>
                 <div class="flex items-center justify-between gap-2 py-1">
-                  <span class="shrink-0 text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.requestKey') }}</span>
+                  <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.requestKey') }}</span>
                   <span class="flex min-w-0 items-center gap-1">
-                    <span class="truncate font-mono text-[10.5px] text-[var(--theme-text-secondary)]" :title="selectedRequest!.requestKey">{{ shortId(selectedRequest!.requestKey) }}</span>
+                    <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedRequest!.requestKey">{{ shortId(selectedRequest!.requestKey) }}</span>
                     <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.copyKey')" :title="t(locale, 'desktop.sessions.copyKey')" @click="copyText(selectedRequest!.requestKey, 'key')"><Copy class="h-3 w-3" aria-hidden="true" /></button>
                   </span>
                 </div>
               </section>
 
-              <p v-if="copiedValue" class="text-center text-[10px] font-medium text-emerald-600 dark:text-emerald-300">{{ t(locale, 'desktop.sessions.copied') }}</p>
+              <p v-if="copiedValue" class="text-center text-xs font-medium text-emerald-600 dark:text-emerald-300">{{ t(locale, 'desktop.sessions.copied') }}</p>
             </div>
           </aside>
         </div>
@@ -444,8 +448,18 @@ function gotoPageNumber(num: number | '...') {
     </div>
 
     <!-- 分页控件 -->
-    <div class="flex shrink-0 items-center justify-between gap-3 text-[10.5px] text-[var(--theme-text-tertiary)]">
-      <span class="shrink-0">{{ pageStart }}–{{ pageEnd }} / {{ total }}</span>
+    <div class="flex shrink-0 items-center justify-between gap-3 text-xs text-[var(--theme-text-tertiary)]">
+      <div class="flex shrink-0 items-center gap-2">
+        <span>{{ pageStart }}–{{ pageEnd }} / {{ total }}</span>
+        <select
+          v-model="pageSize"
+          class="theme-input h-6 rounded-md px-1 text-xs outline-none"
+          :aria-label="t(locale, 'desktop.requests.pageSize')"
+          @change="onPageSizeChange"
+        >
+          <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }} / {{ t(locale, 'desktop.requests.pageSize') }}</option>
+        </select>
+      </div>
       <div class="flex items-center gap-2">
         <div class="flex items-center gap-1">
           <button
@@ -472,7 +486,7 @@ function gotoPageNumber(num: number | '...') {
             <button
               v-else
               type="button"
-              class="inline-flex h-7 min-w-[28px] items-center justify-center rounded-lg border px-1.5 font-mono text-[10.5px] transition-colors"
+              class="inline-flex h-7 min-w-[28px] items-center justify-center rounded-lg border px-1.5 font-mono text-xs transition-colors"
               :class="num === currentPage + 1
                 ? 'border-[var(--theme-accent-primary)] bg-[var(--theme-accent-soft)] font-semibold text-[var(--theme-accent-primary)]'
                 : 'border-[var(--theme-border-default)] text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]'"
@@ -508,7 +522,7 @@ function gotoPageNumber(num: number | '...') {
             type="number"
             min="1"
             :max="totalPages"
-            class="theme-input h-7 w-12 rounded-lg px-1 text-center font-mono text-[10.5px] outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            class="theme-input h-7 w-12 rounded-lg px-1 text-center font-mono text-xs outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
             :aria-label="t(locale, 'desktop.requests.jumpTo')"
             @keydown.enter="jumpPage"
           />

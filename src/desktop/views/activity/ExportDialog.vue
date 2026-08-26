@@ -96,7 +96,7 @@ const copyExportPath = async () => {
     <div class="absolute inset-0 bg-black/40" @click="closeExportDialog"></div>
     <div class="theme-surface-elevated relative w-full max-w-md rounded-xl border p-4 shadow-xl">
       <div class="flex items-center justify-between gap-2">
-        <h3 class="text-[13px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'desktop.activity.exportDialogTitle') }}</h3>
+        <h3 class="text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'desktop.activity.exportDialogTitle') }}</h3>
         <button
           type="button"
           class="rounded p-1 text-[var(--theme-text-quaternary)] hover:bg-[var(--theme-bg-hover)]"
@@ -111,8 +111,8 @@ const copyExportPath = async () => {
       <!-- 范围预览 -->
       <div class="mt-3 space-y-2">
         <div class="flex items-center gap-2">
-          <span class="w-24 shrink-0 text-[10.5px] font-semibold text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.activity.exportFormat') }}</span>
-          <label class="flex cursor-pointer items-center gap-1.5 text-[11.5px] text-[var(--theme-text-secondary)]">
+          <span class="w-24 shrink-0 text-xs font-semibold text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.activity.exportFormat') }}</span>
+          <label class="flex cursor-pointer items-center gap-1.5 text-xs text-[var(--theme-text-secondary)]">
             <input
               v-model="exportFormat"
               type="radio"
@@ -121,7 +121,7 @@ const copyExportPath = async () => {
             />
             {{ t(locale, 'desktop.activity.exportFormatJson') }}
           </label>
-          <label class="flex cursor-pointer items-center gap-1.5 text-[11.5px] text-[var(--theme-text-secondary)]">
+          <label class="flex cursor-pointer items-center gap-1.5 text-xs text-[var(--theme-text-secondary)]">
             <input
               v-model="exportFormat"
               type="radio"
@@ -133,26 +133,26 @@ const copyExportPath = async () => {
         </div>
 
         <div class="space-y-1.5 rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-3 py-2.5">
-          <div class="text-[10px] font-semibold uppercase tracking-wide text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.exportScopePreview') }}</div>
+          <div class="text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.exportScopePreview') }}</div>
           <label class="flex cursor-pointer items-center gap-2">
             <input v-model="exportIncludeSummaries" type="checkbox" class="h-3.5 w-3.5 accent-[var(--theme-accent-primary)]" />
-            <span class="text-[11.5px] text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.activity.exportIncludeSummaries') }}</span>
+            <span class="text-xs text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.activity.exportIncludeSummaries') }}</span>
           </label>
           <label class="flex cursor-pointer items-center gap-2">
             <input v-model="exportIncludeToolSummaries" type="checkbox" class="h-3.5 w-3.5 accent-[var(--theme-accent-primary)]" />
-            <span class="text-[11.5px] text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.activity.exportIncludeToolSummaries') }}</span>
+            <span class="text-xs text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.activity.exportIncludeToolSummaries') }}</span>
           </label>
           <label class="flex cursor-pointer items-center gap-2">
             <input v-model="exportIncludeRequestLinks" type="checkbox" class="h-3.5 w-3.5 accent-[var(--theme-accent-primary)]" />
-            <span class="text-[11.5px] text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.activity.exportIncludeRequestLinks') }}</span>
+            <span class="text-xs text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.activity.exportIncludeRequestLinks') }}</span>
           </label>
           <label class="flex cursor-pointer items-center gap-2">
             <input v-model="exportIncludePayloads" type="checkbox" class="h-3.5 w-3.5 accent-[var(--theme-accent-primary)]" />
-            <span class="text-[11.5px] text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.activity.exportIncludePayloads') }}</span>
+            <span class="text-xs text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.activity.exportIncludePayloads') }}</span>
           </label>
           <p
             v-if="exportIncludePayloads"
-            class="flex items-start gap-1.5 rounded-lg border border-amber-500/20 bg-amber-500/5 px-2.5 py-2 text-[10.5px] leading-relaxed text-amber-600 dark:text-amber-300"
+            class="flex items-start gap-1.5 rounded-lg border border-amber-500/20 bg-amber-500/5 px-2.5 py-2 text-xs leading-relaxed text-amber-600 dark:text-amber-300"
           >
             <TriangleAlert class="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
             {{ t(locale, 'desktop.activity.exportPayloadWarning') }}
@@ -162,15 +162,15 @@ const copyExportPath = async () => {
 
       <!-- 结果 / 错误 -->
       <div class="mt-3">
-        <p v-if="exportError" class="break-all text-[10.5px] leading-relaxed text-rose-500">{{ backendErrorLabel(locale, exportError) }}</p>
+        <p v-if="exportError" class="break-all text-xs leading-relaxed text-rose-500">{{ backendErrorLabel(locale, exportError) }}</p>
         <div v-else-if="exportResult" class="rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-2.5 py-2">
-          <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10.5px] text-[var(--theme-text-tertiary)]">
+          <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-[var(--theme-text-tertiary)]">
             <CheckCircle2 class="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-300" aria-hidden="true" />
             <span>{{ t(locale, 'desktop.activity.exportSuccess') }}: {{ t(locale, 'desktop.activity.exportRows', { count: exportResult.rowCount }) }}</span>
             <span v-if="exportResult.truncated" class="text-amber-600 dark:text-amber-300">{{ t(locale, 'desktop.activity.exportTruncated') }}</span>
           </div>
           <div class="mt-1.5 flex items-center gap-1.5">
-            <span class="min-w-0 flex-1 truncate font-mono text-[10px] text-[var(--theme-text-secondary)]" :title="exportResult.filePath">{{ exportResult.filePath }}</span>
+            <span class="min-w-0 flex-1 truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="exportResult.filePath">{{ exportResult.filePath }}</span>
             <button
               type="button"
               class="rounded p-1 text-[var(--theme-text-tertiary)] transition-colors hover:bg-[var(--theme-bg-hover)]"
@@ -180,7 +180,7 @@ const copyExportPath = async () => {
             >
               <Copy class="h-3 w-3" aria-hidden="true" />
             </button>
-            <span v-if="exportCopiedFlash" class="text-[10px] font-medium text-emerald-600 dark:text-emerald-300">{{ t(locale, 'desktop.activity.copied') }}</span>
+            <span v-if="exportCopiedFlash" class="text-xs font-medium text-emerald-600 dark:text-emerald-300">{{ t(locale, 'desktop.activity.copied') }}</span>
           </div>
         </div>
       </div>
@@ -189,7 +189,7 @@ const copyExportPath = async () => {
       <div class="mt-4 flex justify-end gap-2">
         <button
           type="button"
-          class="theme-button-secondary inline-flex h-8 items-center rounded-lg px-3 text-[11.5px] font-semibold disabled:opacity-60"
+          class="theme-button-secondary inline-flex h-8 items-center rounded-lg px-3 text-xs font-semibold disabled:opacity-60"
           :disabled="exportBusy"
           @click="closeExportDialog"
         >
@@ -197,7 +197,7 @@ const copyExportPath = async () => {
         </button>
         <button
           type="button"
-          class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--theme-accent-primary)] px-3.5 text-[11.5px] font-semibold text-[var(--theme-accent-contrast)] transition-opacity hover:opacity-90 disabled:opacity-60"
+          class="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--theme-accent-primary)] px-3.5 text-xs font-semibold text-[var(--theme-accent-contrast)] transition-opacity hover:opacity-90 disabled:opacity-60"
           :disabled="exportBusy"
           @click="runExport"
         >

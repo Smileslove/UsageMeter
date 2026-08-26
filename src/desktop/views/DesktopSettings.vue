@@ -203,7 +203,7 @@ const confirmQuit = async () => {
         v-for="section in sections"
         :key="section.id"
         type="button"
-        class="whitespace-nowrap rounded-lg px-3 py-1.5 text-left text-[12px] font-semibold transition-colors lg:w-full"
+        class="whitespace-nowrap rounded-lg px-3 py-1.5 text-left text-xs font-semibold transition-colors lg:w-full"
         :class="activeSection === section.id ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)] hover:bg-[var(--theme-bg-hover)]'"
         :aria-current="activeSection === section.id ? 'page' : undefined"
         @click="activeSection = section.id"
@@ -220,21 +220,21 @@ const confirmQuit = async () => {
       <!-- 应用 -->
       <section v-if="activeSection === 'app'" class="space-y-1.5">
         <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.sectionApp') }}</h3>
-        <p class="px-1 text-[11px] leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionAppDesc') }}</p>
+        <p class="px-1 text-xs leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionAppDesc') }}</p>
         <GeneralSettingsPanel />
       </section>
 
       <!-- 外观 -->
       <section v-else-if="activeSection === 'appearance'" class="space-y-1.5">
         <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.sectionAppearance') }}</h3>
-        <p class="px-1 text-[11px] leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionAppearanceDesc') }}</p>
+        <p class="px-1 text-xs leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionAppearanceDesc') }}</p>
         <ThemeSelector />
       </section>
 
       <!-- 数据源 -->
       <section v-else-if="activeSection === 'dataSources'" class="space-y-1.5">
         <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.sectionDataSources') }}</h3>
-        <p class="px-1 text-[11px] leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionDataSourcesDesc') }}</p>
+        <p class="px-1 text-xs leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionDataSourcesDesc') }}</p>
         <!-- 桌面设置内嵌数据源管理（组件自带返回按钮，这里 no-op：由目录切换承担返回语义） -->
         <ApiSourceList @back="() => {}" />
       </section>
@@ -243,12 +243,12 @@ const confirmQuit = async () => {
       <section v-else-if="activeSection === 'privacy'" class="space-y-4">
         <div class="space-y-1.5">
           <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.sectionPrivacy') }}</h3>
-          <p class="px-1 text-[11px] leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionPrivacyDesc') }}</p>
+          <p class="px-1 text-xs leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionPrivacyDesc') }}</p>
         </div>
 
         <!-- 深度索引级别：不能用单个开关混淆多种风险，使用 radio group -->
         <div class="space-y-1.5">
-          <h4 class="px-1 text-[12px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'desktop.settings.deepIndexLevel') }}</h4>
+          <h4 class="px-1 text-xs font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'desktop.settings.deepIndexLevel') }}</h4>
           <div class="space-y-2">
             <label
               v-for="option in deepIndexOptions"
@@ -264,8 +264,8 @@ const confirmQuit = async () => {
                 @change="selectDeepIndexLevel(option.id)"
               />
               <span class="min-w-0">
-                <span class="block text-[12px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, option.labelKey) }}</span>
-                <span class="mt-0.5 block text-[10.5px] leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, option.descKey) }}</span>
+                <span class="block text-xs font-semibold text-[var(--theme-text-primary)]">{{ t(locale, option.labelKey) }}</span>
+                <span class="mt-0.5 block text-xs leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, option.descKey) }}</span>
               </span>
             </label>
           </div>
@@ -273,24 +273,24 @@ const confirmQuit = async () => {
 
         <!-- 保留期限与清理 -->
         <div class="space-y-1.5">
-          <h4 class="px-1 text-[12px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'desktop.settings.privacyRetention') }}</h4>
-          <p class="px-1 text-[11px] leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.privacyRetentionDesc') }}</p>
+          <h4 class="px-1 text-xs font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'desktop.settings.privacyRetention') }}</h4>
+          <p class="px-1 text-xs leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.privacyRetentionDesc') }}</p>
           <div class="flex flex-wrap items-center gap-2 px-1">
-            <label class="flex items-center gap-2 text-[11px] text-[var(--theme-text-secondary)]">
+            <label class="flex items-center gap-2 text-xs text-[var(--theme-text-secondary)]">
               {{ t(locale, 'desktop.settings.retentionDaysLabel') }}
               <input
                 v-model.number="retentionDays"
                 type="number"
                 min="1"
                 max="3650"
-                class="w-20 rounded-md border border-[var(--theme-border-default)] bg-[var(--theme-bg-surface)] px-2 py-1 text-[12px] text-[var(--theme-text-primary)] outline-none focus:ring-2 focus:ring-[var(--theme-accent-primary)]"
+                class="w-20 rounded-md border border-[var(--theme-border-default)] bg-[var(--theme-bg-surface)] px-2 py-1 text-xs text-[var(--theme-text-primary)] outline-none focus:ring-2 focus:ring-[var(--theme-accent-primary)]"
                 @change="saveRetentionDays()"
               />
               {{ t(locale, 'desktop.settings.retentionDaysUnit') }}
             </label>
             <button
               type="button"
-              class="inline-flex items-center gap-1.5 rounded-md border border-[var(--theme-border-default)] px-2.5 py-1 text-[11px] font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:opacity-60"
+              class="inline-flex items-center gap-1.5 rounded-md border border-[var(--theme-border-default)] px-2.5 py-1 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:opacity-60"
               :disabled="purgeBusy"
               @click="openPurgeDialog()"
             >
@@ -299,7 +299,7 @@ const confirmQuit = async () => {
               {{ t(locale, 'desktop.settings.purgeNow') }}
             </button>
           </div>
-          <p v-if="purgeResult" class="px-1 text-[11px]" role="status">
+          <p v-if="purgeResult" class="px-1 text-xs" role="status">
             {{ purgeResult }}
           </p>
         </div>
@@ -308,7 +308,7 @@ const confirmQuit = async () => {
       <!-- 来源与计费 -->
       <section v-else-if="activeSection === 'pricing'" class="space-y-1.5">
         <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.sectionPricing') }}</h3>
-        <p class="px-1 text-[11px] leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionPricingDesc') }}</p>
+        <p class="px-1 text-xs leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionPricingDesc') }}</p>
         <DataNavigationPanel
           @open-api-sources="activeSection = 'dataSources'"
           @open-model-pricing="pricingSubView = 'model-pricing'"
@@ -321,7 +321,7 @@ const confirmQuit = async () => {
       <!-- 网关与代理 -->
       <section v-else-if="activeSection === 'gateway'" class="space-y-1.5">
         <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.sectionGateway') }}</h3>
-        <p class="px-1 text-[11px] leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionGatewayDesc') }}</p>
+        <p class="px-1 text-xs leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionGatewayDesc') }}</p>
         <ProxyControlPanel />
         <CcSwitchCompatPanel />
       </section>
@@ -329,21 +329,21 @@ const confirmQuit = async () => {
       <!-- 网络 -->
       <section v-else-if="activeSection === 'network'" class="space-y-1.5">
         <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.sectionNetwork') }}</h3>
-        <p class="px-1 text-[11px] leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionNetworkDesc') }}</p>
+        <p class="px-1 text-xs leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionNetworkDesc') }}</p>
         <NetworkProxyPanel />
       </section>
 
       <!-- 同步 -->
       <section v-else-if="activeSection === 'sync'" class="space-y-1.5">
         <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.sectionSync') }}</h3>
-        <p class="px-1 text-[11px] leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionSyncDesc') }}</p>
+        <p class="px-1 text-xs leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionSyncDesc') }}</p>
         <SyncSettingsPanel />
       </section>
 
       <!-- 存储与维护 -->
       <section v-else-if="activeSection === 'storage'" class="space-y-1.5">
         <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.sectionStorage') }}</h3>
-        <p class="px-1 text-[11px] leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionStorageDesc') }}</p>
+        <p class="px-1 text-xs leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionStorageDesc') }}</p>
         <LocalCachePanel />
         <LocalCacheManagementPanel />
       </section>
@@ -351,7 +351,7 @@ const confirmQuit = async () => {
       <!-- 关于与更新 -->
       <section v-else class="space-y-1.5">
         <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.sectionAbout') }}</h3>
-        <p class="px-1 text-[11px] leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionAboutDesc') }}</p>
+        <p class="px-1 text-xs leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionAboutDesc') }}</p>
 
         <!-- 版本与更新（普通分隔区块，label + description + control 网格） -->
         <div class="border-b border-[var(--theme-border-default)] py-3">
@@ -359,16 +359,16 @@ const confirmQuit = async () => {
             <div class="min-w-0">
               <div class="flex items-center gap-2 text-[12.5px] font-medium text-[var(--theme-text-primary)]">
                 <span>{{ t(locale, 'desktop.settings.aboutApp') }}</span>
-                <span class="font-mono text-[12px] text-[var(--theme-text-secondary)]">v{{ appVersion || '—' }}</span>
+                <span class="font-mono text-xs text-[var(--theme-text-secondary)]">v{{ appVersion || '—' }}</span>
               </div>
-              <p class="mt-0.5 text-[10.5px] leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.aboutAppDesc') }}</p>
-              <p v-if="updaterStore.hasUpdate && updaterStore.updateInfo" class="mt-1 text-[10.5px] font-medium text-[var(--theme-status-info-fg)]">
+              <p class="mt-0.5 text-xs leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.aboutAppDesc') }}</p>
+              <p v-if="updaterStore.hasUpdate && updaterStore.updateInfo" class="mt-1 text-xs font-medium text-[var(--theme-status-info-fg)]">
                 {{ t(locale, 'settings.update.newVersionReady', { version: updaterStore.updateInfo.version }) }}
               </p>
             </div>
             <button
               type="button"
-              class="theme-button-secondary inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[11.5px] font-semibold disabled:opacity-50"
+              class="theme-button-secondary inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold disabled:opacity-50"
               :disabled="updaterStore.status === 'checking'"
               @click="handleCheckUpdate"
             >
@@ -387,13 +387,13 @@ const confirmQuit = async () => {
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div class="min-w-0">
               <div class="text-[12.5px] font-medium text-[var(--theme-text-primary)]">{{ t(locale, 'desktop.settings.aboutHomepage') }}</div>
-              <p class="mt-0.5 text-[10.5px] leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.aboutHomepageDesc') }}</p>
+              <p class="mt-0.5 text-xs leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.aboutHomepageDesc') }}</p>
             </div>
             <a
               href="https://github.com/smileslove/UsageMeter"
               target="_blank"
               rel="noreferrer"
-              class="theme-button-secondary inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[11.5px] font-semibold"
+              class="theme-button-secondary inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold"
             >
               <ExternalLink class="h-3.5 w-3.5" aria-hidden="true" />
               GitHub
@@ -406,24 +406,24 @@ const confirmQuit = async () => {
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div class="min-w-0">
               <div class="text-[12.5px] font-medium text-red-500">{{ t(locale, 'settings.quitApp') }}</div>
-              <p class="mt-0.5 text-[10.5px] leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'settings.quitAppDesc') }}</p>
+              <p class="mt-0.5 text-xs leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'settings.quitAppDesc') }}</p>
             </div>
             <button
               type="button"
-              class="shrink-0 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-[11px] font-semibold text-red-500 transition-colors hover:bg-red-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+              class="shrink-0 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-500 transition-colors hover:bg-red-500/15 disabled:cursor-not-allowed disabled:opacity-60"
               :disabled="quitBusy"
               @click="openQuitDialog"
             >
               {{ t(locale, 'settings.quitApp') }}
             </button>
           </div>
-          <p v-if="quitFailed" class="mt-1 text-[11px] text-red-500">{{ t(locale, 'settings.quitAppFailed') }}</p>
+          <p v-if="quitFailed" class="mt-1 text-xs text-red-500">{{ t(locale, 'settings.quitAppFailed') }}</p>
         </div>
       </section>
 
       <!-- 保存状态 -->
-      <div v-if="store.saving" class="px-1 text-[11px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'common.saving') }}</div>
-      <div v-if="store.error" class="px-1 text-[11px] text-red-500">{{ store.error }}</div>
+      <div v-if="store.saving" class="px-1 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'common.saving') }}</div>
+      <div v-if="store.error" class="px-1 text-xs text-red-500">{{ store.error }}</div>
     </div>
   </div>
 

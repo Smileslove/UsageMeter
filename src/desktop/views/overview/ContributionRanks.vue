@@ -77,11 +77,11 @@ function formatContributionPrimary(item: OverviewBreakdownItem): string {
       style="background: var(--theme-surface-gradient)"
     >
       <div class="mb-2 flex items-center justify-between gap-2">
-        <h3 class="flex items-center gap-1.5 text-[13px] font-semibold text-[var(--theme-text-secondary)]">
+        <h3 class="flex items-center gap-1.5 text-[15px] font-semibold text-[var(--theme-text-secondary)]">
           <component :is="sectionIcon(section.key)" :size="14" class="shrink-0" aria-hidden="true" />
           {{ t(locale, section.titleKey) }}
         </h3>
-        <span class="shrink-0 text-[10px] text-[var(--theme-text-quaternary)]">{{ metricLabel(metric) }}</span>
+        <span class="shrink-0 text-xs text-[var(--theme-text-quaternary)]">{{ metricLabel(metric) }}</span>
       </div>
 
       <div v-if="loading && !hasBreakdown" class="flex flex-col gap-2">
@@ -101,7 +101,7 @@ function formatContributionPrimary(item: OverviewBreakdownItem): string {
         >
           <span class="flex items-center justify-between gap-2">
             <span class="truncate text-xs font-medium text-[var(--theme-text-primary)]">{{ displayLabel(row.item) }}</span>
-            <span class="shrink-0 font-mono text-[11px] font-semibold text-[var(--theme-text-secondary)]">
+            <span class="shrink-0 font-mono text-xs font-semibold text-[var(--theme-text-secondary)]">
               {{ formatContributionPrimary(row.item) }}
             </span>
           </span>
@@ -112,9 +112,9 @@ function formatContributionPrimary(item: OverviewBreakdownItem): string {
                 :style="{ width: `${row.percent}%`, backgroundColor: row.item.color || 'var(--theme-accent-primary)' }"
               ></span>
             </span>
-            <span class="w-9 shrink-0 text-right text-[10px] text-[var(--theme-text-quaternary)]">{{ formatRate(row.percent) }}%</span>
+            <span class="w-9 shrink-0 text-right text-xs text-[var(--theme-text-quaternary)]">{{ formatRate(row.percent) }}%</span>
           </span>
-          <span class="text-[10px] text-[var(--theme-text-quaternary)]">
+          <span class="text-xs text-[var(--theme-text-quaternary)]">
             {{ t(locale, 'desktop.overview.contributionRequests', { count: formatRequestCount(row.item.requestCount) }) }}
           </span>
         </button>

@@ -43,7 +43,7 @@ function stateIcon(state: LimitState): Component {
 
 <template>
   <div class="rounded-lg border border-[var(--theme-border-default)] p-4" style="background: var(--theme-surface-gradient)">
-    <h3 class="mb-3 flex items-center gap-1.5 text-[13px] font-semibold text-[var(--theme-text-secondary)]">
+    <h3 class="mb-3 flex items-center gap-1.5 text-[15px] font-semibold text-[var(--theme-text-secondary)]">
       <ShieldCheck :size="14" class="shrink-0" aria-hidden="true" />
       {{ t(locale, 'desktop.overview.limitTitle') }}
     </h3>
@@ -73,12 +73,12 @@ function stateIcon(state: LimitState): Component {
             <component :is="stateIcon(row.state)" :size="14" class="shrink-0" :class="stateToneClass(row.state)" aria-hidden="true" />
             <span class="truncate text-xs font-semibold text-[var(--theme-text-primary)]">{{ row.label }}</span>
             <span
-              class="shrink-0 rounded-full border border-[var(--theme-border-default)] px-1.5 py-px text-[10px] text-[var(--theme-text-tertiary)]"
+              class="shrink-0 rounded-full border border-[var(--theme-border-default)] px-1.5 py-px text-xs text-[var(--theme-text-tertiary)]"
             >
               {{ row.windowLabel }}
             </span>
           </div>
-          <span class="shrink-0 text-[11px] font-medium" :class="stateToneClass(row.state)">
+          <span class="shrink-0 text-xs font-medium" :class="stateToneClass(row.state)">
             {{ t(locale, row.conclusionKey) }}
           </span>
         </div>
@@ -90,11 +90,11 @@ function stateIcon(state: LimitState): Component {
               :style="{ width: `${row.barPct}%` }"
             ></div>
           </div>
-          <span class="w-10 shrink-0 text-right font-mono text-[11px] font-semibold text-[var(--theme-text-secondary)]">
+          <span class="w-10 shrink-0 text-right font-mono text-xs font-semibold text-[var(--theme-text-secondary)]">
             {{ row.usedPct == null ? '--' : `${formatRate(row.usedPct)}%` }}
           </span>
         </div>
-        <div class="mt-1.5 flex items-center justify-between gap-2 text-[10px] text-[var(--theme-text-quaternary)]">
+        <div class="mt-1.5 flex items-center justify-between gap-2 text-xs text-[var(--theme-text-quaternary)]">
           <span>{{ t(locale, 'desktop.overview.limitResetIn', { time: row.resetText }) }}</span>
           <span v-if="row.confidenceKey">
             {{ t(locale, 'desktop.overview.limitConfidence') }} {{ t(locale, row.confidenceKey) }}

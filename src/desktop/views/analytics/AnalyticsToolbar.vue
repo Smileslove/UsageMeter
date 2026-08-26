@@ -272,7 +272,7 @@ const activeToolLabel = computed(() => {
           <button
             v-if="hasFilter"
             type="button"
-            class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-[var(--theme-accent-primary)] transition-colors duration-150 hover:bg-[var(--theme-accent-soft)]"
+            class="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs font-medium text-[var(--theme-accent-primary)] transition-colors duration-150 hover:bg-[var(--theme-accent-soft)]"
             @click="clearAllFilters"
           >
             <X :size="11" aria-hidden="true" />
@@ -282,7 +282,7 @@ const activeToolLabel = computed(() => {
 
         <!-- 模型多选 -->
         <div class="mt-3">
-          <p class="text-[10px] font-medium uppercase tracking-wide text-[var(--theme-text-quaternary)]">
+          <p class="text-xs font-medium uppercase tracking-wide text-[var(--theme-text-quaternary)]">
             {{ t(locale, 'desktop.analytics.filterModelLabel') }}
           </p>
           <div
@@ -305,7 +305,7 @@ const activeToolLabel = computed(() => {
           </div>
           <p
             v-else
-            class="mt-1.5 rounded-md border border-dashed border-[var(--theme-border-subtle)] px-2 py-2 text-center text-[10px] text-[var(--theme-text-quaternary)]"
+            class="mt-1.5 rounded-md border border-dashed border-[var(--theme-border-subtle)] px-2 py-2 text-center text-xs text-[var(--theme-text-quaternary)]"
           >
             {{ t(locale, 'desktop.analytics.filterEmpty') }}
           </p>
@@ -313,7 +313,7 @@ const activeToolLabel = computed(() => {
 
         <!-- 项目多选 -->
         <div class="mt-3">
-          <p class="text-[10px] font-medium uppercase tracking-wide text-[var(--theme-text-quaternary)]">
+          <p class="text-xs font-medium uppercase tracking-wide text-[var(--theme-text-quaternary)]">
             {{ t(locale, 'desktop.analytics.filterProjectLabel') }}
           </p>
           <div
@@ -336,14 +336,14 @@ const activeToolLabel = computed(() => {
           </div>
           <p
             v-else
-            class="mt-1.5 rounded-md border border-dashed border-[var(--theme-border-subtle)] px-2 py-2 text-center text-[10px] text-[var(--theme-text-quaternary)]"
+            class="mt-1.5 rounded-md border border-dashed border-[var(--theme-border-subtle)] px-2 py-2 text-center text-xs text-[var(--theme-text-quaternary)]"
           >
             {{ t(locale, 'desktop.analytics.filterEmpty') }}
           </p>
         </div>
 
         <!-- 全局来源/工具筛选（只读：改动走顶栏） -->
-        <div class="mt-3 rounded-md border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-hover)] px-2 py-2 text-[10px]">
+        <div class="mt-3 rounded-md border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-hover)] px-2 py-2 text-xs">
           <p class="flex items-center justify-between gap-2">
             <span class="shrink-0 text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.analytics.filterGlobalSource') }}</span>
             <span class="truncate font-medium text-[var(--theme-text-secondary)]">{{ activeSourceLabel }}</span>
@@ -352,7 +352,7 @@ const activeToolLabel = computed(() => {
             <span class="shrink-0 text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.analytics.filterGlobalTool') }}</span>
             <span class="truncate font-medium text-[var(--theme-text-secondary)]">{{ activeToolLabel }}</span>
           </p>
-          <p class="mt-1.5 text-[9px] text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.analytics.filterGlobalNote') }}</p>
+          <p class="mt-1.5 text-xs text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.analytics.filterGlobalNote') }}</p>
         </div>
       </div>
     </div>

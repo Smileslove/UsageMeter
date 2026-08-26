@@ -234,7 +234,7 @@ const hasPerformance = computed(
       <div v-if="sortedComposition.length" class="overflow-x-auto">
         <table class="w-full min-w-[720px] text-xs">
           <thead>
-            <tr class="border-b border-[var(--theme-border-subtle)] text-left text-[10px] font-medium uppercase tracking-wide text-[var(--theme-text-quaternary)]">
+            <tr class="border-b border-[var(--theme-border-subtle)] text-left text-xs font-medium uppercase tracking-wide text-[var(--theme-text-quaternary)]">
               <th class="py-2 pr-3 font-medium">#</th>
               <th class="py-2 pr-3 font-medium">{{ t(locale, 'desktop.analytics.compName') }}</th>
               <th
@@ -247,7 +247,7 @@ const hasPerformance = computed(
               >
                 <span class="inline-flex items-center gap-0.5">
                   {{ t(locale, col.labelKey) }}
-                  <span v-if="sortKey === col.key" class="text-[9px]">{{ sortDir === 'desc' ? '↓' : '↑' }}</span>
+                  <span v-if="sortKey === col.key" class="text-xs">{{ sortDir === 'desc' ? '↓' : '↑' }}</span>
                 </span>
               </th>
             </tr>
@@ -267,7 +267,7 @@ const hasPerformance = computed(
                   <span class="h-1 w-20 overflow-hidden rounded-full bg-[var(--theme-text-primary)]/10">
                     <span class="block h-full rounded-full" :style="{ width: `${Math.min(row.percent, 100)}%`, backgroundColor: 'var(--theme-accent-primary)' }"></span>
                   </span>
-                  <span class="font-mono text-[10px] text-[var(--theme-text-tertiary)]">{{ formatRate(row.percent) }}%</span>
+                  <span class="font-mono text-xs text-[var(--theme-text-tertiary)]">{{ formatRate(row.percent) }}%</span>
                 </span>
               </td>
               <td class="py-2 pr-3 text-right font-mono text-[var(--theme-text-secondary)]">{{ formatRequestCount(row.requests) }}</td>

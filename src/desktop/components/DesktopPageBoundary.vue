@@ -50,7 +50,7 @@ const locale = () => store.settings.locale
       <p class="mx-auto max-w-md break-words text-xs leading-5 text-[var(--theme-text-tertiary)]">
         {{ error.message }}
       </p>
-      <p v-if="errorInfo" class="text-[10px] text-[var(--theme-text-quaternary)]">
+      <p v-if="errorInfo" class="text-xs text-[var(--theme-text-quaternary)]">
         {{ errorInfo }}
       </p>
     </div>

@@ -110,7 +110,7 @@ const copyEventId = async () => {
   >
     <!-- 检查器头部 -->
     <div class="flex shrink-0 items-center justify-between border-b border-[var(--theme-border-subtle)] px-3 py-2">
-      <span class="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
+      <span class="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
         <Eye class="h-3.5 w-3.5" aria-hidden="true" />
         {{ t(locale, 'desktop.activity.inspectorTitle') }}
       </span>
@@ -129,7 +129,7 @@ const copyEventId = async () => {
       <!-- 未选中 -->
       <div v-if="!event" class="flex flex-col items-center justify-center px-4 py-16 text-center">
         <EyeOff class="h-6 w-6 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-        <p class="mt-2 text-[11px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.activity.inspectorEmpty') }}</p>
+        <p class="mt-2 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.activity.inspectorEmpty') }}</p>
       </div>
 
       <div v-else class="space-y-3">
@@ -140,14 +140,14 @@ const copyEventId = async () => {
           </span>
           <div class="min-w-0 flex-1">
             <div class="text-[12.5px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, KIND_META[event.kind].labelKey) }}</div>
-            <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10.5px] text-[var(--theme-text-tertiary)]">
+            <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-[var(--theme-text-tertiary)]">
               <span class="inline-flex items-center gap-1" :title="event.timestampMs != null ? formatAbsTime(event.timestampMs, locale) : undefined">
                 <Clock class="h-3 w-3" aria-hidden="true" />
                 {{ event.timestampMs != null ? formatAbsTime(event.timestampMs, locale) : t(locale, 'desktop.activity.timeUnknown') }}
               </span>
               <span
                 v-if="statusMeta(event.status)"
-                class="inline-flex items-center rounded-full px-1.5 py-px text-[9px] font-bold leading-none"
+                class="inline-flex items-center rounded-full px-1.5 py-px text-xs font-bold leading-none"
                 :class="statusMeta(event.status)!.cls"
               >
                 {{ t(locale, statusMeta(event.status)!.labelKey) }}
@@ -158,8 +158,8 @@ const copyEventId = async () => {
 
         <!-- 来源文件（脱敏路径，直接显示） -->
         <div class="rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-2.5 py-2">
-          <div class="text-[9.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.inspectorSourceFile') }}</div>
-          <div class="mt-1 flex items-center gap-1.5 break-all font-mono text-[10.5px] leading-relaxed text-[var(--theme-text-secondary)]">
+          <div class="text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.inspectorSourceFile') }}</div>
+          <div class="mt-1 flex items-center gap-1.5 break-all font-mono text-xs leading-relaxed text-[var(--theme-text-secondary)]">
             <FolderOpen class="h-3.5 w-3.5 shrink-0 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
             {{ event.sourceRef.sourceFilePath || '—' }}
           </div>
@@ -167,19 +167,19 @@ const copyEventId = async () => {
 
         <!-- 摘要全文（不截断） -->
         <div v-if="event.summary" class="rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-2.5 py-2">
-          <div class="text-[9.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.inspectorSummary') }}</div>
-          <p class="mt-1 break-words text-[11.5px] leading-relaxed text-[var(--theme-text-secondary)]">{{ event.summary }}</p>
+          <div class="text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.inspectorSummary') }}</div>
+          <p class="mt-1 break-words text-xs leading-relaxed text-[var(--theme-text-secondary)]">{{ event.summary }}</p>
         </div>
 
         <!-- 请求关联（设计 9.9） -->
         <div v-if="event.requestLinks.length > 0" class="rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-2.5 py-2">
-          <div class="text-[9.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.inspectorRequestLinks') }}</div>
+          <div class="text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.inspectorRequestLinks') }}</div>
           <ul class="mt-1 space-y-1">
             <li v-for="link in event.requestLinks" :key="link.requestKey" class="flex items-center gap-1.5">
               <Link2 class="h-3 w-3 shrink-0 text-[var(--theme-text-quaternary)]" :class="{ 'opacity-40': linkMeta(link.strength).dashed }" aria-hidden="true" />
-              <span class="min-w-0 flex-1 truncate font-mono text-[10px] text-[var(--theme-text-secondary)]" :title="link.requestKey">{{ link.requestKey }}</span>
+              <span class="min-w-0 flex-1 truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="link.requestKey">{{ link.requestKey }}</span>
               <span
-                class="shrink-0 rounded px-1.5 py-px text-[9px] font-bold leading-none"
+                class="shrink-0 rounded px-1.5 py-px text-xs font-bold leading-none"
                 :class="linkMeta(link.strength).dashed
                   ? 'bg-amber-500/10 text-amber-600 dark:text-amber-300'
                   : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'"
@@ -192,12 +192,12 @@ const copyEventId = async () => {
 
         <!-- 工具详情 -->
         <div v-if="event.tool" class="rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] px-2.5 py-2">
-          <div class="text-[9.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.inspectorTool') }}</div>
-          <div class="mt-1.5 space-y-1 text-[10.5px] text-[var(--theme-text-secondary)]">
+          <div class="text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.inspectorTool') }}</div>
+          <div class="mt-1.5 space-y-1 text-xs text-[var(--theme-text-secondary)]">
             <div class="flex items-center gap-1.5">
               <Wrench class="h-3 w-3 shrink-0 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
               <span class="truncate font-mono font-semibold">{{ event.tool.normalizedName || event.tool.rawName }}</span>
-              <span v-if="event.tool.family" class="rounded bg-cyan-500/10 px-1.5 py-px text-[9px] font-bold text-cyan-600 dark:text-cyan-300">{{ event.tool.family }}</span>
+              <span v-if="event.tool.family" class="rounded bg-cyan-500/10 px-1.5 py-px text-xs font-bold text-cyan-600 dark:text-cyan-300">{{ event.tool.family }}</span>
             </div>
             <div class="flex flex-wrap gap-x-3 gap-y-0.5">
               <span class="inline-flex items-center gap-1"><Clock class="h-3 w-3 text-[var(--theme-text-quaternary)]" aria-hidden="true" />{{ t(locale, 'desktop.activity.durationLabel') }}: {{ formatDuration(event.tool.durationMs) }}</span>
@@ -205,10 +205,10 @@ const copyEventId = async () => {
               <span v-if="event.tool.outputBytes != null">{{ t(locale, 'desktop.activity.inspectorOutput') }}: {{ formatBytes(event.tool.outputBytes) }}</span>
             </div>
             <div v-if="event.tool.inputKeys.length > 0" class="flex flex-wrap items-center gap-1">
-              <span class="text-[9.5px] text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.inputKeysLabel') }}:</span>
-              <span v-for="key in event.tool.inputKeys" :key="key" class="max-w-32 truncate rounded bg-[var(--theme-border-subtle)] px-1.5 py-px font-mono text-[9px] text-[var(--theme-text-tertiary)]" :title="key">{{ key }}</span>
+              <span class="text-xs text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.inputKeysLabel') }}:</span>
+              <span v-for="key in event.tool.inputKeys" :key="key" class="max-w-32 truncate rounded bg-[var(--theme-border-subtle)] px-1.5 py-px font-mono text-xs text-[var(--theme-text-tertiary)]" :title="key">{{ key }}</span>
             </div>
-            <div v-if="event.tool.resultKind" class="break-all font-mono text-[10px] text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.resultKind', { kind: event.tool.resultKind }) }}</div>
+            <div v-if="event.tool.resultKind" class="break-all font-mono text-xs text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.activity.resultKind', { kind: event.tool.resultKind }) }}</div>
           </div>
         </div>
 
@@ -219,7 +219,7 @@ const copyEventId = async () => {
               v-for="section in payloadSections"
               :key="section"
               type="button"
-              class="rounded-md px-2 py-1 text-[10px] font-semibold capitalize transition-colors"
+              class="rounded-md px-2 py-1 text-xs font-semibold capitalize transition-colors"
               :class="payloadSection === section
                 ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]'
                 : 'text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]'"
@@ -229,32 +229,32 @@ const copyEventId = async () => {
             </button>
             <span
               v-if="payload"
-              class="ml-auto inline-flex items-center rounded px-1.5 py-px text-[9px] font-bold leading-none"
+              class="ml-auto inline-flex items-center rounded px-1.5 py-px text-xs font-bold leading-none"
               :class="contentStateLabel(payload.contentState).cls"
             >
               {{ t(locale, contentStateLabel(payload.contentState).key) }}
             </span>
           </div>
           <div class="mt-2">
-            <div v-if="payloadLoading" class="flex items-center justify-center gap-1.5 py-6 text-[10.5px] text-[var(--theme-text-tertiary)]">
+            <div v-if="payloadLoading" class="flex items-center justify-center gap-1.5 py-6 text-xs text-[var(--theme-text-tertiary)]">
               <Loader2 class="h-3 w-3 animate-spin" aria-hidden="true" />
               {{ t(locale, 'desktop.activity.timelineLoading') }}
             </div>
-            <div v-else-if="payloadError" class="break-all py-2 text-[10.5px] text-rose-500">{{ backendErrorLabel(locale, payloadError) }}</div>
+            <div v-else-if="payloadError" class="break-all py-2 text-xs text-rose-500">{{ backendErrorLabel(locale, payloadError) }}</div>
             <template v-else-if="payload">
-              <p v-if="payload.truncated" class="mb-1.5 text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.activity.payloadTruncated') }}</p>
+              <p v-if="payload.truncated" class="mb-1.5 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.activity.payloadTruncated') }}</p>
               <pre
                 v-if="payload.content"
-                class="max-h-72 overflow-y-auto whitespace-pre-wrap break-all rounded-lg bg-[var(--theme-bg-workspace)] p-2.5 font-mono text-[10px] leading-relaxed text-[var(--theme-text-secondary)]"
+                class="max-h-72 overflow-y-auto whitespace-pre-wrap break-all rounded-lg bg-[var(--theme-bg-workspace)] p-2.5 font-mono text-xs leading-relaxed text-[var(--theme-text-secondary)]"
               >{{ payload.content }}</pre>
-              <p v-else class="py-4 text-center text-[10.5px] text-[var(--theme-text-quaternary)]">
+              <p v-else class="py-4 text-center text-xs text-[var(--theme-text-quaternary)]">
                 {{ payload.contentState === 'unavailable' ? t(locale, 'desktop.activity.payloadUnavailable') : t(locale, 'desktop.activity.payloadEmpty') }}
               </p>
               <!-- M3 payload 分页（设计 12.5：nextCursor 续读 append） -->
               <button
                 v-if="payload.nextCursor"
                 type="button"
-                class="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--theme-border-subtle)] px-2.5 py-1.5 text-[10.5px] font-semibold text-[var(--theme-text-tertiary)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:opacity-60"
+                class="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-[var(--theme-border-subtle)] px-2.5 py-1.5 text-xs font-semibold text-[var(--theme-text-tertiary)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:opacity-60"
                 :disabled="payloadLoading"
                 @click="loadMorePayload"
               >
@@ -269,7 +269,7 @@ const copyEventId = async () => {
         <div class="flex items-center gap-2 pt-1">
           <button
             type="button"
-            class="theme-button-secondary inline-flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-semibold"
+            class="theme-button-secondary inline-flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold"
             :aria-label="t(locale, 'desktop.activity.copyId')"
             :title="t(locale, 'desktop.activity.copyId')"
             @click="copyEventId"
@@ -277,8 +277,8 @@ const copyEventId = async () => {
             <Copy class="h-3 w-3" aria-hidden="true" />
             {{ t(locale, 'desktop.activity.copyId') }}
           </button>
-          <span v-if="copiedFlash" class="text-[10.5px] font-medium text-emerald-600 dark:text-emerald-300">{{ t(locale, 'desktop.activity.copied') }}</span>
-          <span class="ml-auto max-w-36 truncate font-mono text-[9.5px] text-[var(--theme-text-quaternary)]" :title="event.eventKey">{{ event.eventKey }}</span>
+          <span v-if="copiedFlash" class="text-xs font-medium text-emerald-600 dark:text-emerald-300">{{ t(locale, 'desktop.activity.copied') }}</span>
+          <span class="ml-auto max-w-36 truncate font-mono text-xs text-[var(--theme-text-quaternary)]" :title="event.eventKey">{{ event.eventKey }}</span>
         </div>
       </div>
     </div>

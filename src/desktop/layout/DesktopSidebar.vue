@@ -145,7 +145,7 @@ onUnmounted(() => {
     <!-- 数据状态区：最后更新时间 -->
     <div v-if="!collapsed" class="shrink-0 px-2 pb-1">
       <div class="flex flex-col gap-0.5 rounded-lg px-3 py-2">
-        <span class="text-[11px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.updatedAt') }}</span>
+        <span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.updatedAt') }}</span>
         <span class="text-xs font-medium tabular-nums text-[var(--theme-text-secondary)]">{{ updatedLabel }}</span>
       </div>
     </div>

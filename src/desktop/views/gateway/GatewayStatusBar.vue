@@ -29,7 +29,7 @@ const locale = computed(() => store.settings.locale)
   <div class="theme-surface flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border px-4 py-3">
     <div class="flex items-center gap-2">
       <span
-        class="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10.5px] font-semibold leading-none"
+        class="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-semibold leading-none"
         :class="listenerStatus ? 'theme-status-success' : 'theme-status-danger'"
       >
         <RadioTower class="h-3 w-3" aria-hidden="true" />
@@ -37,25 +37,25 @@ const locale = computed(() => store.settings.locale)
       </span>
     </div>
     <div class="min-w-0">
-      <div class="text-[9.5px] uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.gateway.address') }}</div>
-      <div class="truncate font-mono text-[11px] text-[var(--theme-text-secondary)]" :title="listenerAddress">{{ listenerAddress }}</div>
+      <div class="text-xs uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.gateway.address') }}</div>
+      <div class="truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="listenerAddress">{{ listenerAddress }}</div>
     </div>
     <div class="flex items-center gap-1.5">
       <Activity class="h-3.5 w-3.5 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-      <span class="text-[11px] text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.gateway.activeConnections') }}: <b class="font-mono">{{ activeConnections }}</b></span>
+      <span class="text-xs text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.gateway.activeConnections') }}: <b class="font-mono">{{ activeConnections }}</b></span>
     </div>
     <div class="flex items-center gap-1.5">
       <RefreshCw class="h-3.5 w-3.5 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-      <span class="text-[11px] text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.gateway.recentRequests') }}: <b class="font-mono">{{ recentRequests }}</b></span>
+      <span class="text-xs text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.gateway.recentRequests') }}: <b class="font-mono">{{ recentRequests }}</b></span>
     </div>
     <div class="flex items-center gap-1.5">
       <AlertTriangle class="h-3.5 w-3.5 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-      <span class="text-[11px] text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.gateway.errorRate') }}: <b class="font-mono" :class="{ 'text-red-500': errorRate !== '—' && parseFloat(errorRate) > 5 }">{{ errorRate }}</b></span>
+      <span class="text-xs text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.gateway.errorRate') }}: <b class="font-mono" :class="{ 'text-red-500': errorRate !== '—' && parseFloat(errorRate) > 5 }">{{ errorRate }}</b></span>
     </div>
     <!-- 右侧唯一主操作 -->
     <button
       type="button"
-      class="theme-button-accent ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg px-3.5 text-[12px] font-semibold"
+      class="theme-button-accent ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg px-3.5 text-xs font-semibold"
       @click="emit('create')"
     >
       <Plus class="h-4 w-4" aria-hidden="true" />

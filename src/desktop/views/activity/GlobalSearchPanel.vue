@@ -72,7 +72,7 @@ const jumpToSession = (hit: GlobalSearchHit) => {
   <div class="relative shrink-0">
     <button
       type="button"
-      class="theme-button-secondary inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-[12px] font-semibold"
+      class="theme-button-secondary inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold"
       :aria-label="t(locale, 'desktop.activity.globalSearch')"
       :title="t(locale, 'desktop.activity.globalSearch')"
       :aria-expanded="globalSearchOpen"
@@ -92,7 +92,7 @@ const jumpToSession = (hit: GlobalSearchHit) => {
         <input
           v-model="globalQuery"
           type="text"
-          class="min-w-0 flex-1 bg-transparent text-[12px] text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]"
+          class="min-w-0 flex-1 bg-transparent text-xs text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]"
           :placeholder="t(locale, 'desktop.activity.globalSearchPlaceholder')"
           @keydown.enter="triggerGlobalSearch"
         />
@@ -108,25 +108,25 @@ const jumpToSession = (hit: GlobalSearchHit) => {
         </button>
       </div>
       <div class="mt-1.5 max-h-72 overflow-y-auto">
-        <div v-if="globalLoading && globalResults.length === 0" class="py-6 text-center text-[11px] text-[var(--theme-text-tertiary)]">
+        <div v-if="globalLoading && globalResults.length === 0" class="py-6 text-center text-xs text-[var(--theme-text-tertiary)]">
           {{ t(locale, 'desktop.activity.timelineLoading') }}
         </div>
         <div v-else-if="globalError" class="px-2.5 py-4 text-center">
-          <p class="break-all text-[10.5px] text-rose-500">{{ backendErrorLabel(locale, globalError) }}</p>
+          <p class="break-all text-xs text-rose-500">{{ backendErrorLabel(locale, globalError) }}</p>
           <button
             type="button"
-            class="theme-button-secondary mt-2 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-semibold"
+            class="theme-button-secondary mt-2 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold"
             @click="triggerGlobalSearch"
           >
             <RefreshCw class="h-3 w-3" aria-hidden="true" />
             {{ t(locale, 'desktop.activity.retry') }}
           </button>
         </div>
-        <div v-else-if="globalResults.length === 0 && globalQuery.trim()" class="px-2.5 py-6 text-center text-[11px] text-[var(--theme-text-tertiary)]">
+        <div v-else-if="globalResults.length === 0 && globalQuery.trim()" class="px-2.5 py-6 text-center text-xs text-[var(--theme-text-tertiary)]">
           {{ t(locale, 'desktop.activity.globalSearchEmpty') }}
         </div>
         <template v-else>
-          <div v-if="globalTotal > 0" class="px-2 pt-1 text-[10px] font-semibold text-[var(--theme-accent-primary)]">
+          <div v-if="globalTotal > 0" class="px-2 pt-1 text-xs font-semibold text-[var(--theme-accent-primary)]">
             {{ t(locale, 'desktop.activity.searchHitCount', { count: globalTotal }) }}
           </div>
           <button
@@ -137,18 +137,18 @@ const jumpToSession = (hit: GlobalSearchHit) => {
             @click="jumpToSession(hit)"
           >
             <span class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-              <span class="min-w-0 flex-1 truncate text-[11px] font-semibold text-[var(--theme-text-primary)]">{{ hit.sessionTitle || t(locale, 'sessions.untitled') }}</span>
-              <span class="shrink-0 rounded px-1.5 py-px text-[9px] font-bold leading-none" :class="KIND_META[hitKind(hit.kind)].cls">
+              <span class="min-w-0 flex-1 truncate text-xs font-semibold text-[var(--theme-text-primary)]">{{ hit.sessionTitle || t(locale, 'sessions.untitled') }}</span>
+              <span class="shrink-0 rounded px-1.5 py-px text-xs font-bold leading-none" :class="KIND_META[hitKind(hit.kind)].cls">
                 {{ t(locale, KIND_META[hitKind(hit.kind)].labelKey) }}
               </span>
-              <span v-if="hit.toolName" class="shrink-0 inline-flex items-center gap-1 rounded bg-[var(--theme-border-subtle)] px-1.5 py-px font-mono text-[9px] text-[var(--theme-text-tertiary)]">
+              <span v-if="hit.toolName" class="shrink-0 inline-flex items-center gap-1 rounded bg-[var(--theme-border-subtle)] px-1.5 py-px font-mono text-xs text-[var(--theme-text-tertiary)]">
                 <Wrench class="h-2.5 w-2.5" aria-hidden="true" />
                 {{ hit.toolName }}
               </span>
-              <span v-if="hit.timestampMs != null" class="ml-auto shrink-0 text-[9.5px] text-[var(--theme-text-quaternary)]">{{ formatRelTime(hit.timestampMs, locale) }}</span>
+              <span v-if="hit.timestampMs != null" class="ml-auto shrink-0 text-xs text-[var(--theme-text-quaternary)]">{{ formatRelTime(hit.timestampMs, locale) }}</span>
             </span>
-            <span v-if="hit.summary" class="line-clamp-2 break-words text-[11px] leading-relaxed text-[var(--theme-text-secondary)]">{{ hit.summary }}</span>
-            <span class="inline-flex items-center gap-0.5 text-[9.5px] font-semibold text-[var(--theme-accent-primary)]">
+            <span v-if="hit.summary" class="line-clamp-2 break-words text-xs leading-relaxed text-[var(--theme-text-secondary)]">{{ hit.summary }}</span>
+            <span class="inline-flex items-center gap-0.5 text-xs font-semibold text-[var(--theme-accent-primary)]">
               {{ t(locale, 'desktop.activity.globalSearchJump') }}
               <ChevronRight class="h-3 w-3" aria-hidden="true" />
             </span>
@@ -156,7 +156,7 @@ const jumpToSession = (hit: GlobalSearchHit) => {
           <button
             v-if="globalHasMore"
             type="button"
-            class="mt-1 flex w-full items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10.5px] font-semibold text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]"
+            class="mt-1 flex w-full items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]"
             :disabled="globalLoading"
             @click="runGlobalSearch(false)"
           >

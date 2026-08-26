@@ -42,12 +42,12 @@ const emit = defineEmits<{
           </span>
           <span
             v-if="kpi.coverageTag"
-            class="shrink-0 rounded-full border border-[var(--theme-status-warning-border)] bg-[var(--theme-status-warning-bg)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--theme-status-warning-fg)]"
+            class="shrink-0 rounded-full border border-[var(--theme-status-warning-border)] bg-[var(--theme-status-warning-bg)] px-1.5 py-0.5 text-xs font-medium text-[var(--theme-status-warning-fg)]"
           >
             {{ t(locale, 'desktop.overview.kpiCoverageOnly') }}
           </span>
         </span>
-        <span class="w-full truncate font-mono text-[20px] font-bold leading-7 text-[var(--theme-text-primary)]">
+        <span class="w-full truncate font-mono text-[28px] font-semibold leading-8 text-[var(--theme-text-primary)]">
           {{ kpi.primary }}
         </span>
         <span

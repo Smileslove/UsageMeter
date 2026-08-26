@@ -362,7 +362,7 @@ onUnmounted(() => {
     <nav class="flex w-fit gap-0.5 rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] p-0.5" :aria-label="t(locale, 'gateway.title')">
       <button
         type="button"
-        class="rounded-md px-3.5 py-1 text-[11.5px] font-semibold transition-colors"
+        class="rounded-md px-3.5 py-1 text-xs font-semibold transition-colors"
         :class="activePanel === 'takeover' ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'"
         :aria-selected="activePanel === 'takeover'"
         @click="activePanel = 'takeover'"
@@ -371,7 +371,7 @@ onUnmounted(() => {
       </button>
       <button
         type="button"
-        class="rounded-md px-3.5 py-1 text-[11.5px] font-semibold transition-colors"
+        class="rounded-md px-3.5 py-1 text-xs font-semibold transition-colors"
         :class="activePanel === 'manual' ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'"
         :aria-selected="activePanel === 'manual'"
         @click="activePanel = 'manual'"
@@ -380,7 +380,7 @@ onUnmounted(() => {
       </button>
     </nav>
 
-    <div v-if="feedback && !editing" :class="['rounded-xl border px-3 py-2 text-[11px] leading-snug', feedback === 'error' ? 'border-red-500/20 bg-red-500/8 text-red-600 dark:text-red-300' : 'border-emerald-500/20 bg-emerald-500/8 text-emerald-600 dark:text-emerald-300']">
+    <div v-if="feedback && !editing" :class="['rounded-xl border px-3 py-2 text-xs leading-snug', feedback === 'error' ? 'border-red-500/20 bg-red-500/8 text-red-600 dark:text-red-300' : 'border-emerald-500/20 bg-emerald-500/8 text-emerald-600 dark:text-emerald-300']">
       {{ feedbackMessage }}
     </div>
 
@@ -413,7 +413,7 @@ onUnmounted(() => {
           <div v-if="!editing && !selectedProfile" class="theme-surface flex h-56 flex-col items-center justify-center rounded-xl border px-6 text-center">
             <ShieldCheck class="h-7 w-7 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
             <p class="mt-2 text-[12.5px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.gateway.selectProfileHint') }}</p>
-            <p class="mt-1 max-w-sm text-[11px] leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.gateway.selectProfileHintDesc') }}</p>
+            <p class="mt-1 max-w-sm text-xs leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.gateway.selectProfileHintDesc') }}</p>
           </div>
 
           <GatewayProfileEditor

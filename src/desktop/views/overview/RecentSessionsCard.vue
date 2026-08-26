@@ -45,7 +45,7 @@ function formatRelativeTime(epoch: number): string {
 <template>
   <div class="rounded-lg border border-[var(--theme-border-default)] p-4 xl:col-span-2" style="background: var(--theme-surface-gradient)">
     <div class="mb-2 flex items-center justify-between gap-2">
-      <h3 class="flex items-center gap-1.5 text-[13px] font-semibold text-[var(--theme-text-secondary)]">
+      <h3 class="flex items-center gap-1.5 text-[15px] font-semibold text-[var(--theme-text-secondary)]">
         <Clock :size="14" class="shrink-0" aria-hidden="true" />
         {{ t(locale, 'desktop.overview.sessionsTitle') }}
       </h3>
@@ -79,13 +79,13 @@ function formatRelativeTime(epoch: number): string {
         >
           <span class="min-w-0 flex-1">
             <span class="block truncate text-xs font-semibold text-[var(--theme-text-primary)]">{{ sessionTitle(s) }}</span>
-            <span class="mt-0.5 block truncate text-[11px] text-[var(--theme-text-tertiary)]">
+            <span class="mt-0.5 block truncate text-xs text-[var(--theme-text-tertiary)]">
               {{ s.projectName || t(locale, 'common.unknownProject') }}
               · {{ formatToolDisplayName(s.tool, locale, profiles) }}
               · {{ formatRelativeTime(s.lastRequestTime) }}
             </span>
           </span>
-          <span class="flex shrink-0 items-center gap-3 font-mono text-[11px] text-[var(--theme-text-secondary)]">
+          <span class="flex shrink-0 items-center gap-3 font-mono text-xs text-[var(--theme-text-secondary)]">
             <span>{{ formatRequestCount(s.totalRequests) }}</span>
             <span>{{ formatCost(s.estimatedCost ?? 0, currency) }}</span>
             <ArrowUpRight :size="14" class="text-[var(--theme-text-quaternary)]" aria-hidden="true" />

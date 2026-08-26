@@ -410,7 +410,7 @@ onUnmounted(() => {
     <div class="flex items-center justify-between gap-3">
       <div
         v-if="isWindowFallback"
-        class="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-[var(--theme-border-default)] bg-[var(--theme-bg-surface)] px-3 py-2 text-[11px] text-[var(--theme-text-secondary)]"
+        class="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-[var(--theme-border-default)] bg-[var(--theme-bg-surface)] px-3 py-2 text-xs text-[var(--theme-text-secondary)]"
         role="note"
       >
         <Info :size="14" class="shrink-0 text-[var(--theme-text-tertiary)]" aria-hidden="true" />
@@ -495,7 +495,7 @@ onUnmounted(() => {
         <!-- 用量趋势（约 2/3 宽） -->
         <div class="rounded-lg border border-[var(--theme-border-default)] p-4 xl:col-span-2" style="background: var(--theme-surface-gradient)">
           <div class="mb-3 flex items-center justify-between gap-2">
-            <h3 class="flex items-center gap-1.5 text-[13px] font-semibold text-[var(--theme-text-secondary)]">
+            <h3 class="flex items-center gap-1.5 text-[15px] font-semibold text-[var(--theme-text-secondary)]">
               <Activity :size="14" class="shrink-0" aria-hidden="true" />
               {{ t(locale, 'desktop.overview.trendTitle') }}
             </h3>

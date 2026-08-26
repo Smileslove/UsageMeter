@@ -71,8 +71,8 @@ const handleRowKeydown = (event: KeyboardEvent, profile: GatewayProfile) => {
     <div class="theme-surface overflow-hidden rounded-xl border">
       <div class="flex items-center justify-between border-b border-[var(--theme-border-default)] px-3 py-2">
         <div>
-          <h2 class="text-[12px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'gateway.profiles') }}</h2>
-          <p class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.profileCount', { count: profiles.length }) }}</p>
+          <h2 class="text-xs font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'gateway.profiles') }}</h2>
+          <p class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.profileCount', { count: profiles.length }) }}</p>
         </div>
         <button
           type="button"
@@ -87,8 +87,8 @@ const handleRowKeydown = (event: KeyboardEvent, profile: GatewayProfile) => {
 
       <div v-if="profiles.length === 0" class="px-4 py-10 text-center">
         <RadioTower class="mx-auto h-6 w-6 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-        <p class="mt-2 text-[12px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.emptyTitle') }}</p>
-        <p class="mx-auto mt-1 max-w-[220px] text-[10.5px] leading-snug text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.emptyBody') }}</p>
+        <p class="mt-2 text-xs font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.emptyTitle') }}</p>
+        <p class="mx-auto mt-1 max-w-[220px] text-xs leading-snug text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.emptyBody') }}</p>
       </div>
 
       <div v-else class="max-h-[calc(100vh-300px)] overflow-y-auto">
@@ -104,10 +104,10 @@ const handleRowKeydown = (event: KeyboardEvent, profile: GatewayProfile) => {
           <div class="flex items-center gap-2">
             <div class="min-w-0 flex-1">
               <div class="flex min-w-0 items-center gap-1.5">
-                <span class="truncate text-[12px] font-semibold text-[var(--theme-text-primary)]">{{ profile.name }}</span>
-                <span class="shrink-0 rounded-md border border-[var(--theme-border-default)] bg-[var(--theme-bg-hover)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--theme-text-tertiary)]">{{ compactProtocolLabel(locale, profile.protocol) }}</span>
+                <span class="truncate text-xs font-semibold text-[var(--theme-text-primary)]">{{ profile.name }}</span>
+                <span class="shrink-0 rounded-md border border-[var(--theme-border-default)] bg-[var(--theme-bg-hover)] px-1.5 py-0.5 text-xs font-medium text-[var(--theme-text-tertiary)]">{{ compactProtocolLabel(locale, profile.protocol) }}</span>
               </div>
-              <p class="mt-1 flex items-center gap-1.5 text-[10px] text-[var(--theme-text-tertiary)]">
+              <p class="mt-1 flex items-center gap-1.5 text-xs text-[var(--theme-text-tertiary)]">
                 <span class="inline-flex items-center gap-1">
                   <span class="h-1.5 w-1.5 rounded-full" :class="profile.enabled ? 'bg-emerald-500' : 'bg-[var(--theme-border-strong)]'"></span>
                   {{ profile.enabled ? t(locale, 'desktop.gateway.profileEnabled') : t(locale, 'desktop.gateway.profileDisabled') }}
@@ -127,9 +127,9 @@ const handleRowKeydown = (event: KeyboardEvent, profile: GatewayProfile) => {
               <SettingsSwitch compact :checked="profile.enabled" :aria-label="t(locale, 'gateway.enabled')" @toggle="emit('toggle', profile)" />
             </div>
           </div>
-          <p class="mt-1.5 break-all border-t border-[var(--theme-border-default)] pt-1.5 font-mono text-[9.5px] leading-snug text-[var(--theme-text-tertiary)]">{{ gatewayProfileAddress(listenerAddress, profile) }}</p>
-          <p v-if="profile.credentialRecovery.upstreamKeyRequired" class="mt-1 text-[9.5px] leading-snug text-amber-600 dark:text-amber-300">{{ t(locale, 'gateway.upstreamKeyRecoveryNotice') }}</p>
-          <p v-if="profile.credentialRecovery.localKeyRotationRecommended" class="mt-1 text-[9.5px] leading-snug text-amber-600 dark:text-amber-300">{{ t(locale, 'gateway.localKeyRecoveryNotice') }}</p>
+          <p class="mt-1.5 break-all border-t border-[var(--theme-border-default)] pt-1.5 font-mono text-xs leading-snug text-[var(--theme-text-tertiary)]">{{ gatewayProfileAddress(listenerAddress, profile) }}</p>
+          <p v-if="profile.credentialRecovery.upstreamKeyRequired" class="mt-1 text-xs leading-snug text-amber-600 dark:text-amber-300">{{ t(locale, 'gateway.upstreamKeyRecoveryNotice') }}</p>
+          <p v-if="profile.credentialRecovery.localKeyRotationRecommended" class="mt-1 text-xs leading-snug text-amber-600 dark:text-amber-300">{{ t(locale, 'gateway.localKeyRecoveryNotice') }}</p>
         </article>
       </div>
     </div>

@@ -163,7 +163,7 @@ onUnmounted(() => {
         <input
           v-model="searchQuery"
           type="search"
-          class="theme-input h-8 w-full rounded-lg pl-8 pr-3 text-[12px] outline-none"
+          class="theme-input h-8 w-full rounded-lg pl-8 pr-3 text-xs outline-none"
           :placeholder="t(locale, 'desktop.sessions.searchPlaceholder')"
           :aria-label="t(locale, 'desktop.sessions.searchPlaceholder')"
         />
@@ -172,7 +172,7 @@ onUnmounted(() => {
       <!-- 工具下拉（复用 useSessionViewData 的 selectedTool，切换触发后端按工具重载） -->
       <select
         v-model="selectedTool"
-        class="theme-input ml-auto h-8 max-w-40 rounded-lg px-2 text-[12px] outline-none"
+        class="theme-input ml-auto h-8 max-w-40 rounded-lg px-2 text-xs outline-none"
         :aria-label="t(locale, 'desktop.sessions.filterTool')"
       >
         <option :value="null">{{ t(locale, 'desktop.allTools') }}</option>
@@ -184,13 +184,13 @@ onUnmounted(() => {
     <div v-if="store.projectStatsLoading && store.projectStats.length === 0" class="flex justify-center py-10">
       <div class="h-5 w-5 animate-spin rounded-full border-2 border-[var(--theme-border-strong)] border-t-[var(--theme-accent-primary)]"></div>
     </div>
-    <div v-else-if="store.projectStats.length === 0" class="py-14 text-center text-[12px] text-[var(--theme-text-tertiary)]">
+    <div v-else-if="store.projectStats.length === 0" class="py-14 text-center text-xs text-[var(--theme-text-tertiary)]">
       {{ t(locale, 'desktop.sessions.noProjects') }}
     </div>
     <div v-else class="flex min-h-0 gap-3">
       <!-- 左：项目列表（最小 320px） -->
       <div class="theme-surface w-80 shrink-0 self-start overflow-hidden rounded-xl border">
-        <div class="border-b border-[var(--theme-border-default)] px-3 py-2 text-[10.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
+        <div class="border-b border-[var(--theme-border-default)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
           {{ t(locale, 'desktop.sessions.projectsColumn') }}
           <span v-if="projectTruncated" class="ml-1 normal-case text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.sessions.projectsTruncated', { count: 200 }) }}</span>
         </div>
@@ -209,12 +209,12 @@ onUnmounted(() => {
             <span v-else class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-indigo-500/10 text-indigo-500 dark:text-indigo-300"><Folder class="h-3.5 w-3.5" aria-hidden="true" /></span>
             <span class="min-w-0 flex-1">
               <span class="flex items-center justify-between gap-2">
-                <span class="truncate text-[12px] font-semibold text-[var(--theme-text-primary)]">{{ displayProjectName(project) }}</span>
-                <span class="shrink-0 text-[10px] text-[var(--theme-text-quaternary)]">{{ formatTime(project.lastActive) }}</span>
+                <span class="truncate text-xs font-semibold text-[var(--theme-text-primary)]">{{ displayProjectName(project) }}</span>
+                <span class="shrink-0 text-xs text-[var(--theme-text-quaternary)]">{{ formatTime(project.lastActive) }}</span>
               </span>
-              <span v-if="project.projectPath" class="mt-0.5 block truncate font-mono text-[10px] text-[var(--theme-text-tertiary)]">{{ project.projectPath }}</span>
-              <span v-if="displayProjectHint(project)" class="mt-0.5 block text-[10px] text-[var(--theme-text-quaternary)]">{{ displayProjectHint(project) }}</span>
-              <span class="mt-1 block truncate text-[10px] text-[var(--theme-text-secondary)]">
+              <span v-if="project.projectPath" class="mt-0.5 block truncate font-mono text-xs text-[var(--theme-text-tertiary)]">{{ project.projectPath }}</span>
+              <span v-if="displayProjectHint(project)" class="mt-0.5 block text-xs text-[var(--theme-text-quaternary)]">{{ displayProjectHint(project) }}</span>
+              <span class="mt-1 block truncate text-xs text-[var(--theme-text-secondary)]">
                 {{ t(locale, 'desktop.sessions.projectMeta', { sessions: project.sessionCount, requests: project.requestCount, tokens: formatTokens(projectTotalTokens(project)), cost: formatCost(project.totalCost) }) }}
               </span>
             </span>
@@ -228,41 +228,41 @@ onUnmounted(() => {
           <div class="theme-surface rounded-xl border px-4 py-3">
             <div class="flex flex-wrap items-center gap-2">
               <h2 class="text-[14px] font-bold text-[var(--theme-text-primary)]">{{ displayProjectName(selectedProject) }}</h2>
-              <span v-if="selectedProject.projectIdentity === 'global'" class="rounded bg-slate-500/10 px-1.5 py-0.5 text-[9.5px] font-semibold text-slate-500 dark:text-slate-300">{{ t(locale, 'common.global') }}</span>
-              <span v-else-if="selectedProject.projectIdentity === 'unknown'" class="rounded bg-amber-500/10 px-1.5 py-0.5 text-[9.5px] font-semibold text-amber-600 dark:text-amber-300">{{ t(locale, 'common.unknownProject') }}</span>
-              <span class="ml-auto text-[11px] text-[var(--theme-text-tertiary)]">{{ formatTime(selectedProject.lastActive) }}</span>
+              <span v-if="selectedProject.projectIdentity === 'global'" class="rounded bg-slate-500/10 px-1.5 py-0.5 text-xs font-semibold text-slate-500 dark:text-slate-300">{{ t(locale, 'common.global') }}</span>
+              <span v-else-if="selectedProject.projectIdentity === 'unknown'" class="rounded bg-amber-500/10 px-1.5 py-0.5 text-xs font-semibold text-amber-600 dark:text-amber-300">{{ t(locale, 'common.unknownProject') }}</span>
+              <span class="ml-auto text-xs text-[var(--theme-text-tertiary)]">{{ formatTime(selectedProject.lastActive) }}</span>
             </div>
-            <p v-if="selectedProject.projectPath" class="mt-1 truncate font-mono text-[10.5px] text-[var(--theme-text-tertiary)]">{{ selectedProject.projectPath }}</p>
-            <p v-if="displayProjectHint(selectedProject)" class="mt-1 text-[10.5px] text-[var(--theme-text-quaternary)]">{{ displayProjectHint(selectedProject) }}</p>
+            <p v-if="selectedProject.projectPath" class="mt-1 truncate font-mono text-xs text-[var(--theme-text-tertiary)]">{{ selectedProject.projectPath }}</p>
+            <p v-if="displayProjectHint(selectedProject)" class="mt-1 text-xs text-[var(--theme-text-quaternary)]">{{ displayProjectHint(selectedProject) }}</p>
           </div>
 
           <!-- 汇总统计 -->
           <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <div class="theme-surface rounded-xl border px-3 py-2.5">
-              <div class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.projectSessions') }}</div>
+              <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.projectSessions') }}</div>
               <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ selectedProject.sessionCount ?? 0 }}</div>
             </div>
             <div class="theme-surface rounded-xl border px-3 py-2.5">
-              <div class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.columnRequests') }}</div>
+              <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.columnRequests') }}</div>
               <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ selectedProject.requestCount ?? 0 }}</div>
             </div>
             <div class="theme-surface rounded-xl border px-3 py-2.5">
-              <div class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.columnTokens') }}</div>
+              <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.columnTokens') }}</div>
               <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ formatTokens(projectTotalTokens(selectedProject)) }}</div>
             </div>
             <div class="theme-surface rounded-xl border px-3 py-2.5">
-              <div class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.columnCost') }}</div>
+              <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.columnCost') }}</div>
               <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-chart-cost)]">{{ formatCost(selectedProject.totalCost) }}</div>
             </div>
           </div>
 
           <!-- 工具构成 -->
           <div class="theme-surface rounded-xl border">
-            <div class="border-b border-[var(--theme-border-default)] px-3 py-2 text-[10.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.toolComposition') }}</div>
-            <div v-if="!selectedProject.toolBreakdown || selectedProject.toolBreakdown.length === 0" class="px-3 py-4 text-center text-[11px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.noToolData') }}</div>
-            <table v-else class="w-full text-[11.5px]">
+            <div class="border-b border-[var(--theme-border-default)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.toolComposition') }}</div>
+            <div v-if="!selectedProject.toolBreakdown || selectedProject.toolBreakdown.length === 0" class="px-3 py-4 text-center text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.noToolData') }}</div>
+            <table v-else class="w-full text-xs">
               <thead>
-                <tr class="border-b border-[var(--theme-border-subtle)] text-[10px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
+                <tr class="border-b border-[var(--theme-border-subtle)] text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
                   <th class="px-3 py-1.5 text-left">{{ t(locale, 'sessions.tool') }}</th>
                   <th class="px-3 py-1.5 text-right">{{ t(locale, 'desktop.sessions.columnRequests') }}</th>
                   <th class="px-3 py-1.5 text-right">{{ t(locale, 'desktop.sessions.columnTokens') }}</th>
@@ -290,10 +290,10 @@ onUnmounted(() => {
 
           <!-- 模型构成 -->
           <div class="theme-surface rounded-xl border">
-            <div class="border-b border-[var(--theme-border-default)] px-3 py-2 text-[10.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.modelComposition') }}</div>
-            <div v-if="modelsOfProject.length === 0" class="px-3 py-4 text-center text-[11px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.noModelData') }}</div>
+            <div class="border-b border-[var(--theme-border-default)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.modelComposition') }}</div>
+            <div v-if="modelsOfProject.length === 0" class="px-3 py-4 text-center text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.noModelData') }}</div>
             <div v-else class="space-y-1 px-3 py-2">
-              <div v-for="[model, count] in modelsOfProject" :key="model" class="flex items-center gap-2 text-[11.5px]">
+              <div v-for="[model, count] in modelsOfProject" :key="model" class="flex items-center gap-2 text-xs">
                 <span class="min-w-0 flex-1 truncate font-mono text-[var(--theme-text-secondary)]">{{ model }}</span>
                 <span class="h-1.5 flex-1 rounded-full bg-[var(--theme-border-subtle)]">
                   <span class="block h-full rounded-full bg-[var(--theme-accent-primary)]" :style="{ width: `${(count / (modelsOfProject[0]?.[1] ?? 1)) * 100}%` }"></span>
@@ -305,8 +305,8 @@ onUnmounted(() => {
 
           <!-- 会话列表（复用会话行，预设项目过滤） -->
           <div class="theme-surface rounded-xl border">
-            <div class="border-b border-[var(--theme-border-default)] px-3 py-2 text-[10.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.projectSessionsList') }}</div>
-            <div v-if="sessionsOfProject.length === 0" class="px-3 py-4 text-center text-[11px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.noSessions') }}</div>
+            <div class="border-b border-[var(--theme-border-default)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.projectSessionsList') }}</div>
+            <div v-if="sessionsOfProject.length === 0" class="px-3 py-4 text-center text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.noSessions') }}</div>
             <button
               v-for="session in sessionsOfProject"
               :key="session.sessionId"
@@ -316,14 +316,14 @@ onUnmounted(() => {
               :title="t(locale, 'desktop.sessions.openWorkspaceHint')"
               @click="openWorkspace(session)"
             >
-              <span class="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--theme-text-primary)]">{{ displaySessionTitle(session) }}</span>
-              <span class="shrink-0 text-[10px] text-[var(--theme-text-tertiary)]">{{ formatTime(session.lastRequestTime) }}</span>
-              <span class="w-16 shrink-0 text-right font-mono text-[11px] text-[var(--theme-text-secondary)]">{{ session.totalRequests ?? 0 }}</span>
-              <span class="w-20 shrink-0 text-right font-mono text-[11px] text-[var(--theme-text-secondary)]">{{ sessionUsageVisible(session) ? formatTokens(sessionTotalTokens(session)) : '—' }}</span>
+              <span class="min-w-0 flex-1 truncate text-xs font-medium text-[var(--theme-text-primary)]">{{ displaySessionTitle(session) }}</span>
+              <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ formatTime(session.lastRequestTime) }}</span>
+              <span class="w-16 shrink-0 text-right font-mono text-xs text-[var(--theme-text-secondary)]">{{ session.totalRequests ?? 0 }}</span>
+              <span class="w-20 shrink-0 text-right font-mono text-xs text-[var(--theme-text-secondary)]">{{ sessionUsageVisible(session) ? formatTokens(sessionTotalTokens(session)) : '—' }}</span>
             </button>
           </div>
         </template>
-        <div v-else class="theme-surface flex h-48 items-center justify-center rounded-xl border text-[12px] text-[var(--theme-text-tertiary)]">
+        <div v-else class="theme-surface flex h-48 items-center justify-center rounded-xl border text-xs text-[var(--theme-text-tertiary)]">
           {{ t(locale, 'desktop.sessions.selectProjectHint') }}
         </div>
       </div>

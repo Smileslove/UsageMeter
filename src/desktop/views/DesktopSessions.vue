@@ -1,23 +1,20 @@
 <script setup lang="ts">
 /**
- * 桌面主窗口「会话」页（设计文档第 8 章）。
- * 会话表格视图（会话/项目/请求已拆分为独立一级页面，本页只保留会话表格）。
- * 数据加载复用 useSessionViewData（store.fetchSessionsForTool）。
- * 会话工作区：nav.activeSessionKey 非空时渲染 SessionWorkspace 全页面（hash 由 desktopNavigation 路由处理）。
+ * 桌面主窗口「会话」页。
+ * 会话表格 + 覆盖式抽屉（点击行展开详情，不跳转页面）。
+ * 客户端分页：对已加载的 filteredSessions 做内存分页，到达末页时自动续载。
  */
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { ArrowDown, ArrowUp, ChevronDown, Search, X } from 'lucide-vue-next'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { ArrowDown, ArrowUp, ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, ChevronDown, ExternalLink, Search, Settings2, X } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
-import { useDesktopNavigationStore } from '../../desktop/stores/desktopNavigation'
+import { useDesktopNavigationStore } from '../stores/desktopNavigation'
 import { t } from '../../i18n'
 import type { SessionStats } from '../../types'
 import { useSessionDisplay } from '../../composables/useSessionDisplay'
 import { useSessionViewData } from '../../composables/useSessionViewData'
-import { useInfiniteScroll } from '../composables/useInfiniteScroll'
 import { useClipboard } from '../composables/useClipboard'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import LobeIcon from '../../components/LobeIcon.vue'
-import SessionWorkspace from './SessionWorkspace.vue'
 
 const store = useMonitorStore()
 const nav = useDesktopNavigationStore()
@@ -37,7 +34,7 @@ const {
   getToolIcon,
 } = useSessionDisplay(store)
 
-// —— 数据加载（本页固定会话表格 tab；hook 按 tab 分支加载） ——
+// —— 数据加载 ——
 const activeTab = ref<'recent'>('recent')
 const {
   selectedTool,
@@ -48,59 +45,15 @@ const {
   dispose: disposeSessionView,
 } = useSessionViewData(store, activeTab)
 
-// —— 会话工作区（全页面） ——
-const workspaceKey = computed(() => nav.activeSessionKey)
-
-// —— 从工作区返回列表时恢复滚动位置与筛选 ——
-// openSession 保存的恢复信息原本只在 onMounted 消费，但列表/工作区切换不重挂载组件，
-// 深链进入时还会把恢复值错误地消费在错误时机（空上下文）；改为返回瞬间消费。
-watch(workspaceKey, async (key, prevKey) => {
-  if (key != null || prevKey == null) return
-  const restored = nav.consumePreviousSessionsQuery()
-  if (!restored) return
-  restoredScrollTop.value = restored.scrollTop
-  if (restored.sourceId) await store.setActiveSourceFilter(restored.sourceId)
-  if (restored.tool) await store.setActiveToolFilter(restored.tool)
-  await nextTick()
-  applyScrollRestore()
-})
-
-// —— 列表恢复信息（openSession 前保存的 scrollTop + 全局筛选） ——
-const restoredScrollTop = ref(0)
-const applyScrollRestore = () => {
-  if (!restoredScrollTop.value) return
-  const main = document.querySelector('main')
-  if (main) {
-    main.scrollTop = restoredScrollTop.value
-    restoredScrollTop.value = 0
-    nav.clearSessionScrollTop()
-  }
-}
-
-// —— 会话列表滚动上报（主滚动容器为 DesktopShell 的 <main>；节流 150ms，仅列表视图时上报） ——
-let scrollReportTimer: ReturnType<typeof setTimeout> | null = null
-const handleMainScroll = () => {
-  // 进入工作区后 main 的滚动属于工作区内容，不再上报
-  if (nav.activeSessionKey) return
-  if (scrollReportTimer) return
-  scrollReportTimer = setTimeout(() => {
-    scrollReportTimer = null
-    const main = document.querySelector('main')
-    if (main) nav.reportSessionListScrollTop(main.scrollTop)
-  }, 150)
-}
-
-// —— 搜索（无全文索引：仅标题 / topic / 项目 / cwd） ——
+// —— 搜索 ——
 const searchQuery = ref('')
 
-// —— 筛选（chips 可删；来源由顶栏全局筛选承担，子代理/深度活动 M1 无数据） ——
+// —— 筛选 ——
 type CoverageFilter = 'all' | 'full' | 'partial' | 'uncovered'
 interface LocalFilters {
-  /** 'all' | 'today' | '7d' | '30d' | 'custom'（custom 由趋势峰值下钻的 timeRange 填充，模板赋值放宽为 string） */
   time: string
-  /** 趋势下钻携带的自定义时间桶（秒级半开区间 [startEpoch, endEpoch)，无则 null） */
   customRange: { startEpoch: number; endEpoch: number } | null
-  project: string | null  // 项目名（含系统分组标记 global/unknown）
+  project: string | null
   model: string | null
   coverage: CoverageFilter
 }
@@ -130,7 +83,6 @@ const projectFilterLabel = (value: string | null) => {
   return value
 }
 
-// chips 展示（可逐个删除）
 interface Chip {
   id: string
   label: string
@@ -188,7 +140,7 @@ const clearAllFilters = () => {
   searchQuery.value = ''
 }
 
-// —— 排序（原始数值） ——
+// —— 排序 ——
 type SortKey = 'lastActive' | 'firstRequest' | 'requests' | 'tokens' | 'cost' | 'rate' | 'errors'
 const sortKey = ref<SortKey>('lastActive')
 const sortDesc = ref(true)
@@ -235,7 +187,6 @@ const matchesTime = (session: SessionStats): boolean => {
 }
 
 const setTimeFilter = (value: string) => {
-  // custom 需要先有趋势下钻携带的时间桶（无范围时手动点击不生效）
   if (value === 'custom' && !filters.customRange) return
   filters.time = value
 }
@@ -275,24 +226,114 @@ const cycleSort = (key: SortKey) => {
 
 const sortIndicator = (key: SortKey) => (sortKey.value === key ? (sortDesc.value ? ArrowDown : ArrowUp) : null)
 
-// —— 会话表格选择 / 打开工作区 ——
-const selectedSessionId = ref<string | null>(null)
-const selectSession = (session: SessionStats) => { selectedSessionId.value = session.sessionId }
-const openWorkspace = (session: SessionStats) => {
-  nav.openSession(session.sessionId)
-  selectedSessionId.value = null
+// —— 分页（客户端） ——
+const currentPage = ref(0)
+const pageSize = ref(50)
+
+const total = computed(() => filteredSessions.value.length)
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
+
+const paginatedSessions = computed(() => {
+  const start = currentPage.value * pageSize.value
+  return filteredSessions.value.slice(start, start + pageSize.value)
+})
+
+const pageStart = computed(() => total.value === 0 ? 0 : currentPage.value * pageSize.value + 1)
+const pageEnd = computed(() => Math.min((currentPage.value + 1) * pageSize.value, total.value))
+
+const PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
+const onPageSizeChange = () => {
+  currentPage.value = 0
 }
+
+const hasPrev = computed(() => currentPage.value > 0)
+const hasNext = computed(() => currentPage.value < totalPages.value - 1)
+
+const pageNumbers = computed<(number | '...')[]>(() => {
+  const tp = totalPages.value
+  const cur = currentPage.value + 1
+  if (tp <= 7) return Array.from({ length: tp }, (_, i) => i + 1)
+  if (cur <= 4) return [1, 2, 3, 4, 5, '...', tp]
+  if (cur >= tp - 3) return [1, '...', tp - 4, tp - 3, tp - 2, tp - 1, tp]
+  return [1, '...', cur - 1, cur, cur + 1, '...', tp]
+})
+
+const gotoPage = (page: number) => {
+  const clamped = Math.max(0, Math.min(page, totalPages.value - 1))
+  currentPage.value = clamped
+}
+
+const nextPage = () => {
+  if (!hasNext.value) return
+  currentPage.value++
+}
+
+const prevPage = () => {
+  if (!hasPrev.value) return
+  currentPage.value--
+}
+
+function gotoPageNumber(num: number | '...') {
+  if (num === '...') return
+  gotoPage(num - 1)
+}
+
+const jumpPageInput = ref('')
+const jumpPage = () => {
+  const num = parseInt(jumpPageInput.value, 10)
+  if (Number.isFinite(num) && num >= 1 && num <= totalPages.value) {
+    gotoPage(num - 1)
+  }
+  jumpPageInput.value = ''
+}
+
+// 筛选/搜索变化时回到第一页
+watch([searchQuery, () => filters.time, () => filters.project, () => filters.model, () => filters.coverage, () => filters.customRange, selectedTool], () => {
+  currentPage.value = 0
+})
+
+// 到达末页且还有更多数据时自动续载
+watch([currentPage, totalPages, hasMore, loadingMore], async () => {
+  if (hasMore.value && !loadingMore.value && currentPage.value >= totalPages.value - 1 && total.value > 0) {
+    await loadMore()
+  }
+})
+
+// —— 抽屉 ——
+const selectedSession = ref<SessionStats | null>(null)
+const drawerOpen = ref(false)
+
+const openDrawer = (session: SessionStats) => {
+  selectedSession.value = session
+  drawerOpen.value = true
+}
+const closeDrawer = () => {
+  drawerOpen.value = false
+  selectedSession.value = null
+}
+
+const onEscape = (event: KeyboardEvent) => {
+  if (event.key === 'Escape' && drawerOpen.value) closeDrawer()
+}
+
 const handleRowKeydown = (event: KeyboardEvent, session: SessionStats) => {
-  if (event.key === 'Enter') {
+  if (event.target !== event.currentTarget) return
+  if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault()
-    openWorkspace(session)
+    openDrawer(session)
   }
 }
 
-// —— 会话行右键菜单（设计 8.3：仅安全操作——打开会话 / 复制会话 ID / 复制工作目录） ——
-// 「在 Finder/Explorer 显示」依赖后端命令（当前无 show_in_folder/open_path 能力），留待后端补齐。
-const { copiedValue, copyText } = useClipboard({ duration: 1400 })
+const openInWorkspace = () => {
+  const sessionKey = selectedSession.value?.sessionId
+  closeDrawer()
+  if (sessionKey) nav.openSession(sessionKey)
+}
 
+const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…${value.slice(-4)}` : value)
+const { copiedValue, copyText } = useClipboard()
+
+// —— 右键菜单 ——
 interface ContextMenuState {
   session: SessionStats
   x: number
@@ -302,10 +343,9 @@ const contextMenu = ref<ContextMenuState | null>(null)
 const contextMenuOpen = computed(() => contextMenu.value !== null)
 const contextMenuRef = ref<HTMLElement | null>(null)
 
-/** 打开右键菜单：菜单固定在视口内（估算尺寸，防溢出）。 */
 const openContextMenu = (clientX: number, clientY: number, session: SessionStats) => {
-  const MENU_WIDTH = 176 // w-44
-  const MENU_HEIGHT = 104 // 3 项 + padding
+  const MENU_WIDTH = 176
+  const MENU_HEIGHT = 104
   const margin = 8
   const x = Math.max(margin, Math.min(clientX, window.innerWidth - MENU_WIDTH - margin))
   const y = Math.max(margin, Math.min(clientY, window.innerHeight - MENU_HEIGHT - margin))
@@ -315,11 +355,9 @@ const closeContextMenu = () => { contextMenu.value = null }
 useFocusTrap({ open: contextMenuOpen, container: contextMenuRef, onClose: closeContextMenu })
 
 const handleRowContextMenu = (event: MouseEvent, session: SessionStats) => {
-  // 模板 @contextmenu.prevent 已阻止系统菜单；这里仅定位
   openContextMenu(event.clientX, event.clientY, session)
 }
 const handleRowMenuKeydown = (event: KeyboardEvent, session: SessionStats) => {
-  // Shift+F10 或菜单键（键盘可达性）
   if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
     event.preventDefault()
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
@@ -327,7 +365,6 @@ const handleRowMenuKeydown = (event: KeyboardEvent, session: SessionStats) => {
   }
 }
 const handleMenuKeydown = (event: KeyboardEvent) => {
-  // 菜单内上下方向键在可用菜单项间循环移动焦点
   if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
   event.preventDefault()
   const items = Array.from(contextMenuRef.value?.querySelectorAll<HTMLElement>('button[role="menuitem"]') ?? []).filter(
@@ -344,7 +381,7 @@ const runContextAction = (action: 'open' | 'copyId' | 'copyCwd') => {
   const { session } = state
   closeContextMenu()
   if (action === 'open') {
-    openWorkspace(session)
+    openDrawer(session)
   } else if (action === 'copyId') {
     void copyText(session.sessionId, t(locale.value, 'desktop.sessions.menuCopyId'))
   } else if (action === 'copyCwd' && session.cwd) {
@@ -352,7 +389,6 @@ const runContextAction = (action: 'open' | 'copyId' | 'copyCwd') => {
   }
 }
 
-// 点击外部 / 滚动 / 窗口尺寸变化时关闭（scroll 用捕获阶段监听，可覆盖 main 与表格内部滚动）
 const closeMenuOnPointerDown = (event: PointerEvent) => {
   if (contextMenuRef.value?.contains(event.target as Node)) return
   closeContextMenu()
@@ -370,24 +406,66 @@ watch(contextMenuOpen, isOpen => {
   }
 })
 
-// —— 触底续载 ——
-const loadMoreTrigger = ref<HTMLElement | null>(null)
-useInfiniteScroll({
-  trigger: loadMoreTrigger,
-  onLoadMore: loadMore,
-  hasMore: () => hasMore.value,
-  loading: () => loadingMore.value,
-  delay: 100,
-  rootMargin: '160px',
-  reobserve: () => store.sessions.length,
-  reobserveDelay: 60
-})
+// —— 列配置（localStorage 持久化） ——
+type SessionColumnKey = 'session' | 'lastActive' | 'model' | 'requests' | 'tokens' | 'cost' | 'rate' | 'errors' | 'duration'
 
-// 可选列（错误/时长，默认隐藏；设计文档 8.3）
-const showOptionalColumns = ref(false)
+interface SessionColumnDef {
+  key: SessionColumnKey
+  defaultVisible: boolean
+}
 
-/** 深链/事件导航带来的全局筛选上下文（sourceId/tool）应用；sessionKey 走 hash 路由
- *  （openSession 会写 hash，hashchange 同步 activeSessionKey 后工作区自动切换）。 */
+const SESSION_COLUMNS: SessionColumnDef[] = [
+  { key: 'session', defaultVisible: true },
+  { key: 'lastActive', defaultVisible: true },
+  { key: 'model', defaultVisible: true },
+  { key: 'requests', defaultVisible: true },
+  { key: 'tokens', defaultVisible: true },
+  { key: 'cost', defaultVisible: true },
+  { key: 'rate', defaultVisible: true },
+  { key: 'errors', defaultVisible: false },
+  { key: 'duration', defaultVisible: false },
+]
+
+const COLUMN_STORAGE_KEY = 'usagemeter.sessionColumns'
+
+function loadVisibleColumns(): Set<SessionColumnKey> {
+  try {
+    const saved = localStorage.getItem(COLUMN_STORAGE_KEY)
+    if (saved) {
+      const keys = JSON.parse(saved) as string[]
+      const valid = SESSION_COLUMNS.map(c => c.key)
+      const filtered = keys.filter((k): k is SessionColumnKey => valid.includes(k as SessionColumnKey))
+      if (filtered.length > 0) return new Set(filtered)
+    }
+  } catch { /* ignore */ }
+  return new Set(SESSION_COLUMNS.filter(c => c.defaultVisible).map(c => c.key))
+}
+
+function saveVisibleColumns(cols: Set<SessionColumnKey>) {
+  try {
+    localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify([...cols]))
+  } catch { /* ignore */ }
+}
+
+const visibleColumns = ref<Set<SessionColumnKey>>(loadVisibleColumns())
+const showColumnConfig = ref(false)
+
+const isColumnVisible = (key: SessionColumnKey) => visibleColumns.value.has(key)
+
+function toggleColumn(key: SessionColumnKey) {
+  const next = new Set(visibleColumns.value)
+  if (next.has(key)) {
+    if (next.size > 1) next.delete(key)
+  } else {
+    next.add(key)
+  }
+  visibleColumns.value = next
+  saveVisibleColumns(next)
+}
+
+const visibleCols = computed(() => SESSION_COLUMNS.filter(c => isColumnVisible(c.key)))
+
+// —— 深链筛选 ——
 async function applyPendingFilters() {
   const pending = nav.consumePendingFilters()
   if (!pending) return
@@ -397,20 +475,15 @@ async function applyPendingFilters() {
   if (pending.tool && store.settings.clientTools.activeToolFilter !== pending.tool) {
     await store.setActiveToolFilter(pending.tool)
   }
-  // 趋势峰值下钻：携带时间桶过滤（筛选菜单显示为「自定义」范围）
   if (pending.timeRange) {
     filters.time = 'custom'
     filters.customRange = pending.timeRange
   }
-  // 深链携带 sessionKey 时直接打开对应会话工作区（复用 openSession 的 hash/恢复逻辑；
-  // 已处于该工作区则不重复导航；view 字段由 sessionKey 决定，忽略）
   if (pending.sessionKey && !nav.activeSessionKey) {
     nav.openSession(pending.sessionKey)
   }
 }
 
-// 同页深链：hash 相同页面不重挂载，onMounted 消费路径不执行；
-// pendingConsumeTick 变化时若本页激活则补消费（跨页场景由 onMounted 覆盖，这里幂等）。
 watch(
   () => nav.pendingConsumeTick,
   () => {
@@ -418,120 +491,149 @@ watch(
   }
 )
 
-onMounted(async () => {
-  // 深链/事件导航带来的全局筛选上下文（sourceId/tool）先应用
-  await applyPendingFilters()
-  await initializeSessionView()
-  await nextTick()
-  applyScrollRestore()
-  // 滚动上报：主滚动容器是 DesktopShell 的 <main>（与 applyScrollRestore 一致）
-  document.querySelector('main')?.addEventListener('scroll', handleMainScroll, { passive: true })
-})
-
-onUnmounted(() => {
-  disposeSessionView()
-  document.querySelector('main')?.removeEventListener('scroll', handleMainScroll)
-  if (scrollReportTimer) clearTimeout(scrollReportTimer)
-  document.removeEventListener('pointerdown', closeMenuOnPointerDown, true)
-  window.removeEventListener('scroll', closeMenuOnScroll, true)
-  window.removeEventListener('resize', closeMenuOnScroll)
-})
-
-// —— 表格骨架行 ——
-const skeletonRows = [0, 1, 2, 3, 4]
-
-// —— 工具筛选选项 ——
+// —— 工具选项 ——
 const toolOptions = computed(() => {
   const tools = new Set<string>()
   for (const session of store.sessions) tools.add(session.tool)
   return [...tools].sort((a, b) => a.localeCompare(b))
 })
 
-// 来源筛选说明：由顶栏全局筛选器（SourceSelector）承担，会话行无来源字段（见 chips 区提示文案）
+const skeletonRows = [0, 1, 2, 3, 4, 5, 6, 7]
+
+onMounted(async () => {
+  document.addEventListener('keydown', onEscape)
+  await applyPendingFilters()
+  await initializeSessionView()
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', onEscape)
+  disposeSessionView()
+  document.removeEventListener('pointerdown', closeMenuOnPointerDown, true)
+  window.removeEventListener('scroll', closeMenuOnScroll, true)
+  window.removeEventListener('resize', closeMenuOnScroll)
+})
 </script>
 
 <template>
-  <!-- 会话工作区：全页面替换列表（hash 已由 desktopNavigation 处理） -->
-  <SessionWorkspace v-if="workspaceKey" :key="workspaceKey" :session-key="workspaceKey" />
-
-  <div v-else class="flex flex-col gap-3 pb-4">
-    <!-- 工具栏：搜索 + 筛选菜单 + 工具下拉 -->
-    <div class="flex flex-wrap items-center gap-2">
-      <div class="relative min-w-0 flex-1 basis-56">
-        <!-- 搜索框：无全文索引时仅标题 / topic / 项目 / cwd 范围 -->
-        <Search class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
+  <div class="flex h-full flex-col gap-3">
+    <!-- 工具栏 -->
+    <div class="flex shrink-0 flex-wrap items-center gap-2 text-xs">
+      <div class="relative">
+        <Search class="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
         <input
           v-model="searchQuery"
-          type="search"
-          class="theme-input h-8 w-full rounded-lg pl-8 pr-3 text-[12px] outline-none"
+          type="text"
+          class="theme-input h-7 w-44 rounded-lg pl-7 pr-2 text-xs outline-none"
           :placeholder="t(locale, 'desktop.sessions.searchPlaceholder')"
           :aria-label="t(locale, 'desktop.sessions.searchPlaceholder')"
         />
       </div>
 
-      <!-- 筛选菜单（时间/项目/模型/覆盖状态；工具走会话列表右上角工具下拉；来源由顶栏全局筛选承担） -->
       <div class="relative">
         <button
           type="button"
-          class="theme-button-secondary inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-[12px] font-semibold"
+          class="theme-button-secondary inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold"
           :aria-label="t(locale, 'desktop.sessions.filterLabel')"
           :aria-expanded="filterMenuOpen"
           @click="filterMenuOpen = !filterMenuOpen"
         >
-          <ChevronDown class="h-3.5 w-3.5" aria-hidden="true" />
+          <ChevronDown class="h-3 w-3" aria-hidden="true" />
           {{ t(locale, 'desktop.sessions.filterLabel') }}
-          <span v-if="chips.length > 0" class="rounded-full bg-[var(--theme-accent-primary)] px-1.5 text-[10px] font-bold text-[var(--theme-accent-contrast)]">{{ chips.length }}</span>
+          <span v-if="chips.length > 0" class="rounded-full bg-[var(--theme-accent-primary)] px-1.5 text-xs font-bold text-[var(--theme-accent-contrast)]">{{ chips.length }}</span>
         </button>
         <div
           v-if="filterMenuOpen"
           class="theme-surface-elevated absolute right-0 top-10 z-30 w-60 rounded-xl border p-2 shadow-lg"
           role="menu"
         >
-          <!-- 时间范围 -->
-          <div class="px-2 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.filterTime') }}</div>
+          <div class="px-2 pb-1 pt-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.filterTime') }}</div>
           <div class="grid grid-cols-2 gap-1 px-1">
-                        <button v-for="option in [['all', 'desktop.sessions.filterTimeAll'], ['today', 'desktop.sessions.filterTimeToday'], ['7d', 'desktop.sessions.filterTime7d'], ['30d', 'desktop.sessions.filterTime30d'], ['custom', 'desktop.sessions.filterTimeCustom']] as const" :key="option[0]" type="button" class="rounded-md px-2 py-1 text-left text-[11px] font-medium" :class="filters.time === option[0] ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]'" @click="setTimeFilter(option[0])">
+            <button v-for="option in [['all', 'desktop.sessions.filterTimeAll'], ['today', 'desktop.sessions.filterTimeToday'], ['7d', 'desktop.sessions.filterTime7d'], ['30d', 'desktop.sessions.filterTime30d'], ['custom', 'desktop.sessions.filterTimeCustom']] as const" :key="option[0]" type="button" class="rounded-md px-2 py-1 text-left text-xs font-medium" :class="filters.time === option[0] ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]'" @click="setTimeFilter(option[0])">
               {{ t(locale, option[1]) }}
             </button>
           </div>
-          <!-- 项目 -->
-          <div class="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.filterProject') }}</div>
-          <select v-model="filters.project" class="theme-input w-full rounded-lg px-2 py-1.5 text-[11px] outline-none" :aria-label="t(locale, 'desktop.sessions.filterProject')">
+          <div class="px-2 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.filterProject') }}</div>
+          <select v-model="filters.project" class="theme-input w-full rounded-lg px-2 py-1.5 text-xs outline-none" :aria-label="t(locale, 'desktop.sessions.filterProject')">
             <option :value="null">{{ t(locale, 'desktop.sessions.filterAllProjects') }}</option>
             <option v-for="project in projectOptions" :key="project" :value="project">{{ projectFilterLabel(project) }}</option>
           </select>
-          <!-- 模型 -->
-          <div class="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.filterModel') }}</div>
-          <select v-model="filters.model" class="theme-input w-full rounded-lg px-2 py-1.5 text-[11px] outline-none" :aria-label="t(locale, 'desktop.sessions.filterModel')">
+          <div class="px-2 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.filterModel') }}</div>
+          <select v-model="filters.model" class="theme-input w-full rounded-lg px-2 py-1.5 text-xs outline-none" :aria-label="t(locale, 'desktop.sessions.filterModel')">
             <option :value="null">{{ t(locale, 'desktop.sessions.filterAllModels') }}</option>
             <option v-for="model in modelOptions" :key="model" :value="model">{{ model }}</option>
           </select>
-          <!-- 覆盖状态 -->
-          <div class="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.filterCoverage') }}</div>
+          <div class="px-2 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.filterCoverage') }}</div>
           <div class="grid grid-cols-2 gap-1 px-1 pb-1">
-            <button v-for="option in [['all', 'desktop.sessions.filterCoverageAll'], ['full', 'desktop.sessions.filterCoverageFull'], ['partial', 'desktop.sessions.filterCoveragePartial'], ['uncovered', 'desktop.sessions.filterCoverageUncovered']] as const" :key="option[0]" type="button" class="rounded-md px-2 py-1 text-left text-[11px] font-medium" :class="filters.coverage === option[0] ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]'" @click="filters.coverage = option[0]">
+            <button v-for="option in [['all', 'desktop.sessions.filterCoverageAll'], ['full', 'desktop.sessions.filterCoverageFull'], ['partial', 'desktop.sessions.filterCoveragePartial'], ['uncovered', 'desktop.sessions.filterCoverageUncovered']] as const" :key="option[0]" type="button" class="rounded-md px-2 py-1 text-left text-xs font-medium" :class="filters.coverage === option[0] ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]'" @click="filters.coverage = option[0]">
               {{ t(locale, option[1]) }}
             </button>
           </div>
-          <div class="mt-1 border-t border-[var(--theme-border-default)] px-2 py-1.5 text-[10px] leading-snug text-[var(--theme-text-tertiary)]">
+          <div class="mt-1 border-t border-[var(--theme-border-default)] px-2 py-1.5 text-xs leading-snug text-[var(--theme-text-tertiary)]">
             {{ t(locale, 'desktop.sessions.filterSourceHint') }}
           </div>
         </div>
       </div>
 
-      <!-- 工具下拉（复用 useSessionViewData 的 selectedTool，切换触发后端按工具重载） -->
       <select
         v-model="selectedTool"
-        class="theme-input h-8 max-w-40 rounded-lg px-2 text-[12px] outline-none"
+        class="theme-input h-7 max-w-40 rounded-lg px-2 text-xs outline-none"
         :aria-label="t(locale, 'desktop.sessions.filterTool')"
       >
         <option :value="null">{{ t(locale, 'desktop.allTools') }}</option>
         <option v-for="tool in toolOptions" :key="tool" :value="tool">{{ requestToolLabel(tool) }}</option>
       </select>
+
+      <button
+        v-if="chips.length > 0"
+        type="button"
+        class="h-7 rounded-lg px-2 text-xs text-[var(--theme-text-tertiary)] transition-colors hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)]"
+        @click="clearAllFilters"
+      >
+        {{ t(locale, 'desktop.requests.clearFilters') }}
+      </button>
+
+      <div class="ml-auto flex items-center gap-2">
+        <span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.requests.totalRecords', { count: total }) }}</span>
+        <div class="relative">
+          <button
+            type="button"
+            class="inline-flex h-7 items-center gap-1 rounded-lg border border-[var(--theme-border-default)] px-2 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:border-[var(--theme-accent-primary)] hover:text-[var(--theme-accent-primary)]"
+            :aria-label="t(locale, 'desktop.requests.columnConfig')"
+            :title="t(locale, 'desktop.requests.columnConfig')"
+            @click="showColumnConfig = !showColumnConfig"
+          >
+            <Settings2 class="h-3 w-3" aria-hidden="true" />
+            <span class="hidden sm:inline">{{ t(locale, 'desktop.requests.columnConfig') }}</span>
+          </button>
+          <Transition name="popover">
+            <div
+              v-if="showColumnConfig"
+              class="theme-surface-elevated absolute right-0 top-8 z-30 w-40 rounded-xl border p-2 shadow-lg"
+              :aria-label="t(locale, 'desktop.requests.columnConfigTitle')"
+            >
+              <p class="mb-1.5 px-1 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.requests.columnConfigTitle') }}</p>
+              <label
+                v-for="col in SESSION_COLUMNS"
+                :key="col.key"
+                class="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-xs text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]"
+              >
+                <input
+                  type="checkbox"
+                  class="h-3 w-3 accent-[var(--theme-accent-primary)]"
+                  :checked="isColumnVisible(col.key)"
+                  @change="toggleColumn(col.key)"
+                />
+                <span>{{ t(locale, `desktop.sessions.column${col.key.charAt(0).toUpperCase()}${col.key.slice(1)}`) }}</span>
+              </label>
+            </div>
+          </Transition>
+        </div>
+      </div>
     </div>
 
-    <!-- 筛选 chips（可删；超 4 个折叠为“更多 N 项”，不横向滚动） -->
-    <div v-if="chips.length > 0" class="flex flex-wrap items-center gap-1.5 text-[11px]">
+    <!-- 筛选 chips -->
+    <div v-if="chips.length > 0" class="flex shrink-0 flex-wrap items-center gap-1.5 text-xs">
       <span v-for="chip in (chipsCollapsed ? visibleChips : chips)" :key="chip.id" class="inline-flex items-center gap-1 rounded-full border border-[var(--theme-border-default)] bg-[var(--theme-bg-surface)] px-2 py-0.5 font-medium text-[var(--theme-text-secondary)]">
         {{ chip.label }}
         <button type="button" class="rounded-full p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.removeFilter')" :title="t(locale, 'desktop.sessions.removeFilter')" @click="chip.remove()">
@@ -541,160 +643,328 @@ const toolOptions = computed(() => {
       <button v-if="extraChipsCount > 0" type="button" class="rounded-full border border-[var(--theme-border-default)] px-2 py-0.5 font-medium text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]" @click="chipsCollapsed = !chipsCollapsed">
         {{ chipsCollapsed ? t(locale, 'desktop.sessions.chipsMore', { count: extraChipsCount }) : t(locale, 'desktop.sessions.chipsLess') }}
       </button>
-      <button type="button" class="ml-1 font-semibold text-[var(--theme-accent-primary)] hover:underline" @click="clearAllFilters">
-        {{ t(locale, 'desktop.sessions.chipsClearAll') }}
-      </button>
     </div>
 
-    <!-- ================= 会话视图（表格） ================= -->
-    <div class="flex items-center gap-3">
-      <button
-        type="button"
-        class="inline-flex items-center gap-1 rounded-md border border-[var(--theme-border-default)] px-2 py-0.5 text-[10.5px] font-semibold text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]"
-        :aria-pressed="showOptionalColumns"
-        :title="t(locale, 'desktop.sessions.optionalColumnsHint')"
-        @click="showOptionalColumns = !showOptionalColumns"
-      >
-        <ChevronDown class="h-3 w-3" aria-hidden="true" />
-        {{ t(locale, 'desktop.sessions.optionalColumns') }}
-      </button>
-      <span class="text-[10.5px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.openWorkspaceHint') }}</span>
-    </div>
-
-    <!-- 表格容器：仅内部横向滚动，禁止页面级横向滚动 -->
-    <div class="theme-surface overflow-x-auto rounded-xl border">
-      <table class="w-full min-w-[860px] border-collapse text-[12px]">
-        <thead>
-          <tr class="border-b border-[var(--theme-border-default)] text-[10.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
-            <!-- 首列 sticky -->
-            <th class="sticky left-0 z-10 min-w-60 bg-[var(--theme-bg-elevated)] px-3 py-2 text-left font-semibold">
-              <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('lastActive')">
-                {{ t(locale, 'desktop.sessions.columnSession') }}
-                <component :is="sortIndicator('lastActive')" v-if="sortIndicator('lastActive')" class="h-3 w-3" aria-hidden="true" />
-              </button>
-            </th>
-            <th class="px-3 py-2 text-left font-semibold">
-              <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('lastActive')">
-                {{ t(locale, 'desktop.sessions.columnLastActive') }}
-                <component :is="sortIndicator('lastActive')" v-if="sortIndicator('lastActive')" class="h-3 w-3" aria-hidden="true" />
-              </button>
-            </th>
-            <th class="px-3 py-2 text-left font-semibold">{{ t(locale, 'desktop.sessions.columnModel') }}</th>
-            <th class="px-3 py-2 text-right font-semibold">
-              <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('requests')">
-                {{ t(locale, 'desktop.sessions.columnRequests') }}
-                <component :is="sortIndicator('requests')" v-if="sortIndicator('requests')" class="h-3 w-3" aria-hidden="true" />
-              </button>
-            </th>
-            <th class="px-3 py-2 text-right font-semibold">
-              <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('tokens')">
-                {{ t(locale, 'desktop.sessions.columnTokens') }}
-                <component :is="sortIndicator('tokens')" v-if="sortIndicator('tokens')" class="h-3 w-3" aria-hidden="true" />
-              </button>
-            </th>
-            <th class="px-3 py-2 text-right font-semibold">
-              <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('cost')">
-                {{ t(locale, 'desktop.sessions.columnCost') }}
-                <component :is="sortIndicator('cost')" v-if="sortIndicator('cost')" class="h-3 w-3" aria-hidden="true" />
-              </button>
-            </th>
-            <th class="px-3 py-2 text-right font-semibold">
-              <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('rate')">
-                {{ t(locale, 'desktop.sessions.columnAvgRate') }}
-                <component :is="sortIndicator('rate')" v-if="sortIndicator('rate')" class="h-3 w-3" aria-hidden="true" />
-              </button>
-            </th>
-            <th v-if="showOptionalColumns" class="px-3 py-2 text-right font-semibold">
-              <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('errors')">
-                {{ t(locale, 'desktop.sessions.columnErrors') }}
-                <component :is="sortIndicator('errors')" v-if="sortIndicator('errors')" class="h-3 w-3" aria-hidden="true" />
-              </button>
-            </th>
-            <th v-if="showOptionalColumns" class="px-3 py-2 text-right font-semibold">
-              <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('firstRequest')">
-                {{ t(locale, 'desktop.sessions.columnDuration') }}
-                <component :is="sortIndicator('firstRequest')" v-if="sortIndicator('firstRequest')" class="h-3 w-3" aria-hidden="true" />
-              </button>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          <!-- 骨架行 -->
-          <tr v-if="store.sessionsLoading && store.sessions.length === 0" v-for="row in skeletonRows" :key="`sk-${row}`" class="border-b border-[var(--theme-border-subtle)] last:border-0">
-            <td v-for="col in showOptionalColumns ? 9 : 7" :key="col" class="px-3 py-2.5">
-              <div class="h-2.5 animate-pulse rounded bg-[var(--theme-border-default)]" :style="{ width: `${40 + ((row + col) % 5) * 12}%` }"></div>
-            </td>
-          </tr>
-          <!-- 空态 -->
-          <tr v-else-if="filteredSessions.length === 0">
-            <td :colspan="showOptionalColumns ? 9 : 7" class="px-3 py-14 text-center text-[12px] text-[var(--theme-text-tertiary)]">
-              {{ store.sessions.length === 0 ? t(locale, 'desktop.sessions.noSessions') : t(locale, 'desktop.sessions.noMatch') }}
-            </td>
-          </tr>
-          <!-- 数据行 -->
-          <tr
-            v-for="session in filteredSessions"
-            :key="session.sessionId"
-            tabindex="0"
-            class="cursor-pointer border-b border-[var(--theme-border-subtle)] transition-colors last:border-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring-focus)]"
-            :class="selectedSessionId === session.sessionId ? 'bg-[var(--theme-accent-soft)]' : 'hover:bg-[var(--theme-bg-hover)]'"
-            :aria-selected="selectedSessionId === session.sessionId"
-            :title="t(locale, 'desktop.sessions.openWorkspaceHint')"
-            @click="selectSession(session)"
-            @dblclick="openWorkspace(session)"
-            @contextmenu.prevent="handleRowContextMenu($event, session)"
-            @keydown.enter="handleRowKeydown($event, session)"
-            @keydown="handleRowMenuKeydown($event, session)"
-          >
-            <!-- 首列 sticky：标题 + 项目 badge + 工具图标 -->
-            <td class="sticky left-0 z-10 max-w-72 bg-[var(--theme-bg-elevated)] px-3 py-2">
-              <div class="flex min-w-0 items-center gap-2">
-                <LobeIcon v-if="getToolIcon(session.tool)" :slug="getToolIcon(session.tool) ?? 'claudecode'" :size="14" @error="() => {}" />
-                <span v-else class="h-2 w-2 shrink-0 rounded-full bg-[var(--theme-border-strong)]"></span>
-                <div class="min-w-0">
-                  <p class="truncate font-medium text-[var(--theme-text-primary)]">{{ displaySessionTitle(session) }}</p>
-                  <div class="flex items-center gap-1">
-                    <span v-if="displaySessionProjectBadge(session)" class="truncate rounded px-1 py-px text-[9px] font-semibold leading-none" :class="projectBadgeClasses(session.projectIdentity)">
-                      {{ displaySessionProjectBadge(session) }}
-                    </span>
-                    <span v-if="session.wslDistro" class="truncate rounded bg-cyan-500/10 px-1 py-px text-[9px] font-semibold leading-none text-cyan-600 dark:text-cyan-300" :title="t(locale, 'sessions.wslBadgeTitle', { distro: session.wslDistro })">{{ session.wslDistro }}</span>
-                    <span v-if="sessionUsageVisible(session) && (session.uncoveredRequests ?? 0) > 0" class="rounded bg-amber-500/10 px-1 py-px text-[9px] font-semibold leading-none text-amber-600 dark:text-amber-300" :title="t(locale, 'desktop.sessions.partialCoverageTitle')">
-                      {{ t(locale, 'desktop.sessions.partialCoverage') }}
-                    </span>
+    <!-- 表格 + 覆盖式抽屉 -->
+    <div class="relative min-h-0 flex-1">
+      <div class="theme-surface h-full overflow-auto rounded-xl border">
+        <table class="w-full min-w-[860px] border-collapse text-xs">
+          <thead class="sticky top-0 z-10">
+            <tr class="whitespace-nowrap border-b border-[var(--theme-border-default)] text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
+              <th v-if="isColumnVisible('session')" class="min-w-60 px-1.5 py-1.5 text-left font-semibold">
+                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('lastActive')">
+                  {{ t(locale, 'desktop.sessions.columnSession') }}
+                  <component :is="sortIndicator('lastActive')" v-if="sortIndicator('lastActive')" class="h-2.5 w-2.5" aria-hidden="true" />
+                </button>
+              </th>
+              <th v-if="isColumnVisible('lastActive')" class="px-1.5 py-1.5 text-left font-semibold">
+                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('lastActive')">
+                  {{ t(locale, 'desktop.sessions.columnLastActive') }}
+                  <component :is="sortIndicator('lastActive')" v-if="sortIndicator('lastActive')" class="h-2.5 w-2.5" aria-hidden="true" />
+                </button>
+              </th>
+              <th v-if="isColumnVisible('model')" class="px-1.5 py-1.5 text-left font-semibold">{{ t(locale, 'desktop.sessions.columnModel') }}</th>
+              <th v-if="isColumnVisible('requests')" class="px-1.5 py-1.5 text-right font-semibold">
+                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('requests')">
+                  {{ t(locale, 'desktop.sessions.columnRequests') }}
+                  <component :is="sortIndicator('requests')" v-if="sortIndicator('requests')" class="h-2.5 w-2.5" aria-hidden="true" />
+                </button>
+              </th>
+              <th v-if="isColumnVisible('tokens')" class="px-1.5 py-1.5 text-right font-semibold">
+                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('tokens')">
+                  {{ t(locale, 'desktop.sessions.columnTokens') }}
+                  <component :is="sortIndicator('tokens')" v-if="sortIndicator('tokens')" class="h-2.5 w-2.5" aria-hidden="true" />
+                </button>
+              </th>
+              <th v-if="isColumnVisible('cost')" class="px-1.5 py-1.5 text-right font-semibold">
+                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('cost')">
+                  {{ t(locale, 'desktop.sessions.columnCost') }}
+                  <component :is="sortIndicator('cost')" v-if="sortIndicator('cost')" class="h-2.5 w-2.5" aria-hidden="true" />
+                </button>
+              </th>
+              <th v-if="isColumnVisible('rate')" class="px-1.5 py-1.5 text-right font-semibold">
+                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('rate')">
+                  {{ t(locale, 'desktop.sessions.columnAvgRate') }}
+                  <component :is="sortIndicator('rate')" v-if="sortIndicator('rate')" class="h-2.5 w-2.5" aria-hidden="true" />
+                </button>
+              </th>
+              <th v-if="isColumnVisible('errors')" class="px-1.5 py-1.5 text-right font-semibold">
+                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('errors')">
+                  {{ t(locale, 'desktop.sessions.columnErrors') }}
+                  <component :is="sortIndicator('errors')" v-if="sortIndicator('errors')" class="h-2.5 w-2.5" aria-hidden="true" />
+                </button>
+              </th>
+              <th v-if="isColumnVisible('duration')" class="px-1.5 py-1.5 text-right font-semibold">
+                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('firstRequest')">
+                  {{ t(locale, 'desktop.sessions.columnDuration') }}
+                  <component :is="sortIndicator('firstRequest')" v-if="sortIndicator('firstRequest')" class="h-2.5 w-2.5" aria-hidden="true" />
+                </button>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <template v-if="store.sessionsLoading && store.sessions.length === 0">
+              <tr
+                v-for="row in skeletonRows"
+                :key="`sk-${row}`"
+                class="border-b border-[var(--theme-border-subtle)] last:border-0"
+              >
+                <td v-for="col in visibleCols.length" :key="col" class="px-1.5 py-1.5">
+                  <div class="h-2.5 animate-pulse rounded bg-[var(--theme-border-default)]" :style="{ width: `${40 + ((row + col) % 5) * 12}%` }"></div>
+                </td>
+              </tr>
+            </template>
+            <tr v-else-if="paginatedSessions.length === 0">
+              <td :colspan="visibleCols.length" class="px-3 py-12 text-center text-xs text-[var(--theme-text-tertiary)]">
+                {{ store.sessions.length === 0 ? t(locale, 'desktop.sessions.noSessions') : t(locale, 'desktop.sessions.noMatch') }}
+              </td>
+            </tr>
+            <tr
+              v-for="session in paginatedSessions"
+              :key="session.sessionId"
+              tabindex="0"
+              class="cursor-pointer border-b border-[var(--theme-border-subtle)] transition-colors last:border-0 hover:bg-[var(--theme-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring-focus)]"
+              :class="selectedSession?.sessionId === session.sessionId && drawerOpen ? 'bg-[var(--theme-accent-soft)]' : ''"
+              @click="openDrawer(session)"
+              @contextmenu.prevent="handleRowContextMenu($event, session)"
+              @keydown="handleRowKeydown($event, session); handleRowMenuKeydown($event, session)"
+            >
+              <td v-if="isColumnVisible('session')" class="max-w-72 px-1.5 py-1.5">
+                <div class="flex min-w-0 items-center gap-2">
+                  <LobeIcon v-if="getToolIcon(session.tool)" :slug="getToolIcon(session.tool) ?? 'claudecode'" :size="14" @error="() => {}" />
+                  <span v-else class="h-2 w-2 shrink-0 rounded-full bg-[var(--theme-border-strong)]"></span>
+                  <div class="min-w-0">
+                    <p class="truncate font-medium text-[var(--theme-text-primary)]">{{ displaySessionTitle(session) }}</p>
+                    <div class="flex items-center gap-1">
+                      <span v-if="displaySessionProjectBadge(session)" class="truncate rounded px-1 py-px text-xs font-semibold leading-none" :class="projectBadgeClasses(session.projectIdentity)">
+                        {{ displaySessionProjectBadge(session) }}
+                      </span>
+                      <span v-if="session.wslDistro" class="truncate rounded bg-cyan-500/10 px-1 py-px text-xs font-semibold leading-none text-cyan-600 dark:text-cyan-300" :title="t(locale, 'sessions.wslBadgeTitle', { distro: session.wslDistro })">{{ session.wslDistro }}</span>
+                      <span v-if="sessionUsageVisible(session) && (session.uncoveredRequests ?? 0) > 0" class="rounded bg-amber-500/10 px-1 py-px text-xs font-semibold leading-none text-amber-600 dark:text-amber-300" :title="t(locale, 'desktop.sessions.partialCoverageTitle')">
+                        {{ t(locale, 'desktop.sessions.partialCoverage') }}
+                      </span>
+                    </div>
                   </div>
                 </div>
+              </td>
+              <td v-if="isColumnVisible('lastActive')" class="whitespace-nowrap px-1.5 py-1.5 text-[var(--theme-text-secondary)]">{{ formatTime(session.lastRequestTime) }}</td>
+              <td v-if="isColumnVisible('model')" class="max-w-44 truncate px-1.5 py-1.5 font-mono text-xs text-[var(--theme-text-secondary)]" :title="session.models.join(', ')">
+                {{ sessionModelLabel(session) }}<span v-if="session.models.length > 1" class="text-[var(--theme-text-quaternary)]"> +{{ session.models.length - 1 }}</span>
+              </td>
+              <td v-if="isColumnVisible('requests')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ session.totalRequests ?? 0 }}</td>
+              <td v-if="isColumnVisible('tokens')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ sessionUsageVisible(session) ? formatTokens(sessionTotalTokens(session)) : '—' }}</td>
+              <td v-if="isColumnVisible('cost')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-chart-cost)]">{{ sessionUsageVisible(session) ? formatCost(session.estimatedCost) : '—' }}</td>
+              <td v-if="isColumnVisible('rate')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">
+                {{ sessionUsageVisible(session) && (session.avgOutputTokensPerSecond || 0) > 0 ? `${session.avgOutputTokensPerSecond.toFixed(1)}t/s` : '—' }}
+              </td>
+              <td v-if="isColumnVisible('errors')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono" :class="(session.errorRequests ?? 0) > 0 ? 'text-red-500' : 'text-[var(--theme-text-secondary)]'">
+                {{ sessionUsageVisible(session) ? (session.errorRequests ?? 0) : '—' }}
+              </td>
+              <td v-if="isColumnVisible('duration')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">{{ formatDuration(session.totalDurationMs) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 覆盖式抽屉 -->
+      <Transition name="drawer-overlay">
+        <div v-if="drawerOpen" class="absolute inset-0 z-20 flex justify-end" @click.self="closeDrawer">
+          <aside
+            class="theme-surface-elevated flex h-full w-80 flex-col overflow-y-auto rounded-xl border shadow-[0_4px_24px_rgba(0,0,0,0.08)]"
+            :aria-label="t(locale, 'desktop.sessions.drawerTitle')"
+          >
+            <div class="flex items-start justify-between gap-2 border-b border-[var(--theme-border-default)] px-3 py-2.5">
+              <div class="min-w-0">
+                <div class="mb-1 flex items-center gap-1.5">
+                  <span v-if="displaySessionProjectBadge(selectedSession!)" class="rounded px-1 py-px text-xs font-semibold leading-none" :class="projectBadgeClasses(selectedSession!.projectIdentity)">
+                    {{ displaySessionProjectBadge(selectedSession!) }}
+                  </span>
+                  <span class="text-xs text-[var(--theme-text-tertiary)]">{{ formatTime(selectedSession!.lastRequestTime) }}</span>
+                </div>
+                <h3 class="truncate text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ displaySessionTitle(selectedSession!) }}</h3>
+                <p class="mt-0.5 truncate text-xs text-[var(--theme-text-tertiary)]">
+                  {{ selectedSession!.projectName || t(locale, 'common.unknownProject') }}
+                  · {{ requestToolLabel(selectedSession!.tool) }}
+                </p>
               </div>
-            </td>
-            <td class="whitespace-nowrap px-3 py-2 text-[var(--theme-text-secondary)]">{{ formatTime(session.lastRequestTime) }}</td>
-            <td class="max-w-44 truncate px-3 py-2 font-mono text-[11px] text-[var(--theme-text-secondary)]" :title="session.models.join(', ')">
-              {{ sessionModelLabel(session) }}<span v-if="session.models.length > 1" class="text-[var(--theme-text-quaternary)]"> +{{ session.models.length - 1 }}</span>
-            </td>
-            <td class="whitespace-nowrap px-3 py-2 text-right font-mono text-[var(--theme-text-primary)]">{{ session.totalRequests ?? 0 }}</td>
-            <td class="whitespace-nowrap px-3 py-2 text-right font-mono text-[var(--theme-text-primary)]">{{ sessionUsageVisible(session) ? formatTokens(sessionTotalTokens(session)) : '—' }}</td>
-            <td class="whitespace-nowrap px-3 py-2 text-right font-mono text-[var(--theme-chart-cost)]">{{ sessionUsageVisible(session) ? formatCost(session.estimatedCost) : '—' }}</td>
-            <td class="whitespace-nowrap px-3 py-2 text-right font-mono text-[var(--theme-text-secondary)]">
-              {{ sessionUsageVisible(session) && (session.avgOutputTokensPerSecond || 0) > 0 ? `${session.avgOutputTokensPerSecond.toFixed(1)}t/s` : '—' }}
-            </td>
-            <td v-if="showOptionalColumns" class="whitespace-nowrap px-3 py-2 text-right font-mono" :class="(session.errorRequests ?? 0) > 0 ? 'text-red-500' : 'text-[var(--theme-text-secondary)]'">
-              {{ sessionUsageVisible(session) ? (session.errorRequests ?? 0) : '—' }}
-            </td>
-            <td v-if="showOptionalColumns" class="whitespace-nowrap px-3 py-2 text-right font-mono text-[var(--theme-text-secondary)]">{{ formatDuration(session.totalDurationMs) }}</td>
-          </tr>
-        </tbody>
-      </table>
+              <div class="flex shrink-0 items-start gap-1">
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded-lg border border-[var(--theme-border-default)] px-2 py-1 text-xs font-semibold text-[var(--theme-text-secondary)] transition-colors hover:border-[var(--theme-accent-primary)] hover:text-[var(--theme-accent-primary)]"
+                  :title="t(locale, 'desktop.sessions.openWorkspaceHint')"
+                  @click="openInWorkspace"
+                >
+                  <ExternalLink class="h-3 w-3" aria-hidden="true" />
+                  {{ t(locale, 'desktop.sessions.menuOpenSession') }}
+                </button>
+                <button
+                  type="button"
+                  class="shrink-0 rounded-lg p-1 transition-colors hover:bg-[var(--theme-bg-hover)]"
+                  :aria-label="t(locale, 'common.close')"
+                  :title="t(locale, 'common.close')"
+                  @click="closeDrawer"
+                >
+                  <X class="h-4 w-4 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+
+            <div class="space-y-3 p-3">
+              <!-- 概览指标 -->
+              <div class="grid grid-cols-3 gap-2">
+                <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
+                  <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.columnRequests') }}</div>
+                  <div class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">{{ selectedSession!.totalRequests ?? 0 }}</div>
+                </div>
+                <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
+                  <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'common.totalTokens') }}</div>
+                  <div class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">{{ sessionUsageVisible(selectedSession!) ? formatTokens(sessionTotalTokens(selectedSession!)) : '—' }}</div>
+                </div>
+                <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
+                  <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.cost') }}</div>
+                  <div class="font-mono text-xs font-semibold text-[var(--theme-chart-cost)]">{{ sessionUsageVisible(selectedSession!) ? formatCost(selectedSession!.estimatedCost) : '—' }}</div>
+                </div>
+              </div>
+
+              <!-- Token 分项 -->
+              <section class="theme-surface-muted rounded-lg border px-3 py-2">
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.input') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedSession!.totalInputTokens) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.output') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedSession!.totalOutputTokens) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheCreate') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedSession!.totalCacheCreateTokens) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheRead') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedSession!.totalCacheReadTokens) }}</span></div>
+              </section>
+
+              <!-- 性能 -->
+              <section class="theme-surface-muted rounded-lg border px-3 py-2">
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'metrics.tokensPerSecond') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ sessionUsageVisible(selectedSession!) && (selectedSession!.avgOutputTokensPerSecond || 0) > 0 ? `${selectedSession!.avgOutputTokensPerSecond.toFixed(1)}t/s` : '—' }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.ttft') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ selectedSession!.avgTtftMs != null ? formatDuration(selectedSession!.avgTtftMs) : '—' }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.duration') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatDuration(selectedSession!.totalDurationMs) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.errors') }}</span><span class="font-mono text-xs" :class="(selectedSession!.errorRequests ?? 0) > 0 ? 'text-red-500' : 'text-[var(--theme-text-primary)]'">{{ selectedSession!.errorRequests ?? 0 }}</span></div>
+              </section>
+
+              <!-- 模型列表 -->
+              <section v-if="selectedSession!.models.length > 0" class="theme-surface-muted rounded-lg border px-3 py-2">
+                <div class="mb-1 text-xs font-semibold text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.models') }}</div>
+                <div class="flex flex-wrap gap-1">
+                  <span v-for="model in selectedSession!.models" :key="model" class="rounded bg-[var(--theme-border-subtle)] px-1.5 py-px font-mono text-xs text-[var(--theme-text-secondary)]">{{ model }}</span>
+                </div>
+              </section>
+
+              <!-- 标识信息 -->
+              <section class="theme-surface-muted rounded-lg border px-3 py-2">
+                <div class="flex items-center justify-between gap-2 py-1">
+                  <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.sessionId') }}</span>
+                  <span class="flex min-w-0 items-center gap-1">
+                    <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedSession!.sessionId">{{ shortId(selectedSession!.sessionId) }}</span>
+                    <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.copyId')" :title="t(locale, 'desktop.sessions.copyId')" @click="copyText(selectedSession!.sessionId, 'id')"><ExternalLink class="h-3 w-3" aria-hidden="true" /></button>
+                  </span>
+                </div>
+                <div v-if="selectedSession!.cwd" class="flex items-center justify-between gap-2 py-1">
+                  <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'settings.cwd') }}</span>
+                  <span class="flex min-w-0 items-center gap-1">
+                    <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedSession!.cwd">{{ selectedSession!.cwd }}</span>
+                    <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.menuCopyCwd')" :title="t(locale, 'desktop.sessions.menuCopyCwd')" @click="copyText(selectedSession!.cwd!, 'cwd')"><ExternalLink class="h-3 w-3" aria-hidden="true" /></button>
+                  </span>
+                </div>
+                <div v-if="selectedSession!.topic" class="flex items-center justify-between gap-2 py-1">
+                  <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.lastPrompt') }}</span>
+                  <span class="truncate text-xs text-[var(--theme-text-secondary)]" :title="selectedSession!.topic">{{ selectedSession!.topic }}</span>
+                </div>
+              </section>
+
+              <p v-if="copiedValue" class="text-center text-xs font-medium text-emerald-600 dark:text-emerald-300">{{ t(locale, 'desktop.sessions.copied') }}</p>
+            </div>
+          </aside>
+        </div>
+      </Transition>
     </div>
 
-    <!-- 触底续载 -->
-    <div v-if="loadingMore" class="flex justify-center py-3">
-      <div class="h-4 w-4 animate-spin rounded-full border-2 border-[var(--theme-border-strong)] border-t-[var(--theme-accent-primary)]"></div>
+    <!-- 分页控件 -->
+    <div class="flex shrink-0 items-center justify-between gap-3 text-xs text-[var(--theme-text-tertiary)]">
+      <div class="flex shrink-0 items-center gap-2">
+        <span>{{ pageStart }}–{{ pageEnd }} / {{ total }}</span>
+        <select
+          v-model="pageSize"
+          class="theme-input h-6 rounded-md px-1 text-xs outline-none"
+          :aria-label="t(locale, 'desktop.requests.pageSize')"
+          @change="onPageSizeChange"
+        >
+          <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }} / {{ t(locale, 'desktop.requests.pageSize') }}</option>
+        </select>
+      </div>
+      <div class="flex items-center gap-2">
+        <div class="flex items-center gap-1">
+          <button
+            type="button"
+            class="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--theme-border-default)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="!hasPrev"
+            :aria-label="t(locale, 'desktop.requests.pageFirst')"
+            :title="t(locale, 'desktop.requests.pageFirst')"
+            @click="gotoPage(0)"
+          >
+            <ChevronsLeft class="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            class="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--theme-border-default)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="!hasPrev"
+            :aria-label="t(locale, 'desktop.requests.pagePrev')"
+            @click="prevPage"
+          >
+            <ChevronLeft class="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+          <template v-for="(num, idx) in pageNumbers" :key="idx">
+            <span v-if="num === '...'" class="px-1 text-[var(--theme-text-quaternary)]">…</span>
+            <button
+              v-else
+              type="button"
+              class="inline-flex h-7 min-w-[28px] items-center justify-center rounded-lg border px-1.5 font-mono text-xs transition-colors"
+              :class="num === currentPage + 1
+                ? 'border-[var(--theme-accent-primary)] bg-[var(--theme-accent-soft)] font-semibold text-[var(--theme-accent-primary)]'
+                : 'border-[var(--theme-border-default)] text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]'"
+              :aria-current="num === currentPage + 1 ? 'page' : undefined"
+              @click="gotoPageNumber(num)"
+            >{{ num }}</button>
+          </template>
+          <button
+            type="button"
+            class="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--theme-border-default)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="!hasNext"
+            :aria-label="t(locale, 'desktop.requests.pageNext')"
+            @click="nextPage"
+          >
+            <ChevronRight class="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            class="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--theme-border-default)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+            :disabled="!hasNext"
+            :aria-label="t(locale, 'desktop.requests.pageLast')"
+            :title="t(locale, 'desktop.requests.pageLast')"
+            @click="gotoPage(totalPages - 1)"
+          >
+            <ChevronsRight class="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </div>
+        <div v-if="totalPages > 7" class="flex items-center gap-1">
+          <span class="text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.requests.jumpTo') }}</span>
+          <input
+            v-model="jumpPageInput"
+            type="number"
+            min="1"
+            :max="totalPages"
+            class="theme-input h-7 w-12 rounded-lg px-1 text-center font-mono text-xs outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+            :aria-label="t(locale, 'desktop.requests.jumpTo')"
+            @keydown.enter="jumpPage"
+          />
+          <span class="text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.requests.pageOf', { current: '', total: totalPages }) }}</span>
+        </div>
+        <span v-if="loadingMore" class="text-xs text-[var(--theme-text-quaternary)]">{{ t(locale, 'common.syncing') }}</span>
+      </div>
     </div>
-    <div v-else-if="!hasMore && store.sessions.length > 0" class="py-2 text-center text-[10.5px] text-[var(--theme-text-quaternary)]">
-      {{ t(locale, 'common.noMore') }}
-    </div>
-    <div ref="loadMoreTrigger" class="h-1 w-full"></div>
   </div>
 
-  <!-- 会话行右键菜单（仅安全操作：打开会话 / 复制会话 ID / 复制工作目录；cwd 为空禁用复制工作目录） -->
+  <!-- 右键菜单 -->
   <Teleport to="body">
     <div
       v-if="contextMenu"
@@ -707,7 +977,7 @@ const toolOptions = computed(() => {
       <button
         type="button"
         role="menuitem"
-        class="block w-full rounded-lg px-2.5 py-1.5 text-left text-[11.5px] font-medium text-[var(--theme-text-secondary)] outline-none transition-colors hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)] focus-visible:ring-1 focus-visible:ring-[var(--theme-ring-focus)]"
+        class="block w-full rounded-lg px-2.5 py-1.5 text-left text-xs font-medium text-[var(--theme-text-secondary)] outline-none transition-colors hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)] focus-visible:ring-1 focus-visible:ring-[var(--theme-ring-focus)]"
         @click="runContextAction('open')"
       >
         {{ t(locale, 'desktop.sessions.menuOpenSession') }}
@@ -715,7 +985,7 @@ const toolOptions = computed(() => {
       <button
         type="button"
         role="menuitem"
-        class="block w-full rounded-lg px-2.5 py-1.5 text-left text-[11.5px] font-medium text-[var(--theme-text-secondary)] outline-none transition-colors hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)] focus-visible:ring-1 focus-visible:ring-[var(--theme-ring-focus)]"
+        class="block w-full rounded-lg px-2.5 py-1.5 text-left text-xs font-medium text-[var(--theme-text-secondary)] outline-none transition-colors hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)] focus-visible:ring-1 focus-visible:ring-[var(--theme-ring-focus)]"
         @click="runContextAction('copyId')"
       >
         {{ t(locale, 'desktop.sessions.menuCopyId') }}
@@ -725,19 +995,46 @@ const toolOptions = computed(() => {
         role="menuitem"
         :disabled="!contextMenu.session.cwd"
         :title="contextMenu.session.cwd ? '' : t(locale, 'desktop.sessions.menuCopyCwdDisabled')"
-        class="block w-full rounded-lg px-2.5 py-1.5 text-left text-[11.5px] font-medium text-[var(--theme-text-secondary)] outline-none transition-colors hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)] focus-visible:ring-1 focus-visible:ring-[var(--theme-ring-focus)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+        class="block w-full rounded-lg px-2.5 py-1.5 text-left text-xs font-medium text-[var(--theme-text-secondary)] outline-none transition-colors hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)] focus-visible:ring-1 focus-visible:ring-[var(--theme-ring-focus)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
         @click="runContextAction('copyCwd')"
       >
         {{ t(locale, 'desktop.sessions.menuCopyCwd') }}
       </button>
     </div>
 
-    <!-- 复制反馈轻提示（复用 useClipboard 的 copiedValue flash） -->
     <div
       v-if="copiedValue"
-      class="pointer-events-none fixed bottom-5 left-1/2 z-[90] -translate-x-1/2 rounded-full border border-[var(--theme-border-default)] bg-[var(--theme-bg-elevated)] px-3.5 py-1.5 text-[11px] font-medium text-emerald-600 shadow-lg dark:text-emerald-300"
+      class="pointer-events-none fixed bottom-5 left-1/2 z-[90] -translate-x-1/2 rounded-full border border-[var(--theme-border-default)] bg-[var(--theme-bg-elevated)] px-3.5 py-1.5 text-xs font-medium text-emerald-600 shadow-lg dark:text-emerald-300"
     >
       {{ t(locale, 'desktop.sessions.copied') }}
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+.popover-enter-active,
+.popover-leave-active {
+  transition: opacity 0.12s ease-out, transform 0.12s ease-out;
+}
+.popover-enter-from,
+.popover-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+.drawer-overlay-enter-active,
+.drawer-overlay-leave-active {
+  transition: opacity 0.15s ease-out;
+}
+.drawer-overlay-enter-active > aside,
+.drawer-overlay-leave-active > aside {
+  transition: transform 0.18s ease-out;
+}
+.drawer-overlay-enter-from,
+.drawer-overlay-leave-to {
+  opacity: 0;
+}
+.drawer-overlay-enter-from > aside,
+.drawer-overlay-leave-to > aside {
+  transform: translateX(100%);
+}
+</style>

@@ -32,7 +32,7 @@ defineProps({
 
 <template>
   <div class="rounded-lg border border-[var(--theme-border-default)] p-4" style="background: var(--theme-surface-gradient)">
-    <h3 class="mb-2 flex items-center gap-1.5 text-[13px] font-semibold text-[var(--theme-text-secondary)]">
+    <h3 class="mb-2 flex items-center gap-1.5 text-[15px] font-semibold text-[var(--theme-text-secondary)]">
       <CircleHelp :size="14" class="shrink-0" aria-hidden="true" />
       {{ t(locale, 'desktop.overview.healthTitle') }}
     </h3>

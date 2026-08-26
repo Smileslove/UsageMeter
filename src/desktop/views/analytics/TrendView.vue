@@ -263,7 +263,7 @@ function drillToPeak(row: PeakRow): void {
       class="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-[var(--theme-border-default)] bg-[var(--theme-border-default)] sm:grid-cols-3 lg:grid-cols-6"
     >
       <div v-for="item in totalItems" :key="item.key" class="bg-[var(--theme-bg-elevated)] px-4 py-3">
-        <p class="text-[10px] font-medium text-[var(--theme-text-tertiary)]">{{ t(locale, item.labelKey) }}</p>
+        <p class="text-xs font-medium text-[var(--theme-text-tertiary)]">{{ t(locale, item.labelKey) }}</p>
         <p class="mt-0.5 truncate font-mono text-sm font-bold text-[var(--theme-text-primary)]">{{ item.value }}</p>
       </div>
     </div>
@@ -272,10 +272,10 @@ function drillToPeak(row: PeakRow): void {
     <div class="rounded-lg border border-[var(--theme-border-default)] p-4" style="background: var(--theme-surface-gradient)">
       <div class="mb-3 flex items-center justify-between gap-2">
         <div class="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-2">
-          <h3 class="flex items-center gap-1.5 text-[13px] font-semibold text-[var(--theme-text-secondary)]">
+          <h3 class="flex items-center gap-1.5 text-[15px] font-semibold text-[var(--theme-text-secondary)]">
             <BarChart3 :size="14" class="shrink-0" aria-hidden="true" />
             {{ metricLabel(analytics.analyticsMetric) }}
-            <span v-if="compare === 'previous'" class="text-[10px] font-normal text-[var(--theme-text-quaternary)]">
+            <span v-if="compare === 'previous'" class="text-xs font-normal text-[var(--theme-text-quaternary)]">
               {{ t(locale, 'desktop.analytics.trendPrevHint') }}
             </span>
           </h3>
@@ -332,14 +332,14 @@ function drillToPeak(row: PeakRow): void {
 
     <!-- 峰值表（默认按主指标降序；点击动作进入会话页） -->
     <div class="rounded-lg border border-[var(--theme-border-default)] p-4" style="background: var(--theme-surface-gradient)">
-      <h3 class="mb-2 flex items-center gap-1.5 text-[13px] font-semibold text-[var(--theme-text-secondary)]">
+      <h3 class="mb-2 flex items-center gap-1.5 text-[15px] font-semibold text-[var(--theme-text-secondary)]">
         <Zap :size="14" class="shrink-0" aria-hidden="true" />
         {{ t(locale, 'desktop.analytics.peakTable') }}
       </h3>
       <div v-if="visiblePeakRows.length" class="overflow-x-auto">
         <table class="w-full min-w-[600px] text-xs">
           <thead>
-            <tr class="border-b border-[var(--theme-border-subtle)] text-left text-[10px] font-medium uppercase tracking-wide text-[var(--theme-text-quaternary)]">
+            <tr class="border-b border-[var(--theme-border-subtle)] text-left text-xs font-medium uppercase tracking-wide text-[var(--theme-text-quaternary)]">
               <th class="py-2 pr-3 font-medium">{{ t(locale, 'desktop.analytics.peakTime') }}</th>
               <th class="py-2 pr-3 font-medium">{{ metricLabel(analytics.analyticsMetric) }}</th>
               <th class="py-2 pr-3 text-right font-medium">{{ t(locale, 'desktop.analytics.peakRequests') }}</th>
@@ -373,7 +373,7 @@ function drillToPeak(row: PeakRow): void {
               <td class="py-2">
                 <button
                   type="button"
-                  class="rounded-md px-2 py-1 text-[11px] font-medium text-[var(--theme-accent-primary)] transition-colors duration-150 hover:bg-[var(--theme-accent-soft)]"
+                  class="rounded-md px-2 py-1 text-xs font-medium text-[var(--theme-accent-primary)] transition-colors duration-150 hover:bg-[var(--theme-accent-soft)]"
                   @click="drillToPeak(row)"
                 >
                   {{ t(locale, 'desktop.analytics.viewSessions') }}

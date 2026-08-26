@@ -159,7 +159,7 @@ function monthCalendarTooltip(day: DayActivity): string {
     <!-- 月历 + 年度贡献图 -->
     <div class="rounded-lg border border-[var(--theme-border-default)] p-4" style="background: var(--theme-surface-gradient)">
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h3 class="flex items-center gap-1.5 text-[13px] font-semibold text-[var(--theme-text-secondary)]">
+        <h3 class="flex items-center gap-1.5 text-[15px] font-semibold text-[var(--theme-text-secondary)]">
           <CalendarDays :size="14" class="shrink-0" aria-hidden="true" />
           {{ t(locale, 'desktop.analytics.monthCalendar') }}
           <span class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">
@@ -214,7 +214,7 @@ function monthCalendarTooltip(day: DayActivity): string {
         <div
           v-for="wd in weekDayLabels"
           :key="wd"
-          class="pb-1 text-center text-[10px] font-medium text-[var(--theme-text-quaternary)]"
+          class="pb-1 text-center text-xs font-medium text-[var(--theme-text-quaternary)]"
         >
           {{ wd }}
         </div>
@@ -226,7 +226,7 @@ function monthCalendarTooltip(day: DayActivity): string {
           <button
             v-if="cell.day"
             type="button"
-            class="grid h-full w-full place-items-center rounded-md border text-[11px] font-mono transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring-focus)]"
+            class="grid h-full w-full place-items-center rounded-md border text-xs font-mono transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring-focus)]"
             :class="[
               intensityClass(monthCellRatio(cell.day)),
               selectedDate === cell.key
@@ -245,7 +245,7 @@ function monthCalendarTooltip(day: DayActivity): string {
 
     <!-- 年度贡献图：横向 53 周、纵向 7 天 -->
     <div class="rounded-lg border border-[var(--theme-border-default)] p-4" style="background: var(--theme-surface-gradient)">
-      <h3 class="mb-3 flex items-center gap-1.5 text-[13px] font-semibold text-[var(--theme-text-secondary)]">
+      <h3 class="mb-3 flex items-center gap-1.5 text-[15px] font-semibold text-[var(--theme-text-secondary)]">
         <BarChart3 :size="14" class="shrink-0" aria-hidden="true" />
         {{ t(locale, 'desktop.analytics.yearContribution') }}
         <span class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">{{ monthYear }}</span>

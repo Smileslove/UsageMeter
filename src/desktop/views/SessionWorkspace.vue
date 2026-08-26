@@ -185,7 +185,7 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
     <div class="flex flex-wrap items-center gap-2">
       <button
         type="button"
-        class="theme-button-secondary inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-3 text-[12px] font-semibold"
+        class="theme-button-secondary inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold"
         :aria-label="t(locale, 'desktop.workspace.backToSessions')"
         :title="t(locale, 'desktop.workspace.backToSessions')"
         @click="goBack"
@@ -197,12 +197,12 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
       <div v-if="session" class="min-w-0 flex-1">
         <div class="flex min-w-0 items-center gap-2">
           <h1 class="truncate text-[15px] font-bold text-[var(--theme-text-primary)]">{{ displaySessionTitle(session) }}</h1>
-          <span v-if="displaySessionProjectBadge(session)" class="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold leading-none" :class="projectBadgeClasses(session.projectIdentity)">
+          <span v-if="displaySessionProjectBadge(session)" class="shrink-0 rounded px-1.5 py-0.5 text-xs font-semibold leading-none" :class="projectBadgeClasses(session.projectIdentity)">
             {{ displaySessionProjectBadge(session) }}
           </span>
-          <span v-if="session.wslDistro" class="shrink-0 rounded bg-cyan-500/10 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-cyan-600 dark:text-cyan-300">{{ session.wslDistro }}</span>
+          <span v-if="session.wslDistro" class="shrink-0 rounded bg-cyan-500/10 px-1.5 py-0.5 text-xs font-semibold leading-none text-cyan-600 dark:text-cyan-300">{{ session.wslDistro }}</span>
         </div>
-        <p class="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--theme-text-tertiary)]">
+        <p class="mt-0.5 flex items-center gap-1.5 text-xs text-[var(--theme-text-tertiary)]">
           <LobeIcon v-if="getToolIcon(session.tool)" :slug="getToolIcon(session.tool) ?? 'claudecode'" :size="12" @error="() => {}" />
           <span v-else class="h-1.5 w-1.5 rounded-full bg-[var(--theme-border-strong)]"></span>
           {{ requestToolLabel(session.tool) }} · {{ formatTime(session.lastRequestTime) }}
@@ -213,7 +213,7 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
       <!-- 复制 ID -->
       <button
         type="button"
-        class="theme-button-secondary inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-3 text-[12px] font-semibold"
+        class="theme-button-secondary inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold"
         :aria-label="t(locale, 'desktop.workspace.copySessionId')"
         :title="t(locale, 'desktop.workspace.copySessionId')"
         @click="copyText(sessionKey, 'id')"
@@ -226,7 +226,7 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
       <div class="relative shrink-0">
         <button
           type="button"
-          class="theme-button-secondary inline-flex h-8 items-center gap-1 rounded-lg px-2.5 text-[12px] font-semibold"
+          class="theme-button-secondary inline-flex h-8 items-center gap-1 rounded-lg px-2.5 text-xs font-semibold"
           :aria-label="t(locale, 'desktop.workspace.moreMenu')"
           :title="t(locale, 'desktop.workspace.moreMenu')"
           :aria-expanded="moreMenuOpen"
@@ -237,7 +237,7 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
         <div v-if="moreMenuOpen" class="theme-surface-elevated absolute right-0 top-9 z-30 w-64 rounded-xl border p-1.5 shadow-lg" role="menu">
           <button
             type="button"
-            class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11.5px] text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]"
+            class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]"
             role="menuitem"
             @click="copyText(sessionKey, 'id'); moreMenuOpen = false"
           >
@@ -246,7 +246,7 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
           </button>
           <button
             type="button"
-            class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11.5px] text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]"
+            class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]"
             role="menuitem"
             :disabled="!session?.cwd"
             :title="session?.cwd ?? undefined"
@@ -257,7 +257,7 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
           </button>
           <button
             type="button"
-            class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11.5px] text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]"
+            class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]"
             role="menuitem"
             :disabled="!session?.topic"
             :title="session?.topic ?? undefined"
@@ -268,7 +268,7 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
           </button>
           <button
             type="button"
-            class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11.5px] text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]"
+            class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]"
             role="menuitem"
             :disabled="!session?.models || session.models.length === 0"
             @click="session?.models?.length ? copyText(session.models.join(', '), 'models') : undefined; moreMenuOpen = false"
@@ -279,7 +279,7 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
         </div>
       </div>
 
-      <span v-if="copiedFlash" class="shrink-0 text-[11px] font-medium text-emerald-600 dark:text-emerald-300">{{ t(locale, 'desktop.workspace.copied') }}</span>
+      <span v-if="copiedFlash" class="shrink-0 text-xs font-medium text-emerald-600 dark:text-emerald-300">{{ t(locale, 'desktop.workspace.copied') }}</span>
     </div>
 
     <!-- tabs -->
@@ -290,7 +290,7 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
         type="button"
         role="tab"
         :aria-selected="activeTab === tab[0]"
-        class="rounded-md px-3 py-1 text-[11.5px] font-semibold transition-colors"
+        class="rounded-md px-3 py-1 text-xs font-semibold transition-colors"
         :class="activeTab === tab[0] ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'"
         @click="activeTab = tab[0]"
       >
@@ -302,9 +302,9 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
     <div v-if="detailLoading && !session" class="flex justify-center py-16">
       <div class="h-5 w-5 animate-spin rounded-full border-2 border-[var(--theme-border-strong)] border-t-[var(--theme-accent-primary)]"></div>
     </div>
-    <div v-else-if="detailError" class="theme-surface rounded-xl border px-4 py-8 text-center text-[12px] text-red-500">
+    <div v-else-if="detailError" class="theme-surface rounded-xl border px-4 py-8 text-center text-xs text-red-500">
       {{ detailError }}
-      <button type="button" class="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-[var(--theme-border-default)] px-3 py-1.5 text-[11.5px] font-semibold text-[var(--theme-text-secondary)]" @click="loadDetail">
+      <button type="button" class="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-[var(--theme-border-default)] px-3 py-1.5 text-xs font-semibold text-[var(--theme-text-secondary)]" @click="loadDetail">
         <RefreshCw class="h-3.5 w-3.5" aria-hidden="true" />
         {{ t(locale, 'common.refresh') }}
       </button>
@@ -317,28 +317,28 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
         <div class="theme-surface rounded-xl border px-4 py-3">
           <div class="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2 lg:grid-cols-3">
             <div>
-              <div class="text-[10px] uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.title') }}</div>
-              <div class="mt-0.5 truncate text-[12px] font-medium text-[var(--theme-text-primary)]" :title="displaySessionTitle(session)">{{ displaySessionTitle(session) }}</div>
+              <div class="text-xs uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.title') }}</div>
+              <div class="mt-0.5 truncate text-xs font-medium text-[var(--theme-text-primary)]" :title="displaySessionTitle(session)">{{ displaySessionTitle(session) }}</div>
             </div>
             <div>
-              <div class="text-[10px] uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.project') }}</div>
-              <div class="mt-0.5 truncate text-[12px] font-medium text-[var(--theme-text-primary)]">{{ displaySessionProjectBadge(session) || '—' }}</div>
+              <div class="text-xs uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.project') }}</div>
+              <div class="mt-0.5 truncate text-xs font-medium text-[var(--theme-text-primary)]">{{ displaySessionProjectBadge(session) || '—' }}</div>
             </div>
             <div>
-              <div class="text-[10px] uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.cwd') }}</div>
-              <div class="mt-0.5 truncate font-mono text-[11px] text-[var(--theme-text-secondary)]" :title="session.cwd">{{ session.cwd || '—' }}</div>
+              <div class="text-xs uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.cwd') }}</div>
+              <div class="mt-0.5 truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="session.cwd">{{ session.cwd || '—' }}</div>
             </div>
             <div>
-              <div class="text-[10px] uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.startTime') }}</div>
-              <div class="mt-0.5 text-[12px] text-[var(--theme-text-secondary)]">{{ fullTime(session.firstRequestTime) }}</div>
+              <div class="text-xs uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.startTime') }}</div>
+              <div class="mt-0.5 text-xs text-[var(--theme-text-secondary)]">{{ fullTime(session.firstRequestTime) }}</div>
             </div>
             <div>
-              <div class="text-[10px] uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.endTime') }}</div>
-              <div class="mt-0.5 text-[12px] text-[var(--theme-text-secondary)]">{{ fullTime(session.lastRequestTime) }}</div>
+              <div class="text-xs uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.endTime') }}</div>
+              <div class="mt-0.5 text-xs text-[var(--theme-text-secondary)]">{{ fullTime(session.lastRequestTime) }}</div>
             </div>
             <div>
-              <div class="text-[10px] uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.models') }}</div>
-              <div class="mt-0.5 truncate font-mono text-[11px] text-[var(--theme-text-secondary)]" :title="session.models.join(', ')">{{ session.models.join(', ') || '—' }}</div>
+              <div class="text-xs uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.models') }}</div>
+              <div class="mt-0.5 truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="session.models.join(', ')">{{ session.models.join(', ') || '—' }}</div>
             </div>
           </div>
         </div>
@@ -346,48 +346,48 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
         <!-- 统计网格 -->
         <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <div class="theme-surface rounded-xl border px-3 py-2.5">
-            <div class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.requests') }}</div>
+            <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.requests') }}</div>
             <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ sessionUsageVisible(session) ? (session.totalRequests ?? 0) : '—' }}</div>
           </div>
           <div class="theme-surface rounded-xl border px-3 py-2.5">
-            <div class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.tokens') }}</div>
+            <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.tokens') }}</div>
             <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ sessionUsageVisible(session) ? formatTokens((session.totalInputTokens || 0) + (session.totalOutputTokens || 0) + (session.totalCacheCreateTokens || 0) + (session.totalCacheReadTokens || 0)) : '—' }}</div>
           </div>
           <div class="theme-surface rounded-xl border px-3 py-2.5">
-            <div class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.cache') }}</div>
+            <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.cache') }}</div>
             <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ sessionUsageVisible(session) ? formatTokens((session.totalCacheCreateTokens || 0) + (session.totalCacheReadTokens || 0)) : '—' }}</div>
           </div>
           <div class="theme-surface rounded-xl border px-3 py-2.5">
-            <div class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.cost') }}</div>
+            <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.cost') }}</div>
             <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-chart-cost)]">{{ sessionUsageVisible(session) ? formatCost(session.estimatedCost) : '—' }}</div>
           </div>
           <div class="theme-surface rounded-xl border px-3 py-2.5">
-            <div class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.rate') }}</div>
+            <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.rate') }}</div>
             <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ sessionUsageVisible(session) && (session.avgOutputTokensPerSecond || 0) > 0 ? `${session.avgOutputTokensPerSecond.toFixed(1)}t/s` : '—' }}</div>
           </div>
           <div class="theme-surface rounded-xl border px-3 py-2.5">
-            <div class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.ttft') }}</div>
+            <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.ttft') }}</div>
             <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ sessionUsageVisible(session) && session.avgTtftMs ? `${session.avgTtftMs.toFixed(0)}ms` : '—' }}</div>
           </div>
           <div class="theme-surface rounded-xl border px-3 py-2.5">
-            <div class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.success') }}</div>
+            <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.success') }}</div>
             <div class="mt-0.5 font-mono text-[15px] font-semibold text-emerald-600 dark:text-emerald-300">{{ sessionUsageVisible(session) ? (session.successRequests ?? 0) : '—' }}</div>
           </div>
           <div class="theme-surface rounded-xl border px-3 py-2.5">
-            <div class="text-[10px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.errors') }}</div>
+            <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.errors') }}</div>
             <div class="mt-0.5 font-mono text-[15px] font-semibold text-red-500">{{ sessionUsageVisible(session) ? (session.errorRequests ?? 0) : '—' }}</div>
           </div>
         </div>
 
         <!-- 覆盖度条：本地 / 代理 / 合并 -->
         <div class="theme-surface rounded-xl border px-4 py-3">
-          <div class="text-[10.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.coverageLabel') }}</div>
+          <div class="text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.coverageLabel') }}</div>
           <div class="mt-2 flex h-2.5 w-full overflow-hidden rounded-full bg-[var(--theme-border-subtle)]">
             <div class="h-full bg-amber-400" :style="{ width: coveragePercent(coverageSegments.local) }" :title="t(locale, 'desktop.workspace.coverageLocal')"></div>
             <div class="h-full bg-cyan-400" :style="{ width: coveragePercent(coverageSegments.proxy) }" :title="t(locale, 'desktop.workspace.coverageProxy')"></div>
             <div class="h-full bg-violet-400" :style="{ width: coveragePercent(coverageSegments.merged) }" :title="t(locale, 'desktop.workspace.coverageMerged')"></div>
           </div>
-          <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10.5px] text-[var(--theme-text-secondary)]">
+          <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--theme-text-secondary)]">
             <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-amber-400"></span>{{ t(locale, 'desktop.workspace.coverageLocal') }} <b class="font-mono">{{ coverageSegments.local }}</b></span>
             <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-cyan-400"></span>{{ t(locale, 'desktop.workspace.coverageProxy') }} <b class="font-mono">{{ coverageSegments.proxy }}</b></span>
             <span class="inline-flex items-center gap-1"><span class="h-2 w-2 rounded-full bg-violet-400"></span>{{ t(locale, 'desktop.workspace.coverageMerged') }} <b class="font-mono">{{ coverageSegments.merged }}</b></span>
@@ -396,12 +396,12 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
 
         <!-- Token 输入/输出分布 -->
         <div class="theme-surface rounded-xl border px-4 py-3">
-          <div class="text-[10.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.inputOutput') }}</div>
+          <div class="text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.inputOutput') }}</div>
           <div class="mt-2 flex h-2.5 w-full overflow-hidden rounded-full bg-[var(--theme-border-subtle)]" :class="{ 'opacity-40': !sessionUsageVisible(session) }">
             <div class="h-full bg-cyan-400" :style="{ width: `${ioRatio.input}%` }"></div>
             <div class="h-full bg-fuchsia-400" :style="{ width: `${ioRatio.output}%` }"></div>
           </div>
-          <div class="mt-1.5 flex justify-between text-[10.5px] text-[var(--theme-text-tertiary)]">
+          <div class="mt-1.5 flex justify-between text-xs text-[var(--theme-text-tertiary)]">
             <span>{{ t(locale, 'common.inputTokens') }}: {{ sessionUsageVisible(session) ? formatTokens(session.totalInputTokens || 0) : '—' }}</span>
             <span>{{ t(locale, 'common.outputTokens') }}: {{ sessionUsageVisible(session) ? formatTokens(session.totalOutputTokens || 0) : '—' }}</span>
           </div>
@@ -410,10 +410,10 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
         <!-- 子代理摘要：无关系数据显示“不支持”，不显示 0 -->
         <div class="theme-surface rounded-xl border px-4 py-3">
           <div class="flex items-center justify-between">
-            <div class="text-[10.5px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.subagentSummary') }}</div>
-            <span class="rounded bg-slate-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-slate-500 dark:text-slate-300">{{ t(locale, 'desktop.workspace.subagentUnsupported') }}</span>
+            <div class="text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.subagentSummary') }}</div>
+            <span class="rounded bg-slate-500/10 px-1.5 py-0.5 text-xs font-semibold text-slate-500 dark:text-slate-300">{{ t(locale, 'desktop.workspace.subagentUnsupported') }}</span>
           </div>
-          <p class="mt-1.5 text-[11px] leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.subagentUnsupportedDesc') }}</p>
+          <p class="mt-1.5 text-xs leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.subagentUnsupportedDesc') }}</p>
         </div>
       </div>
 
@@ -423,10 +423,10 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
       <!-- ============ 请求 tab ============ -->
       <div v-else-if="activeTab === 'requests'" class="space-y-2">
         <div class="flex items-center justify-between">
-          <span class="text-[11px] text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.requestsCount', { count: sessionRequests.length }) }}</span>
+          <span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.requestsCount', { count: sessionRequests.length }) }}</span>
           <button
             type="button"
-            class="theme-button-secondary inline-flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[11px] font-semibold"
+            class="theme-button-secondary inline-flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold"
             :disabled="wsRequestsLoading || !wsRequestsHasMore"
             @click="loadMoreSessionRequests"
           >
@@ -434,14 +434,14 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
             {{ wsRequestsLoading ? t(locale, 'desktop.workspace.loading') : t(locale, 'desktop.workspace.loadMore') }}
           </button>
         </div>
-        <div v-if="sessionRequests.length === 0 && !wsRequestsLoading" class="theme-surface rounded-xl border px-4 py-10 text-center text-[11.5px] text-[var(--theme-text-tertiary)]">
+        <div v-if="sessionRequests.length === 0 && !wsRequestsLoading" class="theme-surface rounded-xl border px-4 py-10 text-center text-xs text-[var(--theme-text-tertiary)]">
           {{ t(locale, 'desktop.workspace.requestsEmpty') }}
         </div>
         <!-- 请求表格（该会话关联请求） -->
         <div v-else class="theme-surface overflow-x-auto rounded-xl border">
-          <table class="w-full min-w-[720px] border-collapse text-[11.5px]">
+          <table class="w-full min-w-[720px] border-collapse text-xs">
             <thead>
-              <tr class="border-b border-[var(--theme-border-default)] text-[10px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
+              <tr class="border-b border-[var(--theme-border-default)] text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
                 <th class="px-2.5 py-2 text-left">{{ t(locale, 'desktop.sessions.columnTime') }}</th>
                 <th class="px-2.5 py-2 text-left">{{ t(locale, 'desktop.sessions.columnModel') }}</th>
                 <th class="px-2.5 py-2 text-left">{{ t(locale, 'desktop.sessions.columnSource') }}</th>
@@ -463,11 +463,11 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
                 @click="openRequestDrawer(request)"
               >
                 <td class="whitespace-nowrap px-2.5 py-1.5 text-[var(--theme-text-secondary)]">{{ formatTime(request.timestampSec) }}</td>
-                <td class="max-w-40 truncate px-2.5 py-1.5 font-mono text-[10.5px] text-[var(--theme-text-secondary)]" :title="request.model">{{ requestModelLabel(request) }}</td>
+                <td class="max-w-40 truncate px-2.5 py-1.5 font-mono text-xs text-[var(--theme-text-secondary)]" :title="request.model">{{ requestModelLabel(request) }}</td>
                 <td class="max-w-28 truncate px-2.5 py-1.5 text-[var(--theme-text-secondary)]" :title="requestSourceLabel(request)">{{ requestSourceLabel(request) }}</td>
                 <td class="px-2.5 py-1.5">
-                  <span v-if="request.coverageOrigin === 'local_only'" class="text-[10px] text-[var(--theme-text-quaternary)]">—</span>
-                  <span v-else class="inline-flex items-center rounded-full border px-1.5 py-px text-[9.5px] font-bold leading-none" :class="requestStatusClasses(request)">{{ requestStatusLabel(request) }}</span>
+                  <span v-if="request.coverageOrigin === 'local_only'" class="text-xs text-[var(--theme-text-quaternary)]">—</span>
+                  <span v-else class="inline-flex items-center rounded-full border px-1.5 py-px text-xs font-bold leading-none" :class="requestStatusClasses(request)">{{ requestStatusLabel(request) }}</span>
                 </td>
                 <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(request.inputTokens) }}</td>
                 <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(request.outputTokens) }}</td>
@@ -486,11 +486,11 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
             <div class="flex items-start justify-between gap-2">
               <div class="min-w-0">
                 <div class="mb-1 flex items-center gap-1.5">
-                  <span v-if="selectedRequest.coverageOrigin !== 'local_only'" class="inline-flex items-center rounded-full border px-1.5 py-px text-[9.5px] font-bold leading-none" :class="requestStatusClasses(selectedRequest)">{{ requestStatusLabel(selectedRequest) }}</span>
-                  <span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ formatTime(selectedRequest.timestampSec) }}</span>
-                  <span class="text-[10px] text-[var(--theme-text-tertiary)]">{{ requestModelLabel(selectedRequest) }}</span>
+                  <span v-if="selectedRequest.coverageOrigin !== 'local_only'" class="inline-flex items-center rounded-full border px-1.5 py-px text-xs font-bold leading-none" :class="requestStatusClasses(selectedRequest)">{{ requestStatusLabel(selectedRequest) }}</span>
+                  <span class="text-xs text-[var(--theme-text-tertiary)]">{{ formatTime(selectedRequest.timestampSec) }}</span>
+                  <span class="text-xs text-[var(--theme-text-tertiary)]">{{ requestModelLabel(selectedRequest) }}</span>
                 </div>
-                <div class="flex flex-wrap gap-x-4 gap-y-0.5 text-[10.5px] text-[var(--theme-text-secondary)]">
+                <div class="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-[var(--theme-text-secondary)]">
                   <span>{{ t(locale, 'desktop.sessions.columnTotalTokens') }}: <b class="font-mono">{{ formatTokens(selectedRequest.totalTokens) }}</b></span>
                   <span>{{ t(locale, 'sessions.cost') }}: <b class="font-mono text-[var(--theme-chart-cost)]">{{ formatCost(selectedRequest.estimatedCost) }}</b></span>
                   <span>{{ t(locale, 'sessions.ttft') }}: <b class="font-mono">{{ selectedRequest.ttftMs != null ? formatDuration(selectedRequest.ttftMs) : '—' }}</b></span>
@@ -514,12 +514,12 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
 
       <!-- ============ 模型与用量 tab ============ -->
       <div v-else-if="activeTab === 'models'" class="theme-surface overflow-x-auto rounded-xl border">
-        <div v-if="modelAgg.length === 0" class="px-4 py-12 text-center text-[11.5px] text-[var(--theme-text-tertiary)]">
+        <div v-if="modelAgg.length === 0" class="px-4 py-12 text-center text-xs text-[var(--theme-text-tertiary)]">
           {{ t(locale, 'desktop.workspace.modelsUnavailable') }}
         </div>
-        <table v-else class="w-full min-w-[640px] border-collapse text-[11.5px]">
+        <table v-else class="w-full min-w-[640px] border-collapse text-xs">
           <thead>
-            <tr class="border-b border-[var(--theme-border-default)] text-[10px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
+            <tr class="border-b border-[var(--theme-border-default)] text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
               <th class="px-3 py-2 text-left">{{ t(locale, 'desktop.workspace.colModel') }}</th>
               <th class="px-3 py-2 text-right">{{ t(locale, 'desktop.workspace.colRequests') }}</th>
               <th class="px-3 py-2 text-right">{{ t(locale, 'desktop.workspace.colTokens') }}</th>
@@ -530,7 +530,7 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
           </thead>
           <tbody>
             <tr v-for="row in modelAgg" :key="row.model" class="border-b border-[var(--theme-border-subtle)] last:border-0">
-              <td class="max-w-64 truncate px-3 py-2 font-mono text-[10.5px] text-[var(--theme-text-secondary)]" :title="row.model">{{ row.model }}</td>
+              <td class="max-w-64 truncate px-3 py-2 font-mono text-xs text-[var(--theme-text-secondary)]" :title="row.model">{{ row.model }}</td>
               <td class="whitespace-nowrap px-3 py-2 text-right font-mono text-[var(--theme-text-primary)]">{{ row.requests }}</td>
               <td class="whitespace-nowrap px-3 py-2 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(row.inputTokens + row.outputTokens) }}</td>
               <td class="whitespace-nowrap px-3 py-2 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(row.cacheTokens) }}</td>
@@ -544,8 +544,8 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
       <!-- ============ 文件 tab（暂不可用占位） ============ -->
       <div v-else class="theme-surface flex flex-col items-center justify-center rounded-xl border px-6 py-16 text-center">
         <FileQuestionMark class="h-7 w-7 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-        <h3 class="mt-3 text-[13px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'desktop.workspace.filesUnavailable') }}</h3>
-        <p class="mt-1.5 max-w-md text-[11.5px] leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.filesUnavailableDesc') }}</p>
+        <h3 class="mt-3 text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'desktop.workspace.filesUnavailable') }}</h3>
+        <p class="mt-1.5 max-w-md text-xs leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.filesUnavailableDesc') }}</p>
       </div>
     </template>
   </div>

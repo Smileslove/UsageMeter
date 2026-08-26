@@ -83,7 +83,7 @@ onMounted(() => {
   <div class="relative min-w-0 flex-1">
     <button
       type="button"
-      class="theme-surface flex h-9 w-full max-w-md items-center gap-2 rounded-lg border px-3 text-left text-[12px] font-medium text-[var(--theme-text-primary)]"
+      class="theme-surface flex h-9 w-full max-w-md items-center gap-2 rounded-lg border px-3 text-left text-xs font-medium text-[var(--theme-text-primary)]"
       :aria-label="t(locale, 'desktop.activity.selectSessionLabel')"
       :title="t(locale, 'desktop.activity.selectSessionLabel')"
       :aria-expanded="sessionPickerOpen"
@@ -107,7 +107,7 @@ onMounted(() => {
         <input
           v-model="sessionSearch"
           type="text"
-          class="min-w-0 flex-1 bg-transparent text-[12px] text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]"
+          class="min-w-0 flex-1 bg-transparent text-xs text-[var(--theme-text-primary)] outline-none placeholder:text-[var(--theme-text-quaternary)]"
           :placeholder="t(locale, 'desktop.activity.sessionPickerPlaceholder')"
         />
       </div>
@@ -120,16 +120,16 @@ onMounted(() => {
           :class="activeKey === session.sessionId ? 'bg-[var(--theme-accent-soft)]' : ''"
           @click="selectSession(session)"
         >
-          <span class="truncate text-[12px] font-medium text-[var(--theme-text-primary)]">{{ sessionTitle(session) }}</span>
-          <span class="truncate font-mono text-[10px] text-[var(--theme-text-quaternary)]">{{ session.projectName || session.sessionId }}</span>
+          <span class="truncate text-xs font-medium text-[var(--theme-text-primary)]">{{ sessionTitle(session) }}</span>
+          <span class="truncate font-mono text-xs text-[var(--theme-text-quaternary)]">{{ session.projectName || session.sessionId }}</span>
         </button>
-        <div v-if="pickerSessions.length === 0" class="px-2.5 py-6 text-center text-[11px] text-[var(--theme-text-tertiary)]">
+        <div v-if="pickerSessions.length === 0" class="px-2.5 py-6 text-center text-xs text-[var(--theme-text-tertiary)]">
           {{ t(locale, 'desktop.activity.sessionPickerEmpty') }}
         </div>
         <button
           v-if="!sessionsAllLoaded"
           type="button"
-          class="mt-1 flex w-full items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]"
+          class="mt-1 flex w-full items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-bg-hover)]"
           :disabled="sessionsLoading"
           @click="loadMoreSessions"
         >
