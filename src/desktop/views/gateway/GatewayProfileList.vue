@@ -9,7 +9,7 @@ import { KeyRound, Link2, Plus, RadioTower, Trash2 } from 'lucide-vue-next'
 import { useMonitorStore } from '../../../stores/monitor'
 import { t } from '../../../i18n'
 import { compactProtocolLabel } from './protocolOptions'
-import type { GatewayProfile, GatewayUpstreamKey } from '../../../types'
+import type { GatewayProfile } from '../../../types'
 import SettingsSwitch from '../../../components/settings/SettingsSwitch.vue'
 
 defineProps<{
@@ -36,9 +36,7 @@ const lastActiveOf = (profile: GatewayProfile): number | null => {
     if (key.lastUsedAtMs) times.push(key.lastUsedAtMs)
   }
   for (const key of profile.upstreamKeys) {
-    if ('lastUsedAtMs' in key && (key as GatewayUpstreamKey & { lastUsedAtMs?: number }).lastUsedAtMs) {
-      times.push((key as GatewayUpstreamKey & { lastUsedAtMs?: number }).lastUsedAtMs as number)
-    }
+    if (key.lastUsedAtMs) times.push(key.lastUsedAtMs)
   }
   return times.length > 0 ? Math.max(...times) : null
 }

@@ -22,37 +22,15 @@ import {
 } from '../../api/gatewayApi'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
-import { gatewayProtocolOptions } from './gateway/protocolOptions'
-import type { GatewayCredentialRecovery, GatewayDispatchStrategy, GatewayLocalKey, GatewayProfile, GatewayProtocol, GatewayStatus, GatewayUpstreamKey, GatewayUpstreamModel } from '../../types'
+import { gatewayProtocolOptions, gatewayProfileAddress } from './gateway/protocolOptions'
+import { emptyCredentialRecovery, gatewayErrorKey, validateGatewayDraft } from './gateway/gatewayTypes'
+import type { DraftProfile, GatewayDraftInput } from './gateway/gatewayTypes'
+import type { GatewayProfile, GatewayStatus } from '../../types'
 import ProxyControlPanel from '../../components/settings/ProxyControlPanel.vue'
 import CcSwitchCompatPanel from '../../components/settings/CcSwitchCompatPanel.vue'
 import GatewayStatusBar from './gateway/GatewayStatusBar.vue'
 import GatewayProfileList from './gateway/GatewayProfileList.vue'
 import GatewayProfileEditor from './gateway/GatewayProfileEditor.vue'
-
-interface DraftProfile {
-  id?: string
-  name: string
-  protocol: GatewayProtocol
-  baseUrl: string
-  enabled: boolean
-  clientLabel: string
-  dispatchStrategy: GatewayDispatchStrategy
-  upstreamKeys: GatewayUpstreamKey[]
-  localKeys: GatewayLocalKey[]
-  upstreamModels: GatewayUpstreamModel[]
-  credentialRecovery: GatewayCredentialRecovery
-}
-
-interface GatewayDraftInput {
-  name: string
-  protocol: GatewayProtocol
-  baseUrl: string
-  enabled: boolean
-  clientLabel: string
-  dispatchStrategy: GatewayDispatchStrategy
-  upstreamSecret: string
-}
 
 const store = useMonitorStore()
 const profiles = ref<GatewayProfile[]>([])
@@ -72,23 +50,18 @@ const draft = ref<DraftProfile>({
   baseUrl: '',
   enabled: true,
   clientLabel: '',
-  dispatchStrategy: 'round_robin' as GatewayDispatchStrategy,
+  dispatchStrategy: 'round_robin',
   upstreamKeys: [],
   localKeys: [],
   upstreamModels: [],
   credentialRecovery: emptyCredentialRecovery()
 })
 
-function emptyCredentialRecovery(): GatewayCredentialRecovery {
-  return { upstreamKeyRequired: false, localKeyRotationRecommended: false }
-}
-
 const locale = computed(() => store.settings.locale)
 const selectedProfile = computed(() => profiles.value.find(profile => profile.id === selectedId.value) ?? null)
 const listenerAddress = computed(() => status.value?.listenerAddress || `http://127.0.0.1:${store.settings.proxy.port}`)
 const selectedAddress = computed(() => {
-  const option = gatewayProtocolOptions.find(item => item.value === selectedProfile.value?.protocol)
-  return selectedProfile.value ? `${listenerAddress.value}/gateway/${selectedProfile.value.id}${option?.basePath ?? '/v1'}` : ''
+  return selectedProfile.value ? gatewayProfileAddress(listenerAddress.value, selectedProfile.value) : ''
 })
 const selectedProtocolLabel = computed(() => {
   const option = gatewayProtocolOptions.find(item => item.value === (selectedProfile.value?.protocol ?? draft.value.protocol))
@@ -98,23 +71,7 @@ const feedbackMessage = computed(() => {
   if (feedback.value === 'saved') return t(locale.value, 'gateway.saveSuccess')
   if (feedback.value === 'copied') return t(locale.value, 'gateway.copied')
   if (feedback.value !== 'error') return ''
-
-  const errorKey = errorCode.value.startsWith('gateway.')
-    ? errorCode.value
-    : errorCode.value === 'ERR_GATEWAY_LOCAL_KEY_ALREADY_EXISTS'
-      ? 'gateway.singleLocalKeyHint'
-    : errorCode.value === 'ERR_GATEWAY_UPSTREAM_KEY_ALREADY_EXISTS'
-      ? 'gateway.singleUpstreamKeyHint'
-    : errorCode.value === 'ERR_GATEWAY_UPSTREAM_KEY_MIGRATION_REQUIRED'
-      ? 'gateway.upstreamKeyMigrationRequired'
-    : errorCode.value === 'ERR_GATEWAY_LOCAL_KEY_REGENERATE_REQUIRED'
-      ? 'gateway.localKeyRegenerateRequired'
-    : errorCode.value.startsWith('ERR_GATEWAY_PROFILE_NAME')
-      ? 'gateway.validationName'
-      : errorCode.value.startsWith('ERR_GATEWAY_BASE_URL')
-        ? 'gateway.validationUrl'
-        : 'gateway.operationError'
-  return t(locale.value, errorKey)
+  return t(locale.value, gatewayErrorKey(errorCode.value))
 })
 
 // —— 状态带（设计文档 10.2）：监听状态 / 地址 / 活动连接 / 近期请求 / 错误率 ——
@@ -173,53 +130,8 @@ async function load() {
   }
 }
 
-function validateDraft(input: GatewayDraftInput) {
-  if (!input.name.trim()) return 'gateway.validationName'
-  if (!draft.value.id && !input.upstreamSecret.trim()) return 'gateway.validationUpstreamKey'
-  try {
-    const parsed = new URL(input.baseUrl.trim())
-    if (
-      parsed.protocol !== 'https:' ||
-      !parsed.hostname ||
-      parsed.username ||
-      parsed.password ||
-      parsed.search ||
-      parsed.hash ||
-      isDisallowedUpstreamHost(parsed.hostname)
-    ) {
-      return 'gateway.validationUrl'
-    }
-  } catch {
-    return 'gateway.validationUrl'
-  }
-  return null
-}
-
-function isDisallowedUpstreamHost(hostname: string): boolean {
-  const host = hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase()
-  if (host === 'localhost') return true
-
-  const ipv4 = host.split('.').map(Number)
-  if (ipv4.length === 4 && ipv4.every(part => Number.isInteger(part) && part >= 0 && part <= 255)) {
-    const [first, second] = ipv4
-    return first === 0 ||
-      first === 10 ||
-      first === 127 ||
-      first >= 224 ||
-      (first === 100 && second >= 64 && second <= 127) ||
-      (first === 169 && second === 254) ||
-      (first === 172 && second >= 16 && second <= 31) ||
-      (first === 192 && second === 168)
-  }
-
-  if (host === '::' || host === '::1' || host.startsWith('fc') || host.startsWith('fd')) return true
-  if (/^fe[89ab]/.test(host) || host.startsWith('ff')) return true
-  const mappedIpv4 = host.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1]
-  return mappedIpv4 ? isDisallowedUpstreamHost(mappedIpv4) : false
-}
-
 async function saveProfile(input: GatewayDraftInput) {
-  const validationKey = validateDraft(input)
+  const validationKey = validateGatewayDraft(draft.value, input)
   if (validationKey) {
     errorCode.value = validationKey
     feedback.value = 'error'
@@ -300,8 +212,7 @@ async function deleteProfile(profile: GatewayProfile) {
 
 async function copyAddress(profile = selectedProfile.value) {
   if (!profile) return
-  const option = gatewayProtocolOptions.find(item => item.value === profile.protocol)
-  const address = `${listenerAddress.value}/gateway/${profile.id}${option?.basePath ?? '/v1'}`
+  const address = gatewayProfileAddress(listenerAddress.value, profile)
   try {
     await navigator.clipboard.writeText(address)
     feedback.value = 'copied'
@@ -328,8 +239,7 @@ async function copyProfileApiKey(profile: GatewayProfile) {
 }
 
 function profileAddress(profile: GatewayProfile) {
-  const option = gatewayProtocolOptions.find(item => item.value === profile.protocol)
-  return `${listenerAddress.value}/gateway/${profile.id}${option?.basePath ?? '/v1'}`
+  return gatewayProfileAddress(listenerAddress.value, profile)
 }
 
 function handleKeydown(event: KeyboardEvent) {

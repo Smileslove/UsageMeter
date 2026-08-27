@@ -5,51 +5,18 @@
  * 模型连通性测试。draft 由父组件持有（props 传入，表单直接编辑其字段）；
  * 提交、取消、密钥 CRUD、复制地址等副作用一律通过事件上抛由父组件编排。
  */
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, onUnmounted, toRef, watch } from 'vue'
 import { ArrowLeft, Check, Copy, Eye, KeyRound, Plus, RefreshCw, Save, Trash2, X } from 'lucide-vue-next'
-import {
-  createGatewayLocalKey,
-  createGatewayUpstreamKey,
-  deleteGatewayUpstreamKey,
-  listGatewayProfiles,
-  listGatewayUpstreamModels,
-  previewGatewayBaseUrl,
-  revealGatewayLocalKey,
-  revokeGatewayLocalKey,
-  saveGatewayUpstreamModels,
-  testGatewayUpstreamModel,
-  updateGatewayUpstreamKey
-} from '../../../api/gatewayApi'
 import { useMonitorStore } from '../../../stores/monitor'
 import { t } from '../../../i18n'
 import { gatewayProtocolOptions } from './protocolOptions'
 import DesktopSelect from '../../components/DesktopSelect.vue'
 import type { SelectOption } from '../../components/DesktopSelect.vue'
-import type { GatewayBaseUrlPreview, GatewayCredentialRecovery, GatewayDispatchStrategy, GatewayLocalKey, GatewayModelTestResult, GatewayProfile, GatewayProtocol, GatewayUpstreamKey, GatewayUpstreamModel, GatewayUpstreamModelsResult } from '../../../types'
-
-interface DraftProfile {
-  id?: string
-  name: string
-  protocol: GatewayProtocol
-  baseUrl: string
-  enabled: boolean
-  clientLabel: string
-  dispatchStrategy: GatewayDispatchStrategy
-  upstreamKeys: GatewayUpstreamKey[]
-  localKeys: GatewayLocalKey[]
-  upstreamModels: GatewayUpstreamModel[]
-  credentialRecovery: GatewayCredentialRecovery
-}
-
-interface SubmitPayload {
-  name: string
-  protocol: GatewayProtocol
-  baseUrl: string
-  enabled: boolean
-  clientLabel: string
-  dispatchStrategy: GatewayDispatchStrategy
-  upstreamSecret: string
-}
+import type { GatewayProfile, GatewayUpstreamKey } from '../../../types'
+import type { DraftProfile, GatewayDraftInput } from './gatewayTypes'
+import { useGatewayKeyManager } from '../../composables/useGatewayKeyManager'
+import { useGatewayModelTester } from '../../composables/useGatewayModelTester'
+import { useGatewayBaseUrlPreview } from '../../composables/useGatewayBaseUrlPreview'
 
 const props = defineProps<{
   draft: DraftProfile
@@ -62,7 +29,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'submit', payload: SubmitPayload): void
+  (e: 'submit', payload: GatewayDraftInput): void
   (e: 'cancel'): void
   (e: 'applyProfile', profile: GatewayProfile): void
   (e: 'updateDraft', partial: Partial<DraftProfile>): void
@@ -73,23 +40,6 @@ const emit = defineEmits<{
 const store = useMonitorStore()
 const locale = computed(() => store.settings.locale)
 
-const keyBusy = ref(false)
-const upstreamRemark = ref('')
-const upstreamSecret = ref('')
-const localRemark = ref('')
-const generatedLocalKey = ref('')
-const keyPanel = ref<'upstream' | 'local' | null>(null)
-const revealedLocalKeys = ref<Record<string, string>>({})
-const modelsLoading = ref(false)
-const modelsResult = ref<GatewayUpstreamModelsResult | null>(null)
-const modelsPersisted = ref(false)
-const selectedModelId = ref('')
-const testingModel = ref(false)
-const testResult = ref<GatewayModelTestResult | null>(null)
-const baseUrlPreview = ref<GatewayBaseUrlPreview | null>(null)
-let previewTimer: ReturnType<typeof setTimeout> | undefined
-let previewSeq = 0
-
 const upstreamKeyRecoveryRequired = computed(() => props.draft.credentialRecovery.upstreamKeyRequired)
 const localKeyRotationRecommended = computed(() => props.draft.credentialRecovery.localKeyRotationRecommended)
 
@@ -97,88 +47,48 @@ const protocolSelectOptions = computed<SelectOption[]>(() =>
   gatewayProtocolOptions.map(opt => ({ value: opt.value, label: t(locale.value, opt.labelKey) }))
 )
 
-const testErrorMessage = computed(() => {
-  if (!testResult.value || testResult.value.ok) return ''
-  const kind = testResult.value.errorKind
-  if (!kind) return t(locale.value, 'gateway.testFailed')
-  const camelKind = kind.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase())
-  return t(locale.value, `gateway.modelError.${camelKind}`, { status: testResult.value.httpStatus ?? '' })
-})
-
-async function updateBaseUrlPreview() {
-  const raw = props.draft.baseUrl.trim()
-  const seq = ++previewSeq
-  if (!raw) {
-    if (seq === previewSeq) baseUrlPreview.value = null
-    return
-  }
-  try {
-    new URL(raw)
-  } catch {
-    if (seq === previewSeq) baseUrlPreview.value = null
-    return
-  }
-  try {
-    const preview = await previewGatewayBaseUrl(props.draft.protocol, raw)
-    if (seq === previewSeq) baseUrlPreview.value = preview
-  } catch {
-    if (seq === previewSeq) baseUrlPreview.value = null
-  }
+function applyProfile(profile: GatewayProfile) {
+  emit('applyProfile', profile)
 }
 
-watch(
-  [() => props.draft.baseUrl, () => props.draft.protocol],
-  () => {
-    if (previewTimer) clearTimeout(previewTimer)
-    previewTimer = setTimeout(updateBaseUrlPreview, 250)
-  }
-)
-
-function clearBaseUrlPreview() {
-  baseUrlPreview.value = null
-  if (previewTimer) clearTimeout(previewTimer)
-  previewTimer = undefined
-  previewSeq++
+function updateDraft(partial: Partial<DraftProfile>) {
+  emit('updateDraft', partial)
 }
+
+function notify(kind: 'saved' | 'copied' | 'error', errorCode?: string) {
+  emit('notice', { kind, errorCode })
+}
+
+const draftRef = toRef(props, 'draft')
+const keyManager = useGatewayKeyManager(draftRef, applyProfile, notify)
+const modelTester = useGatewayModelTester(draftRef, locale, notify, updateDraft)
+const { baseUrlPreview, clearBaseUrlPreview, dispose: disposePreview } = useGatewayBaseUrlPreview(draftRef)
+
+const {
+  keyBusy, upstreamRemark, upstreamSecret, localRemark, generatedLocalKey,
+  keyPanel, revealedLocalKeys,
+  addUpstreamKey, deleteUpstreamKey, updateUpstreamKey,
+  revokeLocalKey, createReplacementLocalKey, revealLocalKey, copyStoredLocalKey,
+} = keyManager
+
+const {
+  modelsLoading, modelsResult, modelsPersisted, selectedModelId,
+  testingModel, testResult, testErrorMessage,
+  refreshModels, testSelectedModel,
+} = modelTester
 
 function resetFormState() {
-  upstreamRemark.value = ''
-  upstreamSecret.value = ''
-  localRemark.value = ''
-  generatedLocalKey.value = ''
-  revealedLocalKeys.value = {}
-  keyPanel.value = null
-  modelsResult.value = null
-  modelsPersisted.value = false
-  selectedModelId.value = ''
-  testResult.value = null
-  modelsLoading.value = false
-  testingModel.value = false
+  keyManager.resetKeyState()
+  modelTester.resetModelState()
   clearBaseUrlPreview()
 }
 
 watch(
   () => props.draft.id,
   id => {
-    upstreamSecret.value = ''
-    keyPanel.value = null
-    testResult.value = null
-    modelsLoading.value = false
-    testingModel.value = false
+    keyManager.onDraftIdChange(id)
+    modelTester.onDraftIdChange(id)
     clearBaseUrlPreview()
-    if (id) {
-      modelsResult.value = props.draft.upstreamModels.length > 0 ? { ok: true, models: props.draft.upstreamModels } : null
-      modelsPersisted.value = props.draft.upstreamModels.length > 0
-      selectedModelId.value = props.draft.upstreamModels[0]?.id ?? ''
-    } else {
-      upstreamRemark.value = ''
-      localRemark.value = ''
-      generatedLocalKey.value = ''
-      revealedLocalKeys.value = {}
-      modelsResult.value = null
-      modelsPersisted.value = false
-      selectedModelId.value = ''
-    }
   }
 )
 
@@ -186,10 +96,6 @@ watch(
   () => props.resetKey,
   () => resetFormState()
 )
-
-function notify(kind: 'saved' | 'copied' | 'error', errorCode?: string) {
-  emit('notice', { kind, errorCode })
-}
 
 function onSubmit() {
   emit('submit', {
@@ -203,151 +109,8 @@ function onSubmit() {
   })
 }
 
-async function addUpstreamKey() {
-  if (!props.draft.id || !upstreamSecret.value.trim()) return
-  keyBusy.value = true
-  try {
-    const profile = await createGatewayUpstreamKey(props.draft.id, {
-      remark: upstreamRemark.value.trim(), secret: upstreamSecret.value.trim(), enabled: true, weight: 1, priority: 0
-    })
-    emit('applyProfile', profile)
-    upstreamRemark.value = ''
-    upstreamSecret.value = ''
-    notify('saved')
-  } catch (error) {
-    notify('error', String(error))
-  } finally {
-    keyBusy.value = false
-  }
-}
-
-async function deleteUpstreamKey(keyId: string) {
-  if (!props.draft.id) return
-  try {
-    emit('applyProfile', await deleteGatewayUpstreamKey(props.draft.id, keyId))
-  } catch (error) {
-    notify('error', String(error))
-  }
-}
-
-async function updateUpstreamKey(key: GatewayUpstreamKey) {
-  if (!props.draft.id || !Number.isInteger(key.weight) || key.weight < 1 || key.weight > 65535 || !Number.isInteger(key.priority) || key.priority < 0 || key.priority > 65535) {
-    notify('error', 'gateway.operationError')
-    return
-  }
-  keyBusy.value = true
-  try {
-    emit('applyProfile', await updateGatewayUpstreamKey(props.draft.id, key.id, {
-      enabled: key.enabled, weight: key.weight, priority: key.priority
-    }))
-    notify('saved')
-  } catch (error) {
-    notify('error', String(error))
-  } finally {
-    keyBusy.value = false
-  }
-}
-
-async function revokeLocalKey(keyId: string) {
-  if (!props.draft.id) return
-  try {
-    emit('applyProfile', await revokeGatewayLocalKey(props.draft.id, keyId))
-  } catch (error) {
-    notify('error', String(error))
-  }
-}
-
-async function createReplacementLocalKey() {
-  if (!props.draft.id) return
-  keyBusy.value = true
-  try {
-    const generated = await createGatewayLocalKey(props.draft.id, { remark: localRemark.value.trim() })
-    generatedLocalKey.value = generated.key
-    const updated = (await listGatewayProfiles()).find(profile => profile.id === props.draft.id)
-    if (updated) emit('applyProfile', updated)
-    localRemark.value = ''
-    notify('saved')
-  } catch (error) {
-    notify('error', String(error))
-  } finally {
-    keyBusy.value = false
-  }
-}
-
-async function revealLocalKey(keyId: string) {
-  if (!props.draft.id) return
-  try {
-    revealedLocalKeys.value[keyId] = await revealGatewayLocalKey(props.draft.id, keyId)
-  } catch (error) {
-    notify('error', String(error))
-  }
-}
-
-async function copyStoredLocalKey(keyId: string) {
-  await revealLocalKey(keyId)
-  const key = revealedLocalKeys.value[keyId]
-  if (!key) return
-  try {
-    await navigator.clipboard.writeText(key)
-    notify('copied')
-  } catch {
-    notify('error', 'gateway.operationError')
-  }
-}
-
-async function refreshModels() {
-  if (!props.draft.id || modelsLoading.value) return
-  const profileId = props.draft.id
-  modelsLoading.value = true
-  testResult.value = null
-  try {
-    const result = await listGatewayUpstreamModels(profileId)
-    if (props.draft.id !== profileId) return
-    modelsResult.value = result
-    selectedModelId.value = result.models[0]?.id ?? ''
-    if (result.ok) {
-      if (result.models.length > 0) {
-        try {
-          const saved = await saveGatewayUpstreamModels(profileId, result.models)
-          if (props.draft.id !== profileId) return
-          modelsPersisted.value = true
-          emit('updateDraft', { upstreamModels: saved.upstreamModels })
-        } catch {
-          modelsPersisted.value = false
-        }
-      } else {
-        modelsPersisted.value = false
-      }
-    } else {
-      modelsPersisted.value = false
-    }
-  } catch (error) {
-    if (props.draft.id !== profileId) return
-    modelsResult.value = { ok: false, models: [], errorKind: 'transport_error', errorDetail: String(error) }
-    selectedModelId.value = ''
-    modelsPersisted.value = false
-  } finally {
-    if (props.draft.id === profileId) modelsLoading.value = false
-  }
-}
-
-async function testSelectedModel() {
-  if (!props.draft.id || !selectedModelId.value || testingModel.value) return
-  const profileId = props.draft.id
-  const modelId = selectedModelId.value
-  testingModel.value = true
-  try {
-    testResult.value = await testGatewayUpstreamModel(profileId, modelId)
-  } catch (error) {
-    if (props.draft.id !== profileId) return
-    testResult.value = { ok: false, modelId, errorKind: 'transport_error', errorDetail: String(error) }
-  } finally {
-    if (props.draft.id === profileId) testingModel.value = false
-  }
-}
-
 onUnmounted(() => {
-  if (previewTimer) clearTimeout(previewTimer)
+  disposePreview()
 })
 </script>
 

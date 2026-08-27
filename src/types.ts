@@ -45,6 +45,7 @@ export interface GatewayUpstreamKey {
   enabled: boolean
   weight: number
   priority: number
+  lastUsedAtMs?: number | null
 }
 
 export interface GatewayLocalKey {
