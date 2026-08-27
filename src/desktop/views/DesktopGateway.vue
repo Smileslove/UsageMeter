@@ -347,7 +347,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="flex flex-col gap-3 pb-4">
+  <section class="flex h-full flex-col gap-3">
     <!-- 顶部状态带：监听状态 / 地址 / 活动连接 / 近期请求 / 错误率；右侧唯一主操作「新增上游」 -->
     <GatewayStatusBar
       :listener-status="listenerStatus"
@@ -359,7 +359,7 @@ onUnmounted(() => {
     />
 
     <!-- 页内 tabs：工具接管 / 手动接入（保持现有领域边界） -->
-    <nav class="flex w-fit gap-0.5 rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] p-0.5" :aria-label="t(locale, 'gateway.title')">
+    <nav class="flex w-fit shrink-0 gap-0.5 rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] p-0.5" :aria-label="t(locale, 'gateway.title')">
       <button
         type="button"
         class="rounded-md px-3.5 py-1 text-xs font-semibold transition-colors"
@@ -380,26 +380,27 @@ onUnmounted(() => {
       </button>
     </nav>
 
-    <div v-if="feedback && !editing" :class="['rounded-xl border px-3 py-2 text-xs leading-snug', feedback === 'error' ? 'border-red-500/20 bg-red-500/8 text-red-600 dark:text-red-300' : 'border-emerald-500/20 bg-emerald-500/8 text-emerald-600 dark:text-emerald-300']">
+    <div v-if="feedback && !editing" :class="['shrink-0 rounded-lg border px-3 py-2 text-xs leading-snug', feedback === 'error' ? 'border-red-500/20 bg-red-500/8 text-red-600 dark:text-red-300' : 'border-emerald-500/20 bg-emerald-500/8 text-emerald-600 dark:text-emerald-300']">
       {{ feedbackMessage }}
     </div>
 
     <template v-if="activePanel === 'takeover'">
-      <ProxyControlPanel />
-      <CcSwitchCompatPanel />
+      <div class="min-h-0 flex-1 overflow-y-auto">
+        <ProxyControlPanel />
+        <CcSwitchCompatPanel />
+      </div>
     </template>
 
-    <!-- 手动接入：两栏（左 profile 列表 320px + 右详情/编辑） -->
+    <!-- 手动接入：两栏（左 profile 列表 + 右详情/编辑） -->
     <template v-else>
-      <div v-if="loading" class="flex justify-center py-12">
+      <div v-if="loading" class="flex flex-1 items-center justify-center">
         <div class="h-5 w-5 animate-spin rounded-full border-2 border-[var(--theme-border-strong)] border-t-[var(--theme-accent-primary)]"></div>
       </div>
-      <div v-else class="flex min-h-0 items-start gap-3">
+      <div v-else class="flex min-h-0 flex-1 gap-3">
         <!-- 左：profile 列表 -->
         <GatewayProfileList
           :profiles="profiles"
           :selected-id="selectedId"
-          :listener-address="listenerAddress"
           @select="selectProfile"
           @create="startNewProfile"
           @toggle="toggleProfile"
@@ -408,11 +409,11 @@ onUnmounted(() => {
           @copy-api-key="copyProfileApiKey"
         />
 
-        <!-- 右：详情 / 编辑表单（内嵌，非 modal） -->
-        <div class="min-w-0 flex-1">
-          <div v-if="!editing && !selectedProfile" class="theme-surface flex h-56 flex-col items-center justify-center rounded-xl border px-6 text-center">
+        <!-- 右：详情 / 编辑表单 -->
+        <div class="min-w-0 flex-1 overflow-y-auto">
+          <div v-if="!editing && !selectedProfile" class="flex h-full flex-col items-center justify-center rounded-lg border text-center" style="background: var(--theme-surface-gradient)">
             <ShieldCheck class="h-7 w-7 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-            <p class="mt-2 text-[12.5px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.gateway.selectProfileHint') }}</p>
+            <p class="mt-2 text-xs font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.gateway.selectProfileHint') }}</p>
             <p class="mt-1 max-w-sm text-xs leading-relaxed text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.gateway.selectProfileHintDesc') }}</p>
           </div>
 

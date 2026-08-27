@@ -5,17 +5,16 @@
  * 所有操作仅上抛事件，由父组件执行（涉及 confirm、feedback、status 刷新等编排逻辑）。
  */
 import { computed } from 'vue'
-import { KeyRound, Link2, Pencil, Plus, RadioTower, Trash2 } from 'lucide-vue-next'
+import { KeyRound, Link2, Plus, RadioTower, Trash2 } from 'lucide-vue-next'
 import { useMonitorStore } from '../../../stores/monitor'
 import { t } from '../../../i18n'
-import { compactProtocolLabel, gatewayProfileAddress } from './protocolOptions'
+import { compactProtocolLabel } from './protocolOptions'
 import type { GatewayProfile, GatewayUpstreamKey } from '../../../types'
 import SettingsSwitch from '../../../components/settings/SettingsSwitch.vue'
 
 defineProps<{
   profiles: GatewayProfile[]
   selectedId: string | null
-  listenerAddress: string
 }>()
 
 const emit = defineEmits<{
@@ -67,71 +66,70 @@ const handleRowKeydown = (event: KeyboardEvent, profile: GatewayProfile) => {
 </script>
 
 <template>
-  <aside class="w-80 shrink-0">
-    <div class="theme-surface overflow-hidden rounded-xl border">
-      <div class="flex items-center justify-between border-b border-[var(--theme-border-default)] px-3 py-2">
-        <div>
-          <h2 class="text-xs font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'gateway.profiles') }}</h2>
-          <p class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.profileCount', { count: profiles.length }) }}</p>
-        </div>
-        <button
-          type="button"
-          class="theme-icon-button rounded-lg p-1.5"
-          :title="t(locale, 'gateway.newProfile')"
-          :aria-label="t(locale, 'gateway.newProfile')"
-          @click="emit('create')"
-        >
-          <Plus class="h-4 w-4" aria-hidden="true" />
-        </button>
+  <aside class="flex w-72 shrink-0 flex-col overflow-hidden rounded-lg border" style="background: var(--theme-surface-gradient)">
+    <div class="flex shrink-0 items-center justify-between border-b border-[var(--theme-border-default)] px-3 py-2">
+      <div class="flex items-baseline gap-2">
+        <h2 class="text-xs font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'gateway.profiles') }}</h2>
+        <p class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.profileCount', { count: profiles.length }) }}</p>
       </div>
+      <button
+        type="button"
+        class="theme-icon-button rounded-lg p-1.5"
+        :title="t(locale, 'gateway.newProfile')"
+        :aria-label="t(locale, 'gateway.newProfile')"
+        @click="emit('create')"
+      >
+        <Plus class="h-4 w-4" aria-hidden="true" />
+      </button>
+    </div>
 
-      <div v-if="profiles.length === 0" class="px-4 py-10 text-center">
-        <RadioTower class="mx-auto h-6 w-6 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-        <p class="mt-2 text-xs font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.emptyTitle') }}</p>
-        <p class="mx-auto mt-1 max-w-[220px] text-xs leading-snug text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.emptyBody') }}</p>
-      </div>
+    <div v-if="profiles.length === 0" class="flex flex-1 flex-col items-center justify-center px-4 py-10 text-center">
+      <RadioTower class="h-6 w-6 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
+      <p class="mt-2 text-xs font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.emptyTitle') }}</p>
+      <p class="mx-auto mt-1 max-w-[220px] text-xs leading-snug text-[var(--theme-text-tertiary)]">{{ t(locale, 'gateway.emptyBody') }}</p>
+    </div>
 
-      <div v-else class="max-h-[calc(100vh-300px)] overflow-y-auto">
-        <article
-          v-for="profile in profiles"
-          :key="profile.id"
-          tabindex="0"
-          class="cursor-pointer border-b border-[var(--theme-border-subtle)] px-3 py-2.5 transition-colors last:border-0 hover:bg-[var(--theme-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring-focus)]"
-          :class="selectedId === profile.id ? 'bg-[var(--theme-accent-soft)]' : ''"
-          @click="emit('select', profile)"
-          @keydown="handleRowKeydown($event, profile)"
-        >
-          <div class="flex items-center gap-2">
-            <div class="min-w-0 flex-1">
-              <div class="flex min-w-0 items-center gap-1.5">
-                <span class="truncate text-xs font-semibold text-[var(--theme-text-primary)]">{{ profile.name }}</span>
-                <span class="shrink-0 rounded-md border border-[var(--theme-border-default)] bg-[var(--theme-bg-hover)] px-1.5 py-0.5 text-xs font-medium text-[var(--theme-text-tertiary)]">{{ compactProtocolLabel(locale, profile.protocol) }}</span>
-              </div>
-              <p class="mt-1 flex items-center gap-1.5 text-xs text-[var(--theme-text-tertiary)]">
-                <span class="inline-flex items-center gap-1">
-                  <span class="h-1.5 w-1.5 rounded-full" :class="profile.enabled ? 'bg-emerald-500' : 'bg-[var(--theme-border-strong)]'"></span>
-                  {{ profile.enabled ? t(locale, 'desktop.gateway.profileEnabled') : t(locale, 'desktop.gateway.profileDisabled') }}
-                </span>
-                <span>·</span>
-                <span>{{ t(locale, 'desktop.gateway.modelCount', { count: profile.upstreamModels.length }) }}</span>
-                <span>·</span>
-                <span>{{ t(locale, 'desktop.gateway.lastActivity') }} {{ formatLastActive(lastActiveOf(profile)) }}</span>
-              </p>
+    <div v-else class="min-h-0 flex-1 overflow-y-auto">
+      <article
+        v-for="profile in profiles"
+        :key="profile.id"
+        tabindex="0"
+        class="relative cursor-pointer border-b border-[var(--theme-border-subtle)] px-3 py-2.5 transition-colors last:border-0 hover:bg-[var(--theme-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--theme-ring-focus)]"
+        :class="selectedId === profile.id ? 'bg-[var(--theme-accent-soft)]' : ''"
+        @click="emit('select', profile)"
+        @keydown="handleRowKeydown($event, profile)"
+      >
+        <span
+          v-if="selectedId === profile.id"
+          class="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full"
+          style="background: var(--theme-accent-primary)"
+        ></span>
+        <div class="flex items-start gap-2">
+          <div class="min-w-0 flex-1">
+            <div class="flex min-w-0 items-center gap-1.5">
+              <span class="truncate text-xs font-semibold text-[var(--theme-text-primary)]">{{ profile.name }}</span>
+              <span class="shrink-0 rounded border border-[var(--theme-border-default)] bg-[var(--theme-bg-hover)] px-1 py-px text-xs font-medium text-[var(--theme-text-tertiary)]">{{ compactProtocolLabel(locale, profile.protocol) }}</span>
             </div>
-            <!-- 列表行操作：复制地址 / 复制本地 Key / 编辑 / 删除（均带 aria-label） -->
-            <div class="flex shrink-0 items-center gap-0.5">
-              <button type="button" class="theme-icon-button rounded-md p-1" :title="t(locale, 'gateway.copyAddress')" :aria-label="t(locale, 'gateway.copyAddress')" @click.stop="emit('copyAddress', profile)"><Link2 class="h-3.5 w-3.5" aria-hidden="true" /></button>
-              <button type="button" class="theme-icon-button rounded-md p-1" :title="t(locale, 'gateway.copyLocalKey')" :aria-label="t(locale, 'gateway.copyLocalKey')" :disabled="profile.localKeys.length === 0" @click.stop="emit('copyApiKey', profile)"><KeyRound class="h-3.5 w-3.5" aria-hidden="true" /></button>
-              <button type="button" class="theme-icon-button rounded-md p-1" :title="t(locale, 'gateway.editProfile')" :aria-label="t(locale, 'gateway.editProfile')" @click.stop="emit('select', profile)"><Pencil class="h-3.5 w-3.5" aria-hidden="true" /></button>
-              <button type="button" class="theme-icon-button rounded-md p-1 text-red-500" :title="t(locale, 'gateway.delete')" :aria-label="t(locale, 'gateway.delete')" @click.stop="emit('delete', profile)"><Trash2 class="h-3.5 w-3.5" aria-hidden="true" /></button>
-              <SettingsSwitch compact :checked="profile.enabled" :aria-label="t(locale, 'gateway.enabled')" @toggle="emit('toggle', profile)" />
-            </div>
+            <p class="mt-1 flex items-center gap-1.5 text-xs text-[var(--theme-text-tertiary)]">
+              <span class="inline-flex items-center gap-1">
+                <span class="h-1.5 w-1.5 rounded-full" :class="profile.enabled ? 'bg-emerald-500' : 'bg-[var(--theme-border-strong)]'"></span>
+                {{ profile.enabled ? t(locale, 'desktop.gateway.profileEnabled') : t(locale, 'desktop.gateway.profileDisabled') }}
+              </span>
+              <span>·</span>
+              <span>{{ t(locale, 'desktop.gateway.modelCount', { count: profile.upstreamModels.length }) }}</span>
+            </p>
+            <p class="mt-0.5 text-xs text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.gateway.lastActivity') }} {{ formatLastActive(lastActiveOf(profile)) }}</p>
           </div>
-          <p class="mt-1.5 break-all border-t border-[var(--theme-border-default)] pt-1.5 font-mono text-xs leading-snug text-[var(--theme-text-tertiary)]">{{ gatewayProfileAddress(listenerAddress, profile) }}</p>
-          <p v-if="profile.credentialRecovery.upstreamKeyRequired" class="mt-1 text-xs leading-snug text-amber-600 dark:text-amber-300">{{ t(locale, 'gateway.upstreamKeyRecoveryNotice') }}</p>
-          <p v-if="profile.credentialRecovery.localKeyRotationRecommended" class="mt-1 text-xs leading-snug text-amber-600 dark:text-amber-300">{{ t(locale, 'gateway.localKeyRecoveryNotice') }}</p>
-        </article>
-      </div>
+          <div class="flex shrink-0 items-center gap-0.5">
+            <button type="button" class="theme-icon-button rounded-md p-1" :title="t(locale, 'gateway.copyAddress')" :aria-label="t(locale, 'gateway.copyAddress')" @click.stop="emit('copyAddress', profile)"><Link2 class="h-3.5 w-3.5" aria-hidden="true" /></button>
+            <button type="button" class="theme-icon-button rounded-md p-1" :title="t(locale, 'gateway.copyLocalKey')" :aria-label="t(locale, 'gateway.copyLocalKey')" :disabled="profile.localKeys.length === 0" @click.stop="emit('copyApiKey', profile)"><KeyRound class="h-3.5 w-3.5" aria-hidden="true" /></button>
+            <button type="button" class="theme-icon-button rounded-md p-1" :title="t(locale, 'gateway.delete')" :aria-label="t(locale, 'gateway.delete')" @click.stop="emit('delete', profile)"><Trash2 class="h-3.5 w-3.5 text-red-500" aria-hidden="true" /></button>
+            <SettingsSwitch compact :checked="profile.enabled" :aria-label="t(locale, 'gateway.enabled')" @toggle="emit('toggle', profile)" />
+          </div>
+        </div>
+        <p v-if="profile.credentialRecovery.upstreamKeyRequired" class="mt-1 text-xs text-amber-600 dark:text-amber-300">{{ t(locale, 'gateway.upstreamKeyRecoveryNotice') }}</p>
+        <p v-if="profile.credentialRecovery.localKeyRotationRecommended" class="mt-1 text-xs text-amber-600 dark:text-amber-300">{{ t(locale, 'gateway.localKeyRecoveryNotice') }}</p>
+      </article>
     </div>
   </aside>
 </template>

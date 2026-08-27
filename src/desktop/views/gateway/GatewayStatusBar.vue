@@ -26,7 +26,7 @@ const locale = computed(() => store.settings.locale)
 </script>
 
 <template>
-  <div class="theme-surface flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border px-4 py-3">
+  <div class="theme-surface flex shrink-0 flex-wrap items-center gap-x-5 gap-y-2 rounded-lg border px-4 py-2.5">
     <div class="flex items-center gap-2">
       <span
         class="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-semibold leading-none"
@@ -36,9 +36,9 @@ const locale = computed(() => store.settings.locale)
         {{ listenerStatus ? t(locale, 'gateway.running') : t(locale, 'gateway.stopped') }}
       </span>
     </div>
-    <div class="min-w-0">
-      <div class="text-xs uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.gateway.address') }}</div>
-      <div class="truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="listenerAddress">{{ listenerAddress }}</div>
+    <div class="flex min-w-0 items-center gap-2">
+      <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.gateway.address') }}</span>
+      <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="listenerAddress">{{ listenerAddress }}</span>
     </div>
     <div class="flex items-center gap-1.5">
       <Activity class="h-3.5 w-3.5 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
@@ -52,13 +52,12 @@ const locale = computed(() => store.settings.locale)
       <AlertTriangle class="h-3.5 w-3.5 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
       <span class="text-xs text-[var(--theme-text-secondary)]">{{ t(locale, 'desktop.gateway.errorRate') }}: <b class="font-mono" :class="{ 'text-red-500': errorRate !== '—' && parseFloat(errorRate) > 5 }">{{ errorRate }}</b></span>
     </div>
-    <!-- 右侧唯一主操作 -->
     <button
       type="button"
-      class="theme-button-accent ml-auto inline-flex h-8 items-center gap-1.5 rounded-lg px-3.5 text-xs font-semibold"
+      class="theme-button-accent ml-auto inline-flex h-7 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold"
       @click="emit('create')"
     >
-      <Plus class="h-4 w-4" aria-hidden="true" />
+      <Plus class="h-3.5 w-3.5" aria-hidden="true" />
       {{ t(locale, 'gateway.newProfile') }}
     </button>
   </div>
