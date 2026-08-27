@@ -3,20 +3,23 @@
  * 桌面主窗口「会话」页。
  * 会话表格 + 覆盖式抽屉（点击行展开详情，不跳转页面）。
  * 客户端分页：对已加载的 filteredSessions 做内存分页，到达末页时自动续载。
+ * 表格状态（搜索/筛选/排序/分页/列配置）由 useSessionTable 统一管理。
  */
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { ArrowDown, ArrowUp, ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, ExternalLink, Search, Settings2, X } from 'lucide-vue-next'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ArrowDown, ArrowUp, ExternalLink, Search, X } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { useDesktopNavigationStore } from '../stores/desktopNavigation'
 import { t } from '../../i18n'
 import type { SessionStats } from '../../types'
 import { useSessionDisplay } from '../../composables/useSessionDisplay'
-import { useSessionViewData } from '../../composables/useSessionViewData'
 import { useClipboard } from '../composables/useClipboard'
 import { useFocusTrap } from '../composables/useFocusTrap'
+import { useSessionTable, SESSION_COLUMNS, sessionTotalTokens } from '../composables/useSessionTable'
 import LobeIcon from '../../components/LobeIcon.vue'
 import DesktopSelect from '../components/DesktopSelect.vue'
 import type { SelectOption } from '../components/DesktopSelect.vue'
+import PaginationBar from '../components/PaginationBar.vue'
+import ColumnConfigPopover from '../components/ColumnConfigPopover.vue'
 
 const store = useMonitorStore()
 const nav = useDesktopNavigationStore()
@@ -36,47 +39,41 @@ const {
   getToolIcon,
 } = useSessionDisplay(store)
 
-// —— 数据加载 ——
-const activeTab = ref<'recent'>('recent')
 const {
   selectedTool,
-  hasMore,
   loadingMore,
-  loadMore,
-  initialize: initializeSessionView,
-  dispose: disposeSessionView,
-} = useSessionViewData(store, activeTab)
+  initializeSessionView,
+  disposeSessionView,
+  searchQuery,
+  filters,
+  sortDesc,
+  currentPage,
+  pageSize,
+  pageSizeSelectOptions,
+  toggleColumn,
+  isColumnVisible,
+  visibleCols,
+  paginatedSessions,
+  total,
+  totalPages,
+  pageNumbers,
+  hasPrev,
+  hasNext,
+  projectOptions,
+  modelOptions,
+  toolOptions,
+  gotoPage,
+  nextPage,
+  prevPage,
+  cycleSort,
+  isSortedBy,
+  onPageSizeChange,
+  onTimeChange,
+  clearAllFilters,
+  applyPendingFilters,
+} = useSessionTable(store, nav, locale)
 
-// —— 搜索 ——
-const searchQuery = ref('')
-
-// —— 筛选 ——
-type CoverageFilter = 'all' | 'full' | 'partial' | 'uncovered'
-interface LocalFilters {
-  time: string
-  customRange: { startEpoch: number; endEpoch: number } | null
-  project: string | null
-  model: string | null
-  coverage: CoverageFilter
-}
-const filters = reactive<LocalFilters>({ time: 'all', customRange: null, project: null, model: null, coverage: 'all' })
-
-const projectOptions = computed(() => {
-  const names = new Set<string>()
-  for (const session of store.sessions) {
-    if (session.projectIdentity === 'global') names.add('__global__')
-    else if (session.projectIdentity === 'unknown') names.add('__unknown__')
-    else if (session.projectName?.trim()) names.add(session.projectName.trim())
-  }
-  return [...names].sort((a, b) => a.localeCompare(b))
-})
-const modelOptions = computed(() => {
-  const models = new Set<string>()
-  for (const session of store.sessions) {
-    if (session.models[0]) models.add(session.models[0])
-  }
-  return [...models].sort((a, b) => a.localeCompare(b))
-})
+// —— 筛选下拉选项 ——
 const projectFilterLabel = (value: string | null) => {
   if (!value) return ''
   if (value === '__global__') return t(locale.value, 'common.global')
@@ -86,12 +83,12 @@ const projectFilterLabel = (value: string | null) => {
 
 const projectSelectOptions = computed<SelectOption[]>(() => [
   { value: null, label: t(locale.value, 'desktop.sessions.filterAllProjects') },
-  ...projectOptions.value.map(p => ({ value: p, label: projectFilterLabel(p) }))
+  ...projectOptions.value.map(p => ({ value: p, label: projectFilterLabel(p) })),
 ])
 
 const modelSelectOptions = computed<SelectOption[]>(() => [
   { value: null, label: t(locale.value, 'desktop.sessions.filterAllModels') },
-  ...modelOptions.value.map(m => ({ value: m, label: m }))
+  ...modelOptions.value.map(m => ({ value: m, label: m })),
 ])
 
 const timeSelectOptions = computed<SelectOption[]>(() => [
@@ -109,6 +106,12 @@ const coverageSelectOptions = computed<SelectOption[]>(() => [
   { value: 'uncovered', label: t(locale.value, 'desktop.sessions.filterCoverageUncovered') },
 ])
 
+const toolSelectOptions = computed<SelectOption[]>(() => [
+  { value: null, label: t(locale.value, 'desktop.allTools') },
+  ...toolOptions.value.map(tool => ({ value: tool, label: requestToolLabel(tool) })),
+])
+
+// —— 筛选 chips ——
 interface Chip {
   id: string
   label: string
@@ -120,16 +123,16 @@ const chips = computed<Chip[]>(() => {
     today: t(locale.value, 'desktop.sessions.filterTimeToday'),
     '7d': t(locale.value, 'desktop.sessions.filterTime7d'),
     '30d': t(locale.value, 'desktop.sessions.filterTime30d'),
-    custom: t(locale.value, 'desktop.sessions.filterTimeCustom')
+    custom: t(locale.value, 'desktop.sessions.filterTimeCustom'),
   }
   if (filters.time !== 'all') {
     result.push({
       id: 'time',
-      label: timeLabels[filters.time],
+      label: timeLabels[filters.time] ?? '',
       remove: () => {
         filters.time = 'all'
         filters.customRange = null
-      }
+      },
     })
   }
   if (selectedTool.value) {
@@ -142,191 +145,18 @@ const chips = computed<Chip[]>(() => {
     result.push({ id: 'model', label: filters.model, remove: () => { filters.model = null } })
   }
   if (filters.coverage !== 'all') {
-    const coverageLabels: Record<CoverageFilter, string> = {
-      all: '',
+    const coverageLabels: Record<string, string> = {
       full: t(locale.value, 'desktop.sessions.filterCoverageFull'),
       partial: t(locale.value, 'desktop.sessions.filterCoveragePartial'),
-      uncovered: t(locale.value, 'desktop.sessions.filterCoverageUncovered')
+      uncovered: t(locale.value, 'desktop.sessions.filterCoverageUncovered'),
     }
-    result.push({ id: 'coverage', label: coverageLabels[filters.coverage], remove: () => { filters.coverage = 'all' } })
+    result.push({ id: 'coverage', label: coverageLabels[filters.coverage] ?? '', remove: () => { filters.coverage = 'all' } })
   }
   return result
 })
 const visibleChips = computed(() => chips.value.slice(0, 4))
 const extraChipsCount = computed(() => Math.max(0, chips.value.length - 4))
 const chipsCollapsed = ref(true)
-
-const clearAllFilters = () => {
-  filters.time = 'all'
-  filters.customRange = null
-  filters.project = null
-  filters.model = null
-  filters.coverage = 'all'
-  selectedTool.value = null
-  searchQuery.value = ''
-}
-
-// —— 排序 ——
-type SortKey = 'lastActive' | 'firstRequest' | 'requests' | 'tokens' | 'cost' | 'rate' | 'errors'
-const sortKey = ref<SortKey>('lastActive')
-const sortDesc = ref(true)
-
-const sessionTotalTokens = (session: SessionStats) =>
-  (session.totalInputTokens || 0) + (session.totalOutputTokens || 0) + (session.totalCacheCreateTokens || 0) + (session.totalCacheReadTokens || 0)
-
-const sortValue = (session: SessionStats, key: SortKey): number => {
-  switch (key) {
-    case 'lastActive': return session.lastRequestTime || 0
-    case 'firstRequest': return session.firstRequestTime || 0
-    case 'requests': return session.totalRequests || 0
-    case 'tokens': return sessionTotalTokens(session)
-    case 'cost': return session.estimatedCost ?? 0
-    case 'rate': return session.avgOutputTokensPerSecond || 0
-    case 'errors': return session.errorRequests ?? 0
-  }
-}
-
-const matchesSearch = (session: SessionStats): boolean => {
-  const q = searchQuery.value.trim().toLowerCase()
-  if (!q) return true
-  return [
-    displaySessionTitle(session),
-    session.topic,
-    session.lastPrompt,
-    session.projectName,
-    session.cwd,
-    session.sessionId
-  ].some(value => value?.toLowerCase().includes(q))
-}
-
-const matchesTime = (session: SessionStats): boolean => {
-  if (filters.time === 'all') return true
-  if (filters.time === 'custom') {
-    const range = filters.customRange
-    if (!range) return true
-    const ts = session.lastRequestTime || 0
-    return ts >= range.startEpoch && ts < range.endEpoch
-  }
-  const now = Date.now()
-  const horizon = filters.time === 'today' ? 24 * 3600e3 : filters.time === '7d' ? 7 * 24 * 3600e3 : 30 * 24 * 3600e3
-  return (session.lastRequestTime || 0) * 1000 >= now - horizon
-}
-
-const onTimeChange = (value: string | number | null) => {
-  if (value === 'custom' && !filters.customRange) return
-  filters.time = value as string
-}
-
-const sessionCoverageKind = (session: SessionStats): CoverageFilter => {
-  if (session.usageFullyCovered) return 'full'
-  if ((session.uncoveredRequests ?? 0) > 0) return 'uncovered'
-  if ((session.coveredRequests ?? 0) > 0) return 'partial'
-  return 'full'
-}
-
-const matchesFilters = (session: SessionStats): boolean => {
-  if (filters.project === '__global__' && session.projectIdentity !== 'global') return false
-  if (filters.project === '__unknown__' && session.projectIdentity !== 'unknown') return false
-  if (filters.project && filters.project !== '__global__' && filters.project !== '__unknown__' && session.projectName !== filters.project) return false
-  if (filters.model && session.models[0] !== filters.model) return false
-  if (filters.coverage !== 'all' && sessionCoverageKind(session) !== filters.coverage) return false
-  return true
-}
-
-const filteredSessions = computed(() => {
-  const list = store.sessions.filter(session => matchesSearch(session) && matchesTime(session) && matchesFilters(session))
-  return [...list].sort((a, b) => {
-    const diff = sortValue(a, sortKey.value) - sortValue(b, sortKey.value)
-    return sortDesc.value ? -diff : diff
-  })
-})
-
-const cycleSort = (key: SortKey) => {
-  if (sortKey.value === key) {
-    sortDesc.value = !sortDesc.value
-  } else {
-    sortKey.value = key
-    sortDesc.value = true
-  }
-}
-
-const sortIndicator = (key: SortKey) => (sortKey.value === key ? (sortDesc.value ? ArrowDown : ArrowUp) : null)
-
-// —— 分页（客户端） ——
-const currentPage = ref(0)
-const pageSize = ref(50)
-
-const total = computed(() => filteredSessions.value.length)
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
-
-const paginatedSessions = computed(() => {
-  const start = currentPage.value * pageSize.value
-  return filteredSessions.value.slice(start, start + pageSize.value)
-})
-
-const pageStart = computed(() => total.value === 0 ? 0 : currentPage.value * pageSize.value + 1)
-const pageEnd = computed(() => Math.min((currentPage.value + 1) * pageSize.value, total.value))
-
-const PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
-const pageSizeSelectOptions = computed<SelectOption[]>(() =>
-  PAGE_SIZE_OPTIONS.map(size => ({ value: size, label: `${size} / ${t(locale.value, 'desktop.requests.pageSize')}` }))
-)
-const onPageSizeChange = () => {
-  currentPage.value = 0
-}
-
-const hasPrev = computed(() => currentPage.value > 0)
-const hasNext = computed(() => currentPage.value < totalPages.value - 1)
-
-const pageNumbers = computed<(number | '...')[]>(() => {
-  const tp = totalPages.value
-  const cur = currentPage.value + 1
-  if (tp <= 7) return Array.from({ length: tp }, (_, i) => i + 1)
-  if (cur <= 4) return [1, 2, 3, 4, 5, '...', tp]
-  if (cur >= tp - 3) return [1, '...', tp - 4, tp - 3, tp - 2, tp - 1, tp]
-  return [1, '...', cur - 1, cur, cur + 1, '...', tp]
-})
-
-const gotoPage = (page: number) => {
-  const clamped = Math.max(0, Math.min(page, totalPages.value - 1))
-  currentPage.value = clamped
-}
-
-const nextPage = () => {
-  if (!hasNext.value) return
-  currentPage.value++
-}
-
-const prevPage = () => {
-  if (!hasPrev.value) return
-  currentPage.value--
-}
-
-function gotoPageNumber(num: number | '...') {
-  if (num === '...') return
-  gotoPage(num - 1)
-}
-
-const jumpPageInput = ref('')
-const jumpPage = () => {
-  const num = parseInt(jumpPageInput.value, 10)
-  if (Number.isFinite(num) && num >= 1 && num <= totalPages.value) {
-    gotoPage(num - 1)
-  }
-  jumpPageInput.value = ''
-}
-
-// 筛选/搜索变化时回到第一页
-watch([searchQuery, () => filters.time, () => filters.project, () => filters.model, () => filters.coverage, () => filters.customRange, selectedTool], () => {
-  currentPage.value = 0
-})
-
-// 到达末页且还有更多数据时自动续载
-watch([currentPage, totalPages, hasMore, loadingMore], async () => {
-  if (hasMore.value && !loadingMore.value && currentPage.value >= totalPages.value - 1 && total.value > 0) {
-    await loadMore()
-  }
-})
 
 // —— 抽屉 ——
 const selectedSession = ref<SessionStats | null>(null)
@@ -397,7 +227,7 @@ const handleMenuKeydown = (event: KeyboardEvent) => {
   if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
   event.preventDefault()
   const items = Array.from(contextMenuRef.value?.querySelectorAll<HTMLElement>('button[role="menuitem"]') ?? []).filter(
-    el => !(el as HTMLButtonElement).disabled
+    el => !(el as HTMLButtonElement).disabled,
   )
   if (items.length === 0) return
   const activeIndex = items.indexOf(document.activeElement as HTMLElement)
@@ -435,104 +265,12 @@ watch(contextMenuOpen, isOpen => {
   }
 })
 
-// —— 列配置（localStorage 持久化） ——
-type SessionColumnKey = 'session' | 'lastActive' | 'model' | 'requests' | 'tokens' | 'cost' | 'rate' | 'errors' | 'duration'
-
-interface SessionColumnDef {
-  key: SessionColumnKey
-  defaultVisible: boolean
-}
-
-const SESSION_COLUMNS: SessionColumnDef[] = [
-  { key: 'session', defaultVisible: true },
-  { key: 'lastActive', defaultVisible: true },
-  { key: 'model', defaultVisible: true },
-  { key: 'requests', defaultVisible: true },
-  { key: 'tokens', defaultVisible: true },
-  { key: 'cost', defaultVisible: true },
-  { key: 'rate', defaultVisible: true },
-  { key: 'errors', defaultVisible: false },
-  { key: 'duration', defaultVisible: false },
-]
-
-const COLUMN_STORAGE_KEY = 'usagemeter.sessionColumns'
-
-function loadVisibleColumns(): Set<SessionColumnKey> {
-  try {
-    const saved = localStorage.getItem(COLUMN_STORAGE_KEY)
-    if (saved) {
-      const keys = JSON.parse(saved) as string[]
-      const valid = SESSION_COLUMNS.map(c => c.key)
-      const filtered = keys.filter((k): k is SessionColumnKey => valid.includes(k as SessionColumnKey))
-      if (filtered.length > 0) return new Set(filtered)
-    }
-  } catch { /* ignore */ }
-  return new Set(SESSION_COLUMNS.filter(c => c.defaultVisible).map(c => c.key))
-}
-
-function saveVisibleColumns(cols: Set<SessionColumnKey>) {
-  try {
-    localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify([...cols]))
-  } catch { /* ignore */ }
-}
-
-const visibleColumns = ref<Set<SessionColumnKey>>(loadVisibleColumns())
-const showColumnConfig = ref(false)
-
-const isColumnVisible = (key: SessionColumnKey) => visibleColumns.value.has(key)
-
-function toggleColumn(key: SessionColumnKey) {
-  const next = new Set(visibleColumns.value)
-  if (next.has(key)) {
-    if (next.size > 1) next.delete(key)
-  } else {
-    next.add(key)
-  }
-  visibleColumns.value = next
-  saveVisibleColumns(next)
-}
-
-const visibleCols = computed(() => SESSION_COLUMNS.filter(c => isColumnVisible(c.key)))
-
-// —— 深链筛选 ——
-async function applyPendingFilters() {
-  const pending = nav.consumePendingFilters()
-  if (!pending) return
-  if (pending.sourceId && store.settings.sourceAware.activeSourceFilter !== pending.sourceId) {
-    await store.setActiveSourceFilter(pending.sourceId)
-  }
-  if (pending.tool && store.settings.clientTools.activeToolFilter !== pending.tool) {
-    await store.setActiveToolFilter(pending.tool)
-  }
-  if (pending.timeRange) {
-    filters.time = 'custom'
-    filters.customRange = pending.timeRange
-  }
-  if (pending.sessionKey && !nav.activeSessionKey) {
-    nav.openSession(pending.sessionKey)
-  }
-}
-
-watch(
-  () => nav.pendingConsumeTick,
-  () => {
-    if (nav.currentPage === 'sessions') void applyPendingFilters()
-  }
-)
-
-// —— 工具选项 ——
-const toolOptions = computed(() => {
-  const tools = new Set<string>()
-  for (const session of store.sessions) tools.add(session.tool)
-  return [...tools].sort((a, b) => a.localeCompare(b))
-})
-
-const toolSelectOptions = computed<SelectOption[]>(() => [
-  { value: null, label: t(locale.value, 'desktop.allTools') },
-  ...toolOptions.value.map(tool => ({ value: tool, label: requestToolLabel(tool) }))
-])
-
 const skeletonRows = [0, 1, 2, 3, 4, 5, 6, 7]
+
+function onPageSizeUpdate(size: number) {
+  pageSize.value = size
+  onPageSizeChange()
+}
 
 onMounted(async () => {
   document.addEventListener('keydown', onEscape)
@@ -606,40 +344,15 @@ onUnmounted(() => {
 
       <div class="ml-auto flex items-center gap-2">
         <span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.requests.totalRecords', { count: total }) }}</span>
-        <div class="relative">
-          <button
-            type="button"
-            class="inline-flex h-7 items-center gap-1 rounded-lg border border-[var(--theme-border-default)] px-2 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:border-[var(--theme-accent-primary)] hover:text-[var(--theme-accent-primary)]"
-            :aria-label="t(locale, 'desktop.requests.columnConfig')"
-            :title="t(locale, 'desktop.requests.columnConfig')"
-            @click="showColumnConfig = !showColumnConfig"
-          >
-            <Settings2 class="h-3 w-3" aria-hidden="true" />
-            <span class="hidden sm:inline">{{ t(locale, 'desktop.requests.columnConfig') }}</span>
-          </button>
-          <Transition name="popover">
-            <div
-              v-if="showColumnConfig"
-              class="theme-surface-elevated absolute right-0 top-8 z-30 w-40 rounded-xl border p-2 shadow-lg"
-              :aria-label="t(locale, 'desktop.requests.columnConfigTitle')"
-            >
-              <p class="mb-1.5 px-1 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.requests.columnConfigTitle') }}</p>
-              <label
-                v-for="col in SESSION_COLUMNS"
-                :key="col.key"
-                class="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-xs text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]"
-              >
-                <input
-                  type="checkbox"
-                  class="h-3 w-3 accent-[var(--theme-accent-primary)]"
-                  :checked="isColumnVisible(col.key)"
-                  @change="toggleColumn(col.key)"
-                />
-                <span>{{ t(locale, `desktop.sessions.column${col.key.charAt(0).toUpperCase()}${col.key.slice(1)}`) }}</span>
-              </label>
-            </div>
-          </Transition>
-        </div>
+        <ColumnConfigPopover
+          :columns="SESSION_COLUMNS"
+          :is-visible="isColumnVisible"
+          :toggle-column="toggleColumn"
+          :button-label="t(locale, 'desktop.requests.columnConfig')"
+          :title-label="t(locale, 'desktop.requests.columnConfigTitle')"
+          label-prefix="desktop.sessions.column"
+          :locale="locale"
+        />
       </div>
     </div>
 
@@ -662,54 +375,24 @@ onUnmounted(() => {
         <table class="w-full min-w-[860px] border-collapse text-xs">
           <thead class="sticky top-0 z-10">
             <tr class="whitespace-nowrap border-b border-[var(--theme-border-default)] text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
-              <th v-if="isColumnVisible('session')" class="min-w-60 px-1.5 py-1.5 text-left font-semibold">
-                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('lastActive')">
-                  {{ t(locale, 'desktop.sessions.columnSession') }}
-                  <component :is="sortIndicator('lastActive')" v-if="sortIndicator('lastActive')" class="h-2.5 w-2.5" aria-hidden="true" />
-                </button>
-              </th>
-              <th v-if="isColumnVisible('lastActive')" class="px-1.5 py-1.5 text-left font-semibold">
-                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('lastActive')">
-                  {{ t(locale, 'desktop.sessions.columnLastActive') }}
-                  <component :is="sortIndicator('lastActive')" v-if="sortIndicator('lastActive')" class="h-2.5 w-2.5" aria-hidden="true" />
-                </button>
-              </th>
-              <th v-if="isColumnVisible('model')" class="px-1.5 py-1.5 text-left font-semibold">{{ t(locale, 'desktop.sessions.columnModel') }}</th>
-              <th v-if="isColumnVisible('requests')" class="px-1.5 py-1.5 text-right font-semibold">
-                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('requests')">
-                  {{ t(locale, 'desktop.sessions.columnRequests') }}
-                  <component :is="sortIndicator('requests')" v-if="sortIndicator('requests')" class="h-2.5 w-2.5" aria-hidden="true" />
-                </button>
-              </th>
-              <th v-if="isColumnVisible('tokens')" class="px-1.5 py-1.5 text-right font-semibold">
-                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('tokens')">
-                  {{ t(locale, 'desktop.sessions.columnTokens') }}
-                  <component :is="sortIndicator('tokens')" v-if="sortIndicator('tokens')" class="h-2.5 w-2.5" aria-hidden="true" />
-                </button>
-              </th>
-              <th v-if="isColumnVisible('cost')" class="px-1.5 py-1.5 text-right font-semibold">
-                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('cost')">
-                  {{ t(locale, 'desktop.sessions.columnCost') }}
-                  <component :is="sortIndicator('cost')" v-if="sortIndicator('cost')" class="h-2.5 w-2.5" aria-hidden="true" />
-                </button>
-              </th>
-              <th v-if="isColumnVisible('rate')" class="px-1.5 py-1.5 text-right font-semibold">
-                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('rate')">
-                  {{ t(locale, 'desktop.sessions.columnAvgRate') }}
-                  <component :is="sortIndicator('rate')" v-if="sortIndicator('rate')" class="h-2.5 w-2.5" aria-hidden="true" />
-                </button>
-              </th>
-              <th v-if="isColumnVisible('errors')" class="px-1.5 py-1.5 text-right font-semibold">
-                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('errors')">
-                  {{ t(locale, 'desktop.sessions.columnErrors') }}
-                  <component :is="sortIndicator('errors')" v-if="sortIndicator('errors')" class="h-2.5 w-2.5" aria-hidden="true" />
-                </button>
-              </th>
-              <th v-if="isColumnVisible('duration')" class="px-1.5 py-1.5 text-right font-semibold">
-                <button type="button" class="inline-flex items-center gap-1 hover:text-[var(--theme-text-primary)]" @click="cycleSort('firstRequest')">
-                  {{ t(locale, 'desktop.sessions.columnDuration') }}
-                  <component :is="sortIndicator('firstRequest')" v-if="sortIndicator('firstRequest')" class="h-2.5 w-2.5" aria-hidden="true" />
-                </button>
+              <th
+                v-for="col in visibleCols"
+                :key="col.key"
+                class="select-none px-1.5 py-1.5 font-semibold"
+                :class="[
+                  col.align === 'right' ? 'text-right' : 'text-left',
+                  col.sortable ? 'cursor-pointer hover:text-[var(--theme-text-primary)]' : '',
+                  col.key === 'session' ? 'min-w-60' : '',
+                ]"
+                @click="col.sortable && col.sortField && cycleSort(col.sortField)"
+              >
+                <span class="inline-flex items-center gap-0.5" :class="col.align === 'right' ? 'flex-row-reverse' : ''">
+                  {{ t(locale, col.labelKey) }}
+                  <template v-if="col.sortable && col.sortField && isSortedBy(col.sortField)">
+                    <ArrowUp v-if="!sortDesc" class="h-2.5 w-2.5" aria-hidden="true" />
+                    <ArrowDown v-else class="h-2.5 w-2.5" aria-hidden="true" />
+                  </template>
+                </span>
               </th>
             </tr>
           </thead>
@@ -720,8 +403,8 @@ onUnmounted(() => {
                 :key="`sk-${row}`"
                 class="border-b border-[var(--theme-border-subtle)] last:border-0"
               >
-                <td v-for="col in visibleCols.length" :key="col" class="px-1.5 py-1.5">
-                  <div class="h-2.5 animate-pulse rounded bg-[var(--theme-border-default)]" :style="{ width: `${40 + ((row + col) % 5) * 12}%` }"></div>
+                <td v-for="n in visibleCols.length" :key="n" class="px-1.5 py-1.5">
+                  <div class="h-2.5 animate-pulse rounded bg-[var(--theme-border-default)]" :style="{ width: `${40 + ((row + n) % 5) * 12}%` }"></div>
                 </td>
               </tr>
             </template>
@@ -891,87 +574,31 @@ onUnmounted(() => {
     </div>
 
     <!-- 分页控件 -->
-    <div class="flex shrink-0 items-center justify-between gap-3 text-xs text-[var(--theme-text-tertiary)]">
-      <div class="flex shrink-0 items-center gap-2">
-        <span>{{ pageStart }}–{{ pageEnd }} / {{ total }}</span>
-        <DesktopSelect
-          v-model="pageSize"
-          :options="pageSizeSelectOptions"
-          :aria-label="t(locale, 'desktop.requests.pageSize')"
-          compact
-          @change="onPageSizeChange"
-        />
-      </div>
-      <div class="flex items-center gap-2">
-        <div class="flex items-center gap-1">
-          <button
-            type="button"
-            class="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--theme-border-default)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="!hasPrev"
-            :aria-label="t(locale, 'desktop.requests.pageFirst')"
-            :title="t(locale, 'desktop.requests.pageFirst')"
-            @click="gotoPage(0)"
-          >
-            <ChevronsLeft class="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            class="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--theme-border-default)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="!hasPrev"
-            :aria-label="t(locale, 'desktop.requests.pagePrev')"
-            @click="prevPage"
-          >
-            <ChevronLeft class="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-          <template v-for="(num, idx) in pageNumbers" :key="idx">
-            <span v-if="num === '...'" class="px-1 text-[var(--theme-text-quaternary)]">…</span>
-            <button
-              v-else
-              type="button"
-              class="inline-flex h-7 min-w-[28px] items-center justify-center rounded-lg border px-1.5 font-mono text-xs transition-colors"
-              :class="num === currentPage + 1
-                ? 'border-[var(--theme-accent-primary)] bg-[var(--theme-accent-soft)] font-semibold text-[var(--theme-accent-primary)]'
-                : 'border-[var(--theme-border-default)] text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]'"
-              :aria-current="num === currentPage + 1 ? 'page' : undefined"
-              @click="gotoPageNumber(num)"
-            >{{ num }}</button>
-          </template>
-          <button
-            type="button"
-            class="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--theme-border-default)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="!hasNext"
-            :aria-label="t(locale, 'desktop.requests.pageNext')"
-            @click="nextPage"
-          >
-            <ChevronRight class="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            class="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--theme-border-default)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="!hasNext"
-            :aria-label="t(locale, 'desktop.requests.pageLast')"
-            :title="t(locale, 'desktop.requests.pageLast')"
-            @click="gotoPage(totalPages - 1)"
-          >
-            <ChevronsRight class="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-        </div>
-        <div v-if="totalPages > 7" class="flex items-center gap-1">
-          <span class="text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.requests.jumpTo') }}</span>
-          <input
-            v-model="jumpPageInput"
-            type="number"
-            min="1"
-            :max="totalPages"
-            class="theme-input h-7 w-12 rounded-lg px-1 text-center font-mono text-xs outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-            :aria-label="t(locale, 'desktop.requests.jumpTo')"
-            @keydown.enter="jumpPage"
-          />
-          <span class="text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.requests.pageOf', { current: '', total: totalPages }) }}</span>
-        </div>
+    <PaginationBar
+      :current-page="currentPage"
+      :total-pages="totalPages"
+      :total="total"
+      :page-numbers="pageNumbers"
+      :has-prev="hasPrev"
+      :has-next="hasNext"
+      :page-size="pageSize"
+      :page-size-options="pageSizeSelectOptions"
+      :page-size-label="t(locale, 'desktop.requests.pageSize')"
+      :page-first-label="t(locale, 'desktop.requests.pageFirst')"
+      :page-prev-label="t(locale, 'desktop.requests.pagePrev')"
+      :page-next-label="t(locale, 'desktop.requests.pageNext')"
+      :page-last-label="t(locale, 'desktop.requests.pageLast')"
+      :jump-to-label="t(locale, 'desktop.requests.jumpTo')"
+      :page-of-label="t(locale, 'desktop.requests.pageOf', { current: '', total: totalPages })"
+      @goto="gotoPage"
+      @next="nextPage"
+      @prev="prevPage"
+      @update:page-size="onPageSizeUpdate"
+    >
+      <template #extra>
         <span v-if="loadingMore" class="text-xs text-[var(--theme-text-quaternary)]">{{ t(locale, 'common.syncing') }}</span>
-      </div>
-    </div>
+      </template>
+    </PaginationBar>
   </div>
 
   <!-- 右键菜单 -->
@@ -1022,15 +649,6 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.popover-enter-active,
-.popover-leave-active {
-  transition: opacity 0.12s ease-out, transform 0.12s ease-out;
-}
-.popover-enter-from,
-.popover-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
-}
 .drawer-overlay-enter-active,
 .drawer-overlay-leave-active {
   transition: opacity 0.15s ease-out;

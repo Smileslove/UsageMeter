@@ -3,6 +3,7 @@ import { computed, ref, watch, type Ref } from 'vue'
 import type { RequestSortDir, RequestSortField } from '../../types'
 import type { useMonitorStore } from '../../stores/monitor'
 import { normalizeSessionTool, SESSION_SOURCE_TOOLS } from '../../composables/useSessionViewData'
+import { useColumnConfig, type ColumnDef } from './useColumnConfig'
 
 export { SESSION_SOURCE_TOOLS }
 
@@ -22,12 +23,10 @@ export type RequestColumnKey =
   | 'rate'
   | 'session'
 
-export interface RequestColumnDef {
-  key: RequestColumnKey
+export interface RequestColumnDef extends ColumnDef<RequestColumnKey> {
   align: 'left' | 'right'
   sortable: boolean
   sortField?: RequestSortField
-  defaultVisible: boolean
 }
 
 export const REQUEST_COLUMNS: RequestColumnDef[] = [
@@ -51,29 +50,6 @@ const STORAGE_KEY = 'usagemeter.requestColumns'
 const SEARCH_DEBOUNCE_MS = 300
 const REFRESH_DEBOUNCE_MS = 800
 
-function loadVisibleColumns(): Set<RequestColumnKey> {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY)
-    if (saved) {
-      const keys = JSON.parse(saved) as string[]
-      const valid = REQUEST_COLUMNS.map(c => c.key)
-      const filtered = keys.filter((k): k is RequestColumnKey =>
-        valid.includes(k as RequestColumnKey)
-      )
-      if (filtered.length > 0) return new Set(filtered)
-    }
-  } catch { /* ignore */ }
-  return new Set(
-    REQUEST_COLUMNS.filter(c => c.defaultVisible).map(c => c.key)
-  )
-}
-
-function saveVisibleColumns(cols: Set<RequestColumnKey>) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify([...cols]))
-  } catch { /* ignore */ }
-}
-
 export function useRequestTable(
   store: ReturnType<typeof useMonitorStore>,
   selectedTool: Ref<string | null>
@@ -87,7 +63,7 @@ export function useRequestTable(
   const perfFilter = ref<string>('all')
   const sortField = ref<RequestSortField>('timestamp')
   const sortDir = ref<RequestSortDir>('desc')
-  const visibleColumns = ref<Set<RequestColumnKey>>(loadVisibleColumns())
+  const { visibleColumns, toggleColumn, isColumnVisible } = useColumnConfig(STORAGE_KEY, REQUEST_COLUMNS, 3)
 
   const lastGlobalTool = ref<string | null>(
     normalizeSessionTool(store.settings.clientTools.activeToolFilter)
@@ -168,22 +144,6 @@ export function useRequestTable(
 
   function isSortedBy(field: RequestSortField) {
     return sortField.value === field
-  }
-
-  function toggleColumn(key: RequestColumnKey) {
-    const next = new Set(visibleColumns.value)
-    if (next.has(key)) {
-      if (next.size <= 3) return
-      next.delete(key)
-    } else {
-      next.add(key)
-    }
-    visibleColumns.value = next
-    saveVisibleColumns(next)
-  }
-
-  function isColumnVisible(key: RequestColumnKey) {
-    return visibleColumns.value.has(key)
   }
 
   function resetFilters() {

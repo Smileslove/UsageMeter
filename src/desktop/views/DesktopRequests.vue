@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowDown, ArrowUp, ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, Copy, ExternalLink, Search, Settings2, X } from 'lucide-vue-next'
+import { ArrowDown, ArrowUp, Copy, ExternalLink, Search, X } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { useDesktopNavigationStore } from '../../desktop/stores/desktopNavigation'
 import { t } from '../../i18n'
@@ -12,6 +12,8 @@ import { normalizeSessionTool } from '../../composables/useSessionViewData'
 import LobeIcon from '../../components/LobeIcon.vue'
 import DesktopSelect from '../components/DesktopSelect.vue'
 import type { SelectOption } from '../components/DesktopSelect.vue'
+import PaginationBar from '../components/PaginationBar.vue'
+import ColumnConfigPopover from '../components/ColumnConfigPopover.vue'
 
 const store = useMonitorStore()
 const nav = useDesktopNavigationStore()
@@ -111,8 +113,6 @@ const openInSession = () => {
   if (sessionKey) nav.openSession(sessionKey)
 }
 
-const showColumnConfig = ref(false)
-
 const toolOptions = computed(() => {
   const tools = new Set<string>()
   for (const session of store.sessions) tools.add(session.tool)
@@ -150,22 +150,14 @@ const { copiedValue, copyText } = useClipboard()
 
 const skeletonRows = [0, 1, 2, 3, 4, 5, 6, 7]
 
-const pageStart = computed(() => total.value === 0 ? 0 : currentPage.value * pageSize.value + 1)
-const pageEnd = computed(() => Math.min((currentPage.value + 1) * pageSize.value, total.value))
-
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
 const pageSizeSelectOptions = computed<SelectOption[]>(() =>
   PAGE_SIZE_OPTIONS.map(size => ({ value: size, label: `${size} / ${t(locale.value, 'desktop.requests.pageSize')}` })),
 )
-const onPageSizeChange = () => reload()
 
-const jumpPageInput = ref('')
-const jumpPage = () => {
-  const num = parseInt(jumpPageInput.value, 10)
-  if (Number.isFinite(num) && num >= 1 && num <= totalPages.value) {
-    gotoPage(num - 1)
-  }
-  jumpPageInput.value = ''
+function onPageSizeUpdate(size: number) {
+  pageSize.value = size
+  reload()
 }
 
 onMounted(async () => {
@@ -184,11 +176,6 @@ onUnmounted(() => {
 
 function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField }) {
   if (col.sortable && col.sortField) toggleSort(col.sortField)
-}
-
-function gotoPageNumber(num: number | '...') {
-  if (num === '...') return
-  gotoPage(num - 1)
 }
 </script>
 
@@ -235,40 +222,15 @@ function gotoPageNumber(num: number | '...') {
 
       <div class="ml-auto flex items-center gap-2">
         <span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.requests.totalRecords', { count: total }) }}</span>
-        <div class="relative">
-          <button
-            type="button"
-            class="inline-flex h-7 items-center gap-1 rounded-lg border border-[var(--theme-border-default)] px-2 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:border-[var(--theme-accent-primary)] hover:text-[var(--theme-accent-primary)]"
-            :aria-label="t(locale, 'desktop.requests.columnConfig')"
-            :title="t(locale, 'desktop.requests.columnConfig')"
-            @click="showColumnConfig = !showColumnConfig"
-          >
-            <Settings2 class="h-3 w-3" aria-hidden="true" />
-            <span class="hidden sm:inline">{{ t(locale, 'desktop.requests.columnConfig') }}</span>
-          </button>
-          <Transition name="popover">
-            <div
-              v-if="showColumnConfig"
-              class="theme-surface-elevated absolute right-0 top-8 z-30 w-40 rounded-xl border p-2 shadow-lg"
-              :aria-label="t(locale, 'desktop.requests.columnConfigTitle')"
-            >
-              <p class="mb-1.5 px-1 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.requests.columnConfigTitle') }}</p>
-              <label
-                v-for="col in REQUEST_COLUMNS"
-                :key="col.key"
-                class="flex cursor-pointer items-center gap-2 rounded px-1 py-0.5 text-xs text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]"
-              >
-                <input
-                  type="checkbox"
-                  class="h-3 w-3 accent-[var(--theme-accent-primary)]"
-                  :checked="isColumnVisible(col.key)"
-                  @change="toggleColumn(col.key)"
-                />
-                <span>{{ t(locale, `desktop.sessions.column${col.key.charAt(0).toUpperCase()}${col.key.slice(1)}`) }}</span>
-              </label>
-            </div>
-          </Transition>
-        </div>
+        <ColumnConfigPopover
+          :columns="REQUEST_COLUMNS"
+          :is-visible="isColumnVisible"
+          :toggle-column="toggleColumn"
+          :button-label="t(locale, 'desktop.requests.columnConfig')"
+          :title-label="t(locale, 'desktop.requests.columnConfigTitle')"
+          label-prefix="desktop.sessions.column"
+          :locale="locale"
+        />
       </div>
     </div>
 
@@ -461,101 +423,32 @@ function gotoPageNumber(num: number | '...') {
     </div>
 
     <!-- 分页控件 -->
-    <div class="flex shrink-0 items-center justify-between gap-3 text-xs text-[var(--theme-text-tertiary)]">
-      <div class="flex shrink-0 items-center gap-2">
-        <span>{{ pageStart }}–{{ pageEnd }} / {{ total }}</span>
-        <DesktopSelect
-          v-model="pageSize"
-          :options="pageSizeSelectOptions"
-          :aria-label="t(locale, 'desktop.requests.pageSize')"
-          compact
-          @change="onPageSizeChange"
-        />
-      </div>
-      <div class="flex items-center gap-2">
-        <div class="flex items-center gap-1">
-          <button
-            type="button"
-            class="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--theme-border-default)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="!hasPrev || loading"
-            :aria-label="t(locale, 'desktop.requests.pageFirst')"
-            :title="t(locale, 'desktop.requests.pageFirst')"
-            @click="gotoPage(0)"
-          >
-            <ChevronsLeft class="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            class="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--theme-border-default)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="!hasPrev || loading"
-            :aria-label="t(locale, 'desktop.requests.pagePrev')"
-            @click="prevPage"
-          >
-            <ChevronLeft class="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-          <template v-for="(num, idx) in pageNumbers" :key="idx">
-            <span v-if="num === '...'" class="px-1 text-[var(--theme-text-quaternary)]">…</span>
-            <button
-              v-else
-              type="button"
-              class="inline-flex h-7 min-w-[28px] items-center justify-center rounded-lg border px-1.5 font-mono text-xs transition-colors"
-              :class="num === currentPage + 1
-                ? 'border-[var(--theme-accent-primary)] bg-[var(--theme-accent-soft)] font-semibold text-[var(--theme-accent-primary)]'
-                : 'border-[var(--theme-border-default)] text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]'"
-              :disabled="loading"
-              :aria-current="num === currentPage + 1 ? 'page' : undefined"
-              @click="gotoPageNumber(num)"
-            >{{ num }}</button>
-          </template>
-          <button
-            type="button"
-            class="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--theme-border-default)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="!hasNext || loading"
-            :aria-label="t(locale, 'desktop.requests.pageNext')"
-            @click="nextPage"
-          >
-            <ChevronRight class="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            class="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--theme-border-default)] transition-colors hover:bg-[var(--theme-bg-hover)] disabled:cursor-not-allowed disabled:opacity-40"
-            :disabled="!hasNext || loading"
-            :aria-label="t(locale, 'desktop.requests.pageLast')"
-            :title="t(locale, 'desktop.requests.pageLast')"
-            @click="gotoPage(totalPages - 1)"
-          >
-            <ChevronsRight class="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-        </div>
-        <div v-if="totalPages > 7" class="flex items-center gap-1">
-          <span class="text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.requests.jumpTo') }}</span>
-          <input
-            v-model="jumpPageInput"
-            type="number"
-            min="1"
-            :max="totalPages"
-            class="theme-input h-7 w-12 rounded-lg px-1 text-center font-mono text-xs outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-            :aria-label="t(locale, 'desktop.requests.jumpTo')"
-            @keydown.enter="jumpPage"
-          />
-          <span class="text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.requests.pageOf', { current: '', total: totalPages }) }}</span>
-        </div>
-      </div>
-    </div>
+    <PaginationBar
+      :current-page="currentPage"
+      :total-pages="totalPages"
+      :total="total"
+      :page-numbers="pageNumbers"
+      :has-prev="hasPrev"
+      :has-next="hasNext"
+      :page-size="pageSize"
+      :page-size-options="pageSizeSelectOptions"
+      :loading="loading"
+      :page-size-label="t(locale, 'desktop.requests.pageSize')"
+      :page-first-label="t(locale, 'desktop.requests.pageFirst')"
+      :page-prev-label="t(locale, 'desktop.requests.pagePrev')"
+      :page-next-label="t(locale, 'desktop.requests.pageNext')"
+      :page-last-label="t(locale, 'desktop.requests.pageLast')"
+      :jump-to-label="t(locale, 'desktop.requests.jumpTo')"
+      :page-of-label="t(locale, 'desktop.requests.pageOf', { current: '', total: totalPages })"
+      @goto="gotoPage"
+      @next="nextPage"
+      @prev="prevPage"
+      @update:page-size="onPageSizeUpdate"
+    />
   </div>
 </template>
 
 <style scoped>
-.popover-enter-active,
-.popover-leave-active {
-  transition: opacity 0.12s ease-out, transform 0.12s ease-out;
-}
-.popover-enter-from,
-.popover-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
-}
-
 .drawer-overlay-enter-active,
 .drawer-overlay-leave-active {
   transition: opacity 0.18s ease-out;
