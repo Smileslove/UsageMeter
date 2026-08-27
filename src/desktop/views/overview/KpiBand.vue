@@ -5,7 +5,7 @@
  */
 import type { PropType } from 'vue'
 import { t } from '../../../i18n'
-import type { KpiItem } from '../../composables/useOverviewKpis'
+import type { KpiItem, SecondaryPart } from '../../composables/useOverviewKpis'
 import type { StatisticsMetric } from '../../../types'
 
 defineProps({
@@ -17,6 +17,11 @@ defineProps({
 const emit = defineEmits<{
   select: [metric: StatisticsMetric]
 }>()
+
+/** 将结构化片段渲染为单行副标题：key 片段走 t()，text 片段原样输出，以空格拼接。 */
+function renderSecondary(parts: SecondaryPart[], locale: string): string {
+  return parts.map(p => (p.key ? t(locale, p.key, p.params) : p.text ?? '')).join(' ')
+}
 </script>
 
 <template>
@@ -52,9 +57,9 @@ const emit = defineEmits<{
         </span>
         <span
           class="w-full truncate text-xs text-[var(--theme-text-tertiary)]"
-          :title="kpi.secondaryTitle"
+          :title="kpi.secondaryTitleKey ? t(locale, kpi.secondaryTitleKey) : undefined"
         >
-          {{ kpi.secondary }}
+          {{ renderSecondary(kpi.secondaryParts, locale) }}
         </span>
       </button>
     </div>

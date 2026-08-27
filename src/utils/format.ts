@@ -502,3 +502,35 @@ export function formatRate(value: number): string {
   if (value >= 100) return value.toFixed(0)
   return value.toFixed(1)
 }
+
+/** 将相对秒数格式化为 "1d2h / 3h4m / 5m" 风格倒计时（复用 subscription.* 单位键由调用方传入）。 */
+export function formatCountdownSeconds(seconds: number, unitDay: string, unitHour: string, unitMinute: string): string {
+  if (seconds <= 0) return '0' + unitMinute
+  const mins = Math.floor(seconds / 60)
+  const hours = Math.floor(mins / 60)
+  const days = Math.floor(hours / 24)
+  if (days > 0) {
+    const remainHours = hours % 24
+    return remainHours > 0 ? `${days}${unitDay}${remainHours}${unitHour}` : `${days}${unitDay}`
+  }
+  if (hours > 0) {
+    const remainMins = mins % 60
+    return remainMins > 0 ? `${hours}${unitHour}${remainMins}${unitMinute}` : `${hours}${unitHour}`
+  }
+  return `${mins}${unitMinute}`
+}
+
+/**
+ * 将 epoch 秒级时间戳格式化为相对时间文案（如 "刚刚 / 5分钟前 / 3小时前 / 2天前"）。
+ * null 或 0 返回 '—'。统一供概览最近会话、分析构成视图、侧栏最后更新时间复用。
+ */
+export function formatRelativeTime(epoch: number | null, locale: string): string {
+  if (!epoch) return '—'
+  const diffMs = Date.now() - epoch * 1000
+  if (diffMs < 60_000) return t(locale, 'common.justNow')
+  const minutes = Math.floor(diffMs / 60_000)
+  if (minutes < 60) return `${minutes}${t(locale, 'common.minutesAgo')}`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}${t(locale, 'common.hoursAgo')}`
+  return `${Math.floor(hours / 24)}${t(locale, 'common.daysAgo')}`
+}

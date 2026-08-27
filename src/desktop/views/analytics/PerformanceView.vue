@@ -21,6 +21,7 @@ import { useMonitorStore } from '../../../stores/monitor'
 import { useDesktopNavigationStore } from '../../stores/desktopNavigation'
 import { useSessionDisplay } from '../../../composables/useSessionDisplay'
 import { registerChartComponents, trendLineSeries, useChartTheme } from '../../composables/useTrendChart'
+import { usePerformanceAvailability } from '../../composables/usePerformanceAvailability'
 import { queryRecentRequestRecords } from '../../../stores/sessionQueries'
 import { t } from '../../../i18n'
 import { formatDurationMs, formatRate, formatRequestCount } from '../../../utils/format'
@@ -33,12 +34,8 @@ const nav = useDesktopNavigationStore()
 const locale = computed(() => store.settings.locale)
 const display = useSessionDisplay(store)
 
-const performance = computed(() => store.statisticsSummary?.performance ?? null)
+const { performance, hasPerformance } = usePerformanceAvailability(store)
 const statusBreakdown = computed(() => store.statisticsSummary?.status ?? null)
-/** 仅当 store 有代理覆盖数据时渲染（StatisticsSummary.performance 为可选字段）。 */
-const hasPerformance = computed(
-  () => !!store.statisticsSummary?.capability.hasPerformance && !!performance.value && performance.value.requestCount > 0
-)
 /** 模板安全取值（模板表达式不支持非空断言；渲染前提是 hasPerformance）。 */
 const perf = computed(() => ({
   avgTtftMs: performance.value?.avgTtftMs ?? 0,

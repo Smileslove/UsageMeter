@@ -5,6 +5,7 @@ import type { Component } from 'vue'
 import { useDesktopNavigationStore } from '../stores/desktopNavigation'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
+import { formatRelativeTime } from '../../utils/format'
 import type { DesktopPage } from '../../types'
 
 interface NavItem {
@@ -46,26 +47,6 @@ function handleResize() {
 function toggleCollapsed() {
   userAdjusted.value = true
   nav.sidebarCollapsed = !nav.sidebarCollapsed
-}
-
-function formatRelativeTime(epoch: number | null, localeValue: string): string {
-  if (!epoch) {
-    return t(localeValue, 'common.unknown')
-  }
-  const diffMs = Date.now() - epoch * 1000
-  if (diffMs < 60_000) {
-    return t(localeValue, 'common.justNow')
-  }
-  const minutes = Math.floor(diffMs / 60_000)
-  if (minutes < 60) {
-    return `${minutes}${t(localeValue, 'common.minutesAgo')}`
-  }
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) {
-    return `${hours}${t(localeValue, 'common.hoursAgo')}`
-  }
-  const days = Math.floor(hours / 24)
-  return `${days}${t(localeValue, 'common.daysAgo')}`
 }
 
 const updatedLabel = ref('')

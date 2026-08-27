@@ -123,7 +123,7 @@ onUnmounted(() => {
         :class="badgeMeta.cls"
       >
         <span class="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true"></span>
-        {{ badgeMeta.label }}
+        {{ t(locale, badgeMeta.labelKey) }}
       </span>
 
       <!-- 窄屏：左栏折叠按钮 + 检查器按钮 -->

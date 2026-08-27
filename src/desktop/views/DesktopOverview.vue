@@ -37,6 +37,7 @@ import {
 import { useOverviewKpis } from '../composables/useOverviewKpis'
 import { useQuotaLimits } from '../composables/useQuotaLimits'
 import { formatRate } from '../../utils/format'
+import { metricValueOfBreakdownItem } from '../../utils/metric'
 import { pickEffectiveWindow } from '../../utils/windowFallback'
 import { WINDOW_ORDER } from '../../types'
 import type { OverviewBreakdownItem, StatisticsMetric, WindowName, WindowUsage } from '../../types'
@@ -98,7 +99,7 @@ const rateSummary = computed(() => store.rateSummary)
 
 // ============ KPI 条带（设计 6.4）：计算下沉到 useOverviewKpis ============
 
-const { kpis, hasRateData } = useOverviewKpis(windowData, rateSummary, locale)
+const { kpis, hasRateData } = useOverviewKpis(windowData, rateSummary)
 
 // ============ 用量趋势（设计 6.5） ============
 
@@ -171,16 +172,14 @@ const chartOptions = computed(() => {
 
 // ============ 额度与生存（设计 6.6）：计算下沉到 useQuotaLimits ============
 
-const { limitRows, limitLoading } = useQuotaLimits(locale)
+const { limitRows, limitLoading } = useQuotaLimits()
 
 // ============ 三维贡献（设计 6.7） ============
 
 const breakdown = computed(() => store.overviewBreakdown)
 
 function primaryValue(item: OverviewBreakdownItem): number {
-  if (analytics.analyticsMetric === 'cost') return item.cost
-  if (analytics.analyticsMetric === 'tokens') return item.totalTokens
-  return item.requestCount
+  return metricValueOfBreakdownItem(item, analytics.analyticsMetric)
 }
 
 /** 前 5 + "其他"（其余汇总为一行），占比按当前主指标计算。 */

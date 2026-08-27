@@ -1,31 +1,33 @@
 /**
  * 概览页"额度与生存"卡片（设计 6.6）纯计算逻辑。
- * 输入：locale；输出限流行列表 + 加载态。数据源为 monitor store 的
+ * 输出限流行列表 + 加载态（行内文案均为 i18n key，由组件层渲染）。数据源为 monitor store 的
  * limitSurvival / claudeQuota / subscriptionQuota / copilotQuota / geminiQuota / configuredSourceQuotas。
  */
 import { computed } from 'vue'
-import type { ComputedRef } from 'vue'
 import { useMonitorStore } from '../../stores/monitor'
-import { formatCountdownSeconds } from '../stores/desktopAnalytics'
-import { t } from '../../i18n'
 import type { QuotaTier, SubscriptionQuota, SurvivalConfidence } from '../../types'
 
 export type LimitState = 'safe' | 'attention' | 'danger' | 'unknown'
 
 export interface LimitRow {
   key: string
-  label: string
-  windowLabel: string
+  /** 可翻译标签的 i18n key（与 labelText 二选一）。 */
+  labelKey: string | null
+  /** 不可翻译的原始展示文本（产品名 / 动态账号名等，与 labelKey 二选一）。 */
+  labelText: string | null
+  windowLabelKey: string | null
+  windowLabelText: string | null
   usedPct: number | null
   barPct: number
-  resetText: string
+  /** 距离重置的原始秒数（null 表示无重置信息，由组件层格式化）。 */
+  resetSeconds: number | null
   conclusionKey: string
   state: LimitState
   confidenceKey: string | null
   clickable: boolean
 }
 
-export function useQuotaLimits(locale: ComputedRef<string | undefined>) {
+export function useQuotaLimits() {
   const store = useMonitorStore()
 
   const BLOCK_SECONDS = 5 * 3600
@@ -68,21 +70,16 @@ export function useQuotaLimits(locale: ComputedRef<string | undefined>) {
     return 'safe'
   }
 
-  function tierLabel(name: string): string {
-    if (name === 'five_hour') return t(locale.value, 'subscription.fiveHour')
-    if (name === 'seven_day') return t(locale.value, 'subscription.sevenDay')
-    return name
+  function tierLabelParts(name: string): { key: string | null; text: string | null } {
+    if (name === 'five_hour') return { key: 'subscription.fiveHour', text: null }
+    if (name === 'seven_day') return { key: 'subscription.sevenDay', text: null }
+    return { key: null, text: name || null }
   }
 
-  function resetCountdown(resetsAt?: string): string {
-    if (!resetsAt) return '--'
+  function resetSecondsOf(resetsAt?: string): number | null {
+    if (!resetsAt) return null
     const diffMs = new Date(resetsAt).getTime() - Date.now()
-    return formatCountdownSeconds(
-      Math.floor(diffMs / 1000),
-      t(locale.value, 'subscription.unitDayShort'),
-      t(locale.value, 'subscription.unitHourShort'),
-      t(locale.value, 'subscription.unitMinuteShort')
-    )
+    return Math.floor(diffMs / 1000)
   }
 
   function confidenceKeyOf(confidence: SurvivalConfidence | undefined): string | null {
@@ -120,18 +117,13 @@ export function useQuotaLimits(locale: ComputedRef<string | undefined>) {
     }
     return {
       key: 'local-5h',
-      label: t(locale.value, 'desktop.overview.limitLocalWindow'),
-      windowLabel: t(locale.value, 'settings.window5h'),
+      labelKey: 'desktop.overview.limitLocalWindow',
+      labelText: null,
+      windowLabelKey: 'settings.window5h',
+      windowLabelText: null,
       usedPct: elapsedPct,
       barPct: elapsedPct ?? 0,
-      resetText: block
-        ? formatCountdownSeconds(
-            Math.max(0, block.remainingSeconds),
-            t(locale.value, 'subscription.unitDayShort'),
-            t(locale.value, 'subscription.unitHourShort'),
-            t(locale.value, 'subscription.unitMinuteShort')
-          )
-        : '--',
+      resetSeconds: block ? Math.max(0, block.remainingSeconds) : null,
       conclusionKey,
       state,
       confidenceKey: confidenceKeyOf(burn?.confidence),
@@ -140,7 +132,11 @@ export function useQuotaLimits(locale: ComputedRef<string | undefined>) {
   })
 
   /** 官方配额来源行（Claude / Codex / Copilot / Gemini / 中转来源）。 */
-  function quotaRow(key: string, label: string, q: SubscriptionQuota): LimitRow | null {
+  function quotaRow(
+    key: string,
+    labelParts: { key: string | null; text: string | null },
+    q: SubscriptionQuota
+  ): LimitRow | null {
     const windowTier = primaryTierOf(q)
     const balanceTier = balanceTierOf(q)
     if (!windowTier && !balanceTier) return null
@@ -151,13 +147,24 @@ export function useQuotaLimits(locale: ComputedRef<string | undefined>) {
     } else {
       state = stateForUsed(pct)
     }
+    let windowLabelKey: string | null = null
+    let windowLabelText: string | null = null
+    if (balanceTier) {
+      windowLabelText = balanceTier.currency ?? ''
+    } else {
+      const wp = tierLabelParts(windowTier?.name ?? '')
+      windowLabelKey = wp.key
+      windowLabelText = wp.text
+    }
     return {
       key,
-      label,
-      windowLabel: balanceTier ? (balanceTier.currency ?? '') : tierLabel(windowTier?.name ?? ''),
+      labelKey: labelParts.key,
+      labelText: labelParts.text,
+      windowLabelKey,
+      windowLabelText,
       usedPct: pct,
       barPct: pct ?? (balanceTier ? 100 : 0),
-      resetText: resetCountdown(windowTier?.resetsAt),
+      resetSeconds: resetSecondsOf(windowTier?.resetsAt),
       conclusionKey:
         state === 'danger' && balanceTier ? 'desktop.overview.limitStatusExhausted' : conclusionKeyFor(state),
       state,
@@ -173,36 +180,38 @@ export function useQuotaLimits(locale: ComputedRef<string | undefined>) {
     opencode: 'survival.tool.opencode'
   }
 
-  function sourceToolLabel(q: SubscriptionQuota): string {
+  function sourceToolLabelParts(q: SubscriptionQuota): { key: string | null; text: string | null } {
     const key = q.sourceTool ? TOOL_LABEL_KEYS[q.sourceTool] : undefined
-    if (key) return t(locale.value, key)
-    if (q.sourceTool) return q.sourceTool
+    if (key) return { key, text: null }
+    if (q.sourceTool) return { key: null, text: q.sourceTool }
     if (q.provider === 'source-config') {
-      return q.accountLabel || q.credentialMessage || t(locale.value, 'survival.sourceSection')
+      if (q.accountLabel) return { key: null, text: q.accountLabel }
+      if (q.credentialMessage) return { key: null, text: q.credentialMessage }
+      return { key: 'survival.sourceSection', text: null }
     }
-    return q.tool
+    return { key: null, text: q.tool }
   }
 
   const limitRows = computed<LimitRow[]>(() => {
     const rows: LimitRow[] = [localRow.value]
     if (claudeQuota.value) {
-      const row = quotaRow('claude', 'Claude', claudeQuota.value)
+      const row = quotaRow('claude', { key: null, text: 'Claude' }, claudeQuota.value)
       if (row) rows.push(row)
     }
     if (codexQuota.value) {
-      const row = quotaRow('codex', t(locale.value, 'subscription.codex'), codexQuota.value)
+      const row = quotaRow('codex', { key: 'subscription.codex', text: null }, codexQuota.value)
       if (row) rows.push(row)
     }
     if (copilotQuota.value) {
-      const row = quotaRow('copilot', t(locale.value, 'copilot.label'), copilotQuota.value)
+      const row = quotaRow('copilot', { key: 'copilot.label', text: null }, copilotQuota.value)
       if (row) rows.push(row)
     }
     if (geminiQuota.value) {
-      const row = quotaRow('gemini', t(locale.value, 'subscription.gemini'), geminiQuota.value)
+      const row = quotaRow('gemini', { key: 'subscription.gemini', text: null }, geminiQuota.value)
       if (row) rows.push(row)
     }
     for (const q of configuredQuotas.value) {
-      const row = quotaRow(`source:${q.provider}:${q.tool}`, sourceToolLabel(q), q)
+      const row = quotaRow(`source:${q.provider}:${q.tool}`, sourceToolLabelParts(q), q)
       if (row) rows.push(row)
     }
     return rows

@@ -1,6 +1,6 @@
 /**
  * 概览页 KPI 条带（设计 6.4）纯计算逻辑。
- * 输入：当前概览窗口数据 + 速率统计 + locale；输出 6 个 KPI 卡片数据。
+ * 输入：当前概览窗口数据 + 速率统计；输出 6 个 KPI 卡片数据（文案为 i18n key，由组件层渲染）。
  * 不依赖任何页面局部状态，可在概览页 / 测试中复用。
  */
 import { computed } from 'vue'
@@ -14,7 +14,6 @@ import {
   Sigma
 } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
-import { t } from '../../i18n'
 import {
   formatCost,
   formatDurationMs,
@@ -25,13 +24,23 @@ import {
 } from '../../utils/format'
 import type { StatisticsMetric, WindowRateSummary, WindowUsage } from '../../types'
 
+export interface SecondaryPart {
+  /** 可翻译片段的 i18n key（与 text 二选一）。 */
+  key?: string
+  /** 不可翻译的原始数据片段（格式化数值 / 分隔符等）。 */
+  text?: string
+  /** i18n 插值参数（仅当 key 存在时有效）。 */
+  params?: Record<string, string | number>
+}
+
 export interface KpiItem {
   key: string
   icon: Component
   labelKey: string
   primary: string
-  secondary: string
-  secondaryTitle?: string
+  /** 副标题结构化片段：组件层负责将 key 片段用 t() 渲染并与 text 片段以空格拼接。 */
+  secondaryParts: SecondaryPart[]
+  secondaryTitleKey?: string
   /** 点击后趋势切换到的主指标维度。 */
   metric: StatisticsMetric
   /** "仅代理覆盖"徽标。 */
@@ -40,8 +49,7 @@ export interface KpiItem {
 
 export function useOverviewKpis(
   windowData: ComputedRef<WindowUsage | null>,
-  rateSummary: ComputedRef<WindowRateSummary | null>,
-  locale: ComputedRef<string | undefined>
+  rateSummary: ComputedRef<WindowRateSummary | null>
 ) {
   const store = useMonitorStore()
 
@@ -81,17 +89,22 @@ export function useOverviewKpis(
     const covered = coveredStatusRequests.value
     const speed = hasRateData.value ? rateSummary.value!.overall.avgTokensPerSecond : null
     const ttft = hasRateData.value ? rateSummary.value!.ttft.avgTtftMs : null
-    const statusSecondary =
-      covered > 0
-        ? `${t(locale.value, 'desktop.overview.kpiSuccess')} ${formatRequestCount(d.successRequests)} · ${t(locale.value, 'desktop.overview.kpiFailed')} ${formatRequestCount(d.clientErrorRequests + d.serverErrorRequests)}`
-        : '--'
+    const statusParts: SecondaryPart[] = covered > 0
+      ? [
+          { key: 'desktop.overview.kpiSuccess' },
+          { text: formatRequestCount(d.successRequests) },
+          { text: '·' },
+          { key: 'desktop.overview.kpiFailed' },
+          { text: formatRequestCount(d.clientErrorRequests + d.serverErrorRequests) }
+        ]
+      : [{ text: '--' }]
     return [
       {
         key: 'requests',
         icon: MessageSquare,
         labelKey: 'desktop.overview.kpiRequests',
         primary: formatRequestCount(d.requestUsed),
-        secondary: statusSecondary,
+        secondaryParts: statusParts,
         metric: 'requests' as StatisticsMetric,
         coverageTag: false
       },
@@ -100,7 +113,13 @@ export function useOverviewKpis(
         icon: Sigma,
         labelKey: 'desktop.overview.kpiTokens',
         primary: formatTokenValue(d.tokenUsed),
-        secondary: `${t(locale.value, 'desktop.overview.kpiInput')} ${pair.input} · ${t(locale.value, 'desktop.overview.kpiOutput')} ${pair.output}`,
+        secondaryParts: [
+          { key: 'desktop.overview.kpiInput' },
+          { text: pair.input },
+          { text: '·' },
+          { key: 'desktop.overview.kpiOutput' },
+          { text: pair.output }
+        ],
         metric: 'tokens' as StatisticsMetric,
         coverageTag: false
       },
@@ -109,8 +128,11 @@ export function useOverviewKpis(
         icon: CircleDollarSign,
         labelKey: 'desktop.overview.kpiCost',
         primary: formatCost(d.cost, store.settings.currency),
-        secondary: `USD ${d.cost.toFixed(4)}`,
-        secondaryTitle: t(locale.value, 'desktop.overview.kpiUsdHint'),
+        secondaryParts: [
+          { text: 'USD' },
+          { text: d.cost.toFixed(4) }
+        ],
+        secondaryTitleKey: 'desktop.overview.kpiUsdHint',
         metric: 'cost' as StatisticsMetric,
         coverageTag: false
       },
@@ -119,10 +141,13 @@ export function useOverviewKpis(
         icon: Database,
         labelKey: 'desktop.overview.kpiCache',
         primary: formatTokenValue(d.cacheReadTokens),
-        secondary:
+        secondaryParts:
           cacheHitRate.value == null
-            ? '--'
-            : `${formatRate(cacheHitRate.value)}% ${t(locale.value, 'desktop.overview.kpiHitRate')}`,
+            ? [{ text: '--' }]
+            : [
+                { text: `${formatRate(cacheHitRate.value)}%` },
+                { key: 'desktop.overview.kpiHitRate' }
+              ],
         metric: 'tokens' as StatisticsMetric,
         coverageTag: false
       },
@@ -131,10 +156,9 @@ export function useOverviewKpis(
         icon: ShieldCheck,
         labelKey: 'desktop.overview.kpiSuccessRate',
         primary: successRate.value == null ? '--' : `${formatRate(successRate.value)}%`,
-        secondary:
-          successRate.value == null
-            ? t(locale.value, 'desktop.overview.kpiCoverageOnly')
-            : t(locale.value, 'desktop.overview.kpiCovered', { count: formatRequestCount(coveredStatusRequests.value) }),
+        secondaryParts: successRate.value == null
+          ? [{ key: 'desktop.overview.kpiCoverageOnly' }]
+          : [{ key: 'desktop.overview.kpiCovered', params: { count: formatRequestCount(coveredStatusRequests.value) } }],
         metric: 'requests' as StatisticsMetric,
         coverageTag: successRate.value == null
       },
@@ -143,10 +167,12 @@ export function useOverviewKpis(
         icon: Gauge,
         labelKey: 'desktop.overview.kpiAvgSpeed',
         primary: speed == null ? '--' : `${formatRate(speed)} t/s`,
-        secondary:
-          ttft == null
-            ? t(locale.value, 'desktop.overview.kpiCoverageOnly')
-            : `${t(locale.value, 'desktop.overview.kpiTtft')} ${formatDurationMs(ttft)}`,
+        secondaryParts: ttft == null
+          ? [{ key: 'desktop.overview.kpiCoverageOnly' }]
+          : [
+              { key: 'desktop.overview.kpiTtft' },
+              { text: formatDurationMs(ttft) }
+            ],
         metric: 'requests' as StatisticsMetric,
         coverageTag: !hasRateData.value
       }

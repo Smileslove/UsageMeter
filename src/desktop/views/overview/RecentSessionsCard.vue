@@ -7,7 +7,7 @@
 import type { PropType } from 'vue'
 import { ArrowUpRight, Clock } from 'lucide-vue-next'
 import { t } from '../../../i18n'
-import { formatCost, formatRequestCount } from '../../../utils/format'
+import { formatCost, formatRelativeTime, formatRequestCount } from '../../../utils/format'
 import { formatToolDisplayName } from '../../../utils/toolDisplay'
 import type { AppLocale, ClientToolProfile, CurrencySettings, SessionStats } from '../../../types'
 
@@ -28,17 +28,6 @@ const emit = defineEmits<{
 
 function sessionTitle(session: { sessionName?: string; topic?: string }): string {
   return session.sessionName || session.topic || t(props.locale, 'sessions.untitled')
-}
-
-function formatRelativeTime(epoch: number): string {
-  if (!epoch) return '--'
-  const diffMs = Date.now() - epoch * 1000
-  if (diffMs < 60_000) return t(props.locale, 'common.justNow')
-  const minutes = Math.floor(diffMs / 60_000)
-  if (minutes < 60) return `${minutes}${t(props.locale, 'common.minutesAgo')}`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}${t(props.locale, 'common.hoursAgo')}`
-  return `${Math.floor(hours / 24)}${t(props.locale, 'common.daysAgo')}`
 }
 </script>
 
@@ -82,7 +71,7 @@ function formatRelativeTime(epoch: number): string {
             <span class="mt-0.5 block truncate text-xs text-[var(--theme-text-tertiary)]">
               {{ s.projectName || t(locale, 'common.unknownProject') }}
               · {{ formatToolDisplayName(s.tool, locale, profiles) }}
-              · {{ formatRelativeTime(s.lastRequestTime) }}
+              · {{ formatRelativeTime(s.lastRequestTime, locale) }}
             </span>
           </span>
           <span class="flex shrink-0 items-center gap-3 font-mono text-xs text-[var(--theme-text-secondary)]">

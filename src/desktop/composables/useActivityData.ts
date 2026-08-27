@@ -14,7 +14,6 @@
  */
 import { computed, ref, watch } from 'vue'
 import { useMonitorStore } from '../../stores/monitor'
-import { t } from '../../i18n'
 import {
   getSessionActivitySummary, getSessionAgents, getSessionEvents,
   getSessionToolSummary, rebuildSessionActivityIndex
@@ -32,7 +31,6 @@ export const PAGE_SIZE = 100
 
 export function useActivityData() {
   const store = useMonitorStore()
-  const locale = computed(() => store.settings.locale)
 
   // ============ 活动数据状态 ============
   const activeSessionKey = ref<string | null>(null)
@@ -63,18 +61,18 @@ export function useActivityData() {
     return capabilityLevel.value
   })
 
-  /** 顶部能力状态徽标（Structured / Off / 仅聚合…）。 */
-  const badgeMeta = computed<{ label: string; cls: string } | null>(() => {
+  /** 顶部能力状态徽标（Structured / Off / 仅聚合…）。返回 i18n key，由组件层渲染。 */
+  const badgeMeta = computed<{ labelKey: string; cls: string } | null>(() => {
     switch (capabilityBadge.value) {
       case 'off':
-        return { label: t(locale.value, 'desktop.activity.capabilityOff'), cls: 'bg-slate-500/10 text-slate-500 dark:text-slate-300' }
+        return { labelKey: 'desktop.activity.capabilityOff', cls: 'bg-slate-500/10 text-slate-500 dark:text-slate-300' }
       case 'none':
       case 'metadata':
-        return { label: t(locale.value, 'desktop.activity.capabilityAggregate'), cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-300' }
+        return { labelKey: 'desktop.activity.capabilityAggregate', cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-300' }
       case 'structured':
-        return { label: t(locale.value, 'desktop.activity.capabilityStructured'), cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300' }
+        return { labelKey: 'desktop.activity.capabilityStructured', cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300' }
       case 'fullContent':
-        return { label: t(locale.value, 'desktop.activity.capabilityOnDemand'), cls: 'bg-sky-500/10 text-sky-600 dark:text-sky-300' }
+        return { labelKey: 'desktop.activity.capabilityOnDemand', cls: 'bg-sky-500/10 text-sky-600 dark:text-sky-300' }
       default:
         return null
     }

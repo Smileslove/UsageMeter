@@ -6,7 +6,7 @@
 import type { PropType, Component } from 'vue'
 import { CheckCircle2, CircleAlert, CircleHelp, ShieldCheck, TriangleAlert } from 'lucide-vue-next'
 import { t } from '../../../i18n'
-import { formatRate } from '../../../utils/format'
+import { formatRate, formatCountdownSeconds } from '../../../utils/format'
 import type { LimitRow, LimitState } from '../../composables/useQuotaLimits'
 
 defineProps({
@@ -38,6 +38,19 @@ function stateIcon(state: LimitState): Component {
   if (state === 'attention') return TriangleAlert
   if (state === 'danger') return CircleAlert
   return CircleHelp
+}
+
+/** 由原始秒数格式化倒计时并套入 "重置于 {time}" 句式（i18n 渲染留在组件层）。 */
+function resetLabel(row: LimitRow, locale: string): string {
+  const time = row.resetSeconds == null
+    ? '--'
+    : formatCountdownSeconds(
+        row.resetSeconds,
+        t(locale, 'subscription.unitDayShort'),
+        t(locale, 'subscription.unitHourShort'),
+        t(locale, 'subscription.unitMinuteShort')
+      )
+  return t(locale, 'desktop.overview.limitResetIn', { time })
 }
 </script>
 
@@ -71,11 +84,11 @@ function stateIcon(state: LimitState): Component {
         <div class="flex items-center justify-between gap-2">
           <div class="flex min-w-0 items-center gap-1.5">
             <component :is="stateIcon(row.state)" :size="14" class="shrink-0" :class="stateToneClass(row.state)" aria-hidden="true" />
-            <span class="truncate text-xs font-semibold text-[var(--theme-text-primary)]">{{ row.label }}</span>
+            <span class="truncate text-xs font-semibold text-[var(--theme-text-primary)]">{{ row.labelKey ? t(locale, row.labelKey) : row.labelText }}</span>
             <span
               class="shrink-0 rounded-full border border-[var(--theme-border-default)] px-1.5 py-px text-xs text-[var(--theme-text-tertiary)]"
             >
-              {{ row.windowLabel }}
+              {{ row.windowLabelKey ? t(locale, row.windowLabelKey) : row.windowLabelText }}
             </span>
           </div>
           <span class="shrink-0 text-xs font-medium" :class="stateToneClass(row.state)">
@@ -95,7 +108,7 @@ function stateIcon(state: LimitState): Component {
           </span>
         </div>
         <div class="mt-1.5 flex items-center justify-between gap-2 text-xs text-[var(--theme-text-quaternary)]">
-          <span>{{ t(locale, 'desktop.overview.limitResetIn', { time: row.resetText }) }}</span>
+          <span>{{ resetLabel(row, locale) }}</span>
           <span v-if="row.confidenceKey">
             {{ t(locale, 'desktop.overview.limitConfidence') }} {{ t(locale, row.confidenceKey) }}
           </span>

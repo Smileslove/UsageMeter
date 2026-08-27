@@ -11,10 +11,13 @@ import { t } from '../../../i18n'
 import {
   formatCost,
   formatRate,
+  formatRelativeTime,
   formatRequestCount,
   formatTokenValue
 } from '../../../utils/format'
+import { metricValueOfBreakdownItem } from '../../../utils/metric'
 import { formatToolDisplayName } from '../../../utils/toolDisplay'
+import { usePerformanceAvailability } from '../../composables/usePerformanceAvailability'
 import type { OverviewBreakdownItem, ProjectStats } from '../../../types'
 
 const store = useMonitorStore()
@@ -66,9 +69,7 @@ const sortableColumns: Array<{ key: CompositionSortKey; labelKey: string }> = [
 // ---- 行构建 ----
 
 function primaryValueOf(item: OverviewBreakdownItem): number {
-  if (analytics.analyticsMetric === 'cost') return item.cost
-  if (analytics.analyticsMetric === 'tokens') return item.totalTokens
-  return item.requestCount
+  return metricValueOfBreakdownItem(item, analytics.analyticsMetric)
 }
 
 function projectPrimaryValue(p: ProjectStats): number {
@@ -186,22 +187,8 @@ function switchDimension(d: CompositionDimension) {
 
 // ---- 展示工具 ----
 
-function formatRelativeTime(epoch: number | null): string {
-  if (!epoch) return '—'
-  const diffMs = Date.now() - epoch * 1000
-  if (diffMs < 60_000) return t(locale.value, 'common.justNow')
-  const minutes = Math.floor(diffMs / 60_000)
-  if (minutes < 60) return `${minutes}${t(locale.value, 'common.minutesAgo')}`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}${t(locale.value, 'common.hoursAgo')}`
-  return `${Math.floor(hours / 24)}${t(locale.value, 'common.daysAgo')}`
-}
-
 /** 仅当 store 有代理覆盖数据时渲染（与性能视图同口径，用于 speed 列）。 */
-const performance = computed(() => store.statisticsSummary?.performance ?? null)
-const hasPerformance = computed(
-  () => !!store.statisticsSummary?.capability.hasPerformance && !!performance.value && performance.value.requestCount > 0
-)
+const { hasPerformance } = usePerformanceAvailability(store)
 </script>
 
 <template>
@@ -282,7 +269,7 @@ const hasPerformance = computed(
                 {{ row.errorRate == null ? '—' : `${formatRate(row.errorRate)}%` }}
               </td>
               <td class="py-2 text-right text-[var(--theme-text-tertiary)]" :title="row.lastSeen ? new Date(row.lastSeen).toLocaleString(locale.replace('_', '-')) : undefined">
-                {{ formatRelativeTime(row.lastSeen) }}
+                {{ formatRelativeTime(row.lastSeen, locale) }}
               </td>
             </tr>
           </tbody>
