@@ -101,7 +101,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="flex min-w-0 flex-col gap-3 pb-4">
+  <section class="flex h-full min-w-0 flex-col gap-3 pb-4">
     <!-- ============ 顶部：会话选择器 + 跨会话搜索 + 能力徽标 ============ -->
     <div class="flex flex-wrap items-center gap-2">
       <!-- 会话选择器（自由模式） -->

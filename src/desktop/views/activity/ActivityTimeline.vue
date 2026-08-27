@@ -246,7 +246,7 @@ useInfiniteScroll({
       </div>
     </div>
 
-    <div class="min-h-0 flex-1 overflow-y-auto p-3" style="max-height: 62vh">
+    <div class="min-h-0 flex-1 overflow-y-auto p-3">
       <!-- ===== 搜索模式：命中列表（替代时间线，设计 9.8） ===== -->
       <template v-if="searchMode">
         <div v-if="searchLoading && searchResults.length === 0" class="flex items-center justify-center gap-1.5 py-8 text-xs text-[var(--theme-text-tertiary)]">
