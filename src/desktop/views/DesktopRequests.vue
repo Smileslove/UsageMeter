@@ -10,6 +10,8 @@ import { useClipboard } from '../composables/useClipboard'
 import { useRequestTable, REQUEST_COLUMNS } from '../composables/useRequestTable'
 import { normalizeSessionTool } from '../../composables/useSessionViewData'
 import LobeIcon from '../../components/LobeIcon.vue'
+import DesktopSelect from '../components/DesktopSelect.vue'
+import type { SelectOption } from '../components/DesktopSelect.vue'
 
 const store = useMonitorStore()
 const nav = useDesktopNavigationStore()
@@ -118,6 +120,31 @@ const toolOptions = computed(() => {
   return [...tools].sort((a, b) => a.localeCompare(b))
 })
 
+const toolSelectOptions = computed<SelectOption[]>(() => [
+  { value: null, label: t(locale.value, 'desktop.allTools') },
+  ...toolOptions.value.map(tool => ({ value: tool, label: requestToolLabel(tool) })),
+])
+
+const statusSelectOptions = computed<SelectOption[]>(() => [
+  { value: 'all', label: t(locale.value, 'desktop.sessions.requestFilterStatusAll') },
+  { value: 'success', label: t(locale.value, 'common.success') },
+  { value: 'error', label: t(locale.value, 'common.error') },
+  { value: 'local', label: t(locale.value, 'desktop.sessions.requestFilterStatusLocal') },
+])
+
+const coverageSelectOptions = computed<SelectOption[]>(() => [
+  { value: 'all', label: t(locale.value, 'desktop.sessions.requestFilterCoverageAll') },
+  { value: 'proxy_only', label: t(locale.value, 'sessions.requestCoverageProxy') },
+  { value: 'local_only', label: t(locale.value, 'sessions.requestCoverageLocal') },
+  { value: 'merged', label: t(locale.value, 'sessions.requestCoverageMerged') },
+])
+
+const perfSelectOptions = computed<SelectOption[]>(() => [
+  { value: 'all', label: t(locale.value, 'desktop.sessions.requestFilterPerfAll') },
+  { value: 'has', label: t(locale.value, 'desktop.sessions.requestFilterPerfHas') },
+  { value: 'none', label: t(locale.value, 'desktop.sessions.requestFilterPerfNone') },
+])
+
 const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…${value.slice(-4)}` : value)
 const { copiedValue, copyText } = useClipboard()
 
@@ -127,6 +154,9 @@ const pageStart = computed(() => total.value === 0 ? 0 : currentPage.value * pag
 const pageEnd = computed(() => Math.min((currentPage.value + 1) * pageSize.value, total.value))
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
+const pageSizeSelectOptions = computed<SelectOption[]>(() =>
+  PAGE_SIZE_OPTIONS.map(size => ({ value: size, label: `${size} / ${t(locale.value, 'desktop.requests.pageSize')}` })),
+)
 const onPageSizeChange = () => reload()
 
 const jumpPageInput = ref('')
@@ -176,43 +206,26 @@ function gotoPageNumber(num: number | '...') {
           :aria-label="t(locale, 'desktop.requests.searchPlaceholder')"
         />
       </div>
-      <select
+      <DesktopSelect
         v-model="selectedTool"
-        class="theme-input h-7 rounded-lg px-2 text-xs outline-none"
+        :options="toolSelectOptions"
         :aria-label="t(locale, 'desktop.sessions.filterTool')"
-      >
-        <option :value="null">{{ t(locale, 'desktop.allTools') }}</option>
-        <option v-for="tool in toolOptions" :key="tool" :value="tool">{{ requestToolLabel(tool) }}</option>
-      </select>
-      <select
+      />
+      <DesktopSelect
         v-model="statusFilter"
-        class="theme-input h-7 rounded-lg px-2 text-xs outline-none"
+        :options="statusSelectOptions"
         :aria-label="t(locale, 'desktop.sessions.requestFilterStatus')"
-      >
-        <option value="all">{{ t(locale, 'desktop.sessions.requestFilterStatusAll') }}</option>
-        <option value="success">{{ t(locale, 'common.success') }}</option>
-        <option value="error">{{ t(locale, 'common.error') }}</option>
-        <option value="local">{{ t(locale, 'desktop.sessions.requestFilterStatusLocal') }}</option>
-      </select>
-      <select
+      />
+      <DesktopSelect
         v-model="coverageFilter"
-        class="theme-input h-7 rounded-lg px-2 text-xs outline-none"
+        :options="coverageSelectOptions"
         :aria-label="t(locale, 'desktop.sessions.requestFilterCoverage')"
-      >
-        <option value="all">{{ t(locale, 'desktop.sessions.requestFilterCoverageAll') }}</option>
-        <option value="proxy_only">{{ t(locale, 'sessions.requestCoverageProxy') }}</option>
-        <option value="local_only">{{ t(locale, 'sessions.requestCoverageLocal') }}</option>
-        <option value="merged">{{ t(locale, 'sessions.requestCoverageMerged') }}</option>
-      </select>
-      <select
+      />
+      <DesktopSelect
         v-model="perfFilter"
-        class="theme-input h-7 rounded-lg px-2 text-xs outline-none"
+        :options="perfSelectOptions"
         :aria-label="t(locale, 'desktop.sessions.requestFilterPerformance')"
-      >
-        <option value="all">{{ t(locale, 'desktop.sessions.requestFilterPerfAll') }}</option>
-        <option value="has">{{ t(locale, 'desktop.sessions.requestFilterPerfHas') }}</option>
-        <option value="none">{{ t(locale, 'desktop.sessions.requestFilterPerfNone') }}</option>
-      </select>
+      />
       <button
         v-if="hasActiveFilters"
         type="button"
@@ -451,14 +464,13 @@ function gotoPageNumber(num: number | '...') {
     <div class="flex shrink-0 items-center justify-between gap-3 text-xs text-[var(--theme-text-tertiary)]">
       <div class="flex shrink-0 items-center gap-2">
         <span>{{ pageStart }}–{{ pageEnd }} / {{ total }}</span>
-        <select
+        <DesktopSelect
           v-model="pageSize"
-          class="theme-input h-6 rounded-md px-1 text-xs outline-none"
+          :options="pageSizeSelectOptions"
           :aria-label="t(locale, 'desktop.requests.pageSize')"
+          compact
           @change="onPageSizeChange"
-        >
-          <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }} / {{ t(locale, 'desktop.requests.pageSize') }}</option>
-        </select>
+        />
       </div>
       <div class="flex items-center gap-2">
         <div class="flex items-center gap-1">

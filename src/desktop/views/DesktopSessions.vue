@@ -5,7 +5,7 @@
  * 客户端分页：对已加载的 filteredSessions 做内存分页，到达末页时自动续载。
  */
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { ArrowDown, ArrowUp, ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, ChevronDown, ExternalLink, Search, Settings2, X } from 'lucide-vue-next'
+import { ArrowDown, ArrowUp, ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, ExternalLink, Search, Settings2, X } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { useDesktopNavigationStore } from '../stores/desktopNavigation'
 import { t } from '../../i18n'
@@ -15,6 +15,8 @@ import { useSessionViewData } from '../../composables/useSessionViewData'
 import { useClipboard } from '../composables/useClipboard'
 import { useFocusTrap } from '../composables/useFocusTrap'
 import LobeIcon from '../../components/LobeIcon.vue'
+import DesktopSelect from '../components/DesktopSelect.vue'
+import type { SelectOption } from '../components/DesktopSelect.vue'
 
 const store = useMonitorStore()
 const nav = useDesktopNavigationStore()
@@ -58,7 +60,6 @@ interface LocalFilters {
   coverage: CoverageFilter
 }
 const filters = reactive<LocalFilters>({ time: 'all', customRange: null, project: null, model: null, coverage: 'all' })
-const filterMenuOpen = ref(false)
 
 const projectOptions = computed(() => {
   const names = new Set<string>()
@@ -82,6 +83,31 @@ const projectFilterLabel = (value: string | null) => {
   if (value === '__unknown__') return t(locale.value, 'common.unknownProject')
   return value
 }
+
+const projectSelectOptions = computed<SelectOption[]>(() => [
+  { value: null, label: t(locale.value, 'desktop.sessions.filterAllProjects') },
+  ...projectOptions.value.map(p => ({ value: p, label: projectFilterLabel(p) }))
+])
+
+const modelSelectOptions = computed<SelectOption[]>(() => [
+  { value: null, label: t(locale.value, 'desktop.sessions.filterAllModels') },
+  ...modelOptions.value.map(m => ({ value: m, label: m }))
+])
+
+const timeSelectOptions = computed<SelectOption[]>(() => [
+  { value: 'all', label: t(locale.value, 'desktop.sessions.filterTimeAll') },
+  { value: 'today', label: t(locale.value, 'desktop.sessions.filterTimeToday') },
+  { value: '7d', label: t(locale.value, 'desktop.sessions.filterTime7d') },
+  { value: '30d', label: t(locale.value, 'desktop.sessions.filterTime30d') },
+  { value: 'custom', label: t(locale.value, 'desktop.sessions.filterTimeCustom') },
+])
+
+const coverageSelectOptions = computed<SelectOption[]>(() => [
+  { value: 'all', label: t(locale.value, 'desktop.sessions.filterCoverageAll') },
+  { value: 'full', label: t(locale.value, 'desktop.sessions.filterCoverageFull') },
+  { value: 'partial', label: t(locale.value, 'desktop.sessions.filterCoveragePartial') },
+  { value: 'uncovered', label: t(locale.value, 'desktop.sessions.filterCoverageUncovered') },
+])
 
 interface Chip {
   id: string
@@ -186,9 +212,9 @@ const matchesTime = (session: SessionStats): boolean => {
   return (session.lastRequestTime || 0) * 1000 >= now - horizon
 }
 
-const setTimeFilter = (value: string) => {
+const onTimeChange = (value: string | number | null) => {
   if (value === 'custom' && !filters.customRange) return
-  filters.time = value
+  filters.time = value as string
 }
 
 const sessionCoverageKind = (session: SessionStats): CoverageFilter => {
@@ -242,6 +268,9 @@ const pageStart = computed(() => total.value === 0 ? 0 : currentPage.value * pag
 const pageEnd = computed(() => Math.min((currentPage.value + 1) * pageSize.value, total.value))
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 200]
+const pageSizeSelectOptions = computed<SelectOption[]>(() =>
+  PAGE_SIZE_OPTIONS.map(size => ({ value: size, label: `${size} / ${t(locale.value, 'desktop.requests.pageSize')}` }))
+)
 const onPageSizeChange = () => {
   currentPage.value = 0
 }
@@ -498,6 +527,11 @@ const toolOptions = computed(() => {
   return [...tools].sort((a, b) => a.localeCompare(b))
 })
 
+const toolSelectOptions = computed<SelectOption[]>(() => [
+  { value: null, label: t(locale.value, 'desktop.allTools') },
+  ...toolOptions.value.map(tool => ({ value: tool, label: requestToolLabel(tool) }))
+])
+
 const skeletonRows = [0, 1, 2, 3, 4, 5, 6, 7]
 
 onMounted(async () => {
@@ -530,59 +564,36 @@ onUnmounted(() => {
         />
       </div>
 
-      <div class="relative">
-        <button
-          type="button"
-          class="theme-button-secondary inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold"
-          :aria-label="t(locale, 'desktop.sessions.filterLabel')"
-          :aria-expanded="filterMenuOpen"
-          @click="filterMenuOpen = !filterMenuOpen"
-        >
-          <ChevronDown class="h-3 w-3" aria-hidden="true" />
-          {{ t(locale, 'desktop.sessions.filterLabel') }}
-          <span v-if="chips.length > 0" class="rounded-full bg-[var(--theme-accent-primary)] px-1.5 text-xs font-bold text-[var(--theme-accent-contrast)]">{{ chips.length }}</span>
-        </button>
-        <div
-          v-if="filterMenuOpen"
-          class="theme-surface-elevated absolute right-0 top-10 z-30 w-60 rounded-xl border p-2 shadow-lg"
-          role="menu"
-        >
-          <div class="px-2 pb-1 pt-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.filterTime') }}</div>
-          <div class="grid grid-cols-2 gap-1 px-1">
-            <button v-for="option in [['all', 'desktop.sessions.filterTimeAll'], ['today', 'desktop.sessions.filterTimeToday'], ['7d', 'desktop.sessions.filterTime7d'], ['30d', 'desktop.sessions.filterTime30d'], ['custom', 'desktop.sessions.filterTimeCustom']] as const" :key="option[0]" type="button" class="rounded-md px-2 py-1 text-left text-xs font-medium" :class="filters.time === option[0] ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]'" @click="setTimeFilter(option[0])">
-              {{ t(locale, option[1]) }}
-            </button>
-          </div>
-          <div class="px-2 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.filterProject') }}</div>
-          <select v-model="filters.project" class="theme-input w-full rounded-lg px-2 py-1.5 text-xs outline-none" :aria-label="t(locale, 'desktop.sessions.filterProject')">
-            <option :value="null">{{ t(locale, 'desktop.sessions.filterAllProjects') }}</option>
-            <option v-for="project in projectOptions" :key="project" :value="project">{{ projectFilterLabel(project) }}</option>
-          </select>
-          <div class="px-2 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.filterModel') }}</div>
-          <select v-model="filters.model" class="theme-input w-full rounded-lg px-2 py-1.5 text-xs outline-none" :aria-label="t(locale, 'desktop.sessions.filterModel')">
-            <option :value="null">{{ t(locale, 'desktop.sessions.filterAllModels') }}</option>
-            <option v-for="model in modelOptions" :key="model" :value="model">{{ model }}</option>
-          </select>
-          <div class="px-2 pb-1 pt-2 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.filterCoverage') }}</div>
-          <div class="grid grid-cols-2 gap-1 px-1 pb-1">
-            <button v-for="option in [['all', 'desktop.sessions.filterCoverageAll'], ['full', 'desktop.sessions.filterCoverageFull'], ['partial', 'desktop.sessions.filterCoveragePartial'], ['uncovered', 'desktop.sessions.filterCoverageUncovered']] as const" :key="option[0]" type="button" class="rounded-md px-2 py-1 text-left text-xs font-medium" :class="filters.coverage === option[0] ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-hover)]'" @click="filters.coverage = option[0]">
-              {{ t(locale, option[1]) }}
-            </button>
-          </div>
-          <div class="mt-1 border-t border-[var(--theme-border-default)] px-2 py-1.5 text-xs leading-snug text-[var(--theme-text-tertiary)]">
-            {{ t(locale, 'desktop.sessions.filterSourceHint') }}
-          </div>
-        </div>
-      </div>
+      <DesktopSelect
+        v-model="filters.time"
+        :options="timeSelectOptions"
+        :aria-label="t(locale, 'desktop.sessions.filterTime')"
+        @change="onTimeChange"
+      />
 
-      <select
+      <DesktopSelect
+        v-model="filters.project"
+        :options="projectSelectOptions"
+        :aria-label="t(locale, 'desktop.sessions.filterProject')"
+      />
+
+      <DesktopSelect
+        v-model="filters.model"
+        :options="modelSelectOptions"
+        :aria-label="t(locale, 'desktop.sessions.filterModel')"
+      />
+
+      <DesktopSelect
+        v-model="filters.coverage"
+        :options="coverageSelectOptions"
+        :aria-label="t(locale, 'desktop.sessions.filterCoverage')"
+      />
+
+      <DesktopSelect
         v-model="selectedTool"
-        class="theme-input h-7 max-w-40 rounded-lg px-2 text-xs outline-none"
+        :options="toolSelectOptions"
         :aria-label="t(locale, 'desktop.sessions.filterTool')"
-      >
-        <option :value="null">{{ t(locale, 'desktop.allTools') }}</option>
-        <option v-for="tool in toolOptions" :key="tool" :value="tool">{{ requestToolLabel(tool) }}</option>
-      </select>
+      />
 
       <button
         v-if="chips.length > 0"
@@ -883,14 +894,13 @@ onUnmounted(() => {
     <div class="flex shrink-0 items-center justify-between gap-3 text-xs text-[var(--theme-text-tertiary)]">
       <div class="flex shrink-0 items-center gap-2">
         <span>{{ pageStart }}–{{ pageEnd }} / {{ total }}</span>
-        <select
+        <DesktopSelect
           v-model="pageSize"
-          class="theme-input h-6 rounded-md px-1 text-xs outline-none"
+          :options="pageSizeSelectOptions"
           :aria-label="t(locale, 'desktop.requests.pageSize')"
+          compact
           @change="onPageSizeChange"
-        >
-          <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size">{{ size }} / {{ t(locale, 'desktop.requests.pageSize') }}</option>
-        </select>
+        />
       </div>
       <div class="flex items-center gap-2">
         <div class="flex items-center gap-1">
