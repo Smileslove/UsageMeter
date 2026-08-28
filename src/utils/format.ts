@@ -534,3 +534,7 @@ export function formatRelativeTime(epoch: number | null, locale: string): string
   if (hours < 24) return `${hours}${t(locale, 'common.hoursAgo')}`
   return `${Math.floor(hours / 24)}${t(locale, 'common.daysAgo')}`
 }
+
+export function shortId(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 6)}…${value.slice(-4)}` : value
+}

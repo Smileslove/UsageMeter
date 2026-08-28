@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowDown, ArrowUp, Copy, ExternalLink, Search, X } from 'lucide-vue-next'
+import { ArrowDown, ArrowUp, Copy, ExternalLink, X } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { useDesktopNavigationStore } from '../../desktop/stores/desktopNavigation'
 import { t } from '../../i18n'
@@ -14,6 +14,10 @@ import DesktopSelect from '../components/DesktopSelect.vue'
 import type { SelectOption } from '../components/DesktopSelect.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import ColumnConfigPopover from '../components/ColumnConfigPopover.vue'
+import DrawerShell from '../components/DrawerShell.vue'
+import SearchInput from '../components/SearchInput.vue'
+import StatusBadge from '../components/StatusBadge.vue'
+import { shortId } from '../../utils/format'
 
 const store = useMonitorStore()
 const nav = useDesktopNavigationStore()
@@ -145,7 +149,6 @@ const perfSelectOptions = computed<SelectOption[]>(() => [
   { value: 'none', label: t(locale.value, 'desktop.sessions.requestFilterPerfNone') },
 ])
 
-const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…${value.slice(-4)}` : value)
 const { copiedValue, copyText } = useClipboard()
 
 const skeletonRows = [0, 1, 2, 3, 4, 5, 6, 7]
@@ -183,16 +186,7 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
   <div class="flex h-full flex-col gap-3">
     <!-- 工具栏 -->
     <div class="flex shrink-0 flex-wrap items-center gap-2 text-xs">
-      <div class="relative">
-        <Search class="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-        <input
-          v-model="searchInput"
-          type="text"
-          class="theme-input h-7 w-44 rounded-lg pl-7 pr-2 text-xs outline-none"
-          :placeholder="t(locale, 'desktop.requests.searchPlaceholder')"
-          :aria-label="t(locale, 'desktop.requests.searchPlaceholder')"
-        />
-      </div>
+      <SearchInput v-model="searchInput" :placeholder="t(locale, 'desktop.requests.searchPlaceholder')" />
       <DesktopSelect
         v-model="selectedTool"
         :options="toolSelectOptions"
@@ -298,7 +292,7 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
               <td v-if="isColumnVisible('model')" class="max-w-28 truncate px-1.5 py-1.5 font-mono text-xs text-[var(--theme-text-secondary)]" :title="request.model">{{ requestModelLabel(request) }}</td>
               <td v-if="isColumnVisible('status')" class="px-1.5 py-1.5">
                 <span v-if="request.coverageOrigin === 'local_only'" class="text-xs text-[var(--theme-text-quaternary)]">—</span>
-                <span v-else class="inline-flex items-center rounded-full border px-1.5 py-px text-xs font-bold leading-none" :class="requestStatusClasses(request)">{{ requestStatusLabel(request) }}</span>
+                <StatusBadge v-else :label="requestStatusLabel(request)" :cls="requestStatusClasses(request)" />
               </td>
               <td v-if="isColumnVisible('input')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(request.inputTokens) }}</td>
               <td v-if="isColumnVisible('output')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(request.outputTokens) }}</td>
@@ -324,20 +318,16 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
       </div>
 
       <!-- 覆盖式抽屉 -->
-      <Transition name="drawer-overlay">
-        <div v-if="drawerOpen" class="absolute inset-0 z-20 flex justify-end" @click.self="closeDrawer">
-          <aside
-            class="theme-surface-elevated flex h-full w-80 flex-col overflow-y-auto rounded-xl border shadow-[0_4px_24px_rgba(0,0,0,0.08)]"
-            :aria-label="t(locale, 'desktop.sessions.drawerTitle')"
-          >
+      <DrawerShell :open="drawerOpen && !!selectedRequest" :aria-label="t(locale, 'desktop.sessions.drawerTitle')" @close="closeDrawer">
+        <template v-if="selectedRequest">
             <div class="flex items-start justify-between gap-2 border-b border-[var(--theme-border-default)] px-3 py-2.5">
               <div class="min-w-0">
                 <div class="mb-1 flex items-center gap-1.5">
-                  <span v-if="selectedRequest!.coverageOrigin !== 'local_only'" class="inline-flex items-center rounded-full border px-1.5 py-px text-xs font-bold leading-none" :class="requestStatusClasses(selectedRequest!)">{{ requestStatusLabel(selectedRequest!) }}</span>
-                  <span class="text-xs text-[var(--theme-text-tertiary)]">{{ formatTime(selectedRequest!.timestampSec) }}</span>
+                  <StatusBadge v-if="selectedRequest.coverageOrigin !== 'local_only'" :label="requestStatusLabel(selectedRequest)" :cls="requestStatusClasses(selectedRequest)" />
+                  <span class="text-xs text-[var(--theme-text-tertiary)]">{{ formatTime(selectedRequest.timestampSec) }}</span>
                 </div>
-                <h3 class="truncate text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ requestModelLabel(selectedRequest!) }}</h3>
-                <p class="mt-0.5 truncate text-xs text-[var(--theme-text-tertiary)]">{{ requestProjectLabel(selectedRequest!) }} / {{ requestToolLabel(selectedRequest!.tool) }} / {{ requestSourceLabel(selectedRequest!) }}</p>
+                <h3 class="truncate text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ requestModelLabel(selectedRequest) }}</h3>
+                <p class="mt-0.5 truncate text-xs text-[var(--theme-text-tertiary)]">{{ requestProjectLabel(selectedRequest) }} / {{ requestToolLabel(selectedRequest.tool) }} / {{ requestSourceLabel(selectedRequest) }}</p>
               </div>
               <div class="flex shrink-0 items-start gap-1">
                 <button
@@ -365,61 +355,60 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
               <div class="grid grid-cols-3 gap-2">
                 <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
                   <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'common.totalTokens') }}</div>
-                  <div class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest!.totalTokens) }}</div>
+                  <div class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest.totalTokens) }}</div>
                 </div>
                 <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
                   <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.cost') }}</div>
-                  <div class="font-mono text-xs font-semibold text-[var(--theme-chart-cost)]">{{ formatCost(selectedRequest!.estimatedCost) }}</div>
+                  <div class="font-mono text-xs font-semibold text-[var(--theme-chart-cost)]">{{ formatCost(selectedRequest.estimatedCost) }}</div>
                 </div>
                 <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
                   <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.duration') }}</div>
-                  <div class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">{{ formatDuration(selectedRequest!.durationMs) }}</div>
+                  <div class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">{{ formatDuration(selectedRequest.durationMs) }}</div>
                 </div>
               </div>
 
               <section class="theme-surface-muted rounded-lg border px-3 py-2">
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.input') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest!.inputTokens) }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.output') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest!.outputTokens) }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheCreate') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest!.cacheCreateTokens) }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheRead') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest!.cacheReadTokens) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.input') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest.inputTokens) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.output') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest.outputTokens) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheCreate') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest.cacheCreateTokens) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheRead') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest.cacheReadTokens) }}</span></div>
               </section>
 
               <section class="theme-surface-muted rounded-lg border px-3 py-2">
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.ttft') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ requestHasProxyPerformance(selectedRequest!) ? formatDuration(selectedRequest!.ttftMs) : '—' }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'metrics.tokensPerSecond') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ requestHasProxyPerformance(selectedRequest!) && selectedRequest!.outputTokensPerSecond ? `${selectedRequest!.outputTokensPerSecond.toFixed(1)}t/s` : '—' }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.status') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ selectedRequest!.statusCode || '—' }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.requestCoverage') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ requestCoverageLabel(selectedRequest!.coverageOrigin) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.ttft') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ requestHasProxyPerformance(selectedRequest) ? formatDuration(selectedRequest.ttftMs) : '—' }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'metrics.tokensPerSecond') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ requestHasProxyPerformance(selectedRequest) && selectedRequest.outputTokensPerSecond ? `${selectedRequest.outputTokensPerSecond.toFixed(1)}t/s` : '—' }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.status') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ selectedRequest.statusCode || '—' }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.requestCoverage') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ requestCoverageLabel(selectedRequest.coverageOrigin) }}</span></div>
               </section>
 
               <section class="theme-surface-muted rounded-lg border px-3 py-2">
                 <div class="flex items-center justify-between gap-2 py-1">
                   <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'common.source') }}</span>
                   <span class="flex min-w-0 items-center gap-1">
-                    <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]">{{ requestSourceLabel(selectedRequest!) }}</span>
-                    <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.copySource')" :title="t(locale, 'desktop.sessions.copySource')" @click="copyText(requestSourceLabel(selectedRequest!), 'source')"><Copy class="h-3 w-3" aria-hidden="true" /></button>
+                    <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]">{{ requestSourceLabel(selectedRequest) }}</span>
+                    <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.copySource')" :title="t(locale, 'desktop.sessions.copySource')" @click="copyText(requestSourceLabel(selectedRequest), 'source')"><Copy class="h-3 w-3" aria-hidden="true" /></button>
                   </span>
                 </div>
                 <div class="flex items-center justify-between gap-2 py-1">
                   <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.sessionId') }}</span>
                   <span class="flex min-w-0 items-center gap-1">
-                    <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedRequest!.sessionId">{{ shortId(selectedRequest!.sessionId) }}</span>
-                    <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.copyId')" :title="t(locale, 'desktop.sessions.copyId')" @click="copyText(selectedRequest!.sessionId, 'id')"><Copy class="h-3 w-3" aria-hidden="true" /></button>
+                    <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedRequest.sessionId">{{ shortId(selectedRequest.sessionId) }}</span>
+                    <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.copyId')" :title="t(locale, 'desktop.sessions.copyId')" @click="copyText(selectedRequest.sessionId, 'id')"><Copy class="h-3 w-3" aria-hidden="true" /></button>
                   </span>
                 </div>
                 <div class="flex items-center justify-between gap-2 py-1">
                   <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.requestKey') }}</span>
                   <span class="flex min-w-0 items-center gap-1">
-                    <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedRequest!.requestKey">{{ shortId(selectedRequest!.requestKey) }}</span>
-                    <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.copyKey')" :title="t(locale, 'desktop.sessions.copyKey')" @click="copyText(selectedRequest!.requestKey, 'key')"><Copy class="h-3 w-3" aria-hidden="true" /></button>
+                    <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedRequest.requestKey">{{ shortId(selectedRequest.requestKey) }}</span>
+                    <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.copyKey')" :title="t(locale, 'desktop.sessions.copyKey')" @click="copyText(selectedRequest.requestKey, 'key')"><Copy class="h-3 w-3" aria-hidden="true" /></button>
                   </span>
                 </div>
               </section>
 
               <p v-if="copiedValue" class="text-center text-xs font-medium text-emerald-600 dark:text-emerald-300">{{ t(locale, 'desktop.sessions.copied') }}</p>
             </div>
-          </aside>
-        </div>
-      </Transition>
+        </template>
+      </DrawerShell>
     </div>
 
     <!-- 分页控件 -->
@@ -447,22 +436,3 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
     />
   </div>
 </template>
-
-<style scoped>
-.drawer-overlay-enter-active,
-.drawer-overlay-leave-active {
-  transition: opacity 0.18s ease-out;
-}
-.drawer-overlay-enter-from,
-.drawer-overlay-leave-to {
-  opacity: 0;
-}
-.drawer-overlay-enter-active aside,
-.drawer-overlay-leave-active aside {
-  transition: transform 0.18s ease-out;
-}
-.drawer-overlay-enter-from aside,
-.drawer-overlay-leave-to aside {
-  transform: translateX(16px);
-}
-</style>

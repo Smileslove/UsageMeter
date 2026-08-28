@@ -5,7 +5,7 @@
  * 布局与请求页/会话页一致：flex h-full flex-col，工具栏 + 内容区各独立滚动。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { FileQuestionMark, Folder, Globe, Search } from 'lucide-vue-next'
+import { FileQuestionMark, Folder, Globe } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { useDesktopNavigationStore } from '../stores/desktopNavigation'
 import { t } from '../../i18n'
@@ -15,6 +15,7 @@ import { useSessionViewData } from '../../composables/useSessionViewData'
 import LobeIcon from '../../components/LobeIcon.vue'
 import DesktopSelect from '../components/DesktopSelect.vue'
 import type { SelectOption } from '../components/DesktopSelect.vue'
+import SearchInput from '../components/SearchInput.vue'
 
 const store = useMonitorStore()
 const nav = useDesktopNavigationStore()
@@ -197,16 +198,7 @@ onUnmounted(() => {
       <div class="flex w-72 shrink-0 flex-col overflow-hidden rounded-lg border" style="background: var(--theme-surface-gradient)">
         <!-- 项目搜索 -->
         <div class="shrink-0 border-b border-[var(--theme-border-default)] p-2">
-          <div class="relative">
-            <Search class="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-            <input
-              v-model="projectSearchQuery"
-              type="text"
-              class="theme-input h-7 w-full rounded-lg pl-7 pr-2 text-xs outline-none"
-              :placeholder="t(locale, 'desktop.sessions.searchPlaceholder')"
-              :aria-label="t(locale, 'desktop.sessions.searchPlaceholder')"
-            />
-          </div>
+          <SearchInput v-model="projectSearchQuery" width="w-full" :placeholder="t(locale, 'desktop.sessions.searchPlaceholder')" />
         </div>
         <!-- 列表标题 -->
         <div class="shrink-0 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
@@ -338,16 +330,7 @@ onUnmounted(() => {
             </div>
             <!-- 会话搜索 -->
             <div class="border-b border-[var(--theme-border-subtle)] p-2">
-              <div class="relative">
-                <Search class="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-                <input
-                  v-model="searchQuery"
-                  type="text"
-                  class="theme-input h-7 w-full rounded-lg pl-7 pr-2 text-xs outline-none"
-                  :placeholder="t(locale, 'desktop.sessions.searchPlaceholder')"
-                  :aria-label="t(locale, 'desktop.sessions.searchPlaceholder')"
-                />
-              </div>
+              <SearchInput v-model="searchQuery" width="w-full" :placeholder="t(locale, 'desktop.sessions.searchPlaceholder')" />
             </div>
             <div v-if="sessionsOfProject.length === 0" class="px-3 py-4 text-center text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.noSessions') }}</div>
             <button

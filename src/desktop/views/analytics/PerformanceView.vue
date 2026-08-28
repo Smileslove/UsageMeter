@@ -13,6 +13,8 @@
  * 抽屉说明：请求明细抽屉（selectedRequest/requestDrawerOpen）是 DesktopRequests.vue
  * 的组件内局部状态，未暴露为共享 store 或全局事件，本视图无法直接打开；
  * 因此行点击仅做选中态高亮，并提供跳转「请求」页按钮查看完整详情。
+ *
+ * 计算逻辑见 usePerformanceStats；图表配置见 usePerformanceCharts。
  */
 import { computed, onMounted, ref } from 'vue'
 import { Activity, ArrowRight, BarChart3, Gauge, Globe, Info, ShieldCheck, Table2, Timer } from 'lucide-vue-next'
@@ -20,8 +22,9 @@ import VChart from 'vue-echarts'
 import { useMonitorStore } from '../../../stores/monitor'
 import { useDesktopNavigationStore } from '../../stores/desktopNavigation'
 import { useSessionDisplay } from '../../../composables/useSessionDisplay'
-import { registerChartComponents, trendLineSeries, useChartTheme } from '../../composables/useTrendChart'
-import { usePerformanceAvailability } from '../../composables/usePerformanceAvailability'
+import { registerChartComponents } from '../../composables/useTrendChart'
+import { usePerformanceStats } from '../../composables/usePerformanceStats'
+import { usePerformanceCharts } from '../../composables/usePerformanceCharts'
 import { queryRecentRequestRecords } from '../../../stores/sessionQueries'
 import { t } from '../../../i18n'
 import { formatDurationMs, formatRate, formatRequestCount } from '../../../utils/format'
@@ -33,16 +36,6 @@ const store = useMonitorStore()
 const nav = useDesktopNavigationStore()
 const locale = computed(() => store.settings.locale)
 const display = useSessionDisplay(store)
-
-const { performance, hasPerformance } = usePerformanceAvailability(store)
-const statusBreakdown = computed(() => store.statisticsSummary?.status ?? null)
-/** 模板安全取值（模板表达式不支持非空断言；渲染前提是 hasPerformance）。 */
-const perf = computed(() => ({
-  avgTtftMs: performance.value?.avgTtftMs ?? 0,
-  avgTokensPerSecond: performance.value?.avgTokensPerSecond ?? 0,
-  slowestModel: performance.value?.slowestModel ?? null,
-  fastestModel: performance.value?.fastestModel ?? null
-}))
 
 // ---- 请求级数据：本地分页拉取（后端单次 limit 上限 30，见 requests.rs RECENT_REQUESTS_MAX_LIMIT） ----
 
@@ -72,207 +65,26 @@ async function loadRecords() {
 
 onMounted(loadRecords)
 
-// ---- 分位统计（A）：线性插值分位；慢请求 = 耗时 > P95 的条数 ----
+// ---- composable：统计计算 + 图表配置 ----
 
-function percentile(sorted: number[], p: number): number | null {
-  if (sorted.length === 0) return null
-  if (sorted.length === 1) return sorted[0]
-  const idx = (sorted.length - 1) * p
-  const lo = Math.floor(idx)
-  const hi = Math.ceil(idx)
-  return lo === hi ? sorted[lo] : sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo)
-}
+const {
+  hasPerformance,
+  perf,
+  statusBreakdown,
+  ttftP50,
+  ttftP95,
+  durationP50,
+  durationP95,
+  slowRequestsCount,
+  statusGroups,
+  slowestModels,
+  slowestSources,
+  slowestRequests,
+} = usePerformanceStats(records, store, display)
 
-/** 有效样本（> 0 视为有性能数据），升序排列。 */
-const ttftSamples = computed(() =>
-  records.value.map(r => r.ttftMs).filter((v): v is number => !!v && v > 0).sort((a, b) => a - b)
-)
-const durationSamples = computed(() =>
-  records.value.map(r => r.durationMs).filter((v): v is number => !!v && v > 0).sort((a, b) => a - b)
-)
+const { ttftSeries, rateSeries, ttftChartOption, rateChartOption } = usePerformanceCharts(records, locale)
 
-const ttftP50 = computed(() => percentile(ttftSamples.value, 0.5))
-const ttftP95 = computed(() => percentile(ttftSamples.value, 0.95))
-const durationP50 = computed(() => percentile(durationSamples.value, 0.5))
-const durationP95 = computed(() => percentile(durationSamples.value, 0.95))
-/** 慢请求数：耗时严格大于 P95 的条数；无样本时为 null（模板显示 —）。 */
-const slowRequestsCount = computed(() => {
-  const p95 = durationP95.value
-  if (p95 == null) return null
-  return durationSamples.value.filter(v => v > p95).length
-})
-
-// ---- 状态码分组（C）：2xx / 3xx / 4xx / 5xx ----
-
-interface StatusGroup {
-  key: string
-  color: string
-  count: number
-}
-
-const statusGroups = computed(() => {
-  const groups: StatusGroup[] = [
-    { key: '2xx', color: 'var(--theme-chart-requests)', count: 0 },
-    { key: '3xx', color: 'var(--theme-chart-tokens)', count: 0 },
-    { key: '4xx', color: 'var(--theme-chart-cost)', count: 0 },
-    { key: '5xx', color: 'var(--theme-chart-series-3)', count: 0 }
-  ]
-  let total = 0
-  for (const r of records.value) {
-    const code = r.statusCode
-    if (!code || code < 100 || code >= 600) continue
-    total++
-    const idx = code < 300 ? 0 : code < 400 ? 1 : code < 500 ? 2 : 3
-    groups[idx].count++
-  }
-  return { groups, total }
-})
-
-// ---- 最慢模型/来源排行（D）：按平均耗时降序 top 5，带请求数 ----
-
-interface RankRow {
-  label: string
-  avgMs: number
-  count: number
-}
-
-function rankByDuration(pick: (r: RequestRecord) => { key: string; label: string } | null): RankRow[] {
-  const acc = new Map<string, { label: string; total: number; count: number }>()
-  for (const r of records.value) {
-    const picked = pick(r)
-    if (!picked || !r.durationMs || r.durationMs <= 0) continue
-    const cur = acc.get(picked.key) ?? { label: picked.label, total: 0, count: 0 }
-    cur.total += r.durationMs
-    cur.count += 1
-    acc.set(picked.key, cur)
-  }
-  return [...acc.entries()]
-    .map(([, v]) => ({ label: v.label, avgMs: v.total / v.count, count: v.count }))
-    .sort((a, b) => b.avgMs - a.avgMs)
-    .slice(0, 5)
-}
-
-const slowestModels = computed(() =>
-  rankByDuration(r => {
-    const model = r.model?.trim()
-    return model ? { key: model, label: display.requestModelLabel(r) } : null
-  })
-)
-
-const slowestSources = computed(() =>
-  rankByDuration(r => {
-    const source = r.sourceLabel?.trim() || r.requestBaseUrl?.trim() || ''
-    return source ? { key: source, label: source } : null
-  })
-)
-
-// ---- TTFT 与生成速率双时序图（B）：上下两个独立坐标区，按时间正序 ----
-
-const chartTheme = useChartTheme()
-
-const sortedByTime = computed(() => [...records.value].sort((a, b) => a.timestampMs - b.timestampMs))
-
-function chartTimeLabel(tsMs: number): string {
-  const localeTag = locale.value.replace('_', '-')
-  return new Date(tsMs).toLocaleTimeString(localeTag, { hour: '2-digit', minute: '2-digit' })
-}
-
-function chartFullLabel(tsMs: number): string {
-  const localeTag = locale.value.replace('_', '-')
-  return new Date(tsMs).toLocaleString(localeTag, {
-    month: 'numeric',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  })
-}
-
-interface TimelinePoint {
-  time: string
-  full: string
-  value: number
-}
-
-const ttftSeries = computed<TimelinePoint[]>(() => {
-  const data: TimelinePoint[] = []
-  for (const r of sortedByTime.value) {
-    if (r.ttftMs && r.ttftMs > 0) data.push({ time: chartTimeLabel(r.timestampMs), full: chartFullLabel(r.timestampMs), value: r.ttftMs })
-  }
-  return data
-})
-
-const rateSeries = computed<TimelinePoint[]>(() => {
-  const data: TimelinePoint[] = []
-  for (const r of sortedByTime.value) {
-    if (r.outputTokensPerSecond && r.outputTokensPerSecond > 0) {
-      data.push({ time: chartTimeLabel(r.timestampMs), full: chartFullLabel(r.timestampMs), value: r.outputTokensPerSecond })
-    }
-  }
-  return data
-})
-
-function timelineOption(
-  data: TimelinePoint[],
-  color: string,
-  valueFormatter: (v: number) => string,
-  seriesName: string
-) {
-  const colors = chartTheme.value
-  return {
-    grid: { left: 48, right: 12, top: 10, bottom: 22 },
-    tooltip: {
-      trigger: 'axis' as const,
-      backgroundColor: colors.tooltipBg,
-      borderColor: colors.tooltipBorder,
-      borderRadius: 8,
-      padding: [7, 9],
-      textStyle: { color: colors.tooltipText, fontSize: 11 },
-      formatter: (params: any) => {
-        const point = params?.[0]
-        if (!point || !data[point.dataIndex]) return ''
-        const item = data[point.dataIndex]
-        return `<div style="font-weight:600;margin-bottom:2px;">${item.full}</div><div style="display:flex;align-items:center;gap:6px;"><span style="display:inline-block;width:7px;height:7px;border-radius:999px;background:${color};"></span><span>${seriesName}: <b>${valueFormatter(item.value)}</b></span></div>`
-      }
-    },
-    xAxis: {
-      type: 'category' as const,
-      data: data.map(d => d.time),
-      boundaryGap: false,
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: { color: colors.axis, fontSize: 10, hideOverlap: true, margin: 8 }
-    },
-    yAxis: {
-      type: 'value' as const,
-      min: 0,
-      axisLine: { show: false },
-      axisTick: { show: false },
-      axisLabel: { color: colors.axis, fontSize: 10, formatter: (v: number) => valueFormatter(v) },
-      splitLine: { lineStyle: { type: 'dashed' as const, color: colors.grid } }
-    },
-    series: [trendLineSeries({ name: seriesName, data: data.map(d => d.value), color, primary: true })]
-  }
-}
-
-const ttftAxisFormatter = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)}ms`)
-const rateAxisFormatter = (v: number) => `${formatRate(v)}t/s`
-
-const ttftChartOption = computed(() =>
-  timelineOption(ttftSeries.value, chartTheme.value.requests, ttftAxisFormatter, t(locale.value, 'desktop.analytics.perfTtftChart'))
-)
-const rateChartOption = computed(() =>
-  timelineOption(rateSeries.value, chartTheme.value.tokens, rateAxisFormatter, t(locale.value, 'desktop.analytics.perfRateChart'))
-)
-
-// ---- 最慢 20 条请求子表（E）：耗时降序，行点击选中态（抽屉为请求页局部状态，本视图不可达） ----
-
-const slowestRequests = computed(() =>
-  records.value
-    .filter(r => !!r.durationMs && r.durationMs > 0)
-    .sort((a, b) => (b.durationMs ?? 0) - (a.durationMs ?? 0))
-    .slice(0, 20)
-)
+// ---- 最慢请求子表行选中态（抽屉为请求页局部状态，本视图不可达） ----
 
 const selectedRequestKey = ref<string | null>(null)
 

@@ -6,7 +6,7 @@
  * 表格状态（搜索/筛选/排序/分页/列配置）由 useSessionTable 统一管理。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowDown, ArrowUp, ExternalLink, Search, X } from 'lucide-vue-next'
+import { ArrowDown, ArrowUp, ExternalLink, X } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { useDesktopNavigationStore } from '../stores/desktopNavigation'
 import { t } from '../../i18n'
@@ -20,6 +20,9 @@ import DesktopSelect from '../components/DesktopSelect.vue'
 import type { SelectOption } from '../components/DesktopSelect.vue'
 import PaginationBar from '../components/PaginationBar.vue'
 import ColumnConfigPopover from '../components/ColumnConfigPopover.vue'
+import DrawerShell from '../components/DrawerShell.vue'
+import SearchInput from '../components/SearchInput.vue'
+import { shortId } from '../../utils/format'
 
 const store = useMonitorStore()
 const nav = useDesktopNavigationStore()
@@ -189,7 +192,6 @@ const openInWorkspace = () => {
   if (sessionKey) nav.openSession(sessionKey)
 }
 
-const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…${value.slice(-4)}` : value)
 const { copiedValue, copyText } = useClipboard()
 
 // —— 右键菜单 ——
@@ -291,16 +293,7 @@ onUnmounted(() => {
   <div class="flex h-full flex-col gap-3">
     <!-- 工具栏 -->
     <div class="flex shrink-0 flex-wrap items-center gap-2 text-xs">
-      <div class="relative">
-        <Search class="pointer-events-none absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-[var(--theme-text-quaternary)]" aria-hidden="true" />
-        <input
-          v-model="searchQuery"
-          type="text"
-          class="theme-input h-7 w-44 rounded-lg pl-7 pr-2 text-xs outline-none"
-          :placeholder="t(locale, 'desktop.sessions.searchPlaceholder')"
-          :aria-label="t(locale, 'desktop.sessions.searchPlaceholder')"
-        />
-      </div>
+      <SearchInput v-model="searchQuery" :placeholder="t(locale, 'desktop.sessions.searchPlaceholder')" />
 
       <DesktopSelect
         v-model="filters.time"
@@ -461,24 +454,20 @@ onUnmounted(() => {
       </div>
 
       <!-- 覆盖式抽屉 -->
-      <Transition name="drawer-overlay">
-        <div v-if="drawerOpen" class="absolute inset-0 z-20 flex justify-end" @click.self="closeDrawer">
-          <aside
-            class="theme-surface-elevated flex h-full w-80 flex-col overflow-y-auto rounded-xl border shadow-[0_4px_24px_rgba(0,0,0,0.08)]"
-            :aria-label="t(locale, 'desktop.sessions.drawerTitle')"
-          >
+      <DrawerShell :open="drawerOpen && !!selectedSession" :aria-label="t(locale, 'desktop.sessions.drawerTitle')" @close="closeDrawer">
+        <template v-if="selectedSession">
             <div class="flex items-start justify-between gap-2 border-b border-[var(--theme-border-default)] px-3 py-2.5">
               <div class="min-w-0">
                 <div class="mb-1 flex items-center gap-1.5">
-                  <span v-if="displaySessionProjectBadge(selectedSession!)" class="rounded px-1 py-px text-xs font-semibold leading-none" :class="projectBadgeClasses(selectedSession!.projectIdentity)">
-                    {{ displaySessionProjectBadge(selectedSession!) }}
+                  <span v-if="displaySessionProjectBadge(selectedSession)" class="rounded px-1 py-px text-xs font-semibold leading-none" :class="projectBadgeClasses(selectedSession.projectIdentity)">
+                    {{ displaySessionProjectBadge(selectedSession) }}
                   </span>
-                  <span class="text-xs text-[var(--theme-text-tertiary)]">{{ formatTime(selectedSession!.lastRequestTime) }}</span>
+                  <span class="text-xs text-[var(--theme-text-tertiary)]">{{ formatTime(selectedSession.lastRequestTime) }}</span>
                 </div>
-                <h3 class="truncate text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ displaySessionTitle(selectedSession!) }}</h3>
+                <h3 class="truncate text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ displaySessionTitle(selectedSession) }}</h3>
                 <p class="mt-0.5 truncate text-xs text-[var(--theme-text-tertiary)]">
-                  {{ selectedSession!.projectName || t(locale, 'common.unknownProject') }}
-                  · {{ requestToolLabel(selectedSession!.tool) }}
+                  {{ selectedSession.projectName || t(locale, 'common.unknownProject') }}
+                  · {{ requestToolLabel(selectedSession.tool) }}
                 </p>
               </div>
               <div class="flex shrink-0 items-start gap-1">
@@ -508,39 +497,39 @@ onUnmounted(() => {
               <div class="grid grid-cols-3 gap-2">
                 <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
                   <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.columnRequests') }}</div>
-                  <div class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">{{ selectedSession!.totalRequests ?? 0 }}</div>
+                  <div class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">{{ selectedSession.totalRequests ?? 0 }}</div>
                 </div>
                 <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
                   <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'common.totalTokens') }}</div>
-                  <div class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">{{ sessionUsageVisible(selectedSession!) ? formatTokens(sessionTotalTokens(selectedSession!)) : '—' }}</div>
+                  <div class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">{{ sessionUsageVisible(selectedSession) ? formatTokens(sessionTotalTokens(selectedSession)) : '—' }}</div>
                 </div>
                 <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
                   <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.cost') }}</div>
-                  <div class="font-mono text-xs font-semibold text-[var(--theme-chart-cost)]">{{ sessionUsageVisible(selectedSession!) ? formatCost(selectedSession!.estimatedCost) : '—' }}</div>
+                  <div class="font-mono text-xs font-semibold text-[var(--theme-chart-cost)]">{{ sessionUsageVisible(selectedSession) ? formatCost(selectedSession.estimatedCost) : '—' }}</div>
                 </div>
               </div>
 
               <!-- Token 分项 -->
               <section class="theme-surface-muted rounded-lg border px-3 py-2">
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.input') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedSession!.totalInputTokens) }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.output') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedSession!.totalOutputTokens) }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheCreate') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedSession!.totalCacheCreateTokens) }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheRead') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedSession!.totalCacheReadTokens) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.input') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedSession.totalInputTokens) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.output') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedSession.totalOutputTokens) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheCreate') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedSession.totalCacheCreateTokens) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheRead') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedSession.totalCacheReadTokens) }}</span></div>
               </section>
 
               <!-- 性能 -->
               <section class="theme-surface-muted rounded-lg border px-3 py-2">
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'metrics.tokensPerSecond') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ sessionUsageVisible(selectedSession!) && (selectedSession!.avgOutputTokensPerSecond || 0) > 0 ? `${selectedSession!.avgOutputTokensPerSecond.toFixed(1)}t/s` : '—' }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.ttft') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ selectedSession!.avgTtftMs != null ? formatDuration(selectedSession!.avgTtftMs) : '—' }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.duration') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatDuration(selectedSession!.totalDurationMs) }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.errors') }}</span><span class="font-mono text-xs" :class="(selectedSession!.errorRequests ?? 0) > 0 ? 'text-red-500' : 'text-[var(--theme-text-primary)]'">{{ selectedSession!.errorRequests ?? 0 }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'metrics.tokensPerSecond') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ sessionUsageVisible(selectedSession) && (selectedSession.avgOutputTokensPerSecond || 0) > 0 ? `${selectedSession.avgOutputTokensPerSecond.toFixed(1)}t/s` : '—' }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.ttft') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ selectedSession.avgTtftMs != null ? formatDuration(selectedSession.avgTtftMs) : '—' }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.duration') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatDuration(selectedSession.totalDurationMs) }}</span></div>
+                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.errors') }}</span><span class="font-mono text-xs" :class="(selectedSession.errorRequests ?? 0) > 0 ? 'text-red-500' : 'text-[var(--theme-text-primary)]'">{{ selectedSession.errorRequests ?? 0 }}</span></div>
               </section>
 
               <!-- 模型列表 -->
-              <section v-if="selectedSession!.models.length > 0" class="theme-surface-muted rounded-lg border px-3 py-2">
+              <section v-if="selectedSession.models.length > 0" class="theme-surface-muted rounded-lg border px-3 py-2">
                 <div class="mb-1 text-xs font-semibold text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.models') }}</div>
                 <div class="flex flex-wrap gap-1">
-                  <span v-for="model in selectedSession!.models" :key="model" class="rounded bg-[var(--theme-border-subtle)] px-1.5 py-px font-mono text-xs text-[var(--theme-text-secondary)]">{{ model }}</span>
+                  <span v-for="model in selectedSession.models" :key="model" class="rounded bg-[var(--theme-border-subtle)] px-1.5 py-px font-mono text-xs text-[var(--theme-text-secondary)]">{{ model }}</span>
                 </div>
               </section>
 
@@ -549,28 +538,27 @@ onUnmounted(() => {
                 <div class="flex items-center justify-between gap-2 py-1">
                   <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.sessionId') }}</span>
                   <span class="flex min-w-0 items-center gap-1">
-                    <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedSession!.sessionId">{{ shortId(selectedSession!.sessionId) }}</span>
-                    <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.copyId')" :title="t(locale, 'desktop.sessions.copyId')" @click="copyText(selectedSession!.sessionId, 'id')"><ExternalLink class="h-3 w-3" aria-hidden="true" /></button>
+                    <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedSession.sessionId">{{ shortId(selectedSession.sessionId) }}</span>
+                    <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.copyId')" :title="t(locale, 'desktop.sessions.copyId')" @click="copyText(selectedSession.sessionId, 'id')"><ExternalLink class="h-3 w-3" aria-hidden="true" /></button>
                   </span>
                 </div>
-                <div v-if="selectedSession!.cwd" class="flex items-center justify-between gap-2 py-1">
+                <div v-if="selectedSession.cwd" class="flex items-center justify-between gap-2 py-1">
                   <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'settings.cwd') }}</span>
                   <span class="flex min-w-0 items-center gap-1">
-                    <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedSession!.cwd">{{ selectedSession!.cwd }}</span>
-                    <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.menuCopyCwd')" :title="t(locale, 'desktop.sessions.menuCopyCwd')" @click="copyText(selectedSession!.cwd!, 'cwd')"><ExternalLink class="h-3 w-3" aria-hidden="true" /></button>
+                    <span class="truncate font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedSession.cwd">{{ selectedSession.cwd }}</span>
+                    <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.menuCopyCwd')" :title="t(locale, 'desktop.sessions.menuCopyCwd')" @click="copyText(selectedSession.cwd!, 'cwd')"><ExternalLink class="h-3 w-3" aria-hidden="true" /></button>
                   </span>
                 </div>
-                <div v-if="selectedSession!.topic" class="flex items-center justify-between gap-2 py-1">
+                <div v-if="selectedSession.topic" class="flex items-center justify-between gap-2 py-1">
                   <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.lastPrompt') }}</span>
-                  <span class="truncate text-xs text-[var(--theme-text-secondary)]" :title="selectedSession!.topic">{{ selectedSession!.topic }}</span>
+                  <span class="truncate text-xs text-[var(--theme-text-secondary)]" :title="selectedSession.topic">{{ selectedSession.topic }}</span>
                 </div>
               </section>
 
               <p v-if="copiedValue" class="text-center text-xs font-medium text-emerald-600 dark:text-emerald-300">{{ t(locale, 'desktop.sessions.copied') }}</p>
             </div>
-          </aside>
-        </div>
-      </Transition>
+        </template>
+      </DrawerShell>
     </div>
 
     <!-- 分页控件 -->
@@ -647,22 +635,3 @@ onUnmounted(() => {
     </div>
   </Teleport>
 </template>
-
-<style scoped>
-.drawer-overlay-enter-active,
-.drawer-overlay-leave-active {
-  transition: opacity 0.15s ease-out;
-}
-.drawer-overlay-enter-active > aside,
-.drawer-overlay-leave-active > aside {
-  transition: transform 0.18s ease-out;
-}
-.drawer-overlay-enter-from,
-.drawer-overlay-leave-to {
-  opacity: 0;
-}
-.drawer-overlay-enter-from > aside,
-.drawer-overlay-leave-to > aside {
-  transform: translateX(100%);
-}
-</style>
