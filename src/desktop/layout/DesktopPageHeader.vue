@@ -69,35 +69,36 @@ async function handleOpenShareWindow() {
       </p>
     </div>
 
-    <!-- 右侧：来源 → 工具 → 分享 → 主题 → 刷新（时间范围选择位于各页面内部工具栏） -->
+    <!-- 右侧：筛选范围与窗口操作分组，时间范围仍位于各页面内部工具栏。 -->
     <div class="flex shrink-0 items-center gap-2">
-      <SourceSelector />
-      <ToolSelector />
+      <div class="flex items-center gap-0.5 rounded-full border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)]/55 p-0.5">
+        <SourceSelector />
+        <ToolSelector />
+      </div>
 
-      <!-- 分享窗口：把当前统计摘要生成可分享/导出的卡片（复用快速面板分享窗口） -->
-      <button
-        type="button"
-        class="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-tertiary)] transition-colors duration-150 hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)]"
-        :title="t(locale, 'desktop.shareWindow')"
-        :aria-label="t(locale, 'desktop.shareWindow')"
-        @click="handleOpenShareWindow"
-      >
-        <Share2 :size="16" aria-hidden="true" />
-      </button>
+      <div class="flex items-center gap-0.5 rounded-full border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)]/55 p-0.5">
+        <button
+          type="button"
+          class="theme-icon-button flex h-7 w-7 items-center justify-center rounded-full transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-primary)]"
+          :title="t(locale, 'desktop.refresh')"
+          :aria-label="t(locale, 'desktop.refresh')"
+          @click="monitor.refreshUsageAndSessionViews()"
+        >
+          <RefreshCw :size="15" :class="{ 'animate-spin': monitor.loading }" aria-hidden="true" />
+        </button>
 
-      <!-- 主题切换（与快速面板一致，设计文档 3.6：顶栏保持主题入口） -->
-      <ThemeSelector />
+        <ThemeSelector />
 
-      <!-- 刷新 -->
-      <button
-        type="button"
-        class="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--theme-text-tertiary)] transition-colors duration-150 hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)]"
-        :title="t(locale, 'desktop.refresh')"
-        :aria-label="t(locale, 'desktop.refresh')"
-        @click="monitor.refreshUsageAndSessionViews()"
-      >
-        <RefreshCw :size="16" :class="{ 'animate-spin': monitor.loading }" aria-hidden="true" />
-      </button>
+        <button
+          type="button"
+          class="theme-icon-button flex h-7 w-7 items-center justify-center rounded-full transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-accent-primary)]"
+          :title="t(locale, 'desktop.shareWindow')"
+          :aria-label="t(locale, 'desktop.shareWindow')"
+          @click="handleOpenShareWindow"
+        >
+          <Share2 :size="15" aria-hidden="true" />
+        </button>
+      </div>
     </div>
   </header>
 </template>

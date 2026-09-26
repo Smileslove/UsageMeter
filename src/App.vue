@@ -17,7 +17,7 @@ import SourceSelector from './components/SourceSelector.vue'
 import ToolSelector from './components/ToolSelector.vue'
 import ThemeSelector from './components/ThemeSelector.vue'
 import { applyResolvedTheme } from './theme'
-import { RefreshCw, ArrowLeftRight, Share2, PanelTopOpen, MoreHorizontal, ArrowUpRight } from 'lucide-vue-next'
+import { RefreshCw, ArrowLeftRight, Share2, PanelTopOpen, ArrowUpRight } from 'lucide-vue-next'
 import { t } from './i18n'
 import { formatToolDisplayName } from './utils/toolDisplay'
 import { quitApplication } from './utils/appExit'
@@ -26,8 +26,6 @@ const store = useMonitorStore()
 const updaterStore = useUpdaterStore()
 
 const currentView = ref('overview')
-/** 顶栏“更多”菜单展开状态（低频操作收纳：分享窗口等）。 */
-const moreMenuOpen = ref(false)
 const navItems = [
   { id: 'overview', key: 'common.dashboard' },
   { id: 'statistics', key: 'common.statistics' },
@@ -146,7 +144,6 @@ async function forceReclaimFromExternalManager() {
 }
 
 async function openSharePanel() {
-  moreMenuOpen.value = false
   await openShareWindow()
 }
 
@@ -329,49 +326,25 @@ onUnmounted(() => {
         </div>
 
         <!-- 操作按钮（右侧） -->
-        <div class="flex items-center gap-1 shrink-0 drag-region-none" style="-webkit-app-region: no-drag; app-region: no-drag">
-          <SourceSelector />
-          <ToolSelector />
-          <!-- 打开主窗口（设计 3.2：入口按钮；低频“分享”已移入更多菜单，设计 3.6） -->
-          <button @click="openDesktop()" class="theme-icon-button p-1.5 rounded-full transition-all select-none" :aria-label="t(store.settings.locale, 'desktop.open')" :title="t(store.settings.locale, 'desktop.open')">
-            <PanelTopOpen class="w-3.5 h-3.5" />
-          </button>
-          <button @click="store.refreshUsageAndSessionViews()" class="theme-icon-button p-1.5 rounded-full transition-all select-none" :aria-label="t(store.settings.locale, 'common.refresh')" :title="t(store.settings.locale, 'common.refresh')">
-            <RefreshCw class="w-3.5 h-3.5" :class="{ 'animate-spin': store.loading }" />
-          </button>
+        <div class="flex shrink-0 items-center gap-1.5 drag-region-none" style="-webkit-app-region: no-drag; app-region: no-drag">
+          <!-- 数据范围：将两个筛选器收拢为一个视觉单元。 -->
+          <div class="flex items-center gap-0.5 rounded-full border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)]/55 p-0.5">
+            <SourceSelector />
+            <ToolSelector />
+          </div>
 
-          <ThemeSelector />
-
-          <!-- 更多菜单（收纳低频操作：分享窗口） -->
-          <div class="relative">
-            <button
-              @click="moreMenuOpen = !moreMenuOpen"
-              class="theme-icon-button p-1.5 rounded-full transition-all select-none"
-              :aria-label="t(store.settings.locale, 'desktop.moreMenu')"
-              :title="t(store.settings.locale, 'desktop.moreMenu')"
-              :aria-expanded="moreMenuOpen"
-            >
-              <MoreHorizontal class="w-3.5 h-3.5" />
+          <!-- 快捷操作：常驻动作统一收进紧凑工具条，分享直接触达。 -->
+          <div class="flex items-center gap-0.5 rounded-full border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)]/55 p-0.5">
+            <button @click="store.refreshUsageAndSessionViews()" class="theme-icon-button rounded-full p-1.5 transition-all select-none" :aria-label="t(store.settings.locale, 'common.refresh')" :title="t(store.settings.locale, 'common.refresh')">
+              <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" />
             </button>
-            <!-- 点击遮罩关闭菜单 -->
-            <div v-if="moreMenuOpen" class="fixed inset-0 z-30" @click="moreMenuOpen = false"></div>
-            <Transition name="fade">
-              <div
-                v-if="moreMenuOpen"
-                class="absolute right-0 top-full z-40 mt-1.5 min-w-36 rounded-xl border border-[var(--theme-border-default)] bg-[var(--theme-bg-elevated)] p-1 shadow-lg backdrop-blur-xl"
-                role="menu"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)]"
-                  @click="openSharePanel()"
-                >
-                  <Share2 class="h-3.5 w-3.5" />
-                  {{ t(store.settings.locale, 'desktop.shareWindow') }}
-                </button>
-              </div>
-            </Transition>
+            <ThemeSelector />
+            <button @click="openDesktop()" class="theme-icon-button rounded-full p-1.5 transition-all select-none" :aria-label="t(store.settings.locale, 'desktop.open')" :title="t(store.settings.locale, 'desktop.open')">
+              <PanelTopOpen class="h-3.5 w-3.5" />
+            </button>
+            <button @click="openSharePanel()" class="theme-icon-button rounded-full p-1.5 transition-all select-none" :aria-label="t(store.settings.locale, 'desktop.shareWindow')" :title="t(store.settings.locale, 'desktop.shareWindow')">
+              <Share2 class="h-3.5 w-3.5" />
+            </button>
           </div>
         </div>
       </div>
