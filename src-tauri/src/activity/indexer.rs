@@ -21,7 +21,7 @@ use crate::activity::adapter::{
     ActivityIndexBatch, NewEventRequestLink, NewSessionEvent, NewToolInvocation,
     SessionActivityAdapter, SessionSourceRef,
 };
-use crate::activity::db::{self, ActivityIndexEntry};
+use crate::activity::db::{self, ActivityIndexEntry, ActivityPersistencePolicy};
 use crate::activity::model::RebuildResult;
 use crate::activity::registry::AdapterRegistry;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -44,9 +44,9 @@ fn file_fingerprint(path: &str) -> Result<String, String> {
         .modified()
         .ok()
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    Ok(format!("{}:{}", mtime, metadata.len()))
+        .map(|duration| (duration.as_secs(), duration.subsec_nanos()))
+        .unwrap_or((0, 0));
+    Ok(format!("{}.{:09}:{}", mtime.0, mtime.1, metadata.len()))
 }
 
 /// 会话级源指纹：primary + 全部关联文件的 (mtime,size) 摘要拼接。
@@ -227,15 +227,37 @@ fn build_index_entry(
     }
 }
 
-/// 核心索引步骤：指纹比对 → 过期则解析并写入；返回本次写入的事件数
-/// （`None` = 指纹未变化，未写入）。
-///
-/// 注意：本函数在持有 `conn` 借用期间完成文件解析（懒索引路径单会话文件
-/// 小、通常 <100ms，可接受；rebuild 由用户显式触发，spawn_blocking 执行）。
-fn index_session_if_stale(
+/// 锁外解析得到的单会话索引快照。`observed_fingerprint` 用于提交时检测
+/// 并发索引或隐私档位变化，避免旧解析结果覆盖更新的数据。
+pub(crate) struct PreparedSessionIndex {
+    entry: ActivityIndexEntry,
+    batch: ActivityIndexBatch,
+    policy: ActivityPersistencePolicy,
+    observed_fingerprint: Option<String>,
+}
+
+pub(crate) fn query_session_fingerprint(
     conn: &Connection,
+    session_key: &str,
+) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT source_fingerprint FROM session_activity_index WHERE session_key = ?1",
+        params![session_key],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|error| format!("ERR_ACTIVITY_QUERY_INDEX: {error}"))
+}
+
+/// 只进行文件系统访问与解析，不持有 SQLite 连接锁。
+pub(crate) fn prepare_session_index_if_changed(
     source: &SessionSourceRef,
-) -> Result<Option<usize>, String> {
+    policy: ActivityPersistencePolicy,
+    observed_fingerprint: Option<String>,
+) -> Result<Option<PreparedSessionIndex>, String> {
+    if !policy.indexing_enabled() {
+        return Ok(None);
+    }
     let registry = AdapterRegistry::new();
     let adapter = registry.get_adapter(&source.tool).ok_or_else(|| {
         format!(
@@ -245,29 +267,71 @@ fn index_session_if_stale(
     })?;
     let files = discover_related_files(&source.tool, &source.primary_file_path);
     let fingerprint = compute_source_fingerprint(&files)?;
-    let existing: Option<String> = conn
-        .query_row(
-            "SELECT source_fingerprint FROM session_activity_index WHERE session_key = ?1",
-            params![source.session_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| format!("ERR_ACTIVITY_QUERY_INDEX: {error}"))?;
-    if existing.as_deref() == Some(fingerprint.as_str()) {
+    if observed_fingerprint.as_deref() == Some(fingerprint.as_str()) {
         return Ok(None);
     }
     let batch = index_session_files(adapter, source, &files)?;
+    // 文件在解析期间变化时不提交混合快照；下一次查询会自然重试。
+    if compute_source_fingerprint(&files)? != fingerprint {
+        return Err("ERR_ACTIVITY_SOURCE_CHANGED: source changed while indexing".to_string());
+    }
     let entry = build_index_entry(adapter, source, &batch, &fingerprint);
-    db::write_activity_batch(conn, &entry, &batch)?;
-    Ok(Some(batch.events.len()))
+    Ok(Some(PreparedSessionIndex {
+        entry,
+        batch,
+        policy,
+        observed_fingerprint,
+    }))
+}
+
+/// 在短事务内提交锁外解析结果。若另一个任务已经提交，或数据库指纹自准备
+/// 开始后发生变化，则丢弃当前快照，由后续查询按最新状态决定是否重建。
+pub(crate) fn commit_prepared_session_index(
+    conn: &Connection,
+    prepared: PreparedSessionIndex,
+) -> Result<Option<usize>, String> {
+    let current = query_session_fingerprint(conn, &prepared.entry.session_key)?;
+    if current == prepared.entry.source_fingerprint {
+        return Ok(None);
+    }
+    if current != prepared.observed_fingerprint {
+        return Ok(None);
+    }
+    let event_count = prepared.batch.events.len();
+    db::write_activity_batch_with_policy(conn, &prepared.entry, &prepared.batch, prepared.policy)?;
+    Ok(Some(event_count))
+}
+
+/// 核心索引步骤：指纹比对 → 过期则解析并写入；返回本次写入的事件数
+/// （`None` = 指纹未变化，未写入）。保留该同步入口供纯数据库单元测试使用；
+/// IPC 路径使用 prepare/commit 两阶段以避免解析期间占用全局 DB 锁。
+fn index_session_if_stale(
+    conn: &Connection,
+    source: &SessionSourceRef,
+    policy: ActivityPersistencePolicy,
+) -> Result<Option<usize>, String> {
+    let existing = query_session_fingerprint(conn, &source.session_id)?;
+    let Some(prepared) = prepare_session_index_if_changed(source, policy, existing)? else {
+        return Ok(None);
+    };
+    commit_prepared_session_index(conn, prepared)
 }
 
 /// 懒索引：单会话指纹比对 + 按需重建；返回是否发生了写入（新建或更新）。
+pub fn ensure_session_indexed_with_policy(
+    conn: &Connection,
+    source: &SessionSourceRef,
+    policy: ActivityPersistencePolicy,
+) -> Result<bool, String> {
+    Ok(index_session_if_stale(conn, source, policy)?.is_some())
+}
+
+#[cfg(test)]
 pub fn ensure_session_indexed(
     conn: &Connection,
     source: &SessionSourceRef,
 ) -> Result<bool, String> {
-    Ok(index_session_if_stale(conn, source)?.is_some())
+    ensure_session_indexed_with_policy(conn, source, ActivityPersistencePolicy::FullText)
 }
 
 /// 按 session_key 定位会话源引用（供懒索引查询路径使用）。
@@ -346,7 +410,14 @@ pub fn list_indexable_sessions(
 ///   （指纹未变化自动跳过；单会话失败记录 errors 继续，设计 14.4 隔离）；
 /// - `"session:<session_key>"`：单会话；
 /// - `"older_than_days:<n>"`：仅 purge 支持的清理 scope，此处返回明确错误。
-pub fn rebuild_scope(conn: &Connection, scope: &str) -> Result<RebuildResult, String> {
+pub fn rebuild_scope_with_policy(
+    conn: &Connection,
+    scope: &str,
+    policy: ActivityPersistencePolicy,
+) -> Result<RebuildResult, String> {
+    if !policy.indexing_enabled() {
+        return Ok(RebuildResult::default());
+    }
     let registry = AdapterRegistry::new();
     let mut result = RebuildResult::default();
 
@@ -358,7 +429,7 @@ pub fn rebuild_scope(conn: &Connection, scope: &str) -> Result<RebuildResult, St
                 primary_file_path: session.primary_file_path.clone(),
                 source_file_id: None,
             };
-            match index_session_if_stale(conn, &source) {
+            match index_session_if_stale(conn, &source, policy) {
                 Ok(Some(written)) => {
                     result.sessions_indexed += 1;
                     result.events_written += written as i64;
@@ -381,7 +452,7 @@ pub fn rebuild_scope(conn: &Connection, scope: &str) -> Result<RebuildResult, St
         let source = find_source_ref(conn, session_key)?.ok_or_else(|| {
             "ERR_ACTIVITY_SESSION_NOT_FOUND: session not found in local sessions".to_string()
         })?;
-        if let Some(written) = index_session_if_stale(conn, &source)? {
+        if let Some(written) = index_session_if_stale(conn, &source, policy)? {
             result.sessions_indexed = 1;
             result.events_written = written as i64;
         }
@@ -397,6 +468,11 @@ pub fn rebuild_scope(conn: &Connection, scope: &str) -> Result<RebuildResult, St
     Err(format!(
         "ERR_ACTIVITY_INVALID_SCOPE: unsupported scope: {scope}"
     ))
+}
+
+#[cfg(test)]
+pub fn rebuild_scope(conn: &Connection, scope: &str) -> Result<RebuildResult, String> {
+    rebuild_scope_with_policy(conn, scope, ActivityPersistencePolicy::FullText)
 }
 
 /// 清理深度活动内容（scope："all" | "session:<session_key>" |
@@ -713,6 +789,36 @@ mod tests {
             .expect("read indexed_at");
         // 首次索引时间保留（保留期语义按数据首次建立索引计算）。
         assert_eq!(indexed_at_first, indexed_at_second);
+    }
+
+    #[test]
+    fn prepared_index_does_not_overwrite_a_concurrent_fingerprint_change() {
+        let conn = test_conn();
+        let (_dir, path) = write_claude_fixture(&claude_fixture_lines());
+        let session_key = "proj::concurrent";
+        insert_session(&conn, session_key, TOOL_CLAUDE_CODE, &path);
+        let source = find_source_ref(&conn, session_key)
+            .expect("find source")
+            .expect("source exists");
+        let prepared =
+            prepare_session_index_if_changed(&source, ActivityPersistencePolicy::FullText, None)
+                .expect("prepare index")
+                .expect("changed source");
+
+        let mut concurrent_entry = prepared.entry.clone();
+        concurrent_entry.source_fingerprint = Some("newer-fingerprint".to_string());
+        db::upsert_session_activity_index(&conn, &concurrent_entry)
+            .expect("write concurrent fingerprint");
+
+        assert_eq!(
+            commit_prepared_session_index(&conn, prepared).expect("commit prepared"),
+            None
+        );
+        assert_eq!(
+            query_session_fingerprint(&conn, session_key).expect("read fingerprint"),
+            Some("newer-fingerprint".to_string())
+        );
+        assert_eq!(count_events(&conn, session_key), 0);
     }
 
     #[test]

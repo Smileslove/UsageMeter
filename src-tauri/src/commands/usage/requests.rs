@@ -169,9 +169,18 @@ fn fact_matches_performance(fact: &MergedRequestFact, perf: &str) -> bool {
     }
 }
 
-fn fact_matches_search(fact: &MergedRequestFact, needle: &str) -> bool {
-    let needle = needle.to_lowercase();
-    if needle.is_empty() {
+fn contains_case_insensitive(haystack: &str, normalized_needle: &str) -> bool {
+    if haystack.is_ascii() && normalized_needle.is_ascii() {
+        return haystack
+            .as_bytes()
+            .windows(normalized_needle.len())
+            .any(|part| part.eq_ignore_ascii_case(normalized_needle.as_bytes()));
+    }
+    haystack.to_lowercase().contains(normalized_needle)
+}
+
+fn fact_matches_search(fact: &MergedRequestFact, normalized_needle: &str) -> bool {
+    if normalized_needle.is_empty() {
         return true;
     }
     let haystacks: [Option<&str>; 7] = [
@@ -186,7 +195,7 @@ fn fact_matches_search(fact: &MergedRequestFact, needle: &str) -> bool {
     haystacks
         .iter()
         .flatten()
-        .any(|h| h.to_lowercase().contains(&needle))
+        .any(|haystack| contains_case_insensitive(haystack, normalized_needle))
 }
 
 fn fact_sort_value(fact: &MergedRequestFact, field: &str) -> Option<f64> {
@@ -210,6 +219,46 @@ fn compare_with_none_last(a: f64, b: f64, dir_asc: bool) -> std::cmp::Ordering {
     }
 }
 
+fn compare_facts(
+    a: &MergedRequestFact,
+    b: &MergedRequestFact,
+    sort_field: &str,
+    dir_asc: bool,
+) -> std::cmp::Ordering {
+    let av = fact_sort_value(a, sort_field);
+    let bv = fact_sort_value(b, sort_field);
+    match (av, bv) {
+        (Some(av), Some(bv)) => compare_with_none_last(av, bv, dir_asc),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => {
+            if dir_asc {
+                a.timestamp_ms.cmp(&b.timestamp_ms)
+            } else {
+                b.timestamp_ms.cmp(&a.timestamp_ms)
+            }
+        }
+    }
+}
+
+/// 仅保留并排序页面会访问的前缀。原始位置作为最终 tie-breaker，结果与对完整
+/// Vec 执行稳定排序后截取前缀一致，但常见的前几页只需 O(n + k log k)。
+fn retain_sorted_prefix(
+    facts: &mut Vec<(usize, &MergedRequestFact)>,
+    keep: usize,
+    sort_field: &str,
+    dir_asc: bool,
+) {
+    let compare = |a: &(usize, &MergedRequestFact), b: &(usize, &MergedRequestFact)| {
+        compare_facts(a.1, b.1, sort_field, dir_asc).then_with(|| a.0.cmp(&b.0))
+    };
+    if keep < facts.len() {
+        facts.select_nth_unstable_by(keep, compare);
+        facts.truncate(keep);
+    }
+    facts.sort_unstable_by(compare);
+}
+
 #[tauri::command]
 pub async fn get_request_records_page(
     app: tauri::AppHandle,
@@ -230,53 +279,114 @@ pub async fn get_request_records_page(
     )
     .await?;
 
-    let search = query.search.as_deref().unwrap_or("").trim();
+    // 搜索词每次请求只规范化一次；ASCII 字段匹配走无分配路径。
+    let search = query.search.as_deref().unwrap_or("").trim().to_lowercase();
     let status = query.status.as_deref().unwrap_or("all");
     let coverage = query.coverage.as_deref().unwrap_or("all");
     let performance = query.performance.as_deref().unwrap_or("all");
     let sort_field = query.sort_field.as_deref().unwrap_or("timestamp");
     let dir_asc = query.sort_dir.as_deref() == Some("asc");
 
-    let mut filtered: Vec<&MergedRequestFact> = facts
+    let mut filtered: Vec<(usize, &MergedRequestFact)> = facts
         .iter()
-        .filter(|fact| {
+        .enumerate()
+        .filter(|(_, fact)| {
             fact_matches_status(fact, status)
                 && fact_matches_coverage(fact, coverage)
                 && fact_matches_performance(fact, performance)
-                && fact_matches_search(fact, search)
+                && fact_matches_search(fact, &search)
         })
         .collect();
 
-    filtered.sort_by(|a, b| {
-        let av = fact_sort_value(a, sort_field);
-        let bv = fact_sort_value(b, sort_field);
-        match (av, bv) {
-            (Some(av), Some(bv)) => compare_with_none_last(av, bv, dir_asc),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => {
-                if dir_asc {
-                    a.timestamp_ms.cmp(&b.timestamp_ms)
-                } else {
-                    b.timestamp_ms.cmp(&a.timestamp_ms)
-                }
-            }
-        }
-    });
+    let total_count = filtered.len();
+    let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+    let limit = limit as usize;
+    let page_end = offset.saturating_add(limit).min(total_count);
+    let has_more = page_end < total_count;
 
-    let total = filtered.len() as i64;
-    let has_more = (offset as usize) + (limit as usize) < (total as usize);
+    if offset >= total_count {
+        filtered.clear();
+    } else {
+        retain_sorted_prefix(&mut filtered, page_end, sort_field, dir_asc);
+    }
 
     let items = filtered
         .into_iter()
-        .skip(offset as usize)
-        .take(limit as usize)
-        .map(map_fact_to_item)
+        .skip(offset)
+        .map(|(_, fact)| map_fact_to_item(fact))
         .collect();
 
     Ok(RequestRecordsPage {
         items,
-        total,
+        total: total_count as i64,
         has_more,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fact(key: &str, model: &str, timestamp_ms: i64, total_tokens: u64) -> MergedRequestFact {
+        MergedRequestFact {
+            canonical_request_key: key.to_string(),
+            session_id: "session".to_string(),
+            project_name: Some("项目 Alpha".to_string()),
+            project_path: None,
+            api_key_prefix: None,
+            request_base_url: None,
+            tool: "codex".to_string(),
+            timestamp_sec: timestamp_ms / 1000,
+            timestamp_ms,
+            model: model.to_string(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_create_tokens: 0,
+            cache_read_tokens: 0,
+            total_tokens,
+            request_count: 1,
+            estimated_cost: 0.0,
+            estimated: false,
+            coverage_origin: CoverageOrigin::LocalOnly,
+            status_code: None,
+            duration_ms: None,
+            output_tokens_per_second: None,
+            ttft_ms: None,
+            source_label: None,
+        }
+    }
+
+    #[test]
+    fn search_is_case_insensitive_for_ascii_and_unicode() {
+        let fact = fact("request", "GPT-5", 1_000, 10);
+        assert!(fact_matches_search(&fact, &"gpt".to_lowercase()));
+        assert!(fact_matches_search(&fact, &"项目".to_lowercase()));
+        assert!(!fact_matches_search(&fact, &"claude".to_lowercase()));
+    }
+
+    #[test]
+    fn prefix_selection_matches_stable_full_sort() {
+        let facts = [
+            fact("a", "model", 1_000, 20),
+            fact("b", "model", 2_000, 10),
+            fact("c", "model", 3_000, 20),
+            fact("d", "model", 4_000, 30),
+        ];
+        let mut expected: Vec<_> = facts.iter().enumerate().collect();
+        expected.sort_by(|a, b| compare_facts(a.1, b.1, "totalTokens", false));
+        expected.truncate(3);
+
+        let mut actual: Vec<_> = facts.iter().enumerate().collect();
+        retain_sorted_prefix(&mut actual, 3, "totalTokens", false);
+
+        let expected_keys: Vec<_> = expected
+            .iter()
+            .map(|(_, fact)| fact.canonical_request_key.as_str())
+            .collect();
+        let actual_keys: Vec<_> = actual
+            .iter()
+            .map(|(_, fact)| fact.canonical_request_key.as_str())
+            .collect();
+        assert_eq!(actual_keys, expected_keys);
+    }
 }

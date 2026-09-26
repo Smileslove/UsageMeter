@@ -12,7 +12,6 @@
 
 use crate::activity::db;
 use crate::activity::fts;
-use crate::activity::indexer;
 use crate::activity::model::EventsPage;
 use crate::models::AppSettings;
 use std::collections::HashMap;
@@ -80,20 +79,6 @@ fn empty_global_page() -> GlobalSearchPage {
     }
 }
 
-/// 查询路径的懒索引（与 `commands/activity.rs` 行为一致）：同步执行单会话
-/// 索引（含 FTS 填充），失败不阻断查询——「深度解析失败不影响既有统计」。
-fn lazy_ensure_indexed(conn: &mut rusqlite::Connection, session_key: &str) {
-    match indexer::find_source_ref(conn, session_key) {
-        Ok(Some(source)) => {
-            if let Err(error) = indexer::ensure_session_indexed(conn, &source) {
-                eprintln!("[UsageMeter] Deep index lazy sync failed: {error}");
-            }
-        }
-        Ok(None) => {}
-        Err(error) => eprintln!("[UsageMeter] Deep index lazy source lookup failed: {error}"),
-    }
-}
-
 /// 会话内全文搜索：FTS 命中（bm25 相关性排序）→ 按 event_key 回填
 /// `session_events` 详情，返回与活动页一致的 [`EventsPage`]。
 ///
@@ -114,17 +99,27 @@ pub async fn search_session_activity(
     }
     let limit = limit.clamp(1, SEARCH_PAGE_MAX_LIMIT);
     let offset = offset.max(0);
-    activity_db(|conn| {
-        lazy_ensure_indexed(conn, &session_key);
-        let (keys, total) = fts::search_session(conn, &session_key, &query, offset, limit)?;
-        let items = db::query_events_by_keys(conn, &keys)?;
-        let has_more = (offset as usize) + items.len() < total as usize;
-        Ok(EventsPage {
-            items,
-            total,
-            has_more,
+    tauri::async_runtime::spawn_blocking(move || {
+        if crate::settings::persisted_deep_index_level() != "fulltext" {
+            return Ok(empty_events_page());
+        }
+        super::commands::lazy_ensure_indexed_without_db_lock(
+            &session_key,
+            db::ActivityPersistencePolicy::FullText,
+        );
+        activity_db(|conn| {
+            let (keys, total) = fts::search_session(conn, &session_key, &query, offset, limit)?;
+            let items = db::query_events_by_keys(conn, &keys)?;
+            let has_more = (offset as usize) + items.len() < total as usize;
+            Ok(EventsPage {
+                items,
+                total,
+                has_more,
+            })
         })
     })
+    .await
+    .map_err(|error| format!("ERR_ACTIVITY_SEARCH_JOIN: {error}"))?
 }
 
 /// 跨会话全文搜索：不分会话，返回命中事件 + 会话标题（topic/session_name）
@@ -143,16 +138,23 @@ pub async fn search_activity_global(
     }
     let limit = limit.clamp(1, SEARCH_PAGE_MAX_LIMIT);
     let offset = offset.max(0);
-    activity_db(|conn| {
-        let (hits, total) = fts::search_global(conn, &query, offset, limit)?;
-        let items = hydrate_global_hits(conn, &hits)?;
-        let has_more = (offset as usize) + items.len() < total as usize;
-        Ok(GlobalSearchPage {
-            items,
-            total,
-            has_more,
+    tauri::async_runtime::spawn_blocking(move || {
+        if crate::settings::persisted_deep_index_level() != "fulltext" {
+            return Ok(empty_global_page());
+        }
+        activity_db(|conn| {
+            let (hits, total) = fts::search_global(conn, &query, offset, limit)?;
+            let items = hydrate_global_hits(conn, &hits)?;
+            let has_more = (offset as usize) + items.len() < total as usize;
+            Ok(GlobalSearchPage {
+                items,
+                total,
+                has_more,
+            })
         })
     })
+    .await
+    .map_err(|error| format!("ERR_ACTIVITY_GLOBAL_SEARCH_JOIN: {error}"))?
 }
 
 /// 按 FTS 命中顺序回填跨会话搜索详情：事件行 + 工具名 + 会话标题。

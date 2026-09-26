@@ -58,4 +58,23 @@ describe('desktop navigation 新页面路由', () => {
     nav.applyNavigationTarget({ page: 'requests' })
     expect(nav.currentPage).toBe('requests')
   })
+
+  it('带 sessionKey 的深链遵循目标页面的二级路由', () => {
+    const nav = useDesktopNavigationStore()
+
+    nav.applyNavigationTarget({ page: 'activity', sessionKey: 'activity/session' })
+    expect(nav.currentPage).toBe('activity')
+    expect(nav.activeSessionKey).toBe('activity/session')
+    expect(window.location.hash).toBe('#/desktop/activity/activity%2Fsession')
+
+    nav.applyNavigationTarget({ page: 'sessions', sessionKey: 'session/detail' })
+    expect(nav.currentPage).toBe('sessions')
+    expect(nav.activeSessionKey).toBe('session/detail')
+    expect(window.location.hash).toBe('#/desktop/sessions/session/session%2Fdetail')
+
+    nav.applyNavigationTarget({ page: 'requests', sessionKey: 'filter-only' })
+    expect(nav.currentPage).toBe('requests')
+    expect(nav.activeSessionKey).toBeNull()
+    expect(window.location.hash).toBe('#/desktop/requests')
+  })
 })

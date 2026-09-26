@@ -120,6 +120,131 @@ fn redact_sk_keys(text: &str) -> String {
     out
 }
 
+/// 脱敏具有稳定厂商前缀的独立 token。保留前缀便于用户判断凭据类型，
+/// 但不保留任何 token 内容。
+fn redact_known_prefixed_tokens(text: &str) -> String {
+    const PREFIXES: &[(&str, usize)] = &[
+        ("github_pat_", 20),
+        ("ghp_", 20),
+        ("gho_", 20),
+        ("ghu_", 20),
+        ("ghs_", 20),
+        ("ghr_", 20),
+        ("AIza", 20),
+        ("AKIA", 16),
+        ("ASIA", 16),
+    ];
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let mut matched = false;
+        for (prefix, min_tail) in PREFIXES {
+            if bytes[i..].starts_with(prefix.as_bytes()) && (i == 0 || !is_word_char(bytes[i - 1]))
+            {
+                let mut end = i + prefix.len();
+                let aws_access_key = matches!(*prefix, "AKIA" | "ASIA");
+                while end < bytes.len()
+                    && if aws_access_key {
+                        bytes[end].is_ascii_uppercase() || bytes[end].is_ascii_digit()
+                    } else {
+                        bytes[end].is_ascii_alphanumeric() || matches!(bytes[end], b'_' | b'-')
+                    }
+                {
+                    end += 1;
+                }
+                let tail_len = end.saturating_sub(i + prefix.len());
+                let valid = if aws_access_key {
+                    tail_len == *min_tail && (end == bytes.len() || !is_word_char(bytes[end]))
+                } else {
+                    tail_len >= *min_tail
+                };
+                if valid {
+                    out.push_str(prefix);
+                    out.push_str(REDACTED);
+                    i = end;
+                    matched = true;
+                    break;
+                }
+            }
+        }
+        if matched {
+            continue;
+        }
+        let ch_len = utf8_char_len(bytes[i]);
+        out.push_str(&text[i..i + ch_len]);
+        i += ch_len;
+    }
+    out
+}
+
+fn is_jwt_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
+}
+
+/// JWT 的三段均为 base64url。只匹配常见的 JSON header（`eyJ`）并要求
+/// 三段都有合理长度，避免把版本号或普通点分标识误判成凭据。
+fn redact_jwts(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"eyJ") && (i == 0 || !is_word_char(bytes[i - 1])) {
+            let mut end = i;
+            while end < bytes.len() && is_jwt_char(bytes[end]) {
+                end += 1;
+            }
+            let token = &text[i..end];
+            let parts: Vec<&str> = token.split('.').collect();
+            if parts.len() == 3 && parts.iter().all(|part| part.len() >= 8) {
+                out.push_str(REDACTED);
+                i = end;
+                continue;
+            }
+        }
+        let ch_len = utf8_char_len(bytes[i]);
+        out.push_str(&text[i..i + ch_len]);
+        i += ch_len;
+    }
+    out
+}
+
+/// 私钥 PEM 块必须整体移除；只替换主体会泄露密钥类型和尾部内容。
+fn redact_private_key_pem(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        let Some(begin) = rest.find("-----BEGIN ") else {
+            out.push_str(rest);
+            break;
+        };
+        let header_end = rest[begin..]
+            .find('\n')
+            .map(|relative| begin + relative)
+            .unwrap_or(rest.len());
+        let header = &rest[begin..header_end];
+        if !header.contains("PRIVATE KEY") {
+            out.push_str(&rest[..header_end]);
+            rest = &rest[header_end..];
+            continue;
+        }
+        out.push_str(&rest[..begin]);
+        out.push_str(REDACTED);
+        let end_marker_start = rest[header_end..]
+            .find("-----END ")
+            .map(|relative| header_end + relative);
+        let Some(end_marker_start) = end_marker_start else {
+            break;
+        };
+        let end_marker_end = rest[end_marker_start..]
+            .find('\n')
+            .map(|relative| end_marker_start + relative + 1)
+            .unwrap_or(rest.len());
+        rest = &rest[end_marker_end..];
+    }
+    out
+}
+
 /// `Bearer <token>`（任意位置；token 为连续非空白字符且长度 ≥ 8）。
 fn redact_bearer_tokens(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
@@ -244,8 +369,11 @@ fn redact_secret_kv(text: &str) -> String {
 /// `api_key=[redacted]`）。
 pub fn redact_secret(text: &str) -> String {
     let text = redact_auth_headers(text);
+    let text = redact_private_key_pem(&text);
     let text = redact_bearer_tokens(&text);
     let text = redact_sk_keys(&text);
+    let text = redact_known_prefixed_tokens(&text);
+    let text = redact_jwts(&text);
     redact_secret_kv(&text)
 }
 
@@ -414,6 +542,41 @@ mod tests {
     }
 
     #[test]
+    fn redacts_common_standalone_credentials() {
+        let github = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";
+        let google = "AIzaabcdefghijklmnopqrstuvwxyz1234567890";
+        let aws = "AKIA1234567890ABCDEF";
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefgh12345678";
+        let input = format!("{github}\n{google}\n{aws}\n{jwt}");
+        let output = redact_secret(&input);
+        assert!(!output.contains(github));
+        assert!(!output.contains(google));
+        assert!(!output.contains(aws));
+        assert!(!output.contains(jwt));
+        assert!(output.contains("ghp_[redacted]"));
+        assert!(output.contains("AIza[redacted]"));
+        assert!(output.contains("AKIA[redacted]"));
+    }
+
+    #[test]
+    fn redacts_private_key_pem_as_one_block() {
+        let input = "before\n-----BEGIN PRIVATE KEY-----\nsecret-material\n-----END PRIVATE KEY-----\nafter";
+        let output = redact_secret(input);
+        assert_eq!(output, "before\n[redacted]after");
+        assert!(!output.contains("secret-material"));
+    }
+
+    #[test]
+    fn does_not_redact_short_or_similar_identifiers() {
+        assert_eq!(redact_secret("ghp_short"), "ghp_short");
+        assert_eq!(
+            redact_secret("AKIA-not-an-access-key"),
+            "AKIA-not-an-access-key"
+        );
+        assert_eq!(redact_secret("eyJ.part.two"), "eyJ.part.two");
+    }
+
+    #[test]
     fn redacts_secret_kv_fields() {
         assert_eq!(
             redact_secret("api_key=sk-abcdefgh12345678"),
@@ -477,6 +640,7 @@ mod tests {
 
     #[test]
     fn redacts_home_path_prefix() {
+        let _guard = crate::test_support::env_lock();
         let home = dirs::home_dir().expect("home dir in test env");
         let home_str = home.to_string_lossy().to_string();
         let input = format!("{home_str}/projects/foo/main.rs");
@@ -489,6 +653,7 @@ mod tests {
 
     #[test]
     fn redacts_home_path_with_backslash_boundary() {
+        let _guard = crate::test_support::env_lock();
         let home = dirs::home_dir().expect("home dir in test env");
         let home_str = home.to_string_lossy().to_string();
         // Windows 风格路径分隔符 `\` 也是合法边界（C:\Users\name\... 形态）。
@@ -498,6 +663,7 @@ mod tests {
 
     #[test]
     fn redacts_home_path_rejected_match_keeps_text_without_panicking() {
+        let _guard = crate::test_support::env_lock();
         let home = dirs::home_dir().expect("home dir in test env");
         let home_str = home.to_string_lossy().to_string();
         // 边界校验拒绝（home 后紧跟词内字符 X）：推进不得丢字符、不得 panic，

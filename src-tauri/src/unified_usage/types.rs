@@ -631,7 +631,14 @@ fn fallback_model_name_for_tool(tool: &str) -> Option<&'static str> {
 pub(crate) fn normalize_model_bucket(tool: &str, model: &str) -> String {
     if !is_opaque_model_name(model) {
         let trimmed = model.trim();
-        return if tool.starts_with("qoder_") {
+        return if tool == "reasonix" {
+            trimmed
+                .split_once('/')
+                .map(|(_, model)| model.trim())
+                .filter(|model| !model.is_empty())
+                .unwrap_or(trimmed)
+                .to_string()
+        } else if tool.starts_with("qoder_") {
             crate::qoder_models::normalize_qoder_model_name(trimmed)
         } else {
             trimmed.to_string()
@@ -879,6 +886,18 @@ impl MergedRequestFact {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_bucket_only_strips_provider_for_reasonix() {
+        assert_eq!(
+            normalize_model_bucket("reasonix", "基元律动/deepseek-v4-flash-0731"),
+            "deepseek-v4-flash-0731"
+        );
+        assert_eq!(
+            normalize_model_bucket("codex", "openai/gpt-5.4-2026-03-05"),
+            "openai/gpt-5.4-2026-03-05"
+        );
+    }
 
     fn proxy_with(
         input: u64,

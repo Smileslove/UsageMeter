@@ -45,20 +45,26 @@ const payloadSections = computed<readonly ('summary' | 'input' | 'output')[]>(()
 const payload = ref<RedactedPayloadPage | null>(null)
 const payloadLoading = ref(false)
 const payloadError = ref('')
+let payloadRequestSeq = 0
 const { copiedValue: copiedFlash, copyText: copyEventIdText } = useClipboard({ duration: 1400 })
 
 const loadPayload = async () => {
   const event = props.event
   if (!event) return
+  const section = payloadSection.value
+  const requestSeq = ++payloadRequestSeq
   payloadLoading.value = true
   payloadError.value = ''
   payload.value = null
   try {
-    payload.value = await getSessionEventPayload(event.eventKey, payloadSection.value)
+    const next = await getSessionEventPayload(event.eventKey, section)
+    if (requestSeq === payloadRequestSeq) payload.value = next
   } catch (e) {
-    payloadError.value = e instanceof Error ? e.message : String(e)
+    if (requestSeq === payloadRequestSeq) {
+      payloadError.value = e instanceof Error ? e.message : String(e)
+    }
   } finally {
-    payloadLoading.value = false
+    if (requestSeq === payloadRequestSeq) payloadLoading.value = false
   }
 }
 
@@ -67,21 +73,29 @@ const loadMorePayload = async () => {
   const event = props.event
   const page = payload.value
   if (!event || !page || !page.nextCursor || payloadLoading.value) return
+  const section = payloadSection.value
+  const requestSeq = ++payloadRequestSeq
   payloadLoading.value = true
   payloadError.value = ''
   try {
-    const next = await getSessionEventPayload(event.eventKey, payloadSection.value, undefined, page.nextCursor)
-    payload.value = { ...next, content: page.content + next.content }
+    const next = await getSessionEventPayload(event.eventKey, section, undefined, page.nextCursor)
+    if (requestSeq === payloadRequestSeq) {
+      payload.value = { ...next, content: page.content + next.content }
+    }
   } catch (e) {
-    payloadError.value = e instanceof Error ? e.message : String(e)
+    if (requestSeq === payloadRequestSeq) {
+      payloadError.value = e instanceof Error ? e.message : String(e)
+    }
   } finally {
-    payloadLoading.value = false
+    if (requestSeq === payloadRequestSeq) payloadLoading.value = false
   }
 }
 
 watch(() => props.event, event => {
+  payloadRequestSeq += 1
   payload.value = null
   payloadError.value = ''
+  payloadLoading.value = false
   if (event) {
     payloadSection.value = event.tool ? 'input' : 'summary'
     void loadPayload()

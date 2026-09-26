@@ -66,10 +66,12 @@ pub struct DesktopNavigationTarget {
 }
 
 /// 允许导航的桌面页面白名单。
-const DESKTOP_PAGE_WHITELIST: [&str; 6] = [
+const DESKTOP_PAGE_WHITELIST: [&str; 8] = [
     "overview",
     "analytics",
     "sessions",
+    "projects",
+    "requests",
     "activity",
     "gateway",
     "settings",
@@ -520,6 +522,8 @@ mod tests {
             "overview",
             "analytics",
             "sessions",
+            "projects",
+            "requests",
             "activity",
             "gateway",
             "settings",

@@ -6,7 +6,7 @@
 //! 查询路径先做单会话懒索引（同步、失败不阻断查询，深度解析失败
 //! 不影响既有统计）。
 
-use crate::activity::adapter::SessionActivityAdapter;
+use crate::activity::adapter::{SessionActivityAdapter, SessionSourceRef};
 use crate::activity::db;
 use crate::activity::indexer;
 use crate::activity::maintenance;
@@ -49,8 +49,13 @@ fn activity_db<R>(
 /// 不信任 IPC 传入的 settings——任意调用方不得以 `"structured"` 等值伪造
 /// 开启，绕过隐私关闭（`"off"`）。IPC settings 仍用于其它非门控参数
 /// （如 `deep_index_retention_days`）。
+fn deep_index_policy() -> db::ActivityPersistencePolicy {
+    db::ActivityPersistencePolicy::from_level(&crate::settings::persisted_deep_index_level())
+}
+
+#[cfg(test)]
 fn deep_index_disabled() -> bool {
-    crate::settings::persisted_deep_index_level() == "off"
+    !deep_index_policy().indexing_enabled()
 }
 
 /// 内容不可用的诚实响应（不伪造内容）。
@@ -63,13 +68,40 @@ fn unavailable_page() -> RedactedPayloadPage {
     }
 }
 
-/// 查询路径的懒索引：同步执行单会话索引（文件小，通常 <100ms）；
-/// 失败不阻断查询（返回空 + 错误日志 eprintln），保证「深度解析失败
-/// 不影响既有统计」（设计 14.4 降级语义）。
-fn lazy_ensure_indexed(conn: &mut rusqlite::Connection, session_key: &str) {
-    match indexer::find_source_ref(conn, session_key) {
+fn ensure_source_indexed_without_db_lock(
+    source: &SessionSourceRef,
+    policy: db::ActivityPersistencePolicy,
+) -> Result<Option<usize>, String> {
+    let existing =
+        activity_db(|conn| indexer::query_session_fingerprint(conn, &source.session_id))?;
+    let Some(prepared) = indexer::prepare_session_index_if_changed(source, policy, existing)?
+    else {
+        return Ok(None);
+    };
+    // 设置在解析期间变化时丢弃旧策略产物；下一次查询按新策略重建。
+    if deep_index_policy() != policy {
+        return Ok(None);
+    }
+    activity_db(|conn| {
+        // 与设置保存的隐私切换临界区使用同一 DB 锁；拿到锁后再次检查，
+        // 防止“锁外检查通过 → 等待清理 → 用旧策略提交”的竞态。
+        if deep_index_policy() != policy {
+            return Ok(None);
+        }
+        indexer::commit_prepared_session_index(conn, prepared)
+    })
+}
+
+/// 查询路径的懒索引：DB 锁只用于定位、指纹读取和最终短事务；源文件发现、
+/// 解析与指纹复核均在锁外完成。失败不阻断既有统计查询。
+pub(super) fn lazy_ensure_indexed_without_db_lock(
+    session_key: &str,
+    policy: db::ActivityPersistencePolicy,
+) {
+    let source = activity_db(|conn| indexer::find_source_ref(conn, session_key));
+    match source {
         Ok(Some(source)) => {
-            if let Err(error) = indexer::ensure_session_indexed(conn, &source) {
+            if let Err(error) = ensure_source_indexed_without_db_lock(&source, policy) {
                 eprintln!("[UsageMeter] Deep index lazy sync failed: {error}");
             }
         }
@@ -101,14 +133,22 @@ pub async fn get_session_activity_summary(
     session_key: String,
     settings: AppSettings,
 ) -> Result<Option<SessionActivitySummary>, String> {
-    if deep_index_disabled() {
+    let policy = deep_index_policy();
+    if !policy.indexing_enabled() {
         return Ok(None);
     }
-    activity_db(|conn| {
-        let _ = maintenance::maybe_auto_purge(conn, settings.deep_index_retention_days);
-        lazy_ensure_indexed(conn, &session_key);
-        db::query_activity_summary(conn, &session_key)
+    tauri::async_runtime::spawn_blocking(move || {
+        if deep_index_policy() != policy {
+            return Ok(None);
+        }
+        let _ = activity_db(|conn| {
+            maintenance::maybe_auto_purge(conn, settings.deep_index_retention_days)
+        });
+        lazy_ensure_indexed_without_db_lock(&session_key, policy);
+        activity_db(|conn| db::query_activity_summary(conn, &session_key))
     })
+    .await
+    .map_err(|error| format!("ERR_ACTIVITY_SUMMARY_JOIN: {error}"))?
 }
 
 /// 分页查询会话事件（按 sequence 升序；limit clamp 1..=200）。
@@ -121,7 +161,8 @@ pub async fn get_session_events(
     limit: i64,
     settings: AppSettings,
 ) -> Result<EventsPage, String> {
-    if deep_index_disabled() {
+    let policy = deep_index_policy();
+    if !policy.indexing_enabled() {
         return Ok(EventsPage {
             items: Vec::new(),
             total: 0,
@@ -130,11 +171,22 @@ pub async fn get_session_events(
     }
     let limit = limit.clamp(1, EVENTS_PAGE_MAX_LIMIT);
     let offset = offset.max(0);
-    activity_db(|conn| {
-        let _ = maintenance::maybe_auto_purge(conn, settings.deep_index_retention_days);
-        lazy_ensure_indexed(conn, &session_key);
-        db::query_events(conn, &session_key, filter.as_ref(), offset, limit)
+    tauri::async_runtime::spawn_blocking(move || {
+        if deep_index_policy() != policy {
+            return Ok(EventsPage {
+                items: Vec::new(),
+                total: 0,
+                has_more: false,
+            });
+        }
+        let _ = activity_db(|conn| {
+            maintenance::maybe_auto_purge(conn, settings.deep_index_retention_days)
+        });
+        lazy_ensure_indexed_without_db_lock(&session_key, policy);
+        activity_db(|conn| db::query_events(conn, &session_key, filter.as_ref(), offset, limit))
     })
+    .await
+    .map_err(|error| format!("ERR_ACTIVITY_EVENTS_JOIN: {error}"))?
 }
 
 /// 获取会话代理树节点（M2 按已落库的 session_agents 返回）。
@@ -143,13 +195,19 @@ pub async fn get_session_agents(
     _app: tauri::AppHandle,
     session_key: String,
 ) -> Result<Vec<AgentNodeDto>, String> {
-    if deep_index_disabled() {
+    let policy = deep_index_policy();
+    if !policy.indexing_enabled() {
         return Ok(Vec::new());
     }
-    activity_db(|conn| {
-        lazy_ensure_indexed(conn, &session_key);
-        db::query_agents(conn, &session_key)
+    tauri::async_runtime::spawn_blocking(move || {
+        if deep_index_policy() != policy {
+            return Ok(Vec::new());
+        }
+        lazy_ensure_indexed_without_db_lock(&session_key, policy);
+        activity_db(|conn| db::query_agents(conn, &session_key))
     })
+    .await
+    .map_err(|error| format!("ERR_ACTIVITY_AGENTS_JOIN: {error}"))?
 }
 
 /// 获取会话工具调用汇总。
@@ -158,13 +216,19 @@ pub async fn get_session_tool_summary(
     _app: tauri::AppHandle,
     session_key: String,
 ) -> Result<Vec<ToolSummaryRow>, String> {
-    if deep_index_disabled() {
+    let policy = deep_index_policy();
+    if !policy.indexing_enabled() {
         return Ok(Vec::new());
     }
-    activity_db(|conn| {
-        lazy_ensure_indexed(conn, &session_key);
-        db::query_tool_summary(conn, &session_key)
+    tauri::async_runtime::spawn_blocking(move || {
+        if deep_index_policy() != policy {
+            return Ok(Vec::new());
+        }
+        lazy_ensure_indexed_without_db_lock(&session_key, policy);
+        activity_db(|conn| db::query_tool_summary(conn, &session_key))
     })
+    .await
+    .map_err(|error| format!("ERR_ACTIVITY_TOOLS_JOIN: {error}"))?
 }
 
 /// 按需读取（脱敏后的）事件 payload。
@@ -185,76 +249,149 @@ pub async fn get_session_event_payload(
     max_bytes: Option<usize>,
     cursor: Option<String>,
 ) -> Result<RedactedPayloadPage, String> {
-    if deep_index_disabled() {
+    if !deep_index_policy().payload_read_enabled() {
         return Ok(unavailable_page());
     }
     let section = if section.trim().is_empty() {
-        "summary"
+        "summary".to_string()
     } else {
-        section.trim()
+        section.trim().to_string()
     };
     let max_bytes = max_bytes.unwrap_or(PAYLOAD_DEFAULT_MAX_BYTES);
-    activity_db(|conn| {
-        let event_row: Option<(String, String, Option<i64>, Option<String>)> = conn
-            .query_row(
-                "SELECT session_key, source_file_path, source_offset, payload_hash
+    tauri::async_runtime::spawn_blocking(move || {
+        if !deep_index_policy().payload_read_enabled() {
+            return Ok(unavailable_page());
+        }
+        let plan = activity_db(|conn| {
+            let event_row: Option<(String, String, Option<i64>, Option<String>)> = conn
+                .query_row(
+                    "SELECT session_key, source_file_path, source_offset, payload_hash
                  FROM session_events WHERE event_key = ?1",
-                rusqlite::params![event_key],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .optional()
-            .map_err(|error| format!("ERR_ACTIVITY_QUERY_EVENT: {error}"))?;
-        let Some((session_key, source_file_path, source_offset, payload_hash)) = event_row else {
-            return Err("ERR_ACTIVITY_EVENT_NOT_FOUND: no such event key".to_string());
-        };
-        // session_events 无 tool 列：经 session_key 查 local_sessions.tool。
-        let tool: Option<String> = conn
-            .query_row(
-                "SELECT tool FROM local_sessions WHERE session_id = ?1",
-                rusqlite::params![session_key],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|error| format!("ERR_ACTIVITY_QUERY_TOOL: {error}"))?;
-        let Some(tool) = tool else {
-            // 会话行缺失（local_sessions 清理后深度表残留）：不伪造可读内容。
+                    rusqlite::params![event_key],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()
+                .map_err(|error| format!("ERR_ACTIVITY_QUERY_EVENT: {error}"))?;
+            let Some((session_key, source_file_path, source_offset, payload_hash)) = event_row
+            else {
+                return Err("ERR_ACTIVITY_EVENT_NOT_FOUND: no such event key".to_string());
+            };
+            // session_events 无 tool 列：经 session_key 查 local_sessions.tool。
+            let tool: Option<String> = conn
+                .query_row(
+                    "SELECT tool FROM local_sessions WHERE session_id = ?1",
+                    rusqlite::params![session_key],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| format!("ERR_ACTIVITY_QUERY_TOOL: {error}"))?;
+            let Some(tool) = tool else {
+                // 会话行缺失（local_sessions 清理后深度表残留）：不伪造可读内容。
+                return Ok(None);
+            };
+            Ok(Some((
+                tool,
+                SafeSourceRef {
+                    source_file_id: None,
+                    source_file_path,
+                    source_offset,
+                    // M2 适配器未回填 payload_hash，指纹校验留给 M3。
+                    fingerprint: payload_hash,
+                },
+            )))
+        })?;
+        let Some((tool, source_ref)) = plan else {
             return Ok(unavailable_page());
         };
+        if !deep_index_policy().payload_read_enabled() {
+            return Ok(unavailable_page());
+        }
         let Some(adapter) = registry().get_adapter(&tool) else {
             return Ok(unavailable_page());
         };
-        let source_ref = SafeSourceRef {
-            source_file_id: None,
-            source_file_path,
-            source_offset,
-            // M2 适配器未回填 payload_hash，指纹校验留给 M3。
-            fingerprint: payload_hash,
-        };
         adapter
-            .read_payload(&source_ref, section, max_bytes, cursor)
+            .read_payload(&source_ref, &section, max_bytes, cursor)
             .map_err(|error| error.to_string())
     })
+    .await
+    .map_err(|error| format!("ERR_ACTIVITY_PAYLOAD_JOIN: {error}"))?
+}
+
+fn rebuild_activity_without_db_lock(
+    scope: &str,
+    policy: db::ActivityPersistencePolicy,
+) -> Result<RebuildResult, String> {
+    let sources: Vec<SessionSourceRef> = if scope == "all" {
+        activity_db(|conn| indexer::list_indexable_sessions(conn, &registry()))?
+            .into_iter()
+            .map(|session| SessionSourceRef {
+                session_id: session.session_id,
+                tool: session.tool,
+                primary_file_path: session.primary_file_path,
+                source_file_id: None,
+            })
+            .collect()
+    } else if let Some(session_key) = scope.strip_prefix("session:") {
+        let session_key = session_key.trim();
+        if session_key.is_empty() {
+            return Err("ERR_ACTIVITY_INVALID_SCOPE: empty session key".to_string());
+        }
+        vec![
+            activity_db(|conn| indexer::find_source_ref(conn, session_key))?.ok_or_else(|| {
+                "ERR_ACTIVITY_SESSION_NOT_FOUND: session not found in local sessions".to_string()
+            })?,
+        ]
+    } else if scope.starts_with("older_than_days:") {
+        return Err(
+            "ERR_ACTIVITY_UNSUPPORTED_SCOPE: older_than_days is a purge-only scope".to_string(),
+        );
+    } else {
+        return Err(format!(
+            "ERR_ACTIVITY_INVALID_SCOPE: unsupported scope: {scope}"
+        ));
+    };
+
+    let mut result = RebuildResult::default();
+    for source in sources {
+        if deep_index_policy() != policy {
+            result.sessions_failed += 1;
+            result
+                .errors
+                .push("ERR_ACTIVITY_POLICY_CHANGED: deep index policy changed".to_string());
+            break;
+        }
+        match ensure_source_indexed_without_db_lock(&source, policy) {
+            Ok(Some(written)) => {
+                result.sessions_indexed += 1;
+                result.events_written += written as i64;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                result.sessions_failed += 1;
+                result.errors.push(error);
+            }
+        }
+    }
+    Ok(result)
 }
 
 /// 重建深度活动索引（scope："all" | "session:<session_key>"）。
 ///
 /// 深度索引关闭时返回空结果（不触发任何索引写入）；开启时在
-/// spawn_blocking 后台线程执行，避免阻塞 UI 线程。重建期间的数据库
-/// 访问与既有同步共用同一互斥连接（本地会话规模小、用户显式触发，
-/// M2 可接受；单会话失败已隔离在 indexer 内部）。
+/// spawn_blocking 后台线程执行，文件扫描与解析不占用全局 SQLite 互斥锁；
+/// 每个会话仅在读取指纹和提交事务时短暂持锁。
 #[tauri::command]
 pub async fn rebuild_session_activity_index(
     _app: tauri::AppHandle,
     scope: String,
 ) -> Result<RebuildResult, String> {
-    if deep_index_disabled() {
+    let policy = deep_index_policy();
+    if !policy.indexing_enabled() {
         return Ok(RebuildResult::default());
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        activity_db(|conn| indexer::rebuild_scope(conn, &scope))
-    })
-    .await
-    .map_err(|error| format!("ERR_ACTIVITY_REBUILD_JOIN: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || rebuild_activity_without_db_lock(&scope, policy))
+        .await
+        .map_err(|error| format!("ERR_ACTIVITY_REBUILD_JOIN: {error}"))?
 }
 
 /// 清理深度活动内容（scope："all" | "session:<session_key>" |
@@ -300,6 +437,11 @@ struct ExportEventRow {
     request_links: Vec<RequestEventLink>,
     /// include_payloads 时填充 `{section: 脱敏文本}`，否则 Null。
     payload: serde_json::Value,
+}
+
+struct PreparedActivityExport {
+    meta: ExportSessionMeta,
+    events: Vec<ExportEventRow>,
 }
 
 /// 会话元信息查询；local_sessions 无该会话返回 None。
@@ -717,23 +859,31 @@ fn render_csv_export(
 ///
 /// 隐私铁律：导出内容全部来自已脱敏字段（summary_redacted 已脱敏；
 /// payload 经适配器脱敏）；`include_payloads` 默认 false，后端只执行选项。
-pub(crate) fn export_session_activity_impl(
+fn prepare_session_activity_export(
     conn: &rusqlite::Connection,
     session_key: &str,
-    options: &ExportOptions,
-) -> Result<ExportResult, String> {
+) -> Result<PreparedActivityExport, String> {
     let meta = query_export_session_meta(conn, session_key)?.ok_or_else(|| {
         "ERR_ACTIVITY_EXPORT_SESSION_NOT_FOUND: session not found in local sessions".to_string()
     })?;
     let mut events = query_export_events(conn, session_key)?;
     attach_export_request_links(conn, &mut events)?;
+    Ok(PreparedActivityExport { meta, events })
+}
 
+fn finish_session_activity_export(
+    mut prepared: PreparedActivityExport,
+    session_key: &str,
+    options: &ExportOptions,
+) -> Result<ExportResult, String> {
+    let meta = &prepared.meta;
+    let events = &mut prepared.events;
     let mut payload_included = false;
     let mut truncated = false;
     let mut payload_total = 0usize;
     if options.include_payloads {
         if let Some(adapter) = registry().get_adapter(&meta.tool) {
-            for event in &mut events {
+            for event in events.iter_mut() {
                 if payload_total >= EXPORT_TOTAL_PAYLOAD_MAX_BYTES {
                     truncated = true;
                     break;
@@ -761,8 +911,8 @@ pub(crate) fn export_session_activity_impl(
 
     let format = options.format.trim().to_ascii_lowercase();
     let (content, ext) = match format.as_str() {
-        "json" => (render_json_export(&meta, &events, options), "json"),
-        "csv" => (render_csv_export(&meta, &events, options), "csv"),
+        "json" => (render_json_export(meta, events, options), "json"),
+        "csv" => (render_csv_export(meta, events, options), "csv"),
         other => {
             return Err(format!(
                 "ERR_ACTIVITY_EXPORT_FORMAT: unsupported format: {other}"
@@ -799,10 +949,34 @@ pub async fn export_session_activity(
     session_key: String,
     options: ExportOptions,
 ) -> Result<ExportResult, String> {
-    if deep_index_disabled() {
+    let policy = deep_index_policy();
+    if !policy.indexing_enabled() {
         return Err("ERR_ACTIVITY_EXPORT_DISABLED: deep index is off".to_string());
     }
-    activity_db(|conn| export_session_activity_impl(conn, &session_key, &options))
+    if options.include_payloads && !policy.payload_read_enabled() {
+        return Err("ERR_ACTIVITY_EXPORT_PAYLOAD_DISABLED: on-demand content is off".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let current_policy = deep_index_policy();
+        if !current_policy.indexing_enabled() {
+            return Err("ERR_ACTIVITY_EXPORT_DISABLED: deep index is off".to_string());
+        }
+        if options.include_payloads && !current_policy.payload_read_enabled() {
+            return Err(
+                "ERR_ACTIVITY_EXPORT_PAYLOAD_DISABLED: on-demand content is off".to_string(),
+            );
+        }
+        let prepared = activity_db(|conn| prepare_session_activity_export(conn, &session_key))?;
+        let current_policy = deep_index_policy();
+        if !current_policy.indexing_enabled()
+            || (options.include_payloads && !current_policy.payload_read_enabled())
+        {
+            return Err("ERR_ACTIVITY_EXPORT_DISABLED: privacy level changed".to_string());
+        }
+        finish_session_activity_export(prepared, &session_key, &options)
+    })
+    .await
+    .map_err(|error| format!("ERR_ACTIVITY_EXPORT_JOIN: {error}"))?
 }
 
 // ---------------------------------------------------------------------------
@@ -846,6 +1020,14 @@ mod tests {
             !deep_index_disabled(),
             "persisted structured level must open the gate"
         );
+        assert!(!deep_index_policy().payload_read_enabled());
+
+        std::fs::write(
+            settings_dir.join("settings.json"),
+            serde_json::json!({ "settingsVersion": 3, "deepIndexLevel": "ondemand" }).to_string(),
+        )
+        .expect("write on-demand preferences");
+        assert!(deep_index_policy().payload_read_enabled());
 
         // 持久化档位 off → 门控关闭（IPC settings 不再参与判定，任意调用方
         // 无法以传参伪造开启）。

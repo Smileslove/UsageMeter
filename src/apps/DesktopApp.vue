@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { defineAsyncComponent, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { takePendingDesktopNavigation } from '../api/appApi'
 import { useMonitorStore } from '../stores/monitor'
@@ -8,14 +8,15 @@ import { applyResolvedTheme } from '../theme'
 import type { DesktopNavigationTarget } from '../types'
 import DesktopShell from '../desktop/layout/DesktopShell.vue'
 import DesktopPageBoundary from '../desktop/components/DesktopPageBoundary.vue'
-import DesktopOverview from '../desktop/views/DesktopOverview.vue'
-import DesktopAnalytics from '../desktop/views/DesktopAnalytics.vue'
-import DesktopSessions from '../desktop/views/DesktopSessions.vue'
-import DesktopProjects from '../desktop/views/DesktopProjects.vue'
-import DesktopRequests from '../desktop/views/DesktopRequests.vue'
-import DesktopActivity from '../desktop/views/DesktopActivity.vue'
-import DesktopGateway from '../desktop/views/DesktopGateway.vue'
-import DesktopSettings from '../desktop/views/DesktopSettings.vue'
+
+const DesktopOverview = defineAsyncComponent(() => import('../desktop/views/DesktopOverview.vue'))
+const DesktopAnalytics = defineAsyncComponent(() => import('../desktop/views/DesktopAnalytics.vue'))
+const DesktopSessions = defineAsyncComponent(() => import('../desktop/views/DesktopSessions.vue'))
+const DesktopProjects = defineAsyncComponent(() => import('../desktop/views/DesktopProjects.vue'))
+const DesktopRequests = defineAsyncComponent(() => import('../desktop/views/DesktopRequests.vue'))
+const DesktopActivity = defineAsyncComponent(() => import('../desktop/views/DesktopActivity.vue'))
+const DesktopGateway = defineAsyncComponent(() => import('../desktop/views/DesktopGateway.vue'))
+const DesktopSettings = defineAsyncComponent(() => import('../desktop/views/DesktopSettings.vue'))
 
 const store = useMonitorStore()
 const nav = useDesktopNavigationStore()

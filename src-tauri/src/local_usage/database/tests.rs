@@ -2190,6 +2190,7 @@ fn cold_facts_shard_cache_only_refetches_rematerialized_day() {
 
 #[test]
 fn unified_day_local_snapshot_with_settings_uses_passed_day_boundary_mode() {
+    let _env_guard = crate::test_support::env_lock();
     let (_tmp, db) = temp_db();
     let tmp_home = tempfile::tempdir().expect("create temp home");
     let old_home = std::env::var_os("HOME");
@@ -2718,6 +2719,7 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
 
 #[test]
 fn today_local_date_with_settings_uses_passed_day_boundary_mode() {
+    let _env_guard = crate::test_support::env_lock();
     let tmp_home = tempfile::tempdir().expect("create temp home");
     let old_home = std::env::var_os("HOME");
     std::env::set_var("HOME", tmp_home.path());
@@ -2880,6 +2882,7 @@ fn purge_orphan_uses_business_day_bucketing_for_invalidated_dates() {
     )
     .unwrap();
 
+    let _env_guard = crate::test_support::env_lock();
     let tmp_home = tempfile::tempdir().expect("create temp home");
     let old_home = std::env::var_os("HOME");
     std::env::set_var("HOME", tmp_home.path());

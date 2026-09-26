@@ -157,7 +157,8 @@ export const useDesktopNavigationStore = defineStore('desktopNavigation', {
       this.previousSessionsQuery = null
       return query
     },
-    /** 应用深链/事件导航目标：先暂存全字段筛选上下文，再按 sessionKey 或 page 导航。 */
+    /** 应用深链/事件导航目标：先暂存全字段筛选上下文，再按目标页面导航。
+     *  只有 sessions/activity 拥有 sessionKey 二级路由，其余页面仍保留自身 page。 */
     applyNavigationTarget(target: DesktopNavigationTarget) {
       this.pendingFilters = {
         sourceId: target.sourceId ?? null,
@@ -169,8 +170,10 @@ export const useDesktopNavigationStore = defineStore('desktopNavigation', {
         timeRange: target.timeRange ?? null
       }
       this.pendingConsumeTick += 1
-      if (target.sessionKey) {
+      if (target.page === 'sessions' && target.sessionKey) {
         this.openSession(target.sessionKey)
+      } else if (target.page === 'activity' && target.sessionKey) {
+        this.openActivity(target.sessionKey)
       } else {
         this.navigate(target.page)
       }

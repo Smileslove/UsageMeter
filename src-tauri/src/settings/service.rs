@@ -219,9 +219,36 @@ fn save_settings_locked(
     migrate_legacy_model_pricings(&mut settings).map_err(SaveSettingsError::Other)?;
     crate::subscription::source_quota_secrets::persist_settings(&mut settings, previous_settings)
         .map_err(SaveSettingsError::Other)?;
-    with_config_database(|database| database.save_settings(&settings))
+
+    let deep_index_policy_changed = previous_settings.deep_index_level != settings.deep_index_level;
+    if deep_index_policy_changed {
+        let policy =
+            crate::activity::db::ActivityPersistencePolicy::from_level(&settings.deep_index_level);
+        let db = crate::local_usage::get_local_usage_db().map_err(SaveSettingsError::Other)?;
+        // 清理、设置落盘与 DB 锁释放组成一个隐私切换临界区。索引提交会在
+        // 获取同一把 DB 锁后重新读取持久化档位，因此不能在清理后按旧策略
+        // 写回正文。若偏好文件写入失败，尽力恢复配置数据库中的旧设置。
+        db.with_conn(|conn| {
+            crate::activity::db::reconcile_activity_policy(conn, policy)?;
+            with_config_database(|database| database.save_settings(&settings))?;
+            if let Err(error) = write_preferences_file(&settings) {
+                let rollback =
+                    with_config_database(|database| database.save_settings(previous_settings));
+                return Err(match rollback {
+                    Ok(()) => error,
+                    Err(rollback_error) => {
+                        format!("{error}; ERR_SETTINGS_ROLLBACK: {rollback_error}")
+                    }
+                });
+            }
+            Ok(())
+        })
         .map_err(SaveSettingsError::Other)?;
-    write_preferences_file(&settings).map_err(SaveSettingsError::Other)?;
+    } else {
+        with_config_database(|database| database.save_settings(&settings))
+            .map_err(SaveSettingsError::Other)?;
+        write_preferences_file(&settings).map_err(SaveSettingsError::Other)?;
+    }
 
     // Apply the sync policy immediately when the toggle changes. This keeps a
     // disabled account from accumulating payloads until the next app restart;

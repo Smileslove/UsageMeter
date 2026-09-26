@@ -142,6 +142,39 @@ pub struct ActivityIndexEntry {
 /// 摘要截断上限（编码规范：summary_redacted ≤ 500 字符 + 脱敏）。
 const SUMMARY_MAX_CHARS: usize = 500;
 
+/// 深度活动的持久化策略。未知设置一律退回 `Off`，避免配置漂移意外扩大
+/// 本地正文留存范围。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivityPersistencePolicy {
+    Off,
+    Structured,
+    OnDemand,
+    FullText,
+}
+
+impl ActivityPersistencePolicy {
+    pub fn from_level(level: &str) -> Self {
+        match level {
+            "structured" => Self::Structured,
+            "ondemand" => Self::OnDemand,
+            "fulltext" => Self::FullText,
+            _ => Self::Off,
+        }
+    }
+
+    pub fn indexing_enabled(self) -> bool {
+        self != Self::Off
+    }
+
+    pub fn payload_read_enabled(self) -> bool {
+        matches!(self, Self::OnDemand | Self::FullText)
+    }
+
+    fn stores_text(self) -> bool {
+        self == Self::FullText
+    }
+}
+
 fn truncate_summary(summary: &str) -> String {
     if summary.chars().count() <= SUMMARY_MAX_CHARS {
         return summary.to_string();
@@ -210,13 +243,24 @@ pub fn replace_session_events(
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("ERR_ACTIVITY_TX_START: {e}"))?;
-    tx.execute(
+    replace_session_events_inner(&tx, session_key, events)?;
+    tx.commit()
+        .map_err(|e| format!("ERR_ACTIVITY_TX_COMMIT: {e}"))?;
+    Ok(())
+}
+
+fn replace_session_events_inner(
+    conn: &Connection,
+    session_key: &str,
+    events: &[NewSessionEvent],
+) -> Result<(), String> {
+    conn.execute(
         "DELETE FROM session_events WHERE session_key = ?1",
         params![session_key],
     )
     .map_err(|e| format!("ERR_ACTIVITY_DELETE_EVENTS: {e}"))?;
     {
-        let mut stmt = tx
+        let mut stmt = conn
             .prepare(
                 "INSERT INTO session_events (
                     event_key, session_key, sequence, timestamp_ms, kind, status,
@@ -248,8 +292,6 @@ pub fn replace_session_events(
             .map_err(|e| format!("ERR_ACTIVITY_INSERT_EVENT: {e}"))?;
         }
     }
-    tx.commit()
-        .map_err(|e| format!("ERR_ACTIVITY_TX_COMMIT: {e}"))?;
     Ok(())
 }
 
@@ -263,8 +305,20 @@ pub fn upsert_agents(
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("ERR_ACTIVITY_TX_START: {e}"))?;
+    upsert_agents_inner(&tx, session_key, agents, true)?;
+    tx.commit()
+        .map_err(|e| format!("ERR_ACTIVITY_TX_COMMIT: {e}"))?;
+    Ok(())
+}
+
+fn upsert_agents_inner(
+    conn: &Connection,
+    session_key: &str,
+    agents: &[NewAgentNode],
+    store_text: bool,
+) -> Result<(), String> {
     {
-        let mut stmt = tx
+        let mut stmt = conn
             .prepare(
                 "INSERT INTO session_agents (
                     agent_key, session_key, parent_agent_key, display_kind,
@@ -282,7 +336,11 @@ pub fn upsert_agents(
             )
             .map_err(|e| format!("ERR_ACTIVITY_PREPARE_UPSERT_AGENT: {e}"))?;
         for agent in agents {
-            let summary = agent.task_summary_redacted.as_deref().map(truncate_summary);
+            let summary = if store_text {
+                agent.task_summary_redacted.as_deref().map(truncate_summary)
+            } else {
+                None
+            };
             stmt.execute(params![
                 agent.agent_key,
                 session_key,
@@ -297,8 +355,6 @@ pub fn upsert_agents(
             .map_err(|e| format!("ERR_ACTIVITY_UPSERT_AGENT: {e}"))?;
         }
     }
-    tx.commit()
-        .map_err(|e| format!("ERR_ACTIVITY_TX_COMMIT: {e}"))?;
     Ok(())
 }
 
@@ -311,8 +367,19 @@ pub fn upsert_tool_invocations(
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("ERR_ACTIVITY_TX_START: {e}"))?;
+    upsert_tool_invocations_inner(&tx, session_key, invocations)?;
+    tx.commit()
+        .map_err(|e| format!("ERR_ACTIVITY_TX_COMMIT: {e}"))?;
+    Ok(())
+}
+
+fn upsert_tool_invocations_inner(
+    conn: &Connection,
+    session_key: &str,
+    invocations: &[NewToolInvocation],
+) -> Result<(), String> {
     {
-        let mut stmt = tx
+        let mut stmt = conn
             .prepare(
                 "INSERT INTO session_tool_invocations (
                     invocation_key, event_key, session_key, tool_name, family, status,
@@ -350,8 +417,6 @@ pub fn upsert_tool_invocations(
             .map_err(|e| format!("ERR_ACTIVITY_UPSERT_TOOL: {e}"))?;
         }
     }
-    tx.commit()
-        .map_err(|e| format!("ERR_ACTIVITY_TX_COMMIT: {e}"))?;
     Ok(())
 }
 
@@ -366,14 +431,25 @@ pub fn upsert_event_request_links(
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("ERR_ACTIVITY_TX_START: {e}"))?;
-    tx.execute(
+    upsert_event_request_links_inner(&tx, session_key, links)?;
+    tx.commit()
+        .map_err(|e| format!("ERR_ACTIVITY_TX_COMMIT: {e}"))?;
+    Ok(())
+}
+
+fn upsert_event_request_links_inner(
+    conn: &Connection,
+    session_key: &str,
+    links: &[NewEventRequestLink],
+) -> Result<(), String> {
+    conn.execute(
         "DELETE FROM session_event_request_links
          WHERE event_key IN (SELECT event_key FROM session_events WHERE session_key = ?1)",
         params![session_key],
     )
     .map_err(|e| format!("ERR_ACTIVITY_DELETE_LINKS: {e}"))?;
     {
-        let mut stmt = tx
+        let mut stmt = conn
             .prepare(
                 "INSERT INTO session_event_request_links (event_key, request_key, strength, matcher_id)
                  VALUES (?1, ?2, ?3, NULL)
@@ -390,35 +466,67 @@ pub fn upsert_event_request_links(
             .map_err(|e| format!("ERR_ACTIVITY_UPSERT_LINK: {e}"))?;
         }
     }
+    Ok(())
+}
+
+/// 写入一个完整索引批次（index 行 + 事件 + 代理 + 工具调用 + 关联）。
+/// 所有表与 FTS 在同一个事务中提交，fingerprint 最后写入。
+pub fn write_activity_batch_with_policy(
+    conn: &Connection,
+    entry: &ActivityIndexEntry,
+    batch: &ActivityIndexBatch,
+    policy: ActivityPersistencePolicy,
+) -> Result<(), String> {
+    if !policy.indexing_enabled() {
+        return Err("ERR_ACTIVITY_INDEX_DISABLED".to_string());
+    }
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| format!("ERR_ACTIVITY_TX_START: {e}"))?;
+    // 全量快照必须在一个事务中提交。特别是 source_fingerprint 最后写入：
+    // 任一派生表/FTS 写失败都会回滚，下一次 stale check 仍会重试。
+    clear_session_derived_rows(&tx, &batch.session_key)?;
+    replace_session_events_inner_with_policy(&tx, &batch.session_key, &batch.events, policy)?;
+    upsert_agents_inner(&tx, &batch.session_key, &batch.agents, policy.stores_text())?;
+    upsert_tool_invocations_inner(&tx, &batch.session_key, &batch.tool_invocations)?;
+    upsert_event_request_links_inner(&tx, &batch.session_key, &batch.request_links)?;
+    if policy == ActivityPersistencePolicy::FullText {
+        crate::activity::fts::sync_events_to_fts_inner(&tx, &batch.session_key)?;
+    } else {
+        crate::activity::fts::delete_session_fts(&tx, &batch.session_key)?;
+    }
+    upsert_session_activity_index(&tx, entry)?;
     tx.commit()
         .map_err(|e| format!("ERR_ACTIVITY_TX_COMMIT: {e}"))?;
     Ok(())
 }
 
-/// 写入一个完整索引批次（index 行 + 事件 + 代理 + 工具调用 + 关联）。
-/// 事件替换、代理/工具 UPSERT、关联清理各自独立事务（骨架阶段保持简单；
-/// 单会话原子性由 replace_session_events 保证）。
+#[cfg(test)]
 pub fn write_activity_batch(
     conn: &Connection,
     entry: &ActivityIndexEntry,
     batch: &ActivityIndexBatch,
 ) -> Result<(), String> {
-    // 全量替换语义：先清该会话旧的 agents/tools/links 派生行，避免源文件
-    // 删除或事件收缩后残留幽灵行（links 必须基于旧 events 集清理——
-    // upsert_event_request_links 内部的 DELETE 只覆盖新 events 集）。
-    // events 由 replace_session_events 全量替换。各步独立提交：中途失败时
-    // 库可能处于部分替换的中间态，但索引任务可重试收敛（幂等）。
-    clear_session_derived_rows(conn, &batch.session_key)?;
-    upsert_session_activity_index(conn, entry)?;
-    replace_session_events(conn, &batch.session_key, &batch.events)?;
-    upsert_agents(conn, &batch.session_key, &batch.agents)?;
-    upsert_tool_invocations(conn, &batch.session_key, &batch.tool_invocations)?;
-    upsert_event_request_links(conn, &batch.session_key, &batch.request_links)?;
-    // FTS 同步必须在 upsert_tool_invocations 之后（FTS 行要带工具名，
-    // 而旧工具行已被 clear_session_derived_rows 清掉）。失败时整体报错，
-    // 由索引任务重试收敛（幂等）。
-    crate::activity::fts::sync_events_to_fts(conn, &batch.session_key)?;
-    Ok(())
+    write_activity_batch_with_policy(conn, entry, batch, ActivityPersistencePolicy::FullText)
+}
+
+fn replace_session_events_inner_with_policy(
+    conn: &Connection,
+    session_key: &str,
+    events: &[NewSessionEvent],
+    policy: ActivityPersistencePolicy,
+) -> Result<(), String> {
+    if policy.stores_text() {
+        return replace_session_events_inner(conn, session_key, events);
+    }
+    let mut metadata_only = events.to_vec();
+    for event in &mut metadata_only {
+        event.summary_redacted = None;
+        if policy == ActivityPersistencePolicy::Structured {
+            event.content_state = ContentState::Unavailable;
+        }
+    }
+    replace_session_events_inner(conn, session_key, &metadata_only)
 }
 
 /// 删除单会话的 agents/tools/links 派生行（index 与 events 不受影响）。
@@ -932,6 +1040,121 @@ pub fn query_activity_summary(
 // ---------------------------------------------------------------------------
 // 清理
 // ---------------------------------------------------------------------------
+
+/// 设置档位降级时立即移除新档位不允许持久化的内容。
+fn scrub_activity_text(
+    conn: &Connection,
+    mark_payload_unavailable: bool,
+    invalidate_fingerprints: bool,
+) -> Result<usize, String> {
+    let mut changed = conn
+        .execute(
+            "UPDATE session_events SET summary_redacted = NULL
+             WHERE summary_redacted IS NOT NULL",
+            [],
+        )
+        .map_err(|e| format!("ERR_ACTIVITY_CLEAR_SUMMARIES: {e}"))?;
+    if mark_payload_unavailable {
+        changed += conn
+            .execute(
+                "UPDATE session_events SET content_state = 'unavailable'
+                 WHERE content_state != 'unavailable'",
+                [],
+            )
+            .map_err(|e| format!("ERR_ACTIVITY_CLEAR_CONTENT_STATE: {e}"))?;
+    }
+    changed += conn
+        .execute(
+            "UPDATE session_agents SET task_summary_redacted = NULL
+             WHERE task_summary_redacted IS NOT NULL",
+            [],
+        )
+        .map_err(|e| format!("ERR_ACTIVITY_CLEAR_SUMMARIES: {e}"))?;
+    if invalidate_fingerprints {
+        changed += conn
+            .execute(
+                "UPDATE session_activity_index SET source_fingerprint = NULL
+                 WHERE source_fingerprint IS NOT NULL",
+                [],
+            )
+            .map_err(|e| format!("ERR_ACTIVITY_INVALIDATE_FINGERPRINTS: {e}"))?;
+    }
+    conn.execute("DELETE FROM session_event_fts", [])
+        .map_err(|e| format!("ERR_ACTIVITY_SEARCH_DELETE: {e}"))?;
+    Ok(changed)
+}
+
+pub fn reconcile_activity_policy(
+    conn: &Connection,
+    policy: ActivityPersistencePolicy,
+) -> Result<usize, String> {
+    match policy {
+        ActivityPersistencePolicy::FullText => conn
+            .execute(
+                "UPDATE session_activity_index SET source_fingerprint = NULL
+                 WHERE source_fingerprint IS NOT NULL",
+                [],
+            )
+            .map_err(|e| format!("ERR_ACTIVITY_INVALIDATE_FINGERPRINTS: {e}")),
+        ActivityPersistencePolicy::Off => {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("ERR_ACTIVITY_TX_START: {e}"))?;
+            let mut removed = 0usize;
+            for table in [
+                "session_event_request_links",
+                "session_events",
+                "session_tool_invocations",
+                "session_agents",
+                "session_activity_index",
+            ] {
+                removed += tx
+                    .execute(&format!("DELETE FROM {table}"), [])
+                    .map_err(|e| format!("ERR_ACTIVITY_DELETE_ALL: {e}"))?;
+            }
+            tx.execute("DELETE FROM session_event_fts", [])
+                .map_err(|e| format!("ERR_ACTIVITY_SEARCH_DELETE: {e}"))?;
+            tx.commit()
+                .map_err(|e| format!("ERR_ACTIVITY_TX_COMMIT: {e}"))?;
+            Ok(removed)
+        }
+        ActivityPersistencePolicy::Structured | ActivityPersistencePolicy::OnDemand => {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("ERR_ACTIVITY_TX_START: {e}"))?;
+            let removed = scrub_activity_text(
+                &tx,
+                policy == ActivityPersistencePolicy::Structured,
+                policy == ActivityPersistencePolicy::OnDemand,
+            )?;
+            tx.commit()
+                .map_err(|e| format!("ERR_ACTIVITY_TX_COMMIT: {e}"))?;
+            Ok(removed)
+        }
+    }
+}
+
+/// 启动期只清理由旧版本遗留、当前档位不允许的数据。与设置切换不同，
+/// on-demand 启动时不失效指纹，避免每次启动都无条件重建结构化索引。
+pub fn reconcile_activity_policy_on_startup(
+    conn: &Connection,
+    policy: ActivityPersistencePolicy,
+) -> Result<usize, String> {
+    match policy {
+        ActivityPersistencePolicy::FullText => Ok(0),
+        ActivityPersistencePolicy::Off => reconcile_activity_policy(conn, policy),
+        ActivityPersistencePolicy::Structured | ActivityPersistencePolicy::OnDemand => {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("ERR_ACTIVITY_TX_START: {e}"))?;
+            let changed =
+                scrub_activity_text(&tx, policy == ActivityPersistencePolicy::Structured, false)?;
+            tx.commit()
+                .map_err(|e| format!("ERR_ACTIVITY_TX_COMMIT: {e}"))?;
+            Ok(changed)
+        }
+    }
+}
 
 /// 删除单会话全部深度活动数据；返回受影响行数（5 张结构化表之和，
 /// FTS 虚拟表行同步删除但不计入该计数）。
@@ -1449,5 +1672,181 @@ mod tests {
         assert!(truncated.chars().count() <= SUMMARY_MAX_CHARS + 1); // 500 + 省略号
         let short = "short".to_string();
         assert_eq!(truncate_summary(&short), "short");
+    }
+
+    #[test]
+    fn batch_write_rolls_back_all_tables_and_fingerprint_on_failure() {
+        let conn = test_conn();
+        let session_key = "sess-atomic";
+        write_activity_batch(
+            &conn,
+            &sample_entry(session_key),
+            &sample_batch(session_key),
+        )
+        .expect("seed batch");
+        conn.execute_batch(
+            "CREATE TRIGGER fail_activity_event BEFORE INSERT ON session_events
+             WHEN NEW.summary_redacted = 'trigger-fail'
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+        )
+        .expect("create failure trigger");
+
+        let mut next_entry = sample_entry(session_key);
+        next_entry.source_fingerprint = Some("fp-2".to_string());
+        let mut next_batch = sample_batch(session_key);
+        next_batch.events[0].summary_redacted = Some("trigger-fail".to_string());
+        assert!(write_activity_batch_with_policy(
+            &conn,
+            &next_entry,
+            &next_batch,
+            ActivityPersistencePolicy::FullText,
+        )
+        .is_err());
+
+        let fingerprint: String = conn
+            .query_row(
+                "SELECT source_fingerprint FROM session_activity_index WHERE session_key = ?1",
+                params![session_key],
+                |row| row.get(0),
+            )
+            .expect("read original fingerprint");
+        assert_eq!(fingerprint, "fp-1");
+        assert_eq!(count_events(&conn, session_key), 3);
+        let original_summary: String = conn
+            .query_row(
+                "SELECT summary_redacted FROM session_events
+                 WHERE session_key = ?1 AND sequence = 1",
+                params![session_key],
+                |row| row.get(0),
+            )
+            .expect("read original event");
+        assert_eq!(original_summary, "fix the bug");
+    }
+
+    #[test]
+    fn persistence_policy_controls_text_and_fts_and_downgrade_cleanup() {
+        let conn = test_conn();
+        let session_key = "sess-policy";
+        let entry = sample_entry(session_key);
+        let batch = sample_batch(session_key);
+
+        write_activity_batch_with_policy(
+            &conn,
+            &entry,
+            &batch,
+            ActivityPersistencePolicy::Structured,
+        )
+        .expect("write structured batch");
+        let (event_text, agent_text, fts_rows): (i64, i64, i64) = (
+            conn.query_row(
+                "SELECT COUNT(*) FROM session_events WHERE summary_redacted IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count event text"),
+            conn.query_row(
+                "SELECT COUNT(*) FROM session_agents WHERE task_summary_redacted IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count agent text"),
+            conn.query_row("SELECT COUNT(*) FROM session_event_fts", [], |row| {
+                row.get(0)
+            })
+            .expect("count fts"),
+        );
+        assert_eq!((event_text, agent_text, fts_rows), (0, 0, 0));
+        let available_structured: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_events WHERE content_state != 'unavailable'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count structured content states");
+        assert_eq!(available_structured, 0);
+
+        write_activity_batch_with_policy(
+            &conn,
+            &entry,
+            &batch,
+            ActivityPersistencePolicy::FullText,
+        )
+        .expect("write fulltext batch");
+        let fts_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_event_fts", [], |row| {
+                row.get(0)
+            })
+            .expect("count fulltext fts");
+        assert!(fts_rows > 0);
+
+        assert_eq!(
+            reconcile_activity_policy(&conn, ActivityPersistencePolicy::FullText)
+                .expect("invalidate for fulltext rebuild"),
+            1
+        );
+        let fingerprint: Option<String> = conn
+            .query_row(
+                "SELECT source_fingerprint FROM session_activity_index WHERE session_key = ?1",
+                params![session_key],
+                |row| row.get(0),
+            )
+            .expect("read invalidated fingerprint");
+        assert!(fingerprint.is_none());
+
+        reconcile_activity_policy(&conn, ActivityPersistencePolicy::OnDemand)
+            .expect("downgrade policy");
+        let remaining_text: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM session_events WHERE summary_redacted IS NOT NULL)
+                      + (SELECT COUNT(*) FROM session_agents WHERE task_summary_redacted IS NOT NULL)
+                      + (SELECT COUNT(*) FROM session_event_fts)",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count forbidden text");
+        assert_eq!(remaining_text, 0);
+        assert_eq!(count_events(&conn, session_key), 3);
+
+        assert!(
+            reconcile_activity_policy(&conn, ActivityPersistencePolicy::Off)
+                .expect("disable activity")
+                > 0
+        );
+        assert_eq!(count_activity_sessions(&conn).expect("count sessions"), 0);
+        assert_eq!(count_events(&conn, session_key), 0);
+    }
+
+    #[test]
+    fn startup_scrub_keeps_on_demand_fingerprint_but_removes_text() {
+        let conn = test_conn();
+        let session_key = "sess-startup-policy";
+        write_activity_batch_with_policy(
+            &conn,
+            &sample_entry(session_key),
+            &sample_batch(session_key),
+            ActivityPersistencePolicy::FullText,
+        )
+        .expect("write legacy fulltext batch");
+
+        reconcile_activity_policy_on_startup(&conn, ActivityPersistencePolicy::OnDemand)
+            .expect("startup scrub");
+        let fingerprint: Option<String> = conn
+            .query_row(
+                "SELECT source_fingerprint FROM session_activity_index WHERE session_key = ?1",
+                params![session_key],
+                |row| row.get(0),
+            )
+            .expect("read startup fingerprint");
+        assert_eq!(fingerprint, Some("fp-1".to_string()));
+        let remaining_text: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM session_events WHERE summary_redacted IS NOT NULL)
+                      + (SELECT COUNT(*) FROM session_agents WHERE task_summary_redacted IS NOT NULL)
+                      + (SELECT COUNT(*) FROM session_event_fts)",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count forbidden text");
+        assert_eq!(remaining_text, 0);
     }
 }

@@ -1,16 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import type { AppSettings, MonthActivity, OverviewBreakdown, SessionStats, StatisticsQuery, StatisticsSummary, YearActivity } from '../types'
+import type { AppSettings, MonthActivity, OverviewBreakdown, RequestRecordsPage, SessionStats, StatisticsQuery, StatisticsSummary, YearActivity } from '../types'
 
 const {
   queryStatisticsSummaryMock,
   queryOverviewBreakdownMock,
   querySessionsMock,
+  queryRequestRecordsPageMock,
   queryMonthActivityMock,
   queryYearActivityMock,
 } = vi.hoisted(() => ({
   queryStatisticsSummaryMock: vi.fn(),
   queryOverviewBreakdownMock: vi.fn(),
   querySessionsMock: vi.fn(),
+  queryRequestRecordsPageMock: vi.fn(),
   queryMonthActivityMock: vi.fn(),
   queryYearActivityMock: vi.fn(),
 }))
@@ -28,6 +30,7 @@ vi.mock('./sessionQueries', () => ({
   querySessions: querySessionsMock,
   querySessionDetail: vi.fn(),
   queryRecentRequestRecords: vi.fn(),
+  queryRequestRecordsPage: queryRequestRecordsPageMock,
   queryProjectStats: vi.fn(),
 }))
 vi.mock('./subscriptionQueries', () => ({
@@ -41,6 +44,7 @@ import {
   errorMessage,
   fetchMonthActivityAction,
   fetchOverviewBreakdownAction,
+  fetchRequestRecordsPageAction,
   fetchSessionsAction,
   fetchStatisticsSummaryAction,
   fetchYearActivityAction,
@@ -106,6 +110,11 @@ function makeContext(): MonitorDomainContext {
     // sessions 字段
     sessions: [] as SessionStats[],
     sessionsLoading: false,
+    requestRecords: [],
+    requestRecordsLoading: false,
+    requestRecordsPageRequestSeq: 0,
+    requestTotal: 0,
+    requestHasMore: false,
     // overview breakdown 字段
     overviewBreakdownRequestSeq: 0,
     overviewBreakdownLoading: false,
@@ -233,6 +242,34 @@ describe('fetchOverviewBreakdownAction', () => {
     expect(ctx.overviewBreakdown).toBeNull()
     expect(ctx.overviewBreakdownLoading).toBe(false)
     expect(queryOverviewBreakdownMock).toHaveBeenCalledWith(ctx.settings, '24h')
+  })
+})
+
+describe('fetchRequestRecordsPageAction', () => {
+  beforeEach(() => {
+    queryRequestRecordsPageMock.mockReset()
+  })
+
+  it('lets only the latest page request update shared records and loading state', async () => {
+    const ctx = makeContext()
+    let resolveFirst!: (page: RequestRecordsPage) => void
+    let resolveSecond!: (page: RequestRecordsPage) => void
+    queryRequestRecordsPageMock
+      .mockReturnValueOnce(new Promise(resolve => { resolveFirst = resolve }))
+      .mockReturnValueOnce(new Promise(resolve => { resolveSecond = resolve }))
+
+    const first = fetchRequestRecordsPageAction(ctx, null, { limit: 50, offset: 0, search: 'old' })
+    const second = fetchRequestRecordsPageAction(ctx, null, { limit: 50, offset: 0, search: 'new' })
+
+    resolveSecond({ items: [{ requestKey: 'new' }], total: 1, hasMore: false } as RequestRecordsPage)
+    await second
+    expect(ctx.requestRecords[0]?.requestKey).toBe('new')
+    expect(ctx.requestRecordsLoading).toBe(false)
+
+    resolveFirst({ items: [{ requestKey: 'old' }], total: 1, hasMore: false } as RequestRecordsPage)
+    await first
+    expect(ctx.requestRecords[0]?.requestKey).toBe('new')
+    expect(ctx.requestRecordsLoading).toBe(false)
   })
 })
 

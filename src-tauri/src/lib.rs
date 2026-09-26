@@ -272,6 +272,26 @@ pub fn run() {
                     .unwrap_or_default(),
             );
 
+            // 升级后也要立即落实当前隐私档位：旧版本可能在用户已经切到
+            // off/structured/ondemand 后仍留下摘要或 FTS 行。fulltext 不在
+            // 启动时 reconcile，避免每次启动都失效指纹并触发全量重建。
+            if let Some(settings) = initial_settings.as_ref() {
+                let policy = activity::db::ActivityPersistencePolicy::from_level(
+                    &settings.deep_index_level,
+                );
+                if policy != activity::db::ActivityPersistencePolicy::FullText {
+                    let result = local_usage::get_local_usage_db().and_then(|db| {
+                        db.with_conn(|conn| {
+                            activity::db::reconcile_activity_policy_on_startup(conn, policy)
+                        })
+                        .map(|_| ())
+                    });
+                    if let Err(error) = result {
+                        eprintln!("[UsageMeter] Failed to reconcile activity privacy policy: {error}");
+                    }
+                }
+            }
+
             {
                 tauri::async_runtime::spawn(async move {
                     let _ = tauri::async_runtime::spawn_blocking(|| {

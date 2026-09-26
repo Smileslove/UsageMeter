@@ -72,12 +72,16 @@ const purgeResult = ref('')
 const purgeDialogOpen = ref(false)
 
 const selectDeepIndexLevel = async (level: DeepIndexLevel) => {
+  if (store.saving) return
+  const previousLevel = deepIndexLevel.value
   deepIndexLevel.value = level
   store.settings.deepIndexLevel = level
   try {
     await store.saveSettings()
   } catch {
-    // 保存失败保留本地选择，错误由 store.error 呈现
+    // 隐私档位必须与后端已持久化状态一致，不做乐观更新。
+    deepIndexLevel.value = previousLevel
+    store.settings.deepIndexLevel = previousLevel
   }
 }
 
@@ -260,6 +264,7 @@ const confirmQuit = async () => {
                 name="deep-index-level"
                 class="mt-0.5 h-3.5 w-3.5 accent-[var(--theme-accent-primary)]"
                 :checked="deepIndexLevel === option.id"
+                :disabled="store.saving"
                 :aria-label="t(locale, option.labelKey)"
                 @change="selectDeepIndexLevel(option.id)"
               />

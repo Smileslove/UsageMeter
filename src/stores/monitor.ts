@@ -71,6 +71,7 @@ export const useMonitorStore = defineStore('monitor', {
     selectedSession: null as SessionStats | null,
     requestRecords: [] as RequestRecord[],
     requestRecordsLoading: false,
+    requestRecordsPageRequestSeq: 0,
     requestTotal: 0,
     requestHasMore: false,
     // 项目统计（基于所有会话聚合，不受分页影响）

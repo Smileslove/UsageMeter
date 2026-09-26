@@ -57,7 +57,14 @@ pub fn sync_events_to_fts(conn: &Connection, session_key: &str) -> Result<(), St
     let tx = conn
         .unchecked_transaction()
         .map_err(|e| format!("ERR_ACTIVITY_SEARCH_TX_START: {e}"))?;
-    tx.execute(
+    sync_events_to_fts_inner(&tx, session_key)?;
+    tx.commit()
+        .map_err(|e| format!("ERR_ACTIVITY_SEARCH_TX_COMMIT: {e}"))?;
+    Ok(())
+}
+
+pub(crate) fn sync_events_to_fts_inner(conn: &Connection, session_key: &str) -> Result<(), String> {
+    conn.execute(
         "DELETE FROM session_event_fts WHERE session_key = ?1",
         params![session_key],
     )
@@ -65,7 +72,7 @@ pub fn sync_events_to_fts(conn: &Connection, session_key: &str) -> Result<(), St
     // 事件与工具经 event_key 关联（每事件最多一个 tool 行）；GROUP BY
     // 防御历史脏数据造成的多 tool 行，保证每事件在 FTS 中至多一行。
     let rows: Vec<(String, String, String, String, String)> = {
-        let mut stmt = tx
+        let mut stmt = conn
             .prepare(
                 "SELECT e.event_key, e.session_key, e.kind,
                         COALESCE(e.summary_redacted, ''),
@@ -94,7 +101,7 @@ pub fn sync_events_to_fts(conn: &Connection, session_key: &str) -> Result<(), St
         out
     };
     {
-        let mut insert = tx
+        let mut insert = conn
             .prepare(
                 "INSERT INTO session_event_fts (event_key, session_key, kind, summary, tool_name)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -112,8 +119,6 @@ pub fn sync_events_to_fts(conn: &Connection, session_key: &str) -> Result<(), St
                 .map_err(|e| format!("ERR_ACTIVITY_SEARCH_INSERT: {e}"))?;
         }
     }
-    tx.commit()
-        .map_err(|e| format!("ERR_ACTIVITY_SEARCH_TX_COMMIT: {e}"))?;
     Ok(())
 }
 

@@ -259,7 +259,7 @@ onUnmounted(() => {
     </div>
 
     <!-- ============ 三栏布局（设计 9.2） ============ -->
-    <div v-else-if="viewState === 'ready'" class="relative flex min-h-0 min-w-0 flex-1 items-stretch gap-4">
+    <div v-if="viewState === 'ready'" class="relative flex min-h-0 min-w-0 flex-1 items-stretch gap-4">
       <!-- 左栏：章节与代理树（240px；窄屏 overlay） -->
       <ActivitySidebar
         v-if="wideMode || sidebarOpen"

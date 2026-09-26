@@ -157,21 +157,28 @@ export async function fetchRequestRecordsPageAction(
   toolFilter: string | null,
   params: RequestQueryParams
 ): Promise<RequestRecordsPage | null> {
+  const requestSeq = ++context.requestRecordsPageRequestSeq
   context.requestRecordsLoading = true
   try {
     const page = await queryRequestRecordsPage(context.settings, toolFilter, params)
-    context.requestRecords = page.items
-    context.requestTotal = page.total
-    context.requestHasMore = page.hasMore
+    if (requestSeq === context.requestRecordsPageRequestSeq) {
+      context.requestRecords = page.items
+      context.requestTotal = page.total
+      context.requestHasMore = page.hasMore
+    }
     return page
   } catch (error) {
     console.error('Failed to fetch request records page:', error)
-    context.requestRecords = []
-    context.requestTotal = 0
-    context.requestHasMore = false
+    if (requestSeq === context.requestRecordsPageRequestSeq) {
+      context.requestRecords = []
+      context.requestTotal = 0
+      context.requestHasMore = false
+    }
     return null
   } finally {
-    context.requestRecordsLoading = false
+    if (requestSeq === context.requestRecordsPageRequestSeq) {
+      context.requestRecordsLoading = false
+    }
   }
 }
 
