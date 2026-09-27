@@ -306,19 +306,32 @@ impl LocalUsageDatabase {
         let state_count = opencode_states.stores.len();
         let stage_started = Instant::now();
         let now = chrono::Utc::now().timestamp();
-        let conn = self.conn.lock().unwrap();
-        let tx = conn
-            .unchecked_transaction()
-            .map_err(|e| format!("Failed to start OpenCode DB sync state transaction: {}", e))?;
-        Self::persist_opencode_db_scan_states_tx(&tx, &opencode_states, now)?;
-        Self::persist_opencode_message_id_conflict_tx(
-            &tx,
-            &opencode_schema_status.message_id_conflict,
-            now,
-        )?;
-        tx.commit()
-            .map_err(|e| format!("Failed to commit OpenCode DB sync state: {}", e))?;
+        {
+            let conn = self.conn.lock().unwrap();
+            let tx = conn.unchecked_transaction().map_err(|e| {
+                format!("Failed to start OpenCode DB sync state transaction: {}", e)
+            })?;
+            Self::persist_opencode_db_scan_states_tx(&tx, &opencode_states, now)?;
+            Self::persist_opencode_message_id_conflict_tx(
+                &tx,
+                &opencode_schema_status.message_id_conflict,
+                now,
+            )?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit OpenCode DB sync state: {}", e))?;
+        }
         log_sync_stage("persist_opencode_state", stage_started, state_count);
+
+        // Passive attribution is read-only and shares the existing scanner cadence. A missing
+        // or unsupported tool configuration must never block local usage ingestion.
+        if let Ok(settings) = crate::settings::load_settings_blocking() {
+            if self
+                .observe_passive_attribution(&settings, chrono::Utc::now().timestamp_millis())
+                .unwrap_or(false)
+            {
+                crate::unified_usage::clear_runtime_caches();
+            }
+        }
 
         Ok(())
     }

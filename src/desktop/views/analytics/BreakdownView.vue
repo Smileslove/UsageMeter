@@ -7,7 +7,7 @@
 import { computed, ref } from 'vue'
 import { useMonitorStore } from '../../../stores/monitor'
 import { useDesktopAnalyticsStore } from '../../stores/desktopAnalytics'
-import { t } from '../../../i18n'
+import { sourceLabel, t } from '../../../i18n'
 import {
   formatCost,
   formatRate,
@@ -84,9 +84,7 @@ function displayLabel(item: OverviewBreakdownItem): string {
   if (item.kind === 'tool') {
     return formatToolDisplayName(item.id, locale.value, store.settings.clientTools.profiles)
   }
-  if (item.label === '__unknown__') return t(locale.value, 'sources.unknown')
-  if (item.label === '__official_api__') return t(locale.value, 'sources.officialAnthropic')
-  return item.label
+  return sourceLabel(locale.value, item.label)
 }
 
 function rowsFromItems(items: OverviewBreakdownItem[]): CompositionRow[] {

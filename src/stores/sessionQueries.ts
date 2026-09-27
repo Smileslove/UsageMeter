@@ -60,6 +60,60 @@ export function queryRequestRecordsPage(
   })
 }
 
+export function setManualRequestAttribution(
+  settings: AppSettings,
+  requestKeys: string[],
+  sourceId: string | null
+): Promise<number> {
+  return invoke('set_manual_request_attribution', {
+    request: { requestKeys, sourceId },
+    settings,
+  })
+}
+
+export function clearManualRequestAttribution(requestKeys: string[]): Promise<number> {
+  return invoke('clear_manual_request_attribution', { requestKeys })
+}
+
+export function setManualSessionAttribution(
+  settings: AppSettings,
+  sessionId: string,
+  sourceId: string | null
+): Promise<number> {
+  return invoke('set_manual_session_attribution', { sessionId, sourceId, settings })
+}
+
+export function clearManualSessionAttribution(
+  settings: AppSettings,
+  sessionId: string
+): Promise<number> {
+  return invoke('clear_manual_session_attribution', { sessionId, settings })
+}
+
+export function setManualTimeRangeAttribution(
+  settings: AppSettings,
+  startEpoch: number,
+  endEpoch: number,
+  sourceId: string | null
+): Promise<number> {
+  return invoke('set_manual_time_range_attribution', {
+    range: { startEpoch, endEpoch },
+    sourceId,
+    settings,
+  })
+}
+
+export function clearManualTimeRangeAttribution(
+  settings: AppSettings,
+  startEpoch: number,
+  endEpoch: number
+): Promise<number> {
+  return invoke('clear_manual_time_range_attribution', {
+    range: { startEpoch, endEpoch },
+    settings,
+  })
+}
+
 export function queryProjectStats(
   settings: AppSettings,
   toolFilter?: string | null

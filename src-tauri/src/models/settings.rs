@@ -5,6 +5,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
+/// Stable category for requests made through Codex's official ChatGPT OAuth flow.
+/// This is deliberately not a user-configurable API source.
+pub const OFFICIAL_OPENAI_OAUTH_SOURCE_ID: &str = "__openai_official_oauth__";
+/// Internal presentation marker for a plan confirmed by the official OAuth usage endpoint.
+pub const OPENAI_OAUTH_PLAN_LABEL_PREFIX: &str = "__openai_oauth_plan:";
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyConfig {
@@ -770,6 +776,8 @@ pub enum SourceFilter {
     All,
     /// 按指定来源过滤
     Source {
+        /// 稳定来源 ID；配置推断与手动修正使用此字段过滤。
+        source_id: String,
         /// 匹配的 API Key 前缀列表
         api_key_prefixes: Vec<String>,
         /// 匹配的 base_url
@@ -780,6 +788,8 @@ pub enum SourceFilter {
         /// 所有已知来源的 (API Key 前缀, base_url) 组合
         known_pairs: Vec<(String, Option<String>)>,
     },
+    /// Requests resolved from Codex's official ChatGPT OAuth credentials.
+    OfficialOpenAiOAuth,
 }
 
 #[derive(Debug, Clone)]
@@ -806,12 +816,16 @@ impl SourceAwareSettings {
                     .collect();
                 SourceFilter::Unknown { known_pairs }
             }
+            Some(filter) if filter == OFFICIAL_OPENAI_OAUTH_SOURCE_ID => {
+                SourceFilter::OfficialOpenAiOAuth
+            }
             Some(source_id) => {
                 // 查找对应的来源
                 self.sources
                     .iter()
                     .find(|s| &s.id == source_id)
                     .map(|source| SourceFilter::Source {
+                        source_id: source.id.clone(),
                         api_key_prefixes: source.api_key_prefixes.clone(),
                         base_url: source.base_url.clone(),
                     })

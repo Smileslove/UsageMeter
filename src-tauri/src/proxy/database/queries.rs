@@ -368,6 +368,7 @@ mod tests {
 
         let filter = UsageQueryFilter {
             source: SourceFilter::Source {
+                source_id: "test".to_string(),
                 api_key_prefixes: vec!["sk-a".to_string()],
                 base_url: Some("https://api.a.com".to_string()),
             },

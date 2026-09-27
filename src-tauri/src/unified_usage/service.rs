@@ -2,6 +2,7 @@ use super::aggregation_support::{
     build_metadata_only_session_stats, merge_metadata_only_project, session_usage_fully_covered,
     ProjectAggregate,
 };
+use super::attribution::apply_passive_attribution;
 pub(crate) use super::cold_facts_support::ColdFactsShardCache;
 use super::cold_facts_support::{
     ColdConcatMemo, ColdDayCacheEntry, ColdFactsLoad, COLD_CONCAT_MEMO_CAPACITY,
@@ -734,19 +735,11 @@ async fn merge_realtime_range(
         pricing_match_mode,
     } = params;
     let tool_filter = settings.client_tools.build_filter();
+    // Attribution is resolved only after local and proxy facts have been merged. Fetching a
+    // pre-filtered proxy subset here would otherwise hide config-inferred and manual results.
     let usage_filter = UsageQueryFilter {
-        source: settings.source_aware.build_filter(),
+        source: crate::models::SourceFilter::All,
         tool: settings.client_tools.build_filter(),
-    };
-    let needs_unfiltered_proxy_lookup =
-        !matches!(usage_filter.source, crate::models::SourceFilter::All);
-    let unfiltered_usage_filter = if needs_unfiltered_proxy_lookup {
-        Some(UsageQueryFilter {
-            source: crate::models::SourceFilter::All,
-            tool: settings.client_tools.build_filter(),
-        })
-    } else {
-        None
     };
 
     let (range_start, range_end) = normalize_range_bounds(start_epoch, end_epoch);
@@ -754,19 +747,23 @@ async fn merge_realtime_range(
     // 前置同步段：本地/远端会话与请求记录的 SQLite 全行读取、去重与索引构建
     // 是合并路径上的同步重活，移入阻塞线程池，避免占住 tauri async runtime 的
     // 工作线程。
+    let records_database = local_db.clone();
     let (local_records, session_meta_by_id, message_to_session, codex_fallback_base_url) =
         tauri::async_runtime::spawn_blocking(move || {
-            let mut local_sessions_all = local_db.get_all_sessions(&tool_filter)?;
-            local_sessions_all.extend(local_db.get_remote_sessions(&tool_filter)?);
+            let mut local_sessions_all = records_database.get_all_sessions(&tool_filter)?;
+            local_sessions_all.extend(records_database.get_remote_sessions(&tool_filter)?);
             let local_sessions: Vec<SessionMeta> = local_sessions_all
                 .into_iter()
                 .filter(|meta| session_meta_matches(meta, &tool_filter))
                 .collect();
-            let mut local_records =
-                local_db.get_request_records_in_range(range_start, range_end, &tool_filter)?;
+            let mut local_records = records_database.get_request_records_in_range(
+                range_start,
+                range_end,
+                &tool_filter,
+            )?;
             let local_request_keys: HashSet<String> =
                 local_records.iter().map(request_key_for_local).collect();
-            let mut remote_records = local_db.get_remote_request_records_in_range(
+            let mut remote_records = records_database.get_remote_request_records_in_range(
                 range_start,
                 range_end,
                 &tool_filter,
@@ -804,14 +801,10 @@ async fn merge_realtime_range(
     let (raw_proxy_records, raw_unfiltered_proxy_records) = if let Some(proxy_db) =
         ProxyDatabase::get_global()
     {
-        let records =
-            fetch_proxy_records(proxy_db.as_ref(), &usage_filter, start_epoch, end_epoch).await?;
-        let unfiltered = if let Some(filter) = unfiltered_usage_filter.as_ref() {
-            Some(fetch_proxy_records(proxy_db.as_ref(), filter, start_epoch, end_epoch).await?)
-        } else {
-            None
-        };
-        (records, unfiltered)
+        (
+            fetch_proxy_records(proxy_db.as_ref(), &usage_filter, start_epoch, end_epoch).await?,
+            None,
+        )
     } else {
         (Vec::new(), None)
     };
@@ -828,9 +821,17 @@ async fn merge_realtime_range(
         pricing_match_mode: pricing_match_mode.to_string(),
         codex_fallback_base_url,
     };
-    let facts = tauri::async_runtime::spawn_blocking(move || merge_realtime_facts(input))
+    let mut facts = tauri::async_runtime::spawn_blocking(move || merge_realtime_facts(input))
         .await
         .map_err(|e| format!("Task error: {}", e))?;
+    let attribution_database = local_db;
+    let attribution_settings = settings.clone();
+    facts = tauri::async_runtime::spawn_blocking(move || {
+        apply_passive_attribution(&attribution_database, &mut facts, &attribution_settings)?;
+        Ok::<Vec<MergedRequestFact>, String>(facts)
+    })
+    .await
+    .map_err(|e| format!("Task error: {e}"))??;
     Ok(facts)
 }
 
@@ -1222,6 +1223,13 @@ async fn get_merged_request_facts_with_db(
     end_epoch: Option<i64>,
     include_errors: bool,
 ) -> Result<(Arc<Vec<MergedRequestFact>>, MergedCoverage), String> {
+    // A route change invalidates only derived attribution. Raw scanner facts stay untouched.
+    if local_db
+        .observe_passive_attribution(settings, chrono::Utc::now().timestamp_millis())
+        .unwrap_or(false)
+    {
+        clear_runtime_caches();
+    }
     // Unbounded list/prewarm callers use the request-level cache retention window.
     // Explicit historical statistics ranges remain exact and can materialize older days on demand.
     let effective_start_epoch = match start_epoch {
@@ -1299,7 +1307,6 @@ async fn get_merged_request_facts_with_db(
         let cold_db = local_db.clone();
         let cold_dates = history_ready_dates;
         let cold_tool_filter = tool_filter.clone();
-        let cold_source_filter = source_filter.clone();
         let cold_day_boundary_mode = normalized_day_boundary_mode(settings);
         let mut merged = tauri::async_runtime::spawn_blocking(move || {
             // 冷段按日分片缓存：今日新请求只抖动 local/proxy 实时签名（外层
@@ -1325,7 +1332,6 @@ async fn get_merged_request_facts_with_db(
                     fact.timestamp_sec >= range_start
                         && fact.timestamp_sec < range_end
                         && fact_tool_matches(fact, &cold_tool_filter)
-                        && crate::unified_usage::matches_source_filter(fact, &cold_source_filter)
                         && (include_errors
                             || fact.status_code.map(|code| code < 300).unwrap_or(true))
                 })
@@ -1379,9 +1385,22 @@ async fn get_merged_request_facts_with_db(
             .unwrap_or_default();
         merged.extend(filtered_hot_facts);
 
+        let attribution_database = local_db.clone();
+        let attribution_settings = settings.clone();
+        merged = tauri::async_runtime::spawn_blocking(move || {
+            apply_passive_attribution(&attribution_database, &mut merged, &attribution_settings)?;
+            Ok::<Vec<MergedRequestFact>, String>(merged)
+        })
+        .await
+        .map_err(|e| format!("Task error: {e}"))??;
+
         // 大向量排序与覆盖率统计同为 CPU 重活，同样移入阻塞线程池；
         // 缓存与返回值共享同一个 Arc，写缓存已不再整表克隆。
+        let final_source_filter = source_filter.clone();
         let (merged, coverage) = tauri::async_runtime::spawn_blocking(move || {
+            merged.retain(|fact| {
+                crate::unified_usage::matches_source_filter(fact, &final_source_filter)
+            });
             merged.sort_by_key(|fact| fact.timestamp_ms);
             let coverage = build_coverage(&merged);
             let merged = Arc::new(merged);
@@ -1715,7 +1734,6 @@ async fn get_targeted_session_facts_with_db(
     let cold_db = local_db.clone();
     let cold_session_id = session_id.to_string();
     let cold_tool_filter = tool_filter.clone();
-    let cold_source_filter = source_filter.clone();
     let mut facts = tauri::async_runtime::spawn_blocking(move || {
         let facts = cold_db.get_unified_facts_for_session_dates(
             &history_dates,
@@ -1726,9 +1744,7 @@ async fn get_targeted_session_facts_with_db(
             facts
                 .into_iter()
                 .filter(|fact| {
-                    crate::unified_usage::matches_source_filter(fact, &cold_source_filter)
-                        && (include_errors
-                            || fact.status_code.map(|code| code < 300).unwrap_or(true))
+                    include_errors || fact.status_code.map(|code| code < 300).unwrap_or(true)
                 })
                 .collect(),
         )
@@ -1737,7 +1753,7 @@ async fn get_targeted_session_facts_with_db(
     .map_err(|error| format!("Task error: {error}"))??;
 
     let hot_facts = get_hot_merge_facts(
-        local_db,
+        local_db.clone(),
         settings,
         include_errors,
         pricings,
@@ -1752,7 +1768,99 @@ async fn get_targeted_session_facts_with_db(
             .filter(|fact| fact.session_id == session_id)
             .cloned(),
     );
+    let attribution_database = local_db;
+    let attribution_settings = settings.clone();
+    let attribution_source_filter = source_filter.clone();
+    facts = tauri::async_runtime::spawn_blocking(move || {
+        apply_passive_attribution(&attribution_database, &mut facts, &attribution_settings)?;
+        facts.retain(|fact| {
+            crate::unified_usage::matches_source_filter(fact, &attribution_source_filter)
+        });
+        Ok::<Vec<MergedRequestFact>, String>(facts)
+    })
+    .await
+    .map_err(|error| format!("Task error: {error}"))??;
     Ok(facts)
+}
+
+/// Resolves every canonical request key that currently belongs to one session for a manual
+/// attribution operation. This intentionally ignores the active source and tool filters: a
+/// bulk correction must not silently leave filtered-out requests unchanged.
+pub(crate) async fn get_manual_attribution_request_keys_for_session(
+    settings: &AppSettings,
+    session_id: &str,
+) -> Result<Vec<String>, String> {
+    if session_id.trim().is_empty() {
+        return Err("ERR_MANUAL_ATTRIBUTION_INVALID_SESSION".to_string());
+    }
+    let mut query_settings = settings.clone();
+    query_settings.source_aware.active_source_filter = None;
+    query_settings.client_tools.active_tool_filter = None;
+
+    let local_db = crate::local_usage::get_local_usage_db()?;
+    if local_db
+        .observe_passive_attribution(&query_settings, chrono::Utc::now().timestamp_millis())
+        .unwrap_or(false)
+    {
+        clear_runtime_caches();
+    }
+    let source_filter = query_settings.source_aware.build_filter();
+    let tool_filter = query_settings.client_tools.build_filter();
+    let pricings = crate::proxy::ProxyDatabase::get_global()
+        .and_then(|db| db.get_all_model_pricings().ok())
+        .unwrap_or_default();
+    let local_signature = local_db.get_merge_cache_signature()?;
+    let proxy_signature = ProxyDatabase::get_global()
+        .map(|db| db.get_merge_cache_signature())
+        .transpose()?;
+    let facts = get_targeted_session_facts_with_db(
+        local_db,
+        &query_settings,
+        session_id,
+        true,
+        &source_filter,
+        &tool_filter,
+        &pricings,
+        local_signature,
+        proxy_signature,
+    )
+    .await?;
+    let mut request_keys = std::collections::BTreeSet::new();
+    for fact in facts {
+        let request_key = fact.canonical_request_key.trim();
+        if !request_key.is_empty() {
+            request_keys.insert(request_key.to_string());
+        }
+    }
+    Ok(request_keys.into_iter().collect())
+}
+
+/// Resolves canonical request keys in an exact half-open time range for a manual attribution
+/// operation. Source and tool filters are intentionally cleared so a bulk correction always
+/// covers the complete range, not only the rows currently visible in the requests view.
+pub(crate) async fn get_manual_attribution_request_keys_for_time_range(
+    settings: &AppSettings,
+    start_epoch: i64,
+    end_epoch: i64,
+) -> Result<Vec<String>, String> {
+    if start_epoch < 0 || end_epoch <= start_epoch {
+        return Err("ERR_MANUAL_ATTRIBUTION_INVALID_TIME_RANGE".to_string());
+    }
+    let mut query_settings = settings.clone();
+    query_settings.source_aware.active_source_filter = None;
+    query_settings.client_tools.active_tool_filter = None;
+
+    let (facts, _) =
+        get_merged_request_facts_no_sync(&query_settings, Some(start_epoch), Some(end_epoch), true)
+            .await?;
+    let mut request_keys = std::collections::BTreeSet::new();
+    for fact in facts.iter() {
+        let request_key = fact.canonical_request_key.trim();
+        if !request_key.is_empty() {
+            request_keys.insert(request_key.to_string());
+        }
+    }
+    Ok(request_keys.into_iter().collect())
 }
 
 pub async fn get_merged_session_detail(
@@ -1767,6 +1875,12 @@ pub async fn get_merged_session_detail(
     // 一个 SessionStats。未命中时仍复用统一事实合并（保留 Local/Remote/Proxy 去重、
     // Codex fuzzy 和 Source/Tool Filter 语义），但只聚合目标会话，不再构建并排序全量列表。
     let local_db = crate::local_usage::get_local_usage_db()?;
+    if local_db
+        .observe_passive_attribution(settings, chrono::Utc::now().timestamp_millis())
+        .unwrap_or(false)
+    {
+        clear_runtime_caches();
+    }
     let now_sec = chrono::Utc::now().timestamp();
     let include_errors = settings.proxy.include_error_requests;
     let tool_filter = settings.client_tools.build_filter();
@@ -2248,6 +2362,8 @@ mod tests {
             output_tokens_per_second: None,
             ttft_ms: None,
             source_label: None,
+            attribution_source_id: None,
+            attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
         };
 
         assert!(fact_tool_matches(&fact, &ToolFilter::All));

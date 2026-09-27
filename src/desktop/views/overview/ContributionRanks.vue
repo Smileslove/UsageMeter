@@ -24,7 +24,7 @@ export interface ContributionSection {
  */
 import type { PropType, Component } from 'vue'
 import { Layers3, LayoutGrid, Zap } from 'lucide-vue-next'
-import { t } from '../../../i18n'
+import { sourceLabel, t } from '../../../i18n'
 import { metricLabel } from '../../composables/useTrendChart'
 import { formatCost, formatRate, formatRequestCount, formatTokenValue } from '../../../utils/format'
 import { formatToolDisplayName } from '../../../utils/toolDisplay'
@@ -56,9 +56,7 @@ function displayLabel(item: OverviewBreakdownItem): string {
   if (item.kind === 'tool') {
     return formatToolDisplayName(item.id, props.locale, props.profiles)
   }
-  if (item.label === '__unknown__') return t(props.locale, 'sources.unknown')
-  if (item.label === '__official_api__') return t(props.locale, 'sources.officialAnthropic')
-  return item.label
+  return sourceLabel(props.locale, item.label)
 }
 
 function formatContributionPrimary(item: OverviewBreakdownItem): string {

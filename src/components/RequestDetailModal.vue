@@ -23,6 +23,7 @@ const {
   requestCoverageLabel,
   requestModelLabel,
   requestProjectLabel,
+  requestAttributionLabel,
   requestSourceLabel,
   requestStatusClasses,
   requestStatusLabel,
@@ -123,6 +124,10 @@ const {
             <div class="request-detail-row">
               <span>{{ t(store.settings.locale, 'common.source') }}</span>
               <strong class="truncate text-right">{{ requestSourceLabel(request) }}</strong>
+            </div>
+            <div v-if="requestAttributionLabel(request)" class="request-detail-row">
+              <span>{{ t(store.settings.locale, 'sessions.requestAttribution') }}</span>
+              <strong>{{ requestAttributionLabel(request) }}</strong>
             </div>
             <div class="request-detail-row">
               <span>{{ t(store.settings.locale, 'sessions.sessionId') }}</span>

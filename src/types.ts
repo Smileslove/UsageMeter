@@ -1,5 +1,10 @@
 export type AppLocale = 'zh-CN' | 'zh-TW' | 'en-US'
 
+/** Stable pseudo-source used for Codex requests authenticated by official ChatGPT OAuth. */
+export const OFFICIAL_OPENAI_OAUTH_SOURCE_ID = '__openai_official_oauth__'
+/** Presentation-only marker emitted after the official quota endpoint confirms a plan. */
+export const OPENAI_OAUTH_PLAN_LABEL_PREFIX = '__openai_oauth_plan:'
+
 export type WindowName = '5h' | '24h' | 'today' | '7d' | '30d' | 'current_month'
 
 export const WINDOW_ORDER: WindowName[] = ['5h', '24h', 'today', '7d', '30d', 'current_month']
@@ -322,7 +327,7 @@ export interface SourceQuotaProfileDescriptor {
 // 来源感知设置
 export interface SourceAwareSettings {
   sources: ApiSource[]
-  activeSourceFilter: string | null  // null = 全部, "__unknown__" = 未归因, 其他 = source_id
+  activeSourceFilter: string | null  // null = 全部, "__unknown__" = 未归因, 也可为 OpenAI OAuth 伪来源
 }
 
 // 客户端工具接入配置
@@ -686,6 +691,11 @@ export type RequestCoverageOrigin =
   | 'merged_proxy_preferred'
   | 'merged_fuzzy_matched'
 
+export type RequestAttributionMethod =
+  | 'unattributed'
+  | 'config_inferred'
+  | 'manual'
+
 // 最近请求记录
 export interface RequestRecord {
   requestKey: string
@@ -693,6 +703,8 @@ export interface RequestRecord {
   projectName?: string | null
   projectPath?: string | null
   sourceLabel?: string | null
+  attributionSourceId?: string | null
+  attributionMethod: RequestAttributionMethod
   apiKeyPrefix?: string | null
   requestBaseUrl?: string | null
   tool: string

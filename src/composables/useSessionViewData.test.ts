@@ -211,6 +211,7 @@ describe('useSessionViewData session reload/load-more timeout & race', () => {
       totalTokens: 0,
       estimatedCost: 0,
       coverageOrigin: 'local_only',
+      attributionMethod: 'unattributed',
       outputTokensPerSecond: null,
       ttftMs: null,
     }]

@@ -286,6 +286,8 @@ mod tests {
             output_tokens_per_second: rate,
             ttft_ms,
             source_label: None,
+            attribution_source_id: None,
+            attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
         }
     }
 

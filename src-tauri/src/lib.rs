@@ -271,6 +271,7 @@ pub fn run() {
                     .map(|s| s.network_proxy.clone())
                     .unwrap_or_default(),
             );
+            local_usage::start_passive_attribution_watcher();
 
             // 升级后也要立即落实当前隐私档位：旧版本可能在用户已经切到
             // off/structured/ondemand 后仍留下摘要或 FTS 行。fulltext 不在
@@ -590,6 +591,12 @@ pub fn run() {
             commands::get_project_stats,
             commands::get_recent_request_records,
             commands::get_request_records_page,
+            commands::set_manual_request_attribution,
+            commands::clear_manual_request_attribution,
+            commands::set_manual_session_attribution,
+            commands::clear_manual_session_attribution,
+            commands::set_manual_time_range_attribution,
+            commands::clear_manual_time_range_attribution,
             // 本地缓存维护命令
             commands::get_local_usage_maintenance_stats,
             commands::purge_orphan_local_facts,

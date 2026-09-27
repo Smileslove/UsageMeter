@@ -13,9 +13,9 @@ import {
   type AnalyticsGranularity
 } from '../../stores/desktopAnalytics'
 import { metricColor } from '../../composables/useTrendChart'
-import { t, windowNameLabel } from '../../../i18n'
+import { sourceLabel, t, windowNameLabel } from '../../../i18n'
 import { METRICS } from '../../../components/statistics/activityUtils'
-import { WINDOW_ORDER } from '../../../types'
+import { OFFICIAL_OPENAI_OAUTH_SOURCE_ID, WINDOW_ORDER } from '../../../types'
 import { formatToolDisplayName } from '../../../utils/toolDisplay'
 import { useFocusTrap } from '../../composables/useFocusTrap'
 
@@ -121,6 +121,7 @@ function clearAllFilters() {
 const activeSourceLabel = computed(() => {
   const id = store.settings.sourceAware.activeSourceFilter
   if (!id || id === '__unknown__') return t(locale.value, 'desktop.allSources')
+  if (id === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return sourceLabel(locale.value, id)
   const source = store.settings.sourceAware.sources.find(s => s.id === id)
   return source?.displayName || source?.baseUrl || t(locale.value, 'desktop.allSources')
 })

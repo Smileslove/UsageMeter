@@ -21,6 +21,23 @@ pub enum CoverageOrigin {
     MergedFuzzyMatched,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttributionMethod {
+    Unattributed,
+    ConfigInferred,
+    Manual,
+}
+
+impl AttributionMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unattributed => "unattributed",
+            Self::ConfigInferred => "config_inferred",
+            Self::Manual => "manual",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct MergedCoverage {
     pub proxy_backed_requests: u64,
@@ -66,6 +83,10 @@ pub struct MergedRequestFact {
     /// 在前端 UI 阶段（阶段 3）尚未接入时不报警。
     #[allow(dead_code)]
     pub source_label: Option<String>,
+    /// Stable source identity and evidence level. These are resolved after raw facts merge so
+    /// local scanner facts stay immutable and can be safely recomputed.
+    pub attribution_source_id: Option<String>,
+    pub attribution_method: AttributionMethod,
 }
 
 pub(crate) fn has_partial_coverage(proxy_backed_requests: u64, local_only_requests: u64) -> bool {
@@ -653,7 +674,17 @@ pub(crate) fn normalize_model_bucket(tool: &str, model: &str) -> String {
 pub(crate) fn matches_source_filter(fact: &MergedRequestFact, filter: &SourceFilter) -> bool {
     match filter {
         SourceFilter::All => true,
+        SourceFilter::OfficialOpenAiOAuth => {
+            fact.attribution_source_id.as_deref()
+                == Some(crate::models::OFFICIAL_OPENAI_OAUTH_SOURCE_ID)
+        }
         SourceFilter::Unknown { known_pairs } => {
+            if fact.attribution_method == AttributionMethod::Manual {
+                return fact.attribution_source_id.is_none();
+            }
+            if fact.attribution_source_id.is_some() {
+                return false;
+            }
             let prefix = fact.api_key_prefix.as_deref().unwrap_or_default();
             let base_url = fact.request_base_url.clone();
             let known = known_pairs
@@ -662,9 +693,13 @@ pub(crate) fn matches_source_filter(fact: &MergedRequestFact, filter: &SourceFil
             !known
         }
         SourceFilter::Source {
+            source_id,
             api_key_prefixes,
             base_url,
         } => {
+            if let Some(resolved_source_id) = fact.attribution_source_id.as_deref() {
+                return resolved_source_id == source_id;
+            }
             let prefix_match = fact
                 .api_key_prefix
                 .as_ref()
@@ -716,6 +751,8 @@ impl MergedRequestFact {
             ttft_ms: None,
             // local 无 source 维度——明确标 None 表示「未识别来源」桶
             source_label: None,
+            attribution_source_id: None,
+            attribution_method: AttributionMethod::Unattributed,
         }
     }
 
@@ -760,6 +797,8 @@ impl MergedRequestFact {
             output_tokens_per_second: record.output_tokens_per_second,
             ttft_ms: record.ttft_ms,
             source_label,
+            attribution_source_id: None,
+            attribution_method: AttributionMethod::Unattributed,
         }
     }
 
@@ -879,6 +918,8 @@ impl MergedRequestFact {
                 proxy.api_key_prefix.as_deref(),
                 proxy.request_base_url.as_deref(),
             ),
+            attribution_source_id: None,
+            attribution_method: AttributionMethod::Unattributed,
         }
     }
 }

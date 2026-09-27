@@ -222,9 +222,9 @@ pub async fn update_api_source_key_note(
 pub async fn set_active_source_filter(source_id: Option<String>) -> Result<(), String> {
     let mut settings = load_settings()?;
 
-    // 验证 source_id 有效性（如果不是 None 或 "__unknown__"）
+    // 验证 source_id 有效性（官方 OAuth 伪来源不属于用户可编辑来源集合）。
     if let Some(ref id) = source_id {
-        if id != "__unknown__" {
+        if id != "__unknown__" && id != crate::models::OFFICIAL_OPENAI_OAUTH_SOURCE_ID {
             let exists = settings.source_aware.sources.iter().any(|s| &s.id == id);
             if !exists {
                 return Err(format!("Source not found: {}", id));

@@ -123,7 +123,7 @@ export function usePerformanceStats(
   const slowestSources = computed(() =>
     rankByDuration(r => {
       const source = r.sourceLabel?.trim() || r.requestBaseUrl?.trim() || ''
-      return source ? { key: source, label: source } : null
+      return source ? { key: source, label: display.requestSourceLabel(r) } : null
     }),
   )
 

@@ -37,6 +37,7 @@ toml_edit = "0.22"
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros"] }
+notify = "8"
 
 # HTTP server and client
 hyper = { version = "1", features = ["server", "http1"] }

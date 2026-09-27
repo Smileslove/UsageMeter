@@ -1,6 +1,6 @@
 use super::super::types::{OverviewBreakdown, OverviewBreakdownCapability, OverviewBreakdownItem};
 use crate::commands::usage::accumulator::FactAccumulator;
-use crate::models::AppSettings;
+use crate::models::{AppSettings, OFFICIAL_OPENAI_OAUTH_SOURCE_ID};
 use crate::proxy::compute_source_id;
 use crate::unified_usage::{normalize_model_bucket, MergedRequestFact};
 use std::collections::HashMap;
@@ -110,6 +110,48 @@ fn source_label_from_url(base_url: Option<&str>) -> String {
 }
 
 fn source_meta_for_fact(settings: &AppSettings, fact: &MergedRequestFact) -> BreakdownMeta {
+    if let Some(source_id) = fact.attribution_source_id.as_deref() {
+        if source_id == OFFICIAL_OPENAI_OAUTH_SOURCE_ID {
+            let label = fact
+                .source_label
+                .clone()
+                .unwrap_or_else(|| OFFICIAL_OPENAI_OAUTH_SOURCE_ID.to_string());
+            return BreakdownMeta {
+                // Plans must remain distinct in rankings while the source filter remains stable.
+                id: label.clone(),
+                label,
+                kind: "source".to_string(),
+                color: Some("#10A37F".to_string()),
+                icon: None,
+            };
+        }
+        if let Some(source) = settings
+            .source_aware
+            .sources
+            .iter()
+            .find(|source| source.id == source_id)
+        {
+            return BreakdownMeta {
+                id: source.id.clone(),
+                label: source
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| source_label_from_url(source.base_url.as_deref())),
+                kind: "source".to_string(),
+                color: Some(source.color.clone()),
+                icon: source.icon.clone(),
+            };
+        }
+    }
+    if fact.attribution_method == crate::unified_usage::AttributionMethod::Manual {
+        return BreakdownMeta {
+            id: "__unknown__".to_string(),
+            label: "__unknown__".to_string(),
+            kind: "source".to_string(),
+            color: Some("#9CA3AF".to_string()),
+            icon: None,
+        };
+    }
     let matched = settings.source_aware.sources.iter().find(|source| {
         let base_url_matches = source.base_url == fact.request_base_url;
         let key_matches = fact
@@ -328,6 +370,8 @@ mod tests {
             output_tokens_per_second: rate,
             ttft_ms,
             source_label: None,
+            attribution_source_id: None,
+            attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
         }
     }
 

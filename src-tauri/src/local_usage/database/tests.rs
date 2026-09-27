@@ -887,7 +887,8 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
     }
     drop(db);
 
-    let reopened = LocalUsageDatabase::new_with_path(&path).expect("migrate v20 database to v29");
+    let reopened =
+        LocalUsageDatabase::new_with_path(&path).expect("migrate v20 database to current");
     let conn = reopened.conn.lock().unwrap();
     let schema_version: String = conn
         .query_row(
@@ -896,7 +897,7 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
             |row| row.get(0),
         )
         .expect("read schema version");
-    assert_eq!(schema_version, "29");
+    assert_eq!(schema_version, "32");
     for table in ["local_sessions", "remote_sessions"] {
         let columns: Vec<String> = conn
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -1823,6 +1824,8 @@ fn unified_materialized_facts_round_trip() {
         output_tokens_per_second: Some(12.5),
         ttft_ms: Some(300),
         source_label: Some("sk-ant-1234".to_string()),
+        attribution_source_id: None,
+        attribution_method: unified_usage::AttributionMethod::Unattributed,
     };
     let state = UnifiedDayMaterializationState {
         local_date: local_date.clone(),
@@ -1960,6 +1963,8 @@ fn unified_materialization_state_persists_day_boundary_mode() {
         output_tokens_per_second: None,
         ttft_ms: None,
         source_label: None,
+        attribution_source_id: None,
+        attribution_method: unified_usage::AttributionMethod::Unattributed,
     };
 
     db.replace_unified_day_materialization(
@@ -2082,6 +2087,8 @@ fn cold_facts_shard_cache_only_refetches_rematerialized_day() {
         output_tokens_per_second: None,
         ttft_ms: None,
         source_label: None,
+        attribution_source_id: None,
+        attribution_method: unified_usage::AttributionMethod::Unattributed,
     };
     let build_state =
         |local_date: &str, fact_count: u64, materialized_at: i64| UnifiedDayMaterializationState {
@@ -2298,6 +2305,8 @@ fn v16_migration_clears_stale_unified_materialization_from_codex_fuzzy_match_fix
         output_tokens_per_second: None,
         ttft_ms: None,
         source_label: None,
+        attribution_source_id: None,
+        attribution_method: unified_usage::AttributionMethod::Unattributed,
     };
     db.replace_unified_day_materialization(
         &local_date,
@@ -2384,6 +2393,8 @@ fn v17_migration_clears_stale_unified_materialization_from_codex_session_id_pref
         output_tokens_per_second: None,
         ttft_ms: None,
         source_label: None,
+        attribution_source_id: None,
+        attribution_method: unified_usage::AttributionMethod::Unattributed,
     };
     db.replace_unified_day_materialization(
         &local_date,
@@ -2470,6 +2481,8 @@ fn v18_migration_clears_stale_unified_materialization_from_codex_session_id_remo
         output_tokens_per_second: None,
         ttft_ms: None,
         source_label: None,
+        attribution_source_id: None,
+        attribution_method: unified_usage::AttributionMethod::Unattributed,
     };
     db.replace_unified_day_materialization(
         &local_date,
@@ -2556,6 +2569,8 @@ fn v19_migration_clears_stale_unified_materialization_from_per_field_match_fix()
         output_tokens_per_second: None,
         ttft_ms: None,
         source_label: None,
+        attribution_source_id: None,
+        attribution_method: unified_usage::AttributionMethod::Unattributed,
     };
     db.replace_unified_day_materialization(
         &local_date,
@@ -2638,6 +2653,8 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
         output_tokens_per_second: None,
         ttft_ms: None,
         source_label: None,
+        attribution_source_id: None,
+        attribution_method: unified_usage::AttributionMethod::Unattributed,
     };
     db.replace_unified_day_materialization(
         &local_date,
@@ -2705,7 +2722,7 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
             .get_local_sync_state("schema_version")
             .unwrap()
             .as_deref(),
-        Some("29")
+        Some("31")
     );
     assert!(
         reopened
@@ -2855,6 +2872,8 @@ fn purge_orphan_uses_business_day_bucketing_for_invalidated_dates() {
         output_tokens_per_second: None,
         ttft_ms: None,
         source_label: None,
+        attribution_source_id: None,
+        attribution_method: unified_usage::AttributionMethod::Unattributed,
     };
     db.replace_unified_day_materialization(
         &local_date,
@@ -2948,6 +2967,8 @@ fn invalidate_unified_materialization_clears_rows_and_bumps_version() {
         output_tokens_per_second: None,
         ttft_ms: None,
         source_label: None,
+        attribution_source_id: None,
+        attribution_method: unified_usage::AttributionMethod::Unattributed,
     };
     db.replace_unified_day_materialization(
         &local_date,
@@ -3026,6 +3047,8 @@ fn unified_visible_counts_exclude_3xx_statuses() {
         output_tokens_per_second: None,
         ttft_ms: None,
         source_label: None,
+        attribution_source_id: None,
+        attribution_method: unified_usage::AttributionMethod::Unattributed,
     };
     let redirect_fact = MergedRequestFact {
         status_code: Some(302),
@@ -3109,6 +3132,8 @@ fn unified_local_only_day_is_not_marked_partial() {
         output_tokens_per_second: None,
         ttft_ms: None,
         source_label: None,
+        attribution_source_id: None,
+        attribution_method: unified_usage::AttributionMethod::Unattributed,
     };
 
     db.replace_unified_day_materialization(
@@ -3174,6 +3199,8 @@ fn unified_mixed_day_is_marked_partial() {
         output_tokens_per_second: None,
         ttft_ms: None,
         source_label: None,
+        attribution_source_id: None,
+        attribution_method: unified_usage::AttributionMethod::Unattributed,
     };
     let proxy_fact = MergedRequestFact {
         canonical_request_key: "claude_code:msg-proxy".to_string(),
@@ -3200,6 +3227,8 @@ fn unified_mixed_day_is_marked_partial() {
         output_tokens_per_second: Some(18.0),
         ttft_ms: Some(300),
         source_label: Some("sk-ant-1234".to_string()),
+        attribution_source_id: None,
+        attribution_method: unified_usage::AttributionMethod::Unattributed,
     };
 
     db.replace_unified_day_materialization(
@@ -3268,6 +3297,8 @@ fn unified_summary_respects_request_count_weight() {
         output_tokens_per_second: None,
         ttft_ms: None,
         source_label: None,
+        attribution_source_id: None,
+        attribution_method: unified_usage::AttributionMethod::Unattributed,
     };
 
     db.replace_unified_day_materialization(

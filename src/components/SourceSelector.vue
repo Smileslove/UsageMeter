@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
-import { t } from '../i18n'
+import { sourceLabel, t } from '../i18n'
+import { OFFICIAL_OPENAI_OAUTH_SOURCE_ID } from '../types'
 import { ChevronDown, Globe, HelpCircle } from 'lucide-vue-next'
 import LobeIcon from './LobeIcon.vue'
 
@@ -16,6 +17,8 @@ const sources = computed(() => store.settings.sourceAware.sources)
 
 const showSelector = computed(() => {
   return sources.value.length > 0
+    || store.hasChatGptOAuth
+    || activeFilter.value === OFFICIAL_OPENAI_OAUTH_SOURCE_ID
 })
 
 const getSourceName = (source: { id: string; displayName?: string; baseUrl?: string; apiKeyPrefixes: string[] }) => {
@@ -36,6 +39,7 @@ const currentSource = computed(() => {
 })
 
 const currentColor = computed(() => {
+  if (activeFilter.value === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return '#10A37F'
   if (!currentSource.value) return '#9CA3AF'
   return currentSource.value.color
 })
@@ -45,6 +49,9 @@ const currentIcon = computed(() => currentSource.value?.icon || null)
 const currentLabel = computed(() => {
   if (!activeFilter.value) return t(store.settings.locale, 'sources.all')
   if (activeFilter.value === '__unknown__') return t(store.settings.locale, 'sources.unknown')
+  if (activeFilter.value === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) {
+    return sourceLabel(store.settings.locale, OFFICIAL_OPENAI_OAUTH_SOURCE_ID)
+  }
   const source = sources.value.find(s => s.id === activeFilter.value)
   return source ? getSourceName(source) : t(store.settings.locale, 'sources.all')
 })
@@ -127,6 +134,19 @@ onUnmounted(() => {
           <Globe class="w-3.5 h-3.5" />
           {{ t(store.settings.locale, 'sources.all') }}
         </button>
+
+        <div v-if="store.hasChatGptOAuth || activeFilter === OFFICIAL_OPENAI_OAUTH_SOURCE_ID" class="border-t border-gray-50 dark:border-neutral-800">
+          <button
+            @click="selectSource(OFFICIAL_OPENAI_OAUTH_SOURCE_ID)"
+            :class="[
+              'w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left hover:bg-gray-50 dark:hover:bg-neutral-800 transition-colors',
+              activeFilter === OFFICIAL_OPENAI_OAUTH_SOURCE_ID ? 'bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium' : 'text-gray-700 dark:text-gray-200'
+            ]"
+          >
+            <span class="w-2.5 h-2.5 rounded-full shrink-0 bg-[#10A37F]"></span>
+            <span class="truncate">{{ sourceLabel(store.settings.locale, OFFICIAL_OPENAI_OAUTH_SOURCE_ID) }}</span>
+          </button>
+        </div>
 
         <div v-if="sources.length > 0" class="border-t border-gray-50 dark:border-neutral-800">
           <button

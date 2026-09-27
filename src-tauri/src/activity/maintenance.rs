@@ -90,6 +90,9 @@ mod tests {
         SessionActivityCapability, SessionEventKind,
     };
     use rusqlite::Connection;
+    use std::sync::{Mutex, MutexGuard};
+
+    static THROTTLE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     /// 内存 SQLite 测试连接（与生产共用同一 DDL 常量）。
     fn test_conn() -> Connection {
@@ -101,6 +104,12 @@ mod tests {
 
     fn reset_throttle() {
         LAST_AUTO_PURGE_AT.store(0, Ordering::Relaxed);
+    }
+
+    fn throttle_test_guard() -> MutexGuard<'static, ()> {
+        THROTTLE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     fn count_events(conn: &Connection, session_key: &str) -> i64 {
@@ -169,6 +178,7 @@ mod tests {
 
     #[test]
     fn retention_days_le_zero_skips_purge() {
+        let _guard = throttle_test_guard();
         let conn = test_conn();
         reset_throttle();
         insert_session_events(&conn, "sess-old", now_ms() - 100 * 86_400 * 1_000);
@@ -185,6 +195,7 @@ mod tests {
 
     #[test]
     fn purges_sessions_whose_latest_event_is_older_than_retention() {
+        let _guard = throttle_test_guard();
         let conn = test_conn();
         reset_throttle();
         insert_session_events(&conn, "sess-old", now_ms() - 100 * 86_400 * 1_000);
@@ -203,6 +214,7 @@ mod tests {
 
     #[test]
     fn throttle_skips_second_call_within_ten_minutes() {
+        let _guard = throttle_test_guard();
         let conn = test_conn();
         reset_throttle();
         insert_session_events(&conn, "sess-old-1", now_ms() - 100 * 86_400 * 1_000);

@@ -1,4 +1,8 @@
-import type { AppLocale } from '../types'
+import {
+  OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
+  OPENAI_OAUTH_PLAN_LABEL_PREFIX,
+  type AppLocale
+} from '../types'
 
 interface TranslationNode {
   [key: string]: string | TranslationNode
@@ -1249,6 +1253,26 @@ const messages = {
       requestCoverageProxy: '代理采集',
       requestCoverageLocal: '本地扫描',
       requestCoverageMerged: '合并记录',
+      requestAttribution: '归因方式',
+      requestAttributionInferred: '配置推断',
+      requestAttributionManual: '手动确认',
+      requestAttributionUnattributed: '未归因',
+      manualAttribution: '手动归因',
+      manualAttributionAutomatic: '使用自动判断',
+      manualAttributionUnattributed: '标为未归因',
+      manualAttributionError: '归因更新失败，请重试',
+      manualAttributionApplySession: '应用到整个会话',
+      manualAttributionConfirmSession: '将此归因应用到当前会话的全部请求吗？',
+      manualAttributionUpdated: '已更新 {count} 个请求',
+      manualAttributionTimeRange: '按时间段批量归因',
+      manualAttributionTimeStart: '开始时间',
+      manualAttributionTimeEnd: '结束时间',
+      manualAttributionTimeHint: '包含开始时间，不包含结束时间。',
+      manualAttributionApplyTimeRange: '应用归因',
+      manualAttributionConfirmTimeRange: '将此归因应用到所选时间段的全部请求吗？',
+      manualAttributionInvalidTimeRange: '结束时间必须晚于开始时间。',
+      manualAttributionEmptyTimeRange: '所选时间段没有请求。',
+      manualAttributionTimeRangeLimit: '时间段最多可包含 1,000 个请求，请缩小范围。',
       sessionId: '会话 ID',
       requestKey: '请求 Key'
     },
@@ -1423,6 +1447,14 @@ const messages = {
       all: '全部',
       unknown: '未归因',
       officialAnthropic: '官方 Anthropic',
+      openaiOfficial: 'OpenAI 官方',
+      openaiOauthPlanFree: 'GPT Free',
+      openaiOauthPlanGo: 'GPT Go',
+      openaiOauthPlanPlus: 'GPT Plus',
+      openaiOauthPlanPro: 'GPT Pro',
+      openaiOauthPlanBusiness: 'GPT Business',
+      openaiOauthPlanEnterprise: 'ChatGPT Enterprise',
+      openaiOauthPlanEdu: 'ChatGPT Edu',
       noSources: '暂未检测到来源，启动代理后使用 Claude Code 即可自动发现',
       editName: '重命名',
       namePlaceholder: '来源名称（如 OpenRouter）',
@@ -2761,6 +2793,26 @@ const messages = {
       requestCoverageProxy: '代理採集',
       requestCoverageLocal: '本地掃描',
       requestCoverageMerged: '合併記錄',
+      requestAttribution: '歸因方式',
+      requestAttributionInferred: '設定推斷',
+      requestAttributionManual: '手動確認',
+      requestAttributionUnattributed: '未歸因',
+      manualAttribution: '手動歸因',
+      manualAttributionAutomatic: '使用自動判斷',
+      manualAttributionUnattributed: '標為未歸因',
+      manualAttributionError: '歸因更新失敗，請重試',
+      manualAttributionApplySession: '套用到整個會話',
+      manualAttributionConfirmSession: '要將此歸因套用到目前會話的全部請求嗎？',
+      manualAttributionUpdated: '已更新 {count} 個請求',
+      manualAttributionTimeRange: '依時間區間批次歸因',
+      manualAttributionTimeStart: '開始時間',
+      manualAttributionTimeEnd: '結束時間',
+      manualAttributionTimeHint: '包含開始時間，不包含結束時間。',
+      manualAttributionApplyTimeRange: '套用歸因',
+      manualAttributionConfirmTimeRange: '要將此歸因套用到所選時間區間的全部請求嗎？',
+      manualAttributionInvalidTimeRange: '結束時間必須晚於開始時間。',
+      manualAttributionEmptyTimeRange: '所選時間區間沒有請求。',
+      manualAttributionTimeRangeLimit: '時間區間最多可包含 1,000 個請求，請縮小範圍。',
       sessionId: '會話 ID',
       requestKey: '請求 Key'
     },
@@ -2934,6 +2986,14 @@ const messages = {
       all: '全部',
       unknown: '未歸因',
       officialAnthropic: '官方 Anthropic',
+      openaiOfficial: 'OpenAI 官方',
+      openaiOauthPlanFree: 'GPT Free',
+      openaiOauthPlanGo: 'GPT Go',
+      openaiOauthPlanPlus: 'GPT Plus',
+      openaiOauthPlanPro: 'GPT Pro',
+      openaiOauthPlanBusiness: 'GPT Business',
+      openaiOauthPlanEnterprise: 'ChatGPT Enterprise',
+      openaiOauthPlanEdu: 'ChatGPT Edu',
       noSources: '暫未檢測到來源，啟動代理後使用 Claude Code 即可自動發現',
       editName: '重新命名',
       namePlaceholder: '來源名稱（如 OpenRouter）',
@@ -4272,6 +4332,26 @@ const messages = {
       requestCoverageProxy: 'Proxy captured',
       requestCoverageLocal: 'Local scan',
       requestCoverageMerged: 'Merged record',
+      requestAttribution: 'Attribution',
+      requestAttributionInferred: 'Config inferred',
+      requestAttributionManual: 'Manual',
+      requestAttributionUnattributed: 'Unattributed',
+      manualAttribution: 'Manual attribution',
+      manualAttributionAutomatic: 'Use automatic attribution',
+      manualAttributionUnattributed: 'Mark as unattributed',
+      manualAttributionError: 'Could not update attribution. Try again.',
+      manualAttributionApplySession: 'Apply to the entire session',
+      manualAttributionConfirmSession: 'Apply this attribution to every request in the current session?',
+      manualAttributionUpdated: 'Updated {count} requests',
+      manualAttributionTimeRange: 'Batch attribution by time range',
+      manualAttributionTimeStart: 'Start time',
+      manualAttributionTimeEnd: 'End time',
+      manualAttributionTimeHint: 'Includes the start time and excludes the end time.',
+      manualAttributionApplyTimeRange: 'Apply attribution',
+      manualAttributionConfirmTimeRange: 'Apply this attribution to every request in the selected time range?',
+      manualAttributionInvalidTimeRange: 'The end time must be after the start time.',
+      manualAttributionEmptyTimeRange: 'There are no requests in the selected time range.',
+      manualAttributionTimeRangeLimit: 'A time range can contain at most 1,000 requests. Narrow the range and try again.',
       sessionId: 'Session ID',
       requestKey: 'Request Key'
     },
@@ -4445,6 +4525,14 @@ const messages = {
       all: 'All',
       unknown: 'Unattributed',
       officialAnthropic: 'Anthropic Official',
+      openaiOfficial: 'OpenAI Official',
+      openaiOauthPlanFree: 'GPT Free',
+      openaiOauthPlanGo: 'GPT Go',
+      openaiOauthPlanPlus: 'GPT Plus',
+      openaiOauthPlanPro: 'GPT Pro',
+      openaiOauthPlanBusiness: 'GPT Business',
+      openaiOauthPlanEnterprise: 'ChatGPT Enterprise',
+      openaiOauthPlanEdu: 'ChatGPT Edu',
       noSources: 'No sources detected yet. Use Claude Code with proxy enabled.',
       editName: 'Rename',
       namePlaceholder: 'Source name (e.g. OpenRouter)',
@@ -4659,7 +4747,9 @@ const SOURCE_KEY_MAP: Record<string, string> = {
   'local-files': 'source.localFiles',
   'no-data': 'source.noData',
   simulated: 'source.simulated',
-  unknown: 'source.unknown'
+  unknown: 'source.unknown',
+  __unknown__: 'sources.unknown',
+  __official_api__: 'sources.officialAnthropic'
 }
 
 function getByPath(obj: TranslationNode, path: string): string | TranslationNode | undefined {
@@ -4700,8 +4790,22 @@ export function t(locale: string | undefined, key: string, params?: Record<strin
 }
 
 export function sourceLabel(locale: string | undefined, source: string | undefined): string {
-  const key = SOURCE_KEY_MAP[source ?? 'unknown'] ?? 'source.unknown'
-  return t(locale, key)
+  if (source === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return t(locale, 'sources.openaiOfficial')
+  const planType = source?.startsWith(OPENAI_OAUTH_PLAN_LABEL_PREFIX)
+    ? source.slice(OPENAI_OAUTH_PLAN_LABEL_PREFIX.length)
+    : ''
+  const planKey: Record<string, string> = {
+    free: 'sources.openaiOauthPlanFree',
+    go: 'sources.openaiOauthPlanGo',
+    plus: 'sources.openaiOauthPlanPlus',
+    pro: 'sources.openaiOauthPlanPro',
+    business: 'sources.openaiOauthPlanBusiness',
+    enterprise: 'sources.openaiOauthPlanEnterprise',
+    edu: 'sources.openaiOauthPlanEdu'
+  }
+  if (planType) return t(locale, planKey[planType] ?? 'sources.openaiOfficial')
+  const key = SOURCE_KEY_MAP[source ?? 'unknown']
+  return key ? t(locale, key) : (source?.trim() || t(locale, 'source.unknown'))
 }
 
 

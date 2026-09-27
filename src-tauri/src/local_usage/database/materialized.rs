@@ -953,6 +953,8 @@ impl LocalUsageDatabase {
                     output_tokens_per_second: row.get(21)?,
                     ttft_ms: row.get::<_, Option<i64>>(22)?.map(|v| v.max(0) as u64),
                     source_label: row.get(23)?,
+                    attribution_source_id: None,
+                    attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
                 })
             })
             .map_err(|e| format!("Failed to query unified materialized facts: {}", e))?;
@@ -1054,6 +1056,8 @@ impl LocalUsageDatabase {
                         .get::<_, Option<i64>>(22)?
                         .map(|value| value.max(0) as u64),
                     source_label: row.get(23)?,
+                    attribution_source_id: None,
+                    attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
                 })
             })
             .map_err(|e| format!("Failed to query unified session facts: {}", e))?;
@@ -1125,6 +1129,8 @@ impl LocalUsageDatabase {
                         output_tokens_per_second: row.get(22)?,
                         ttft_ms: row.get::<_, Option<i64>>(23)?.map(|v| v.max(0) as u64),
                         source_label: row.get(24)?,
+                        attribution_source_id: None,
+                        attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
                     },
                 ))
             })

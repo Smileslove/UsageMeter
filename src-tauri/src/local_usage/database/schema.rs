@@ -8,6 +8,7 @@ impl LocalUsageDatabase {
         Self::create_sync_v2_tables(conn)?;
         Self::create_unified_materialized_tables(conn)?;
         Self::create_activity_tables(conn)?;
+        Self::create_passive_attribution_tables(conn)?;
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS local_sync_state (

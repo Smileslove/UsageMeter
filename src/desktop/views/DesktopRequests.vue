@@ -9,6 +9,14 @@ import { useSessionDisplay } from '../../composables/useSessionDisplay'
 import { useClipboard } from '../composables/useClipboard'
 import { useRequestTable, REQUEST_COLUMNS } from '../composables/useRequestTable'
 import { normalizeSessionTool } from '../../composables/useSessionViewData'
+import {
+  clearManualRequestAttribution,
+  clearManualSessionAttribution,
+  clearManualTimeRangeAttribution,
+  setManualRequestAttribution,
+  setManualSessionAttribution,
+  setManualTimeRangeAttribution,
+} from '../../stores/sessionQueries'
 import LobeIcon from '../../components/LobeIcon.vue'
 import DesktopSelect from '../components/DesktopSelect.vue'
 import type { SelectOption } from '../components/DesktopSelect.vue'
@@ -33,6 +41,7 @@ const {
   requestStatusClasses,
   requestCoverageLabel,
   requestProjectLabel,
+  requestAttributionLabel,
   requestSourceLabel,
   requestToolLabel,
   requestCacheTokens,
@@ -90,13 +99,142 @@ watch(() => nav.pendingConsumeTick, () => {
 
 const selectedRequest = ref<RequestRecord | null>(null)
 const drawerOpen = ref(false)
+const MANUAL_ATTRIBUTION_AUTOMATIC = '__automatic__'
+const MANUAL_ATTRIBUTION_UNATTRIBUTED = '__unattributed__'
+const manualAttributionSelection = ref(MANUAL_ATTRIBUTION_AUTOMATIC)
+const manualAttributionSaving = ref(false)
+const manualAttributionError = ref(false)
+const manualAttributionResult = ref<number | null>(null)
+const applyManualAttributionToSession = ref(false)
+const manualTimeRangeStart = ref('')
+const manualTimeRangeEnd = ref('')
+const manualTimeRangeSelection = ref(MANUAL_ATTRIBUTION_AUTOMATIC)
+const manualTimeRangeSaving = ref(false)
+const manualTimeRangeError = ref<string | null>(null)
+const manualTimeRangeResult = ref<number | null>(null)
+const manualAttributionSelectionFor = (request: RequestRecord) => (
+  request.attributionMethod === 'manual'
+    ? request.attributionSourceId || MANUAL_ATTRIBUTION_UNATTRIBUTED
+    : MANUAL_ATTRIBUTION_AUTOMATIC
+)
 const openDrawer = (request: RequestRecord) => {
   selectedRequest.value = request
+  manualAttributionSelection.value = manualAttributionSelectionFor(request)
+  manualAttributionError.value = false
+  manualAttributionResult.value = null
+  applyManualAttributionToSession.value = false
   drawerOpen.value = true
 }
 const closeDrawer = () => {
   drawerOpen.value = false
   selectedRequest.value = null
+}
+
+const manualAttributionOptions = computed(() => [
+  { value: MANUAL_ATTRIBUTION_AUTOMATIC, label: t(locale.value, 'sessions.manualAttributionAutomatic') },
+  { value: MANUAL_ATTRIBUTION_UNATTRIBUTED, label: t(locale.value, 'sessions.manualAttributionUnattributed') },
+  ...store.settings.sourceAware.sources.map(source => ({
+    value: source.id,
+    label: source.displayName || source.baseUrl || source.id,
+  })),
+])
+
+async function updateManualAttribution(event: Event) {
+  const request = selectedRequest.value
+  const selection = (event.target as HTMLSelectElement).value
+  if (!request || manualAttributionSaving.value) return
+
+  manualAttributionSaving.value = true
+  manualAttributionError.value = false
+  manualAttributionResult.value = null
+  try {
+    if (applyManualAttributionToSession.value && !window.confirm(
+      t(locale.value, 'sessions.manualAttributionConfirmSession')
+    )) {
+      manualAttributionSelection.value = manualAttributionSelectionFor(request)
+      return
+    }
+    const changed = applyManualAttributionToSession.value
+      ? selection === MANUAL_ATTRIBUTION_AUTOMATIC
+        ? await clearManualSessionAttribution(store.settings, request.sessionId)
+        : await setManualSessionAttribution(
+          store.settings,
+          request.sessionId,
+          selection === MANUAL_ATTRIBUTION_UNATTRIBUTED ? null : selection,
+        )
+      : selection === MANUAL_ATTRIBUTION_AUTOMATIC
+        ? await clearManualRequestAttribution([request.requestKey])
+        : await setManualRequestAttribution(
+          store.settings,
+          [request.requestKey],
+          selection === MANUAL_ATTRIBUTION_UNATTRIBUTED ? null : selection,
+        )
+    manualAttributionResult.value = changed
+    await reload()
+    const refreshed = records.value.find(item => item.requestKey === request.requestKey)
+    if (refreshed) {
+      selectedRequest.value = refreshed
+      manualAttributionSelection.value = manualAttributionSelectionFor(refreshed)
+    } else {
+      closeDrawer()
+    }
+  } catch {
+    manualAttributionError.value = true
+    manualAttributionSelection.value = manualAttributionSelectionFor(request)
+  } finally {
+    manualAttributionSaving.value = false
+  }
+}
+
+function localDateTimeToEpoch(value: string): number | null {
+  const epoch = new Date(value).getTime()
+  return Number.isFinite(epoch) ? Math.floor(epoch / 1000) : null
+}
+
+function manualTimeRangeErrorKey(error: unknown) {
+  const message = String(error)
+  if (message.includes('ERR_MANUAL_ATTRIBUTION_INVALID_TIME_RANGE')) {
+    return 'sessions.manualAttributionInvalidTimeRange'
+  }
+  if (message.includes('ERR_MANUAL_ATTRIBUTION_EMPTY_TIME_RANGE')) {
+    return 'sessions.manualAttributionEmptyTimeRange'
+  }
+  if (message.includes('ERR_MANUAL_ATTRIBUTION_INVALID_TARGETS')) {
+    return 'sessions.manualAttributionTimeRangeLimit'
+  }
+  return 'sessions.manualAttributionError'
+}
+
+async function updateManualTimeRangeAttribution() {
+  const startEpoch = localDateTimeToEpoch(manualTimeRangeStart.value)
+  const endEpoch = localDateTimeToEpoch(manualTimeRangeEnd.value)
+  if (startEpoch === null || endEpoch === null || endEpoch <= startEpoch) {
+    manualTimeRangeError.value = 'sessions.manualAttributionInvalidTimeRange'
+    return
+  }
+  if (!window.confirm(t(locale.value, 'sessions.manualAttributionConfirmTimeRange'))) return
+
+  manualTimeRangeSaving.value = true
+  manualTimeRangeError.value = null
+  manualTimeRangeResult.value = null
+  try {
+    const changed = manualTimeRangeSelection.value === MANUAL_ATTRIBUTION_AUTOMATIC
+      ? await clearManualTimeRangeAttribution(store.settings, startEpoch, endEpoch)
+      : await setManualTimeRangeAttribution(
+        store.settings,
+        startEpoch,
+        endEpoch,
+        manualTimeRangeSelection.value === MANUAL_ATTRIBUTION_UNATTRIBUTED
+          ? null
+          : manualTimeRangeSelection.value,
+      )
+    manualTimeRangeResult.value = changed
+    await reload()
+  } catch (error) {
+    manualTimeRangeError.value = manualTimeRangeErrorKey(error)
+  } finally {
+    manualTimeRangeSaving.value = false
+  }
 }
 
 const handleRowKeydown = (event: KeyboardEvent, request: RequestRecord) => {
@@ -227,6 +365,63 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
         />
       </div>
     </div>
+
+    <details class="theme-surface shrink-0 rounded-xl border px-3 py-2">
+      <summary class="cursor-pointer select-none text-xs font-medium text-[var(--theme-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring-focus)]">
+        {{ t(locale, 'sessions.manualAttributionTimeRange') }}
+      </summary>
+      <form class="mt-2 space-y-2" @submit.prevent="updateManualTimeRangeAttribution">
+        <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <label class="min-w-0 text-xs text-[var(--theme-text-tertiary)]" for="manual-attribution-time-start">
+            <span>{{ t(locale, 'sessions.manualAttributionTimeStart') }}</span>
+            <input
+              id="manual-attribution-time-start"
+              v-model="manualTimeRangeStart"
+              type="datetime-local"
+              step="60"
+              required
+              :disabled="manualTimeRangeSaving"
+              aria-describedby="manual-attribution-time-range-hint"
+              class="mt-1 h-7 w-full rounded-md border border-[var(--theme-border-default)] bg-[var(--theme-bg-base)] px-1.5 text-xs text-[var(--theme-text-secondary)] outline-none transition-colors focus:border-[var(--theme-accent-primary)] disabled:cursor-wait disabled:opacity-60"
+            >
+          </label>
+          <label class="min-w-0 text-xs text-[var(--theme-text-tertiary)]" for="manual-attribution-time-end">
+            <span>{{ t(locale, 'sessions.manualAttributionTimeEnd') }}</span>
+            <input
+              id="manual-attribution-time-end"
+              v-model="manualTimeRangeEnd"
+              type="datetime-local"
+              step="60"
+              required
+              :disabled="manualTimeRangeSaving"
+              aria-describedby="manual-attribution-time-range-hint"
+              class="mt-1 h-7 w-full rounded-md border border-[var(--theme-border-default)] bg-[var(--theme-bg-base)] px-1.5 text-xs text-[var(--theme-text-secondary)] outline-none transition-colors focus:border-[var(--theme-accent-primary)] disabled:cursor-wait disabled:opacity-60"
+            >
+          </label>
+        </div>
+        <p id="manual-attribution-time-range-hint" class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.manualAttributionTimeHint') }}</p>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <label class="flex min-w-0 items-center gap-2 text-xs text-[var(--theme-text-tertiary)]" for="manual-attribution-time-source">
+            <span class="shrink-0">{{ t(locale, 'sessions.manualAttribution') }}</span>
+            <select
+              id="manual-attribution-time-source"
+              v-model="manualTimeRangeSelection"
+              :disabled="manualTimeRangeSaving"
+              class="min-w-0 max-w-52 rounded-md border border-[var(--theme-border-default)] bg-[var(--theme-bg-base)] px-1.5 py-1 text-xs text-[var(--theme-text-secondary)] outline-none transition-colors focus:border-[var(--theme-accent-primary)] disabled:cursor-wait disabled:opacity-60"
+            >
+              <option v-for="option in manualAttributionOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+            </select>
+          </label>
+          <button
+            type="submit"
+            :disabled="manualTimeRangeSaving || !manualTimeRangeStart || !manualTimeRangeEnd"
+            class="h-7 rounded-lg bg-[var(--theme-accent-primary)] px-2 text-xs font-medium text-white transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring-focus)] disabled:cursor-wait disabled:opacity-50"
+          >{{ t(locale, 'sessions.manualAttributionApplyTimeRange') }}</button>
+        </div>
+        <p v-if="manualTimeRangeResult !== null" class="text-xs text-emerald-700 dark:text-emerald-300" role="status">{{ t(locale, 'sessions.manualAttributionUpdated', { count: manualTimeRangeResult }) }}</p>
+        <p v-if="manualTimeRangeError" class="text-xs text-rose-600 dark:text-rose-300" role="alert">{{ t(locale, manualTimeRangeError) }}</p>
+      </form>
+    </details>
 
     <!-- 表格 + 覆盖式抽屉 -->
     <div class="relative min-h-0 flex-1">
@@ -389,6 +584,34 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
                     <button type="button" class="shrink-0 rounded p-0.5 text-[var(--theme-text-quaternary)] hover:text-[var(--theme-text-primary)]" :aria-label="t(locale, 'desktop.sessions.copySource')" :title="t(locale, 'desktop.sessions.copySource')" @click="copyText(requestSourceLabel(selectedRequest), 'source')"><Copy class="h-3 w-3" aria-hidden="true" /></button>
                   </span>
                 </div>
+                <div v-if="requestAttributionLabel(selectedRequest)" class="flex items-center justify-between gap-2 py-1">
+                  <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.requestAttribution') }}</span>
+                  <span class="text-xs font-medium text-[var(--theme-text-secondary)]">{{ requestAttributionLabel(selectedRequest) }}</span>
+                </div>
+                <div class="flex items-center justify-between gap-2 py-1">
+                  <label class="shrink-0 text-xs text-[var(--theme-text-tertiary)]" for="manual-request-attribution">{{ t(locale, 'sessions.manualAttribution') }}</label>
+                  <select
+                    id="manual-request-attribution"
+                    :value="manualAttributionSelection"
+                    :disabled="manualAttributionSaving"
+                    class="min-w-0 max-w-52 rounded-md border border-[var(--theme-border-default)] bg-[var(--theme-bg-base)] px-1.5 py-1 text-xs text-[var(--theme-text-secondary)] outline-none transition-colors focus:border-[var(--theme-accent-primary)] disabled:cursor-wait disabled:opacity-60"
+                    @change="updateManualAttribution"
+                  >
+                    <option v-for="option in manualAttributionOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                  </select>
+                </div>
+                <label class="flex cursor-pointer items-center justify-end gap-1.5 py-1 text-xs text-[var(--theme-text-secondary)]" for="apply-manual-attribution-to-session">
+                  <input
+                    id="apply-manual-attribution-to-session"
+                    v-model="applyManualAttributionToSession"
+                    type="checkbox"
+                    :disabled="manualAttributionSaving"
+                    class="h-3.5 w-3.5 rounded border-[var(--theme-border-strong)] text-[var(--theme-accent-primary)] focus:ring-[var(--theme-accent-primary)] disabled:cursor-wait"
+                  >
+                  {{ t(locale, 'sessions.manualAttributionApplySession') }}
+                </label>
+                <p v-if="manualAttributionResult !== null" class="py-1 text-right text-xs text-emerald-700 dark:text-emerald-300" role="status">{{ t(locale, 'sessions.manualAttributionUpdated', { count: manualAttributionResult }) }}</p>
+                <p v-if="manualAttributionError" class="py-1 text-right text-xs text-rose-600 dark:text-rose-300">{{ t(locale, 'sessions.manualAttributionError') }}</p>
                 <div class="flex items-center justify-between gap-2 py-1">
                   <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.sessionId') }}</span>
                   <span class="flex min-w-0 items-center gap-1">

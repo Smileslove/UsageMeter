@@ -20,7 +20,7 @@ impl LocalUsageDatabase {
 
     pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 29 {
+        if schema_version >= 32 {
             return Ok(());
         }
         let mut cleared_runtime_caches = false;
@@ -1030,6 +1030,68 @@ impl LocalUsageDatabase {
 
             tx.commit()
                 .map_err(|e| format!("Failed to commit v29 schema migration: {}", e))?;
+        }
+
+        if schema_version < 30 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v30 schema migration: {e}"))?;
+            Self::create_passive_attribution_tables(&tx)?;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '30', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v30 schema version: {e}"))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v30 schema migration: {e}"))?;
+        }
+
+        if schema_version < 31 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v31 schema migration: {e}"))?;
+            // Existing route-only observations have no verifiable credential/source binding.
+            // Leave them blank so they conservatively resolve as unattributed after upgrade.
+            Self::add_column_if_missing(
+                &tx,
+                "passive_attribution_intervals",
+                "credential_id",
+                "TEXT NOT NULL DEFAULT ''",
+            )?;
+            Self::add_column_if_missing(&tx, "passive_attribution_intervals", "source_id", "TEXT")?;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '31', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v31 schema version: {e}"))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v31 schema migration: {e}"))?;
+        }
+
+        if schema_version < 32 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v32 schema migration: {e}"))?;
+            Self::add_column_if_missing(&tx, "passive_attribution_intervals", "plan_type", "TEXT")?;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '32', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v32 schema version: {e}"))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v32 schema migration: {e}"))?;
         }
 
         if cleared_runtime_caches {

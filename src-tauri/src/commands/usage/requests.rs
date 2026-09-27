@@ -23,6 +23,8 @@ pub struct RequestRecordItem {
     pub project_name: Option<String>,
     pub project_path: Option<String>,
     pub source_label: Option<String>,
+    pub attribution_source_id: Option<String>,
+    pub attribution_method: String,
     pub api_key_prefix: Option<String>,
     pub request_base_url: Option<String>,
     pub tool: String,
@@ -108,6 +110,8 @@ fn map_fact_to_item(fact: &MergedRequestFact) -> RequestRecordItem {
         project_name: fact.project_name.clone(),
         project_path: fact.project_path.clone(),
         source_label: fact.source_label.clone(),
+        attribution_source_id: fact.attribution_source_id.clone(),
+        attribution_method: fact.attribution_method.as_str().to_string(),
         api_key_prefix: fact.api_key_prefix.clone(),
         request_base_url: fact.request_base_url.clone(),
         tool: fact.tool.clone(),
@@ -353,6 +357,8 @@ mod tests {
             output_tokens_per_second: None,
             ttft_ms: None,
             source_label: None,
+            attribution_source_id: None,
+            attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
         }
     }
 

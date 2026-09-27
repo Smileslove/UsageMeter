@@ -10,10 +10,12 @@ pub(super) fn cache_key_for_source_filter(filter: &SourceFilter) -> String {
     match filter {
         SourceFilter::All => "all".to_string(),
         SourceFilter::Unknown { known_pairs } => format!("unknown:{known_pairs:?}"),
+        SourceFilter::OfficialOpenAiOAuth => "official_openai_oauth".to_string(),
         SourceFilter::Source {
+            source_id,
             api_key_prefixes,
             base_url,
-        } => format!("source:{api_key_prefixes:?}:{base_url:?}"),
+        } => format!("source:{source_id}:{api_key_prefixes:?}:{base_url:?}"),
     }
 }
 

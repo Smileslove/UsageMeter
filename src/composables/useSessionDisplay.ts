@@ -1,5 +1,5 @@
 import type { ProjectStats, ProjectToolStats, RequestRecord, SessionStats } from '../types'
-import { t } from '../i18n'
+import { sourceLabel, t } from '../i18n'
 import { TOOL_LOBE_ICONS } from '../iconConfig'
 import { getFamilyHead } from '../toolFamilies'
 import { formatCost as formatCostUtil, formatTokenValue, formatRequestCount } from '../utils/format'
@@ -92,10 +92,25 @@ export function useSessionDisplay(store: ReturnType<typeof useMonitorStore>) {
   }
 
   const requestSourceLabel = (request: RequestRecord) => (
-    request.sourceLabel?.trim()
+    request.sourceLabel?.trim() ? sourceLabel(store.settings.locale, request.sourceLabel)
       || request.requestBaseUrl?.trim()
       || t(store.settings.locale, 'source.unknown')
+      : request.requestBaseUrl?.trim()
+        || t(store.settings.locale, 'source.unknown')
   )
+
+  const requestAttributionLabel = (request: RequestRecord): string | null => {
+    if (request.attributionMethod === 'config_inferred') {
+      return t(store.settings.locale, 'sessions.requestAttributionInferred')
+    }
+    if (request.attributionMethod === 'manual') {
+      return t(store.settings.locale, 'sessions.requestAttributionManual')
+    }
+    if (request.coverageOrigin === 'local_only') {
+      return t(store.settings.locale, 'sessions.requestAttributionUnattributed')
+    }
+    return null
+  }
 
   const requestToolLabel = (tool: string) => (
     formatToolDisplayName(tool, store.settings.locale, store.settings.clientTools.profiles)
@@ -288,6 +303,7 @@ export function useSessionDisplay(store: ReturnType<typeof useMonitorStore>) {
     requestCoverageLabel,
     requestProjectLabel,
     requestSourceLabel,
+    requestAttributionLabel,
     requestToolLabel,
     requestCacheTokens,
     requestHasProxyPerformance,

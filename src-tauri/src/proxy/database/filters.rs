@@ -5,7 +5,10 @@ impl ProxyDatabase {
     pub(super) fn build_source_filter_sql(source_filter: &SourceFilter) -> (String, Vec<String>) {
         match source_filter {
             SourceFilter::All => (String::new(), vec![]),
+            // OAuth-only attribution is inferred from local scanner facts, never proxy rows.
+            SourceFilter::OfficialOpenAiOAuth => ("AND 1 = 0".to_string(), vec![]),
             SourceFilter::Source {
+                source_id: _,
                 api_key_prefixes,
                 base_url,
             } => {
@@ -137,6 +140,7 @@ mod tests {
     #[test]
     fn source_filter_empty_prefixes_yields_never_match() {
         let (sql, params) = ProxyDatabase::build_source_filter_sql(&SourceFilter::Source {
+            source_id: "test".to_string(),
             api_key_prefixes: vec![],
             base_url: None,
         });
@@ -147,6 +151,7 @@ mod tests {
     #[test]
     fn source_filter_binds_prefixes_then_base_url_in_order() {
         let (sql, params) = ProxyDatabase::build_source_filter_sql(&SourceFilter::Source {
+            source_id: "test".to_string(),
             api_key_prefixes: vec!["sk-alpha".to_string(), "sk-beta".to_string()],
             base_url: Some("https://api.example.com".to_string()),
         });
@@ -163,6 +168,7 @@ mod tests {
     #[test]
     fn source_filter_missing_base_url_binds_empty_string() {
         let (sql, params) = ProxyDatabase::build_source_filter_sql(&SourceFilter::Source {
+            source_id: "test".to_string(),
             api_key_prefixes: vec!["sk-alpha".to_string()],
             base_url: None,
         });
@@ -241,6 +247,7 @@ mod tests {
     fn usage_filter_combines_source_and_tool_and_orders_params() {
         let filter = UsageQueryFilter {
             source: SourceFilter::Source {
+                source_id: "test".to_string(),
                 api_key_prefixes: vec!["sk-a".to_string()],
                 base_url: Some("https://api.example.com".to_string()),
             },
@@ -266,6 +273,7 @@ mod tests {
 
         let filter = UsageQueryFilter {
             source: SourceFilter::Source {
+                source_id: "test".to_string(),
                 api_key_prefixes: vec!["sk-a".to_string()],
                 base_url: None,
             },
@@ -338,6 +346,7 @@ mod tests {
 
         let filter = UsageQueryFilter {
             source: SourceFilter::Source {
+                source_id: "test".to_string(),
                 api_key_prefixes: vec!["sk-a".to_string()],
                 base_url: Some("https://api.a.com".to_string()),
             },

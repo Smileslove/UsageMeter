@@ -11,6 +11,8 @@ const OPENCODE_DB_SYNC_STATE_PREFIX: &str = "opencode_db_";
 const OPENCODE_DB_SYNC_STATES_V2_KEY: &str = "opencode_db_scan_states_v2";
 const OPENCODE_MESSAGE_ID_CONFLICT_PREFIX: &str = "opencode_message_id_conflict_";
 
+mod attribution;
+mod attribution_watcher;
 mod maintenance;
 mod materialized;
 mod migrations;
@@ -23,6 +25,11 @@ mod sync_state;
 #[cfg(test)]
 mod tests;
 mod types;
+
+#[cfg(test)]
+pub(crate) use attribution::PassiveAttributionSnapshot;
+pub use attribution::{ManualAttributionOverride, PassiveAttributionInterval};
+pub use attribution_watcher::start_passive_attribution_watcher;
 
 pub use types::*;
 
@@ -86,7 +93,7 @@ impl LocalUsageDatabase {
         Ok(db)
     }
 
-    fn new_with_path(path: &PathBuf) -> Result<Self, String> {
+    pub(crate) fn new_with_path(path: &PathBuf) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create local usage DB dir: {}", e))?;
