@@ -15,6 +15,9 @@ pub const OPENAI_OAUTH_PLAN_LABEL_PREFIX: &str = "__openai_oauth_plan:";
 pub const OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID: &str = "__google_official_gemini_oauth__";
 /// Internal presentation marker for a Gemini CLI plan confirmed by its quota endpoint.
 pub const GEMINI_OAUTH_PLAN_LABEL_PREFIX: &str = "__gemini_oauth_plan:";
+/// Stable category for Claude Code requests authenticated by Anthropic OAuth.
+/// The official usage API exposes quota windows but no trustworthy subscription plan field.
+pub const OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID: &str = "__anthropic_official_claude_oauth__";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -797,6 +800,8 @@ pub enum SourceFilter {
     OfficialOpenAiOAuth,
     /// Requests resolved from Gemini CLI's official Google OAuth credentials.
     OfficialGoogleGeminiOAuth,
+    /// Requests resolved from Claude Code's official Anthropic OAuth credentials.
+    OfficialAnthropicClaudeOAuth,
 }
 
 #[derive(Debug, Clone)]
@@ -828,6 +833,9 @@ impl SourceAwareSettings {
             }
             Some(filter) if filter == OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID => {
                 SourceFilter::OfficialGoogleGeminiOAuth
+            }
+            Some(filter) if filter == OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID => {
+                SourceFilter::OfficialAnthropicClaudeOAuth
             }
             Some(source_id) => {
                 // 查找对应的来源

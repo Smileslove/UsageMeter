@@ -240,7 +240,7 @@ function onContributionClick(sectionKey: 'source' | 'tool' | 'model', item: Over
       : item.id === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID
         || item.id.startsWith(GEMINI_OAUTH_PLAN_LABEL_PREFIX)
         ? OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID
-      : item.id
+        : item.id
     nav.applyNavigationTarget({ page: 'analytics', sourceId })
   } else if (sectionKey === 'tool') {
     nav.applyNavigationTarget({ page: 'analytics', tool: item.id })

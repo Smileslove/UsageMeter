@@ -8,6 +8,8 @@ export const OPENAI_OAUTH_PLAN_LABEL_PREFIX = '__openai_oauth_plan:'
 export const OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID = '__google_official_gemini_oauth__'
 /** Presentation-only marker emitted after the Gemini quota endpoint confirms a plan. */
 export const GEMINI_OAUTH_PLAN_LABEL_PREFIX = '__gemini_oauth_plan:'
+/** Stable pseudo-source used for Claude Code requests authenticated by Anthropic OAuth. */
+export const OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID = '__anthropic_official_claude_oauth__'
 
 export type WindowName = '5h' | '24h' | 'today' | '7d' | '30d' | 'current_month'
 

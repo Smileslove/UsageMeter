@@ -12,6 +12,7 @@ pub(super) fn cache_key_for_source_filter(filter: &SourceFilter) -> String {
         SourceFilter::Unknown { known_pairs } => format!("unknown:{known_pairs:?}"),
         SourceFilter::OfficialOpenAiOAuth => "official_openai_oauth".to_string(),
         SourceFilter::OfficialGoogleGeminiOAuth => "official_google_gemini_oauth".to_string(),
+        SourceFilter::OfficialAnthropicClaudeOAuth => "official_anthropic_claude_oauth".to_string(),
         SourceFilter::Source {
             source_id,
             api_key_prefixes,

@@ -1,7 +1,8 @@
 use super::super::types::{OverviewBreakdown, OverviewBreakdownCapability, OverviewBreakdownItem};
 use crate::commands::usage::accumulator::FactAccumulator;
 use crate::models::{
-    AppSettings, OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID, OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
+    AppSettings, OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID, OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
+    OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
 };
 use crate::proxy::compute_source_id;
 use crate::unified_usage::{normalize_model_bucket, MergedRequestFact};
@@ -115,7 +116,9 @@ fn source_meta_for_fact(settings: &AppSettings, fact: &MergedRequestFact) -> Bre
     if let Some(source_id) = fact.attribution_source_id.as_deref() {
         if matches!(
             source_id,
-            OFFICIAL_OPENAI_OAUTH_SOURCE_ID | OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID
+            OFFICIAL_OPENAI_OAUTH_SOURCE_ID
+                | OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID
+                | OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID
         ) {
             let label = fact
                 .source_label
@@ -129,8 +132,10 @@ fn source_meta_for_fact(settings: &AppSettings, fact: &MergedRequestFact) -> Bre
                 color: Some(
                     if source_id == OFFICIAL_OPENAI_OAUTH_SOURCE_ID {
                         "#10A37F"
-                    } else {
+                    } else if source_id == OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID {
                         "#4285F4"
+                    } else {
+                        "#D97757"
                     }
                     .to_string(),
                 ),

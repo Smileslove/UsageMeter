@@ -3,7 +3,8 @@ use crate::local_usage::{
     LocalUsageDatabase, ManualAttributionOverride, PassiveAttributionInterval,
 };
 use crate::models::{
-    ApiSource, AppSettings, GEMINI_OAUTH_PLAN_LABEL_PREFIX, OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
+    ApiSource, AppSettings, GEMINI_OAUTH_PLAN_LABEL_PREFIX,
+    OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID, OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
     OFFICIAL_OPENAI_OAUTH_SOURCE_ID, OPENAI_OAUTH_PLAN_LABEL_PREFIX,
 };
 use std::collections::HashMap;
@@ -17,7 +18,7 @@ fn matching_interval<'a>(
         interval.tool == fact.tool
             && matches!(
                 interval.auth_mode.as_str(),
-                "api_key" | "chatgpt_oauth" | "gemini_oauth"
+                "api_key" | "chatgpt_oauth" | "gemini_oauth" | "claude_oauth"
             )
             && interval.valid_from_ms <= timestamp_ms
             && interval.confirmed_until_ms >= timestamp_ms
@@ -124,7 +125,9 @@ pub(crate) fn apply_passive_attribution(
         };
         if matches!(
             source_id,
-            OFFICIAL_OPENAI_OAUTH_SOURCE_ID | OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID
+            OFFICIAL_OPENAI_OAUTH_SOURCE_ID
+                | OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID
+                | OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID
         ) {
             fact.request_base_url = Some(interval.base_url.clone());
             fact.attribution_source_id = Some(source_id.to_string());
@@ -361,6 +364,46 @@ mod tests {
         assert!(crate::unified_usage::matches_source_filter(
             &facts[0],
             &SourceFilter::OfficialGoogleGeminiOAuth
+        ));
+    }
+
+    #[test]
+    fn claude_oauth_resolves_to_the_official_anthropic_source() {
+        let (_directory, database) = temp_db();
+        let oauth_snapshot = |observed_at_ms| PassiveAttributionSnapshot {
+            tool: "claude_code",
+            provider_id: "anthropic",
+            base_url: "https://api.anthropic.com",
+            auth_mode: "claude_oauth",
+            credential_id: "oauth-credential",
+            source_id: Some(crate::models::OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID),
+            plan_type: None,
+            plan_is_confirmed: false,
+            observed_at_ms,
+        };
+        database
+            .record_passive_attribution_snapshot(oauth_snapshot(1_000))
+            .expect("record OAuth configuration");
+        database
+            .record_passive_attribution_snapshot(oauth_snapshot(2_000))
+            .expect("confirm OAuth configuration");
+        let mut facts = vec![local_fact()];
+        facts[0].tool = "claude_code".to_string();
+
+        apply_passive_attribution(&database, &mut facts, &AppSettings::default())
+            .expect("apply OAuth attribution");
+
+        assert_eq!(
+            facts[0].attribution_source_id.as_deref(),
+            Some(crate::models::OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID)
+        );
+        assert_eq!(
+            facts[0].source_label.as_deref(),
+            Some(crate::models::OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID)
+        );
+        assert!(crate::unified_usage::matches_source_filter(
+            &facts[0],
+            &SourceFilter::OfficialAnthropicClaudeOAuth
         ));
     }
 

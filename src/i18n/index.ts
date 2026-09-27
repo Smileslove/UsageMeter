@@ -1,5 +1,6 @@
 import {
   GEMINI_OAUTH_PLAN_LABEL_PREFIX,
+  OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID,
   OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
   OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
   OPENAI_OAUTH_PLAN_LABEL_PREFIX,
@@ -1449,6 +1450,7 @@ const messages = {
       all: '全部',
       unknown: '未归因',
       officialAnthropic: '官方 Anthropic',
+      anthropicOfficial: 'Anthropic 官方',
       openaiOfficial: 'OpenAI 官方',
       openaiOauthPlanFree: 'GPT Free',
       openaiOauthPlanGo: 'GPT Go',
@@ -2995,6 +2997,7 @@ const messages = {
       all: '全部',
       unknown: '未歸因',
       officialAnthropic: '官方 Anthropic',
+      anthropicOfficial: 'Anthropic 官方',
       openaiOfficial: 'OpenAI 官方',
       openaiOauthPlanFree: 'GPT Free',
       openaiOauthPlanGo: 'GPT Go',
@@ -4541,6 +4544,7 @@ const messages = {
       all: 'All',
       unknown: 'Unattributed',
       officialAnthropic: 'Anthropic Official',
+      anthropicOfficial: 'Anthropic Official',
       openaiOfficial: 'OpenAI Official',
       openaiOauthPlanFree: 'GPT Free',
       openaiOauthPlanGo: 'GPT Go',
@@ -4815,6 +4819,7 @@ export function t(locale: string | undefined, key: string, params?: Record<strin
 export function sourceLabel(locale: string | undefined, source: string | undefined): string {
   if (source === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return t(locale, 'sources.openaiOfficial')
   if (source === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) return t(locale, 'sources.googleOfficial')
+  if (source === OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID) return t(locale, 'sources.anthropicOfficial')
   const planType = source?.startsWith(OPENAI_OAUTH_PLAN_LABEL_PREFIX)
     ? source.slice(OPENAI_OAUTH_PLAN_LABEL_PREFIX.length)
     : ''

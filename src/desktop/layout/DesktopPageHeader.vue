@@ -5,6 +5,7 @@ import { useDesktopNavigationStore } from '../stores/desktopNavigation'
 import { useMonitorStore } from '../../stores/monitor'
 import { sourceLabel, t } from '../../i18n'
 import {
+  OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID,
   OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
   OFFICIAL_OPENAI_OAUTH_SOURCE_ID
 } from '../../types'
@@ -34,6 +35,7 @@ const sourceFilterLabel = computed(() => {
   }
   if (id === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return sourceLabel(locale.value, id)
   if (id === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) return sourceLabel(locale.value, id)
+  if (id === OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID) return sourceLabel(locale.value, id)
   const source = monitor.settings.sourceAware.sources.find(s => s.id === id)
   if (!source) {
     return t(locale.value, 'desktop.allSources')

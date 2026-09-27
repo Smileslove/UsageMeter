@@ -3,6 +3,7 @@ import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import { sourceLabel, t } from '../i18n'
 import {
+  OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID,
   OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
   OFFICIAL_OPENAI_OAUTH_SOURCE_ID
 } from '../types'
@@ -22,8 +23,10 @@ const showSelector = computed(() => {
   return sources.value.length > 0
     || store.hasChatGptOAuth
     || store.hasGeminiOAuth
+    || store.hasClaudeOAuth
     || activeFilter.value === OFFICIAL_OPENAI_OAUTH_SOURCE_ID
     || activeFilter.value === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID
+    || activeFilter.value === OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID
 })
 
 const getSourceName = (source: { id: string; displayName?: string; baseUrl?: string; apiKeyPrefixes: string[] }) => {
@@ -46,6 +49,7 @@ const currentSource = computed(() => {
 const currentColor = computed(() => {
   if (activeFilter.value === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return '#10A37F'
   if (activeFilter.value === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) return '#4285F4'
+  if (activeFilter.value === OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID) return '#D97757'
   if (!currentSource.value) return '#9CA3AF'
   return currentSource.value.color
 })
@@ -60,6 +64,9 @@ const currentLabel = computed(() => {
   }
   if (activeFilter.value === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) {
     return sourceLabel(store.settings.locale, OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID)
+  }
+  if (activeFilter.value === OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID) {
+    return sourceLabel(store.settings.locale, OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID)
   }
   const source = sources.value.find(s => s.id === activeFilter.value)
   return source ? getSourceName(source) : t(store.settings.locale, 'sources.all')
@@ -146,9 +153,20 @@ onUnmounted(() => {
         </button>
 
         <div
-          v-if="store.hasChatGptOAuth || store.hasGeminiOAuth || activeFilter === OFFICIAL_OPENAI_OAUTH_SOURCE_ID || activeFilter === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID"
+          v-if="store.hasChatGptOAuth || store.hasGeminiOAuth || store.hasClaudeOAuth || activeFilter === OFFICIAL_OPENAI_OAUTH_SOURCE_ID || activeFilter === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID || activeFilter === OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID"
           class="border-t border-gray-50 dark:border-neutral-800"
         >
+          <button
+            v-if="store.hasClaudeOAuth || activeFilter === OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID"
+            @click="selectSource(OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID)"
+            :class="[
+              'w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left hover:bg-gray-50 dark:hover:bg-neutral-800 transition-colors',
+              activeFilter === OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID ? 'bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium' : 'text-gray-700 dark:text-gray-200'
+            ]"
+          >
+            <span class="w-2.5 h-2.5 rounded-full shrink-0 bg-orange-500"></span>
+            <span class="truncate">{{ sourceLabel(store.settings.locale, OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID) }}</span>
+          </button>
           <button
             v-if="store.hasChatGptOAuth || activeFilter === OFFICIAL_OPENAI_OAUTH_SOURCE_ID"
             @click="selectSource(OFFICIAL_OPENAI_OAUTH_SOURCE_ID)"

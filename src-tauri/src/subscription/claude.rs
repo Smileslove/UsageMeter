@@ -58,6 +58,17 @@ impl ClaudeSubscriptionProvider {
         load_oauth().is_some()
     }
 
+    /// Path to the file-backed Claude Code OAuth credential store.
+    ///
+    /// macOS may keep credentials only in Keychain, which is intentionally
+    /// handled as a best-effort fallback by [`has_claude_oauth`](Self::has_claude_oauth).
+    pub fn oauth_credentials_path() -> PathBuf {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".claude")
+            .join(".credentials.json")
+    }
+
     /// Fetch the Claude subscription quota.
     pub async fn fetch_quota(&self) -> SubscriptionQueryResult {
         let mut creds = match load_oauth() {
@@ -316,15 +327,8 @@ fn load_oauth() -> Option<ClaudeOAuth> {
     None
 }
 
-fn credentials_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".claude")
-        .join(".credentials.json")
-}
-
 fn read_credentials_file() -> Option<String> {
-    std::fs::read_to_string(credentials_path()).ok()
+    std::fs::read_to_string(ClaudeSubscriptionProvider::oauth_credentials_path()).ok()
 }
 
 #[cfg(target_os = "macos")]

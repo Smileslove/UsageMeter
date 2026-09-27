@@ -1,6 +1,6 @@
 use super::LocalUsageDatabase;
 use crate::proxy::{ClaudeConfigManager, CodexConfigManager, GeminiConfigManager};
-use crate::subscription::GeminiSubscriptionProvider;
+use crate::subscription::{ClaudeSubscriptionProvider, GeminiSubscriptionProvider};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
 use std::sync::{mpsc, Once};
@@ -16,6 +16,7 @@ fn watched_config_paths() -> Vec<PathBuf> {
         codex.config_path().clone(),
         codex.auth_path().clone(),
         claude.settings_path().clone(),
+        ClaudeSubscriptionProvider::oauth_credentials_path(),
         gemini.config_path().clone(),
         GeminiSubscriptionProvider::oauth_credentials_path(),
     ]

@@ -227,6 +227,7 @@ pub async fn set_active_source_filter(source_id: Option<String>) -> Result<(), S
         if id != "__unknown__"
             && id != crate::models::OFFICIAL_OPENAI_OAUTH_SOURCE_ID
             && id != crate::models::OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID
+            && id != crate::models::OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID
         {
             let exists = settings.source_aware.sources.iter().any(|s| &s.id == id);
             if !exists {

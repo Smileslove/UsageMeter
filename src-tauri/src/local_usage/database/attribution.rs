@@ -1,9 +1,10 @@
 use super::LocalUsageDatabase;
 use crate::models::{
-    AppSettings, OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID, OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
+    AppSettings, OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID, OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
+    OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
 };
 use crate::proxy::{ClaudeConfigManager, CodexAuthMode, CodexConfigManager, GeminiConfigManager};
-use crate::subscription::GeminiSubscriptionProvider;
+use crate::subscription::{ClaudeSubscriptionProvider, GeminiSubscriptionProvider};
 use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 
@@ -129,6 +130,22 @@ fn normalized_source_base_url(base_url: Option<&str>) -> Option<String> {
     (!official_anthropic).then_some(base_url)
 }
 
+/// The app cannot inspect an arbitrary Claude Code process's environment.
+/// A readable override in UsageMeter's own environment is nevertheless a
+/// definite conflicting signal, so leave the request unattributed.
+fn has_claude_environment_override() -> bool {
+    claude_environment_override_from(|name| std::env::var(name).ok())
+}
+
+fn claude_environment_override_from(read_var: impl Fn(&str) -> Option<String>) -> bool {
+    ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]
+        .iter()
+        .any(|name| read_var(name).is_some_and(|value| !value.trim().is_empty()))
+        || read_var("ANTHROPIC_BASE_URL")
+            .filter(|value| !value.trim().is_empty())
+            .is_some_and(|value| normalized_source_base_url(Some(&value)).is_some())
+}
+
 fn source_id_for_config(settings: &AppSettings, base_url: &str, api_key: &str) -> Option<String> {
     let key_prefix: String = api_key.trim().chars().take(12).collect();
     if key_prefix.is_empty() {
@@ -244,11 +261,11 @@ impl LocalUsageDatabase {
         settings: &AppSettings,
         observed_at_ms: i64,
     ) -> Result<bool, String> {
+        if has_claude_environment_override() {
+            return Ok(false);
+        }
         let manager = ClaudeConfigManager::new();
         let Ok(claude_settings) = manager.read_settings() else {
-            return Ok(false);
-        };
-        let Some(api_key) = claude_settings.get_api_key() else {
             return Ok(false);
         };
         let base_url = claude_settings
@@ -257,15 +274,37 @@ impl LocalUsageDatabase {
         if ClaudeConfigManager::is_usagemeter_proxy_url(&base_url) {
             return Ok(false);
         }
-        let source_id = source_id_for_config(settings, &base_url, &api_key);
-        let credential_id = credential_id(&api_key);
+        if let Some(api_key) = claude_settings
+            .get_api_key()
+            .filter(|api_key| !api_key.trim().is_empty())
+        {
+            let source_id = source_id_for_config(settings, &base_url, &api_key);
+            let credential_id = credential_id(&api_key);
+            return self.record_passive_attribution_snapshot(PassiveAttributionSnapshot {
+                tool: "claude_code",
+                provider_id: "settings",
+                base_url: &base_url,
+                auth_mode: "api_key",
+                credential_id: &credential_id,
+                source_id: source_id.as_deref(),
+                plan_type: None,
+                plan_is_confirmed: false,
+                observed_at_ms,
+            });
+        }
+        if normalized_source_base_url(Some(&base_url)).is_some()
+            || !ClaudeSubscriptionProvider::new().has_claude_oauth()
+        {
+            return Ok(false);
+        }
+        let credential_id = credential_id("anthropic:claude_code_oauth");
         self.record_passive_attribution_snapshot(PassiveAttributionSnapshot {
             tool: "claude_code",
-            provider_id: "settings",
+            provider_id: "anthropic",
             base_url: &base_url,
-            auth_mode: "api_key",
+            auth_mode: "claude_oauth",
             credential_id: &credential_id,
-            source_id: source_id.as_deref(),
+            source_id: Some(OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID),
             plan_type: None,
             plan_is_confirmed: false,
             observed_at_ms,
@@ -618,6 +657,22 @@ mod tests {
         let path = directory.path().join("local_usage.db");
         let db = LocalUsageDatabase::new_with_path(&path).expect("open temp db");
         (directory, db)
+    }
+
+    #[test]
+    fn readable_claude_environment_overrides_disable_oauth_inference() {
+        assert!(claude_environment_override_from(|name| {
+            (name == "ANTHROPIC_API_KEY").then(|| "sk-ant-api-key".to_string())
+        }));
+        assert!(claude_environment_override_from(|name| {
+            (name == "ANTHROPIC_AUTH_TOKEN").then(|| "bearer-token".to_string())
+        }));
+        assert!(claude_environment_override_from(|name| {
+            (name == "ANTHROPIC_BASE_URL").then(|| "https://proxy.example.com/v1".to_string())
+        }));
+        assert!(!claude_environment_override_from(|name| {
+            (name == "ANTHROPIC_BASE_URL").then(|| "https://api.anthropic.com".to_string())
+        }));
     }
 
     fn snapshot<'a>(
