@@ -117,12 +117,13 @@ function balanceTierOf(q: SubscriptionQuota): QuotaTier | undefined {
 }
 
 function remainingPercent(tier?: QuotaTier): number {
-  if (!tier) return 0
+  if (!tier || tier.limitReached) return 0
   return Math.max(0, Math.min(100, 100 - tier.utilization))
 }
 
 function remainingPercentText(tier?: QuotaTier): string {
   if (!tier) return '--'
+  if (tier.limitReached) return t(locale.value, 'desktop.overview.limitStatusExhausted')
   return t(locale.value, 'survival.remainingPercent', { value: Math.round(remainingPercent(tier)) })
 }
 

@@ -13,14 +13,12 @@ pub mod source_quota_executor;
 pub mod source_quota_secrets;
 pub mod source_quota_util;
 pub mod source_resolver;
-mod token_cache;
 mod types;
 
 pub use claude::ClaudeSubscriptionProvider;
 pub use copilot::CopilotSubscriptionProvider;
 pub use gemini::GeminiSubscriptionProvider;
 pub use gpt::*;
-pub use token_cache::TokenCache;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -34,8 +32,6 @@ use crate::subscription::source_quota::SourceQuotaBindingRuntimeState;
 pub struct SubscriptionState {
     /// Cached subscription data by provider
     cache: Arc<RwLock<std::collections::HashMap<String, CachedSubscription>>>,
-    /// Shared token cache for all providers
-    token_cache: Arc<TokenCache>,
     /// GPT provider instance (singleton)
     gpt_provider: Arc<RwLock<Option<GptSubscriptionProvider>>>,
     /// Gemini provider instance (singleton, keeps in-memory token cache)
@@ -94,7 +90,6 @@ impl SubscriptionState {
     pub fn new_with_copilot(copilot_auth: Arc<RwLock<CopilotAuthManager>>) -> Self {
         Self {
             cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
-            token_cache: Arc::new(TokenCache::new()),
             gpt_provider: Arc::new(RwLock::new(None)),
             gemini_provider: Arc::new(RwLock::new(None)),
             copilot_auth,
@@ -103,13 +98,13 @@ impl SubscriptionState {
         }
     }
 
-    /// Get or create GPT provider instance with shared token cache
+    /// Get or create GPT provider instance.
     pub async fn get_gpt_provider(&self) -> GptSubscriptionProvider {
         let mut provider = self.gpt_provider.write().await;
         if let Some(existing) = provider.as_ref() {
             return existing.clone();
         }
-        let instance = GptSubscriptionProvider::with_token_cache(self.token_cache.clone());
+        let instance = GptSubscriptionProvider::new();
         *provider = Some(instance.clone());
         instance
     }

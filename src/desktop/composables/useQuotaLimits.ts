@@ -27,6 +27,16 @@ export interface LimitRow {
   clickable: boolean
 }
 
+/** 使用百分比：优先 (max - remaining) / max，其次 utilization。 */
+export function usedPercentOf(tier: QuotaTier | undefined): number | null {
+  if (!tier) return null
+  if (tier.maxValue != null && tier.remainingValue != null && tier.maxValue > 0) {
+    return ((tier.maxValue - tier.remainingValue) / tier.maxValue) * 100
+  }
+  if (Number.isFinite(tier.utilization)) return tier.utilization
+  return null
+}
+
 export function useQuotaLimits() {
   const store = useMonitorStore()
 
@@ -51,16 +61,6 @@ export function useQuotaLimits() {
 
   function balanceTierOf(q: SubscriptionQuota): QuotaTier | undefined {
     return q.tiers.find(tt => tt.kind === 'balance')
-  }
-
-  /** 使用百分比：优先 (max - remaining) / max，其次 utilization。 */
-  function usedPercentOf(tier: QuotaTier | undefined): number | null {
-    if (!tier) return null
-    if (tier.maxValue != null && tier.remainingValue != null && tier.maxValue > 0) {
-      return ((tier.maxValue - tier.remainingValue) / tier.maxValue) * 100
-    }
-    if (tier.utilization > 0) return tier.utilization
-    return null
   }
 
   function stateForUsed(pct: number | null): LimitState {
@@ -145,7 +145,7 @@ export function useQuotaLimits() {
     if (balanceTier) {
       state = (balanceTier.remainingValue ?? 0) <= 0 ? 'danger' : 'safe'
     } else {
-      state = stateForUsed(pct)
+      state = windowTier?.limitReached ? 'danger' : stateForUsed(pct)
     }
     let windowLabelKey: string | null = null
     let windowLabelText: string | null = null

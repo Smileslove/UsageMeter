@@ -2,19 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// ChatGPT OAuth tokens extracted from auth.json
-#[derive(Debug, Clone)]
-pub struct ChatGptTokens {
-    /// OAuth access token
-    pub access_token: Option<String>,
-    /// OAuth refresh token
-    pub refresh_token: Option<String>,
-    /// ChatGPT account ID
-    pub account_id: Option<String>,
-    /// Token expiration timestamp (seconds since epoch)
-    pub expires_at: Option<i64>,
-}
-
 /// Subscription error types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SubscriptionError {

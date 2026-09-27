@@ -32,15 +32,15 @@ const updatedAt = computed(() => {
 const fiveHourTier = computed(() => tiers.value.find(tier => tier.name === 'five_hour'))
 const sevenDayTier = computed(() => tiers.value.find(tier => tier.name === 'seven_day'))
 
-function getTierColorClass(utilization: number): string {
-  if (utilization >= 90) return 'text-red-500 dark:text-red-400'
-  if (utilization >= 70) return 'text-amber-500 dark:text-amber-400'
+function getTierColorClass(tier: QuotaTier): string {
+  if (tier.limitReached || tier.utilization >= 90) return 'text-red-500 dark:text-red-400'
+  if (tier.utilization >= 70) return 'text-amber-500 dark:text-amber-400'
   return 'text-cyan-500 dark:text-cyan-400'
 }
 
-function getTierDotClass(utilization: number): string {
-  if (utilization >= 90) return 'bg-red-400/80 dark:bg-red-400/70'
-  if (utilization >= 70) return 'bg-amber-400/85 dark:bg-amber-400/70'
+function getTierDotClass(tier: QuotaTier): string {
+  if (tier.limitReached || tier.utilization >= 90) return 'bg-red-400/80 dark:bg-red-400/70'
+  if (tier.utilization >= 70) return 'bg-amber-400/85 dark:bg-amber-400/70'
   return 'bg-cyan-400/85 dark:bg-cyan-300/70'
 }
 
@@ -130,12 +130,12 @@ async function refresh() {
                   <div v-if="fiveHourTier" :class="['rounded-lg border border-gray-100/90 bg-gray-50/60 px-1.5 py-1.5 dark:border-white/10 dark:bg-white/5', sevenDayTier ? '' : 'col-span-2']">
                     <div class="flex items-center justify-between gap-2">
                       <div class="flex min-w-0 items-center gap-1.5">
-                        <span class="h-1.5 w-1.5 rounded-full" :class="getTierDotClass(fiveHourTier.utilization)" />
+                        <span class="h-1.5 w-1.5 rounded-full" :class="getTierDotClass(fiveHourTier)" />
                         <span class="text-[10px] text-gray-500 dark:text-gray-400 whitespace-nowrap">{{ t(locale, 'subscription.fiveHour') }}</span>
                       </div>
 
                       <div class="flex shrink-0 items-center gap-1.5">
-                        <span :class="['text-[10px] font-mono font-semibold', getTierColorClass(fiveHourTier.utilization)]">{{ fiveHourTier.utilization.toFixed(1) }}%</span>
+                        <span :class="['text-[10px] font-mono font-semibold', getTierColorClass(fiveHourTier)]">{{ fiveHourTier.utilization.toFixed(1) }}%</span>
                         <span class="flex items-center gap-0.5 rounded-md border border-gray-100 bg-white/70 px-1 py-0.5 text-[9px] text-gray-400 dark:border-white/10 dark:bg-white/5 dark:text-gray-500">
                           <Clock class="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
                           <span class="font-mono whitespace-nowrap">{{ formatResetTimeRelative(fiveHourTier.resetsAt) }}</span>
@@ -147,12 +147,12 @@ async function refresh() {
                   <div v-if="sevenDayTier" :class="['rounded-lg border border-gray-100/90 bg-gray-50/60 px-1.5 py-1.5 dark:border-white/10 dark:bg-white/5', fiveHourTier ? '' : 'col-span-2']">
                     <div class="flex items-center justify-between gap-2">
                       <div class="flex min-w-0 items-center gap-1.5">
-                        <span class="h-1.5 w-1.5 rounded-full" :class="getTierDotClass(sevenDayTier.utilization)" />
+                        <span class="h-1.5 w-1.5 rounded-full" :class="getTierDotClass(sevenDayTier)" />
                         <span class="text-[10px] text-gray-500 dark:text-gray-400 whitespace-nowrap">{{ t(locale, 'subscription.sevenDay') }}</span>
                       </div>
 
                       <div class="flex shrink-0 items-center gap-1.5">
-                        <span :class="['text-[10px] font-mono font-semibold', getTierColorClass(sevenDayTier.utilization)]">{{ sevenDayTier.utilization.toFixed(1) }}%</span>
+                        <span :class="['text-[10px] font-mono font-semibold', getTierColorClass(sevenDayTier)]">{{ sevenDayTier.utilization.toFixed(1) }}%</span>
                         <span class="flex items-center gap-0.5 rounded-md border border-gray-100 bg-white/70 px-1 py-0.5 text-[9px] text-gray-400 dark:border-white/10 dark:bg-white/5 dark:text-gray-500">
                           <Clock class="h-2.5 w-2.5 shrink-0" aria-hidden="true" />
                           <span class="font-mono whitespace-nowrap">{{ formatResetTimeRelative(sevenDayTier.resetsAt) }}</span>
