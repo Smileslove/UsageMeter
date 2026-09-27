@@ -1,4 +1,6 @@
 import {
+  GEMINI_OAUTH_PLAN_LABEL_PREFIX,
+  OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
   OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
   OPENAI_OAUTH_PLAN_LABEL_PREFIX,
   type AppLocale
@@ -1455,6 +1457,13 @@ const messages = {
       openaiOauthPlanBusiness: 'GPT Business',
       openaiOauthPlanEnterprise: 'ChatGPT Enterprise',
       openaiOauthPlanEdu: 'ChatGPT Edu',
+      googleOfficial: 'Google 官方',
+      geminiOauthPlanFree: 'Gemini Free',
+      geminiOauthPlanLegacy: 'Gemini Legacy',
+      geminiOauthPlanStandard: 'Gemini Standard',
+      geminiOauthPlanPro: 'Gemini Pro',
+      geminiOauthPlanUltra: 'Gemini Ultra',
+      geminiOauthPlanEnterprise: 'Gemini Enterprise',
       noSources: '暂未检测到来源，启动代理后使用 Claude Code 即可自动发现',
       editName: '重命名',
       namePlaceholder: '来源名称（如 OpenRouter）',
@@ -2994,6 +3003,13 @@ const messages = {
       openaiOauthPlanBusiness: 'GPT Business',
       openaiOauthPlanEnterprise: 'ChatGPT Enterprise',
       openaiOauthPlanEdu: 'ChatGPT Edu',
+      googleOfficial: 'Google 官方',
+      geminiOauthPlanFree: 'Gemini Free',
+      geminiOauthPlanLegacy: 'Gemini Legacy',
+      geminiOauthPlanStandard: 'Gemini Standard',
+      geminiOauthPlanPro: 'Gemini Pro',
+      geminiOauthPlanUltra: 'Gemini Ultra',
+      geminiOauthPlanEnterprise: 'Gemini Enterprise',
       noSources: '暫未檢測到來源，啟動代理後使用 Claude Code 即可自動發現',
       editName: '重新命名',
       namePlaceholder: '來源名稱（如 OpenRouter）',
@@ -4533,6 +4549,13 @@ const messages = {
       openaiOauthPlanBusiness: 'GPT Business',
       openaiOauthPlanEnterprise: 'ChatGPT Enterprise',
       openaiOauthPlanEdu: 'ChatGPT Edu',
+      googleOfficial: 'Google Official',
+      geminiOauthPlanFree: 'Gemini Free',
+      geminiOauthPlanLegacy: 'Gemini Legacy',
+      geminiOauthPlanStandard: 'Gemini Standard',
+      geminiOauthPlanPro: 'Gemini Pro',
+      geminiOauthPlanUltra: 'Gemini Ultra',
+      geminiOauthPlanEnterprise: 'Gemini Enterprise',
       noSources: 'No sources detected yet. Use Claude Code with proxy enabled.',
       editName: 'Rename',
       namePlaceholder: 'Source name (e.g. OpenRouter)',
@@ -4791,6 +4814,7 @@ export function t(locale: string | undefined, key: string, params?: Record<strin
 
 export function sourceLabel(locale: string | undefined, source: string | undefined): string {
   if (source === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return t(locale, 'sources.openaiOfficial')
+  if (source === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) return t(locale, 'sources.googleOfficial')
   const planType = source?.startsWith(OPENAI_OAUTH_PLAN_LABEL_PREFIX)
     ? source.slice(OPENAI_OAUTH_PLAN_LABEL_PREFIX.length)
     : ''
@@ -4804,6 +4828,18 @@ export function sourceLabel(locale: string | undefined, source: string | undefin
     edu: 'sources.openaiOauthPlanEdu'
   }
   if (planType) return t(locale, planKey[planType] ?? 'sources.openaiOfficial')
+  const geminiPlanType = source?.startsWith(GEMINI_OAUTH_PLAN_LABEL_PREFIX)
+    ? source.slice(GEMINI_OAUTH_PLAN_LABEL_PREFIX.length)
+    : ''
+  const geminiPlanKey: Record<string, string> = {
+    free: 'sources.geminiOauthPlanFree',
+    legacy: 'sources.geminiOauthPlanLegacy',
+    standard: 'sources.geminiOauthPlanStandard',
+    pro: 'sources.geminiOauthPlanPro',
+    ultra: 'sources.geminiOauthPlanUltra',
+    enterprise: 'sources.geminiOauthPlanEnterprise'
+  }
+  if (geminiPlanType) return t(locale, geminiPlanKey[geminiPlanType] ?? 'sources.googleOfficial')
   const key = SOURCE_KEY_MAP[source ?? 'unknown']
   return key ? t(locale, key) : (source?.trim() || t(locale, 'source.unknown'))
 }

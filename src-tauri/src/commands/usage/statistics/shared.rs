@@ -153,6 +153,9 @@ pub(super) fn cache_key_for_source_filter(filter: &crate::models::SourceFilter) 
             format!("unknown:{known_pairs:?}")
         }
         crate::models::SourceFilter::OfficialOpenAiOAuth => "official_openai_oauth".to_string(),
+        crate::models::SourceFilter::OfficialGoogleGeminiOAuth => {
+            "official_google_gemini_oauth".to_string()
+        }
         crate::models::SourceFilter::Source {
             source_id,
             api_key_prefixes,

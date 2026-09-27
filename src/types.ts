@@ -4,6 +4,10 @@ export type AppLocale = 'zh-CN' | 'zh-TW' | 'en-US'
 export const OFFICIAL_OPENAI_OAUTH_SOURCE_ID = '__openai_official_oauth__'
 /** Presentation-only marker emitted after the official quota endpoint confirms a plan. */
 export const OPENAI_OAUTH_PLAN_LABEL_PREFIX = '__openai_oauth_plan:'
+/** Stable pseudo-source used for Gemini CLI requests authenticated by official Google OAuth. */
+export const OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID = '__google_official_gemini_oauth__'
+/** Presentation-only marker emitted after the Gemini quota endpoint confirms a plan. */
+export const GEMINI_OAUTH_PLAN_LABEL_PREFIX = '__gemini_oauth_plan:'
 
 export type WindowName = '5h' | '24h' | 'today' | '7d' | '30d' | 'current_month'
 

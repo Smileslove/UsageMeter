@@ -1,6 +1,8 @@
 use super::super::types::{OverviewBreakdown, OverviewBreakdownCapability, OverviewBreakdownItem};
 use crate::commands::usage::accumulator::FactAccumulator;
-use crate::models::{AppSettings, OFFICIAL_OPENAI_OAUTH_SOURCE_ID};
+use crate::models::{
+    AppSettings, OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID, OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
+};
 use crate::proxy::compute_source_id;
 use crate::unified_usage::{normalize_model_bucket, MergedRequestFact};
 use std::collections::HashMap;
@@ -111,17 +113,27 @@ fn source_label_from_url(base_url: Option<&str>) -> String {
 
 fn source_meta_for_fact(settings: &AppSettings, fact: &MergedRequestFact) -> BreakdownMeta {
     if let Some(source_id) = fact.attribution_source_id.as_deref() {
-        if source_id == OFFICIAL_OPENAI_OAUTH_SOURCE_ID {
+        if matches!(
+            source_id,
+            OFFICIAL_OPENAI_OAUTH_SOURCE_ID | OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID
+        ) {
             let label = fact
                 .source_label
                 .clone()
-                .unwrap_or_else(|| OFFICIAL_OPENAI_OAUTH_SOURCE_ID.to_string());
+                .unwrap_or_else(|| source_id.to_string());
             return BreakdownMeta {
                 // Plans must remain distinct in rankings while the source filter remains stable.
                 id: label.clone(),
                 label,
                 kind: "source".to_string(),
-                color: Some("#10A37F".to_string()),
+                color: Some(
+                    if source_id == OFFICIAL_OPENAI_OAUTH_SOURCE_ID {
+                        "#10A37F"
+                    } else {
+                        "#4285F4"
+                    }
+                    .to_string(),
+                ),
                 icon: None,
             };
         }

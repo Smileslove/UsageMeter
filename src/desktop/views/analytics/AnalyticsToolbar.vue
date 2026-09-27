@@ -15,7 +15,11 @@ import {
 import { metricColor } from '../../composables/useTrendChart'
 import { sourceLabel, t, windowNameLabel } from '../../../i18n'
 import { METRICS } from '../../../components/statistics/activityUtils'
-import { OFFICIAL_OPENAI_OAUTH_SOURCE_ID, WINDOW_ORDER } from '../../../types'
+import {
+  OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
+  OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
+  WINDOW_ORDER
+} from '../../../types'
 import { formatToolDisplayName } from '../../../utils/toolDisplay'
 import { useFocusTrap } from '../../composables/useFocusTrap'
 
@@ -122,6 +126,7 @@ const activeSourceLabel = computed(() => {
   const id = store.settings.sourceAware.activeSourceFilter
   if (!id || id === '__unknown__') return t(locale.value, 'desktop.allSources')
   if (id === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return sourceLabel(locale.value, id)
+  if (id === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) return sourceLabel(locale.value, id)
   const source = store.settings.sourceAware.sources.find(s => s.id === id)
   return source?.displayName || source?.baseUrl || t(locale.value, 'desktop.allSources')
 })

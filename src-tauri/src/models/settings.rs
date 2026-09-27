@@ -10,6 +10,11 @@ use std::collections::HashMap;
 pub const OFFICIAL_OPENAI_OAUTH_SOURCE_ID: &str = "__openai_official_oauth__";
 /// Internal presentation marker for a plan confirmed by the official OAuth usage endpoint.
 pub const OPENAI_OAUTH_PLAN_LABEL_PREFIX: &str = "__openai_oauth_plan:";
+/// Stable category for Gemini CLI requests authenticated by Google's official OAuth flow.
+/// This is deliberately not a user-configurable API source.
+pub const OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID: &str = "__google_official_gemini_oauth__";
+/// Internal presentation marker for a Gemini CLI plan confirmed by its quota endpoint.
+pub const GEMINI_OAUTH_PLAN_LABEL_PREFIX: &str = "__gemini_oauth_plan:";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -790,6 +795,8 @@ pub enum SourceFilter {
     },
     /// Requests resolved from Codex's official ChatGPT OAuth credentials.
     OfficialOpenAiOAuth,
+    /// Requests resolved from Gemini CLI's official Google OAuth credentials.
+    OfficialGoogleGeminiOAuth,
 }
 
 #[derive(Debug, Clone)]
@@ -818,6 +825,9 @@ impl SourceAwareSettings {
             }
             Some(filter) if filter == OFFICIAL_OPENAI_OAUTH_SOURCE_ID => {
                 SourceFilter::OfficialOpenAiOAuth
+            }
+            Some(filter) if filter == OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID => {
+                SourceFilter::OfficialGoogleGeminiOAuth
             }
             Some(source_id) => {
                 // 查找对应的来源

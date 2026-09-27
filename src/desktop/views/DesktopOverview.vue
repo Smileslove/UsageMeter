@@ -39,7 +39,13 @@ import { useQuotaLimits } from '../composables/useQuotaLimits'
 import { formatRate } from '../../utils/format'
 import { metricValueOfBreakdownItem } from '../../utils/metric'
 import { pickEffectiveWindow } from '../../utils/windowFallback'
-import { OFFICIAL_OPENAI_OAUTH_SOURCE_ID, OPENAI_OAUTH_PLAN_LABEL_PREFIX, WINDOW_ORDER } from '../../types'
+import {
+  GEMINI_OAUTH_PLAN_LABEL_PREFIX,
+  OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
+  OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
+  OPENAI_OAUTH_PLAN_LABEL_PREFIX,
+  WINDOW_ORDER
+} from '../../types'
 import type { OverviewBreakdownItem, StatisticsMetric, WindowName, WindowUsage } from '../../types'
 import type { ContributionSection } from './overview/ContributionRanks.vue'
 import type { HealthItem } from './overview/HealthCard.vue'
@@ -231,6 +237,9 @@ function onContributionClick(sectionKey: 'source' | 'tool' | 'model', item: Over
     const sourceId = item.id === OFFICIAL_OPENAI_OAUTH_SOURCE_ID
       || item.id.startsWith(OPENAI_OAUTH_PLAN_LABEL_PREFIX)
       ? OFFICIAL_OPENAI_OAUTH_SOURCE_ID
+      : item.id === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID
+        || item.id.startsWith(GEMINI_OAUTH_PLAN_LABEL_PREFIX)
+        ? OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID
       : item.id
     nav.applyNavigationTarget({ page: 'analytics', sourceId })
   } else if (sectionKey === 'tool') {

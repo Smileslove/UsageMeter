@@ -1,5 +1,6 @@
 use super::LocalUsageDatabase;
-use crate::proxy::{ClaudeConfigManager, CodexConfigManager};
+use crate::proxy::{ClaudeConfigManager, CodexConfigManager, GeminiConfigManager};
+use crate::subscription::GeminiSubscriptionProvider;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
 use std::sync::{mpsc, Once};
@@ -10,10 +11,13 @@ static PASSIVE_ATTRIBUTION_WATCHER_STARTED: Once = Once::new();
 fn watched_config_paths() -> Vec<PathBuf> {
     let codex = CodexConfigManager::new();
     let claude = ClaudeConfigManager::new();
+    let gemini = GeminiConfigManager::new();
     vec![
         codex.config_path().clone(),
         codex.auth_path().clone(),
         claude.settings_path().clone(),
+        gemini.config_path().clone(),
+        GeminiSubscriptionProvider::oauth_credentials_path(),
     ]
 }
 
@@ -78,7 +82,7 @@ fn run_watcher(config_paths: Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
-/// Starts one native filesystem watcher for the direct Codex and Claude configuration files.
+/// Starts one native filesystem watcher for direct Codex, Claude, and Gemini configuration files.
 /// Scanner-based observation remains as a fallback for tools whose config directories do not
 /// exist yet at startup.
 pub fn start_passive_attribution_watcher() {

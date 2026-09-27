@@ -3,7 +3,8 @@ use crate::local_usage::{
     LocalUsageDatabase, ManualAttributionOverride, PassiveAttributionInterval,
 };
 use crate::models::{
-    ApiSource, AppSettings, OFFICIAL_OPENAI_OAUTH_SOURCE_ID, OPENAI_OAUTH_PLAN_LABEL_PREFIX,
+    ApiSource, AppSettings, GEMINI_OAUTH_PLAN_LABEL_PREFIX, OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
+    OFFICIAL_OPENAI_OAUTH_SOURCE_ID, OPENAI_OAUTH_PLAN_LABEL_PREFIX,
 };
 use std::collections::HashMap;
 
@@ -14,7 +15,10 @@ fn matching_interval<'a>(
     let timestamp_ms = fact.timestamp_ms.max(0);
     let mut matches = intervals.iter().filter(|interval| {
         interval.tool == fact.tool
-            && matches!(interval.auth_mode.as_str(), "api_key" | "chatgpt_oauth")
+            && matches!(
+                interval.auth_mode.as_str(),
+                "api_key" | "chatgpt_oauth" | "gemini_oauth"
+            )
             && interval.valid_from_ms <= timestamp_ms
             && interval.confirmed_until_ms >= timestamp_ms
     });
@@ -22,10 +26,15 @@ fn matching_interval<'a>(
     matches.next().is_none().then_some(interval)
 }
 
-fn openai_oauth_source_label(plan_type: Option<&str>) -> String {
+fn first_party_oauth_source_label(source_id: &str, plan_type: Option<&str>) -> String {
+    let plan_prefix = match source_id {
+        OFFICIAL_OPENAI_OAUTH_SOURCE_ID => OPENAI_OAUTH_PLAN_LABEL_PREFIX,
+        OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID => GEMINI_OAUTH_PLAN_LABEL_PREFIX,
+        _ => return source_id.to_string(),
+    };
     plan_type
-        .map(|plan_type| format!("{OPENAI_OAUTH_PLAN_LABEL_PREFIX}{plan_type}"))
-        .unwrap_or_else(|| OFFICIAL_OPENAI_OAUTH_SOURCE_ID.to_string())
+        .map(|plan_type| format!("{plan_prefix}{plan_type}"))
+        .unwrap_or_else(|| source_id.to_string())
 }
 
 fn apply_source(fact: &mut MergedRequestFact, source: &ApiSource, method: AttributionMethod) {
@@ -113,11 +122,17 @@ pub(crate) fn apply_passive_attribution(
         let Some(source_id) = interval.source_id.as_deref() else {
             continue;
         };
-        if source_id == OFFICIAL_OPENAI_OAUTH_SOURCE_ID {
+        if matches!(
+            source_id,
+            OFFICIAL_OPENAI_OAUTH_SOURCE_ID | OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID
+        ) {
             fact.request_base_url = Some(interval.base_url.clone());
-            fact.attribution_source_id = Some(OFFICIAL_OPENAI_OAUTH_SOURCE_ID.to_string());
+            fact.attribution_source_id = Some(source_id.to_string());
             fact.attribution_method = AttributionMethod::ConfigInferred;
-            fact.source_label = Some(openai_oauth_source_label(interval.plan_type.as_deref()));
+            fact.source_label = Some(first_party_oauth_source_label(
+                source_id,
+                interval.plan_type.as_deref(),
+            ));
             continue;
         }
         let Some(source) = settings
@@ -159,6 +174,7 @@ mod tests {
             credential_id: "credential-a",
             source_id,
             plan_type: None,
+            plan_is_confirmed: false,
             observed_at_ms,
         }
     }
@@ -280,6 +296,7 @@ mod tests {
             credential_id: "oauth-credential",
             source_id: Some(crate::models::OFFICIAL_OPENAI_OAUTH_SOURCE_ID),
             plan_type: Some("plus"),
+            plan_is_confirmed: true,
             observed_at_ms,
         };
         database
@@ -304,6 +321,46 @@ mod tests {
         assert!(crate::unified_usage::matches_source_filter(
             &facts[0],
             &SourceFilter::OfficialOpenAiOAuth
+        ));
+    }
+
+    #[test]
+    fn confirmed_gemini_plan_resolves_to_the_official_google_source() {
+        let (_directory, database) = temp_db();
+        let oauth_snapshot = |observed_at_ms| PassiveAttributionSnapshot {
+            tool: "gemini",
+            provider_id: "google",
+            base_url: "https://cloudcode-pa.googleapis.com",
+            auth_mode: "gemini_oauth",
+            credential_id: "oauth-credential",
+            source_id: Some(crate::models::OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID),
+            plan_type: Some("pro"),
+            plan_is_confirmed: true,
+            observed_at_ms,
+        };
+        database
+            .record_passive_attribution_snapshot(oauth_snapshot(1_000))
+            .expect("record plan");
+        database
+            .record_passive_attribution_snapshot(oauth_snapshot(2_000))
+            .expect("confirm plan");
+        let mut facts = vec![local_fact()];
+        facts[0].tool = "gemini".to_string();
+
+        apply_passive_attribution(&database, &mut facts, &AppSettings::default())
+            .expect("apply OAuth attribution");
+
+        assert_eq!(
+            facts[0].attribution_source_id.as_deref(),
+            Some(crate::models::OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID)
+        );
+        assert_eq!(
+            facts[0].source_label.as_deref(),
+            Some("__gemini_oauth_plan:pro")
+        );
+        assert!(crate::unified_usage::matches_source_filter(
+            &facts[0],
+            &SourceFilter::OfficialGoogleGeminiOAuth
         ));
     }
 

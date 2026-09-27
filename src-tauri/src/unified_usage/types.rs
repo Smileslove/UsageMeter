@@ -678,6 +678,10 @@ pub(crate) fn matches_source_filter(fact: &MergedRequestFact, filter: &SourceFil
             fact.attribution_source_id.as_deref()
                 == Some(crate::models::OFFICIAL_OPENAI_OAUTH_SOURCE_ID)
         }
+        SourceFilter::OfficialGoogleGeminiOAuth => {
+            fact.attribution_source_id.as_deref()
+                == Some(crate::models::OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID)
+        }
         SourceFilter::Unknown { known_pairs } => {
             if fact.attribution_method == AttributionMethod::Manual {
                 return fact.attribution_source_id.is_none();

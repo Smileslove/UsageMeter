@@ -5,8 +5,8 @@ use tauri::State;
 use crate::models::{CredentialStatus, SubscriptionQueryResult, SubscriptionQuota};
 use crate::subscription::SubscriptionState;
 
-async fn persist_openai_oauth_plan(quota: &SubscriptionQuota) {
-    if quota.provider != "gpt" || !quota.success {
+async fn persist_first_party_oauth_plan(quota: &SubscriptionQuota) {
+    if !quota.success || !matches!(quota.provider.as_str(), "gpt" | "gemini") {
         return;
     }
     let Some(plan_type) = quota
@@ -16,10 +16,17 @@ async fn persist_openai_oauth_plan(quota: &SubscriptionQuota) {
     else {
         return;
     };
+    let provider = quota.provider.clone();
     let plan_type = plan_type.to_string();
     let changed = tokio::task::spawn_blocking(move || {
-        crate::local_usage::get_local_usage_db()?
-            .observe_openai_oauth_plan(&plan_type, chrono::Utc::now().timestamp_millis())
+        let database = crate::local_usage::get_local_usage_db()?;
+        match provider.as_str() {
+            "gpt" => database
+                .observe_openai_oauth_plan(&plan_type, chrono::Utc::now().timestamp_millis()),
+            "gemini" => database
+                .observe_gemini_oauth_plan(&plan_type, chrono::Utc::now().timestamp_millis()),
+            _ => Ok(false),
+        }
     })
     .await
     .ok()
@@ -38,7 +45,7 @@ pub async fn get_subscription_quota(
 ) -> Result<SubscriptionQueryResult, String> {
     // Check cache first
     if let Some(cached) = state.get_cached(&provider).await {
-        persist_openai_oauth_plan(&cached).await;
+        persist_first_party_oauth_plan(&cached).await;
         return Ok(SubscriptionQueryResult::from_cache(cached));
     }
 
@@ -49,7 +56,7 @@ pub async fn get_subscription_quota(
     if result.success {
         if let Some(quota) = &result.quota {
             state.update_cache(quota.clone()).await;
-            persist_openai_oauth_plan(quota).await;
+            persist_first_party_oauth_plan(quota).await;
         }
     }
 
@@ -72,7 +79,7 @@ pub async fn refresh_subscription_quota(
     if result.success {
         if let Some(quota) = &result.quota {
             state.update_cache(quota.clone()).await;
-            persist_openai_oauth_plan(quota).await;
+            persist_first_party_oauth_plan(quota).await;
         }
     }
 

@@ -5,7 +5,14 @@ import { toBlob, toPng } from 'html-to-image'
 import { Check, Copy, Download, Loader2, Sparkles, X } from 'lucide-vue-next'
 import { sourceLabel, t } from './i18n'
 import { useMonitorStore } from './stores/monitor'
-import { OFFICIAL_OPENAI_OAUTH_SOURCE_ID, type AppLocale, type StatisticsBucket, type StatisticsRangePreset, type StatisticsSummary } from './types'
+import {
+  OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
+  OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
+  type AppLocale,
+  type StatisticsBucket,
+  type StatisticsRangePreset,
+  type StatisticsSummary
+} from './types'
 import ShareUsageCard from './components/statistics/ShareUsageCard.vue'
 import { SHARE_THEMES } from './components/statistics/shareThemes'
 import { formatToolDisplayName } from './utils/toolDisplay'
@@ -146,6 +153,7 @@ const generatedAtLabel = computed(() => {
 function sourceDisplayName(sourceId: string): string | null {
   if (sourceId === '__unknown__') return t(locale.value, 'sources.unknown')
   if (sourceId === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return sourceLabel(locale.value, sourceId)
+  if (sourceId === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) return sourceLabel(locale.value, sourceId)
   const source = store.settings.sourceAware.sources.find(item => item.id === sourceId)
   if (!source) return null
   if (source.displayName) return source.displayName

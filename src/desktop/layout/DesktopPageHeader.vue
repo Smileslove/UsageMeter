@@ -4,7 +4,10 @@ import { RefreshCw, Share2 } from 'lucide-vue-next'
 import { useDesktopNavigationStore } from '../stores/desktopNavigation'
 import { useMonitorStore } from '../../stores/monitor'
 import { sourceLabel, t } from '../../i18n'
-import { OFFICIAL_OPENAI_OAUTH_SOURCE_ID } from '../../types'
+import {
+  OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
+  OFFICIAL_OPENAI_OAUTH_SOURCE_ID
+} from '../../types'
 import { formatToolDisplayName } from '../../utils/toolDisplay'
 import { openShareWindow } from '../../api/appApi'
 import type { DesktopPage } from '../../types'
@@ -30,6 +33,7 @@ const sourceFilterLabel = computed(() => {
     return t(locale.value, 'desktop.allSources')
   }
   if (id === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return sourceLabel(locale.value, id)
+  if (id === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) return sourceLabel(locale.value, id)
   const source = monitor.settings.sourceAware.sources.find(s => s.id === id)
   if (!source) {
     return t(locale.value, 'desktop.allSources')

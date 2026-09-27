@@ -19,6 +19,7 @@ use std::path::PathBuf;
 
 const DEFAULT_GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 const ENV_KEY: &str = "GOOGLE_GEMINI_BASE_URL";
+const API_KEY_ENV_KEYS: [&str; 3] = ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_API_KEY"];
 const RUNTIME_DOCUMENT_KEY: &str = "gemini_proxy_source_handles";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,6 +216,22 @@ impl GeminiConfigManager {
 
     pub fn config_path(&self) -> &PathBuf {
         &self.env_path
+    }
+
+    /// Whether the readable Gemini CLI configuration or this process environment contains an
+    /// API-key mode signal. The key is never returned or persisted.
+    pub fn has_api_key_configuration(&self) -> bool {
+        let file_has_key = self.read_env().ok().is_some_and(|content| {
+            API_KEY_ENV_KEYS
+                .iter()
+                .any(|key| env_get(&content, key).is_some_and(|value| !value.trim().is_empty()))
+        });
+        file_has_key
+            || API_KEY_ENV_KEYS.iter().any(|key| {
+                std::env::var(key)
+                    .ok()
+                    .is_some_and(|value| !value.trim().is_empty())
+            })
     }
 
     /// 读取当前 .env 中的真实路由状态（GOOGLE_GEMINI_BASE_URL）。
@@ -455,6 +472,16 @@ mod tests {
             Some("https://x.example")
         );
         assert_eq!(env_get("GEMINI_API_KEY=secret\n", ENV_KEY), None);
+    }
+
+    #[test]
+    fn readable_api_key_signal_is_detected_without_exposing_the_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let env_path = dir.path().join(".gemini").join(".env");
+        fs::create_dir_all(env_path.parent().unwrap()).unwrap();
+        fs::write(&env_path, "export GOOGLE_API_KEY=secret\n").unwrap();
+
+        assert!(GeminiConfigManager::new_for_path(env_path).has_api_key_configuration());
     }
 
     #[test]

@@ -1,6 +1,9 @@
 use super::LocalUsageDatabase;
-use crate::models::{AppSettings, OFFICIAL_OPENAI_OAUTH_SOURCE_ID};
-use crate::proxy::{ClaudeConfigManager, CodexAuthMode, CodexConfigManager};
+use crate::models::{
+    AppSettings, OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID, OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
+};
+use crate::proxy::{ClaudeConfigManager, CodexAuthMode, CodexConfigManager, GeminiConfigManager};
+use crate::subscription::GeminiSubscriptionProvider;
 use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 
@@ -14,7 +17,7 @@ pub struct PassiveAttributionInterval {
     pub credential_id: String,
     /// Resolved only when the current configuration maps to exactly one configured source.
     pub source_id: Option<String>,
-    /// Official ChatGPT OAuth plan confirmed by its quota endpoint, never a credential.
+    /// First-party OAuth plan confirmed by its quota endpoint, never a credential.
     pub plan_type: Option<String>,
     pub valid_from_ms: i64,
     pub confirmed_until_ms: i64,
@@ -34,6 +37,9 @@ pub(crate) struct PassiveAttributionSnapshot<'a> {
     pub(crate) credential_id: &'a str,
     pub(crate) source_id: Option<&'a str>,
     pub(crate) plan_type: Option<&'a str>,
+    /// True only for a plan value returned by an official quota endpoint. Config observations
+    /// leave this false so they can retain the last confirmed plan for the same OAuth route.
+    pub(crate) plan_is_confirmed: bool,
     pub(crate) observed_at_ms: i64,
 }
 
@@ -44,6 +50,42 @@ fn normalize_openai_oauth_plan_type(plan_type: Option<&str>) -> Option<String> {
         "free" | "go" | "plus" | "pro" | "business" | "enterprise" | "edu"
     )
     .then_some(plan_type)
+}
+
+fn normalize_gemini_oauth_plan_type(plan_type: Option<&str>) -> Option<String> {
+    let plan_type = plan_type?.trim().to_ascii_lowercase();
+    matches!(
+        plan_type.as_str(),
+        "free" | "legacy" | "standard" | "pro" | "ultra" | "enterprise"
+    )
+    .then_some(plan_type)
+}
+
+fn normalize_oauth_plan_type(auth_mode: &str, plan_type: Option<&str>) -> Option<String> {
+    match auth_mode {
+        "chatgpt_oauth" => normalize_openai_oauth_plan_type(plan_type),
+        "gemini_oauth" => normalize_gemini_oauth_plan_type(plan_type),
+        _ => None,
+    }
+}
+
+fn is_first_party_oauth_mode(auth_mode: &str) -> bool {
+    matches!(auth_mode, "chatgpt_oauth" | "gemini_oauth")
+}
+
+const GEMINI_OAUTH_BASE_URL: &str = "https://cloudcode-pa.googleapis.com";
+
+/// OAuth wins only when readable configuration contains no API-key or custom-route signal.
+/// Mixed or environment-overridden setups intentionally remain unattributed.
+fn gemini_oauth_is_eligible() -> bool {
+    let manager = GeminiConfigManager::new();
+    let Ok(route) = manager.read_live_snapshot() else {
+        return false;
+    };
+    !route.had_base_url
+        && !manager.has_api_key_configuration()
+        && !GeminiConfigManager::is_usagemeter_proxy_url(&route.real_base_url)
+        && GeminiSubscriptionProvider::new().has_gemini_oauth()
 }
 
 fn normalize_base_url(base_url: &str) -> String {
@@ -138,7 +180,7 @@ impl LocalUsageDatabase {
 
     /// Observes tool-owned configuration without persisting upstream secrets. A configuration is
     /// eligible only when its readable key and route map to exactly one saved source. Official
-    /// ChatGPT OAuth is the one exception: it is a stable first-party source without an API key.
+    /// OAuth is the exception: it can be a stable first-party source without an API key.
     pub fn observe_passive_attribution(
         &self,
         settings: &AppSettings,
@@ -146,7 +188,8 @@ impl LocalUsageDatabase {
     ) -> Result<bool, String> {
         let codex_changed = self.observe_codex_passive_attribution(settings, observed_at_ms)?;
         let claude_changed = self.observe_claude_passive_attribution(settings, observed_at_ms)?;
-        Ok(codex_changed || claude_changed)
+        let gemini_changed = self.observe_gemini_passive_attribution(observed_at_ms)?;
+        Ok(codex_changed || claude_changed || gemini_changed)
     }
 
     fn observe_codex_passive_attribution(
@@ -171,6 +214,7 @@ impl LocalUsageDatabase {
                 credential_id: &credential_id,
                 source_id: Some(OFFICIAL_OPENAI_OAUTH_SOURCE_ID),
                 plan_type: None,
+                plan_is_confirmed: false,
                 observed_at_ms,
             });
         }
@@ -190,6 +234,7 @@ impl LocalUsageDatabase {
             credential_id: &credential_id,
             source_id: source_id.as_deref(),
             plan_type: None,
+            plan_is_confirmed: false,
             observed_at_ms,
         })
     }
@@ -222,6 +267,25 @@ impl LocalUsageDatabase {
             credential_id: &credential_id,
             source_id: source_id.as_deref(),
             plan_type: None,
+            plan_is_confirmed: false,
+            observed_at_ms,
+        })
+    }
+
+    fn observe_gemini_passive_attribution(&self, observed_at_ms: i64) -> Result<bool, String> {
+        if !gemini_oauth_is_eligible() {
+            return Ok(false);
+        }
+        let credential_id = credential_id("google:gemini_cli_oauth");
+        self.record_passive_attribution_snapshot(PassiveAttributionSnapshot {
+            tool: "gemini",
+            provider_id: "google",
+            base_url: GEMINI_OAUTH_BASE_URL,
+            auth_mode: "gemini_oauth",
+            credential_id: &credential_id,
+            source_id: Some(OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID),
+            plan_type: None,
+            plan_is_confirmed: false,
             observed_at_ms,
         })
     }
@@ -233,9 +297,7 @@ impl LocalUsageDatabase {
         plan_type: &str,
         observed_at_ms: i64,
     ) -> Result<bool, String> {
-        let Some(plan_type) = normalize_openai_oauth_plan_type(Some(plan_type)) else {
-            return Ok(false);
-        };
+        let plan_type = normalize_openai_oauth_plan_type(Some(plan_type));
         let manager = CodexConfigManager::new();
         let Ok(snapshot) = manager.read_live_snapshot() else {
             return Ok(false);
@@ -253,7 +315,33 @@ impl LocalUsageDatabase {
             auth_mode: "chatgpt_oauth",
             credential_id: &credential_id,
             source_id: Some(OFFICIAL_OPENAI_OAUTH_SOURCE_ID),
-            plan_type: Some(&plan_type),
+            plan_type: plan_type.as_deref(),
+            plan_is_confirmed: true,
+            observed_at_ms,
+        })
+    }
+
+    /// Stores a Gemini plan only after the official Cloud Code Assist quota endpoint confirms it.
+    /// No token, email, project identifier, or refresh credential is persisted.
+    pub fn observe_gemini_oauth_plan(
+        &self,
+        plan_type: &str,
+        observed_at_ms: i64,
+    ) -> Result<bool, String> {
+        let plan_type = normalize_gemini_oauth_plan_type(Some(plan_type));
+        if !gemini_oauth_is_eligible() {
+            return Ok(false);
+        }
+        let credential_id = credential_id("google:gemini_cli_oauth");
+        self.record_passive_attribution_snapshot(PassiveAttributionSnapshot {
+            tool: "gemini",
+            provider_id: "google",
+            base_url: GEMINI_OAUTH_BASE_URL,
+            auth_mode: "gemini_oauth",
+            credential_id: &credential_id,
+            source_id: Some(OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID),
+            plan_type: plan_type.as_deref(),
+            plan_is_confirmed: true,
             observed_at_ms,
         })
     }
@@ -310,11 +398,11 @@ impl LocalUsageDatabase {
             .optional()
             .map_err(|error| format!("Failed to load passive attribution snapshot: {error}"))?;
 
-        let plan_type = (auth_mode == "chatgpt_oauth")
-            .then(|| normalize_openai_oauth_plan_type(snapshot.plan_type))
-            .flatten()
-            .or_else(|| {
-                previous.as_ref().and_then(
+        let plan_type = normalize_oauth_plan_type(auth_mode, snapshot.plan_type).or_else(|| {
+            (!snapshot.plan_is_confirmed)
+                .then(|| previous.as_ref())
+                .flatten()
+                .and_then(
                     |(
                         _,
                         _,
@@ -330,12 +418,12 @@ impl LocalUsageDatabase {
                             && previous_auth_mode == auth_mode
                             && previous_credential_id == credential_id
                             && previous_source_id.as_deref() == source_id
-                            && auth_mode == "chatgpt_oauth")
-                            .then(|| previous_plan_type.clone())
-                            .flatten()
+                            && is_first_party_oauth_mode(auth_mode))
+                        .then(|| previous_plan_type.clone())
+                        .flatten()
                     },
                 )
-            });
+        });
         let digest = snapshot_digest(
             provider_id,
             &base_url,
@@ -548,6 +636,7 @@ mod tests {
             credential_id,
             source_id,
             plan_type: None,
+            plan_is_confirmed: false,
             observed_at_ms,
         }
     }
@@ -685,6 +774,7 @@ mod tests {
             credential_id: "oauth-credential",
             source_id: Some(OFFICIAL_OPENAI_OAUTH_SOURCE_ID),
             plan_type,
+            plan_is_confirmed: plan_type.is_some(),
             observed_at_ms,
         };
 
@@ -703,5 +793,64 @@ mod tests {
         assert_eq!(intervals[0].plan_type, None);
         assert_eq!(intervals[1].plan_type.as_deref(), Some("plus"));
         assert_eq!(intervals[1].confirmed_until_ms, 300);
+    }
+
+    #[test]
+    fn confirmed_gemini_plan_is_preserved_by_later_config_observations() {
+        let (_directory, db) = temp_db();
+        let oauth_snapshot = |plan_type, observed_at_ms| PassiveAttributionSnapshot {
+            tool: "gemini",
+            provider_id: "google",
+            base_url: GEMINI_OAUTH_BASE_URL,
+            auth_mode: "gemini_oauth",
+            credential_id: "oauth-credential",
+            source_id: Some(OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID),
+            plan_type,
+            plan_is_confirmed: plan_type.is_some(),
+            observed_at_ms,
+        };
+
+        db.record_passive_attribution_snapshot(oauth_snapshot(None, 100))
+            .expect("record OAuth configuration");
+        db.record_passive_attribution_snapshot(oauth_snapshot(Some("ultra"), 200))
+            .expect("record confirmed plan");
+        assert!(!db
+            .record_passive_attribution_snapshot(oauth_snapshot(None, 300))
+            .expect("confirm existing OAuth plan"));
+
+        let intervals = db
+            .passive_attribution_intervals_for_range(0, 400)
+            .expect("load intervals");
+        assert_eq!(intervals.len(), 2);
+        assert_eq!(intervals[1].plan_type.as_deref(), Some("ultra"));
+        assert_eq!(intervals[1].confirmed_until_ms, 300);
+    }
+
+    #[test]
+    fn unknown_confirmed_gemini_plan_clears_a_stale_plan_label() {
+        let (_directory, db) = temp_db();
+        let oauth_snapshot =
+            |plan_type, plan_is_confirmed, observed_at_ms| PassiveAttributionSnapshot {
+                tool: "gemini",
+                provider_id: "google",
+                base_url: GEMINI_OAUTH_BASE_URL,
+                auth_mode: "gemini_oauth",
+                credential_id: "oauth-credential",
+                source_id: Some(OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID),
+                plan_type,
+                plan_is_confirmed,
+                observed_at_ms,
+            };
+
+        db.record_passive_attribution_snapshot(oauth_snapshot(Some("pro"), true, 100))
+            .expect("record known plan");
+        db.record_passive_attribution_snapshot(oauth_snapshot(Some("future-tier"), true, 200))
+            .expect("record unknown plan");
+
+        let intervals = db
+            .passive_attribution_intervals_for_range(0, 300)
+            .expect("load intervals");
+        assert_eq!(intervals.len(), 2);
+        assert_eq!(intervals[1].plan_type, None);
     }
 }

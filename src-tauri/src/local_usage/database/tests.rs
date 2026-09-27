@@ -2722,7 +2722,7 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
             .get_local_sync_state("schema_version")
             .unwrap()
             .as_deref(),
-        Some("31")
+        Some("32")
     );
     assert!(
         reopened

@@ -87,7 +87,7 @@ impl GeminiSubscriptionProvider {
     }
 
     /// Path to the Gemini CLI OAuth credential file.
-    fn creds_path() -> PathBuf {
+    pub fn oauth_credentials_path() -> PathBuf {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         home.join(".gemini").join("oauth_creds.json")
     }
@@ -102,7 +102,7 @@ impl GeminiSubscriptionProvider {
 
     /// Read and parse `oauth_creds.json`.
     fn read_creds() -> Result<GeminiOAuthCreds, SubscriptionError> {
-        let path = Self::creds_path();
+        let path = Self::oauth_credentials_path();
         if !path.exists() {
             return Err(SubscriptionError::NoCredentials);
         }
