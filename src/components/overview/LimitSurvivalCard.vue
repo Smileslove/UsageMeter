@@ -327,11 +327,6 @@ function sourceCaptionOf(q: SubscriptionQuota): string {
   return q.tool
 }
 
-function localBarClass(pct: number): string {
-  if (pct >= 90) return 'bg-red-400'
-  if (pct >= 70) return 'bg-amber-400'
-  return 'bg-cyan-400'
-}
 </script>
 
 <template>
@@ -363,7 +358,6 @@ function localBarClass(pct: number): string {
               <div v-if="block" class="compact-progress quota-strip-progress quota-strip-progress-official">
                 <div
                   class="compact-progress-fill"
-                  :class="localBarClass(timeElapsedPct)"
                   :style="{ width: `${timeElapsedPct}%` }"
                 />
               </div>
@@ -544,7 +538,7 @@ function localBarClass(pct: number): string {
 .metric-body {
   min-width: 0;
   flex: 1 1 0%;
-  padding: 0.5rem 0.625rem 0.375rem;
+  padding: 0.375rem 0.5rem 0.25rem;
 }
 
 .writing-vertical {
@@ -555,7 +549,7 @@ function localBarClass(pct: number): string {
 .limit-stack {
   display: flex;
   flex-direction: column;
-  gap: 0.4375rem;
+  gap: 0.3125rem;
 }
 
 .compact-dot {
@@ -611,7 +605,7 @@ function localBarClass(pct: number): string {
   width: 100%;
   overflow: hidden;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--theme-text-primary) 10%, transparent);
+  background: var(--compact-progress-track, color-mix(in srgb, var(--theme-text-primary) 10%, transparent));
 }
 
 .compact-progress-fill {
@@ -637,17 +631,18 @@ function localBarClass(pct: number): string {
   --compact-accent: var(--theme-chart-requests);
   --compact-accent-soft: color-mix(in srgb, var(--compact-accent) 12%, transparent);
   --compact-accent-border: color-mix(in srgb, var(--compact-accent) 22%, transparent);
+  --compact-progress-track: color-mix(in srgb, var(--compact-accent) 16%, transparent);
   display: flex;
   min-width: 0;
   flex-direction: column;
   border-radius: 0.875rem;
   border: 1px solid color-mix(in srgb, var(--theme-text-primary) 8%, transparent);
   background: color-mix(in srgb, var(--theme-text-primary) 3%, transparent);
-  padding: 0.5rem 0.625rem;
+  padding: 0.4375rem 0.5rem;
 }
 
 .quota-strip-multi {
-  padding: 0.46875rem 0.5625rem;
+  padding: 0.40625rem 0.5rem;
 }
 
 .quota-strip-head {
@@ -734,8 +729,8 @@ function localBarClass(pct: number): string {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 0.5rem;
-  margin-top: 0.3125rem;
+  gap: 0.375rem;
+  margin-top: 0.25rem;
 }
 
 .quota-strip-official-body-tiered {
@@ -746,8 +741,8 @@ function localBarClass(pct: number): string {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 0.1875rem;
-  margin-top: 0.25rem;
+  gap: 0.125rem;
+  margin-top: 0.1875rem;
 }
 
 .quota-strip-official-meta {
@@ -767,17 +762,18 @@ function localBarClass(pct: number): string {
 }
 
 .quota-strip-official-meta-tiered {
-  gap: 0.25rem;
+  flex: 1 1 0;
+  gap: 0.1875rem;
 }
 
 .quota-strip-local-meta {
-  flex: 0 1 auto;
+  flex: 1 1 0;
 }
 
 .quota-strip-progress-official {
-  flex: 1 1 0;
+  flex: 0 0 42%;
   min-width: 0;
-  width: 100%;
+  width: auto;
   margin-top: 0;
 }
 
@@ -803,7 +799,7 @@ function localBarClass(pct: number): string {
 }
 
 .quota-strip-caption-tier-label {
-  font-size: 9.5px;
+  font-size: 10px;
 }
 
 .quota-strip-caption-emphasis {
@@ -821,7 +817,7 @@ function localBarClass(pct: number): string {
 }
 
 .quota-strip-tier-row {
-  padding-top: 0.25rem;
+  padding-top: 0.1875rem;
   border-top: 1px solid color-mix(in srgb, var(--theme-text-primary) 6%, transparent);
 }
 
@@ -830,16 +826,14 @@ function localBarClass(pct: number): string {
   border-top: 0;
 }
 
-.quota-strip-tier-row .quota-strip-progress-official {
-  flex-basis: 46%;
-}
-
-.quota-strip-tier-row .compact-progress {
-  height: 0.3125rem;
+.quota-strip-tier-row .quota-strip-caption-tier-label {
+  font-weight: 600;
 }
 
 .quota-strip-metric-tiered {
-  font-size: 11.5px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .quota-row-dot {
