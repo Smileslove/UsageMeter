@@ -53,30 +53,6 @@ async function selectWindow(window: WindowName) {
   }
 }
 
-// 速率摘要数据
-const rateSummary = computed(() => store.rateSummary)
-// 是否有速率数据。切换窗口期间沿用旧窗口速率（配合整体淡化提示），
-// 避免行结构在加载中途切换占位再切回造成抖动
-const hasRateData = computed(() => {
-  if (!rateSummary.value) return false
-  // 必须有实际请求才算有数据，避免错误时返回的空统计显示为 0.00
-  return rateSummary.value.overall.requestCount > 0
-})
-
-const avgResponseDisplay = computed(() => {
-  if (!hasRateData.value || !rateSummary.value) return '--'
-  const value = rateSummary.value.ttft.avgTtftMs
-  if (!value || value <= 0) return '--'
-  if (value >= 1000) return `${(value / 1000).toFixed(2)}s`
-  return `${Math.round(value)}ms`
-})
-
-// 格式化速率显示（保留两位小数）
-const formatRate = (rate: number): string => {
-  if (rate === 0) return '0.00'
-  return rate.toFixed(2)
-}
-
 // 详细模式状态 - 统一控制所有卡片
 const isDetailMode = ref(false)  // 详细模式（千位分隔符）
 const showUsdCost = ref(false)   // 费用显示美元
@@ -106,6 +82,10 @@ function requestDisplay(): string {
     return detailedNumber(data.requestUsed)
   }
   return formatRequestCount(data.requestUsed)
+}
+
+function requestCountDisplay(count: number): string {
+  return isDetailMode.value ? detailedNumber(count) : formatRequestCount(count)
 }
 
 // Token 显示
@@ -232,21 +212,15 @@ function detailPairSizeClass(first: string, second: string): string {
               <p :class="['metric-value dark:!text-gray-50', metricValueSizeClass(requestDisplay())]">{{ requestDisplay() }}</p>
             </div>
             <div class="metric-details">
-              <!-- 有速率数据时显示速率，无速率数据时显示占位 -->
-              <div v-if="hasRateData" class="metric-detail-row text-emerald-600 dark:text-emerald-300">
+              <div class="metric-detail-row text-emerald-600 dark:text-emerald-300">
                 <span class="metric-dot bg-emerald-400/70"></span>
-                <span class="metric-detail-label">{{ t(store.settings.locale, 'overview.responseShort') }}</span>
-                <span class="metric-detail-value ml-auto text-right">{{ avgResponseDisplay }}</span>
+                <span class="metric-detail-label">{{ t(store.settings.locale, 'statistics.localRequests') }}</span>
+                <span class="metric-detail-value ml-auto text-right">{{ requestCountDisplay(summaryWindowData.localRequestCount) }}</span>
               </div>
-              <div v-if="hasRateData" class="metric-detail-row text-emerald-600 dark:text-emerald-300">
-                <span class="metric-dot bg-emerald-400/70"></span>
-                <span class="metric-detail-label">{{ t(store.settings.locale, 'common.avgRate') }}</span>
-                <span class="metric-detail-value ml-auto text-right">{{ formatRate(rateSummary!.overall.avgTokensPerSecond) }} t/s</span>
-              </div>
-              <div v-else class="metric-detail-row text-gray-400 dark:text-gray-500">
-                <span class="metric-dot bg-gray-300/70"></span>
-                <span class="metric-detail-label">{{ t(store.settings.locale, 'common.avgRate') }}</span>
-                <span class="metric-detail-value">--</span>
+              <div class="metric-detail-row text-teal-600 dark:text-teal-300">
+                <span class="metric-dot bg-teal-400/70"></span>
+                <span class="metric-detail-label">{{ t(store.settings.locale, 'statistics.proxyRequests') }}</span>
+                <span class="metric-detail-value ml-auto text-right">{{ requestCountDisplay(summaryWindowData.proxyRequestCount) }}</span>
               </div>
             </div>
           </div>

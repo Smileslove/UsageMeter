@@ -212,6 +212,8 @@ mod tests {
             cache_create_tokens: 5,
             cache_read_tokens: 5,
             request_used: 3,
+            local_request_count: 1,
+            proxy_request_count: 2,
             cost: 1.25,
             success_requests: 0,
             client_error_requests: 0,
@@ -421,6 +423,8 @@ mod tests {
         let (summary_usage, _) = build_window_usage_from_facts("custom", &facts);
 
         assert_eq!(summary_usage.request_used, 2);
+        assert_eq!(summary_usage.local_request_count, 1);
+        assert_eq!(summary_usage.proxy_request_count, 1);
         assert_eq!(summary_usage.success_requests, 2);
         assert_eq!(summary_usage.client_error_requests, 0);
         assert_eq!(summary_usage.server_error_requests, 0);

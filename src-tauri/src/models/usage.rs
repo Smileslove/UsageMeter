@@ -100,6 +100,12 @@ pub struct WindowUsage {
     pub cache_create_tokens: u64,
     pub cache_read_tokens: u64,
     pub request_used: u64,
+    /// Requests covered only by local session files.
+    #[serde(default)]
+    pub local_request_count: u64,
+    /// Proxy-backed requests, including records merged with local session data.
+    #[serde(default)]
+    pub proxy_request_count: u64,
     /// 该窗口的费用（美元）
     #[serde(default)]
     pub cost: f64,

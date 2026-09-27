@@ -42,6 +42,8 @@ function windowUsage(window: string, requestUsed: number): WindowUsage {
     cacheCreateTokens: 0,
     cacheReadTokens: 0,
     requestUsed,
+    localRequestCount: requestUsed,
+    proxyRequestCount: 0,
     cost: requestUsed * 0.01,
     successRequests: requestUsed,
     clientErrorRequests: 0,

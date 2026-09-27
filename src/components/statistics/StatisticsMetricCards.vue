@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { CircleDollarSign, CircleX, Database, MessageSquare, Sigma, CheckCircle2 } from 'lucide-vue-next'
+import { CircleDollarSign, Database, MessageSquare, Sigma } from 'lucide-vue-next'
 import { t } from '../../i18n'
 import { formatCost, formatRequestCount, formatTokenValue } from '../../utils/format'
 import type { AppLocale, StatisticsTotals } from '../../types'
@@ -56,8 +56,6 @@ function detailedNumber(value: number | null | undefined): string {
 // 请求来源拆分
 const localCount  = computed(() => props.totals?.localRequestCount  ?? 0)
 const proxyCount  = computed(() => props.totals?.proxyRequestCount  ?? 0)
-const hasMixedSources = computed(() => localCount.value > 0 && proxyCount.value > 0)
-const hasProxyRequests = computed(() => proxyCount.value > 0)
 
 
 function requestCountDisplay(count: number): string {
@@ -66,18 +64,9 @@ function requestCountDisplay(count: number): string {
     : formatRequestCount(count)
 }
 
-function requestStatusValue(raw: number | null | undefined): string {
-  if (raw == null) return '--'
-  return isDetailMode.value ? detailedNumber(raw) : formatRequestCount(raw)
-}
-
-function requestDisplay(key: 'total' | 'success' | 'error'): string {
+function requestDisplay(): string {
   const totals = props.totals
-  if (key === 'total') {
-    return isDetailMode.value ? detailedNumber(totals?.requestCount) : value('requests')
-  }
-  if (key === 'success') return requestStatusValue(totals?.successRequests)
-  return requestStatusValue(totals?.errorRequests)
+  return isDetailMode.value ? detailedNumber(totals?.requestCount) : value('requests')
 }
 
 function tokenDisplay(key: 'total' | 'input' | 'output'): string {
@@ -177,50 +166,19 @@ function detailPairSizeClass(first: string, second: string): string {
         <div class="metric-body">
           <div class="metric-total">
             <p class="metric-label">{{ t(locale, 'statistics.requests') }}</p>
-            <p :class="['metric-value dark:!text-gray-50', metricValueSizeClass(requestDisplay('total'))]">{{ requestDisplay('total') }}</p>
+            <p :class="['metric-value dark:!text-gray-50', metricValueSizeClass(requestDisplay())]">{{ requestDisplay() }}</p>
           </div>
           <div class="metric-details">
-            <!-- 混合来源：分别展示本地 / 代理行 -->
-            <template v-if="hasMixedSources">
-              <!-- 本地行 -->
-              <div class="metric-detail-row text-emerald-600 dark:text-emerald-300">
-                <span class="metric-dot bg-emerald-400/70"></span>
-                <span class="metric-detail-label">{{ t(locale, 'statistics.localRequests') }}</span>
-                <span :class="['metric-detail-value', detailPairSizeClass(requestCountDisplay(localCount), requestCountDisplay(proxyCount))]">{{ requestCountDisplay(localCount) }}</span>
-              </div>
-              <!-- 代理行 -->
-              <div class="metric-detail-row text-emerald-600 dark:text-emerald-300">
-                <span class="metric-dot bg-emerald-400/70"></span>
-                <span class="metric-detail-label">{{ t(locale, 'statistics.proxyRequests') }}</span>
-                <span :class="['metric-detail-value', detailPairSizeClass(requestCountDisplay(localCount), requestCountDisplay(proxyCount))]">{{ requestCountDisplay(proxyCount) }}</span>
-              </div>
-            </template>
-            <!-- 纯代理：本地 = 0，只展示成功/失败 -->
-            <template v-else-if="hasProxyRequests">
-              <div class="metric-detail-row text-emerald-600 dark:text-emerald-300">
-                <CheckCircle2 class="w-3 h-3 shrink-0" />
-                <span class="metric-detail-label">{{ t(locale, 'statistics.successRequests') }}</span>
-                <span :class="['metric-detail-value', detailPairSizeClass(requestDisplay('success'), requestDisplay('error'))]">{{ requestDisplay('success') }}</span>
-              </div>
-              <div class="metric-detail-row text-rose-500 dark:text-rose-300">
-                <CircleX class="w-3 h-3 shrink-0" />
-                <span class="metric-detail-label">{{ t(locale, 'statistics.errorRequests') }}</span>
-                <span :class="['metric-detail-value', detailPairSizeClass(requestDisplay('success'), requestDisplay('error'))]">{{ requestDisplay('error') }}</span>
-              </div>
-            </template>
-            <!-- 纯本地文件：无代理数据 -->
-            <template v-else>
-              <div class="metric-detail-row text-emerald-600 dark:text-emerald-300">
-                <span class="metric-dot bg-emerald-400/70"></span>
-                <span class="metric-detail-label">{{ t(locale, 'statistics.localRequests') }}</span>
-                <span class="metric-detail-value">{{ requestCountDisplay(localCount) }}</span>
-              </div>
-              <div class="metric-detail-row text-gray-400 dark:text-gray-500">
-                <span class="metric-dot bg-gray-300/70 dark:bg-gray-600/70"></span>
-                <span class="metric-detail-label">{{ t(locale, 'statistics.statusNotAvailable') }}</span>
-                <span class="metric-detail-value">--</span>
-              </div>
-            </template>
+            <div class="metric-detail-row text-emerald-600 dark:text-emerald-300">
+              <span class="metric-dot bg-emerald-400/70"></span>
+              <span class="metric-detail-label">{{ t(locale, 'statistics.localRequests') }}</span>
+              <span :class="['metric-detail-value', detailPairSizeClass(requestCountDisplay(localCount), requestCountDisplay(proxyCount))]">{{ requestCountDisplay(localCount) }}</span>
+            </div>
+            <div class="metric-detail-row text-teal-600 dark:text-teal-300">
+              <span class="metric-dot bg-teal-400/70"></span>
+              <span class="metric-detail-label">{{ t(locale, 'statistics.proxyRequests') }}</span>
+              <span :class="['metric-detail-value', detailPairSizeClass(requestCountDisplay(localCount), requestCountDisplay(proxyCount))]">{{ requestCountDisplay(proxyCount) }}</span>
+            </div>
           </div>
         </div>
       </div>

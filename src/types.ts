@@ -404,6 +404,8 @@ export interface WindowUsage {
   cacheCreateTokens: number
   cacheReadTokens: number
   requestUsed: number
+  localRequestCount: number
+  proxyRequestCount: number
   /** 该窗口的费用（美元） */
   cost: number
   successRequests: number

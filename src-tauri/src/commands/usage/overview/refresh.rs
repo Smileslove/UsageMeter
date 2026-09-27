@@ -47,6 +47,8 @@ fn empty_window_usage(window: &str) -> WindowUsage {
         cache_create_tokens: 0,
         cache_read_tokens: 0,
         request_used: 0,
+        local_request_count: 0,
+        proxy_request_count: 0,
         cost: 0.0,
         success_requests: 0,
         client_error_requests: 0,
@@ -65,6 +67,12 @@ fn merge_window_usage(target: &mut WindowUsage, delta: &WindowUsage) {
         .cache_read_tokens
         .saturating_add(delta.cache_read_tokens);
     target.request_used = target.request_used.saturating_add(delta.request_used);
+    target.local_request_count = target
+        .local_request_count
+        .saturating_add(delta.local_request_count);
+    target.proxy_request_count = target
+        .proxy_request_count
+        .saturating_add(delta.proxy_request_count);
     target.cost += delta.cost;
     target.success_requests = target
         .success_requests
@@ -91,6 +99,8 @@ fn usage_from_daily_summary_row(
             cache_create_tokens: row.cache_create_tokens,
             cache_read_tokens: row.cache_read_tokens,
             request_used: row.request_count,
+            local_request_count: row.local_only_requests,
+            proxy_request_count: row.proxy_backed_requests,
             cost: row.total_cost,
             success_requests: row.success_request_count,
             client_error_requests: row.client_error_requests,
@@ -105,6 +115,8 @@ fn usage_from_daily_summary_row(
             cache_create_tokens: row.visible_cache_create_tokens,
             cache_read_tokens: row.visible_cache_read_tokens,
             request_used: row.visible_request_count,
+            local_request_count: row.local_only_requests,
+            proxy_request_count: row.proxy_backed_requests,
             cost: row.visible_cost,
             success_requests: row.success_request_count,
             client_error_requests: 0,
@@ -367,6 +379,8 @@ pub(super) fn build_window_usage_from_facts(
             cache_create_tokens: overall.cache_create_tokens,
             cache_read_tokens: overall.cache_read_tokens,
             request_used: overall.request_count,
+            local_request_count: overall.local_request_count,
+            proxy_request_count: overall.proxy_request_count,
             cost: overall.cost,
             success_requests: overall.success_requests,
             client_error_requests: overall.client_error_requests,

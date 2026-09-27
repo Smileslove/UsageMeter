@@ -56,7 +56,8 @@ const DEFERRED_BUNDLE: OverviewDeferredBundle = {
   generatedAtEpoch: 1,
   windowUsage: {
     window: '24h', tokenUsed: 0, inputTokens: 0, outputTokens: 0,
-    cacheCreateTokens: 0, cacheReadTokens: 0, requestUsed: 0, cost: 0,
+    cacheCreateTokens: 0, cacheReadTokens: 0, requestUsed: 0,
+    localRequestCount: 0, proxyRequestCount: 0, cost: 0,
     successRequests: 0, clientErrorRequests: 0, serverErrorRequests: 0,
   },
   usageSummary: {

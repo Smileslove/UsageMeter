@@ -11,6 +11,8 @@ function makeWindow(window: string, usage: Partial<WindowUsage> = {}): WindowUsa
     cacheCreateTokens: 0,
     cacheReadTokens: 0,
     requestUsed: 0,
+    localRequestCount: 0,
+    proxyRequestCount: 0,
     cost: 0,
     successRequests: 0,
     clientErrorRequests: 0,
