@@ -251,7 +251,13 @@ pub fn run() {
                 "desktop" => {
                     commands::persist_desktop_window_state(window);
                     api.prevent_close();
-                    let _ = window.hide();
+                    if let Err(error) = window.hide() {
+                        eprintln!("[UsageMeter] Failed to hide desktop window: {error}");
+                    } else if let Err(error) =
+                        commands::set_desktop_dock_visibility(window.app_handle(), false)
+                    {
+                        eprintln!("[UsageMeter] Failed to restore menu-bar activation policy: {error}");
+                    }
                 }
                 _ => {}
             },

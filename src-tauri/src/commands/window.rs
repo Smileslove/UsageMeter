@@ -118,6 +118,41 @@ impl DesktopNavigationTarget {
 #[derive(Default)]
 pub struct PendingDesktopNavigation(Mutex<Option<DesktopNavigationTarget>>);
 
+/// Keep the menu-bar-only mode when the desktop window is hidden, and use
+/// regular app activation while it is open so Dock and Cmd-Tab can restore it.
+pub fn set_desktop_dock_visibility(
+    app: &tauri::AppHandle,
+    show_dock_icon: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let policy = if show_dock_icon {
+            tauri::ActivationPolicy::Regular
+        } else {
+            tauri::ActivationPolicy::Accessory
+        };
+        app.set_activation_policy(policy)
+            .map_err(|error| format!("ERR_DESKTOP_ACTIVATION_POLICY: {error}"))?;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, show_dock_icon);
+
+    Ok(())
+}
+
+fn restore_menu_bar_mode_if_desktop_hidden(app: &tauri::AppHandle) {
+    let desktop_visible = app
+        .get_webview_window("desktop")
+        .map(|window| window.is_visible().unwrap_or(true))
+        .unwrap_or(false);
+    if !desktop_visible {
+        if let Err(error) = set_desktop_dock_visibility(app, false) {
+            eprintln!("[UsageMeter] Failed to restore menu-bar activation policy: {error}");
+        }
+    }
+}
+
 /// 打开或聚焦桌面主窗口（单例，label 固定为 "desktop"）。
 ///
 /// - 已存在：show -> unminimize -> set_focus，并向窗口 emit `desktop-navigation`
@@ -135,8 +170,13 @@ pub fn open_desktop_window(
             .map_err(|e| format!("ERR_INVALID_DESKTOP_TARGET: {e}"))?;
     }
 
+    set_desktop_dock_visibility(&app, true)?;
+
     if let Some(window) = app.get_webview_window("desktop") {
-        let _ = window.show();
+        if let Err(error) = window.show() {
+            restore_menu_bar_mode_if_desktop_hidden(&app);
+            return Err(format!("ERR_SHOW_DESKTOP_WINDOW: {error}"));
+        }
         let _ = window.unminimize();
         let _ = window.set_focus();
         if let Some(target) = target {
@@ -180,9 +220,13 @@ pub fn open_desktop_window(
         None => (builder.center(), false),
     };
 
-    let window = builder
-        .build()
-        .map_err(|e| format!("ERR_OPEN_DESKTOP_WINDOW: {e}"))?;
+    let window = match builder.build() {
+        Ok(window) => window,
+        Err(error) => {
+            restore_menu_bar_mode_if_desktop_hidden(&app);
+            return Err(format!("ERR_OPEN_DESKTOP_WINDOW: {error}"));
+        }
+    };
 
     if restore_maximized {
         let _ = window.maximize();
