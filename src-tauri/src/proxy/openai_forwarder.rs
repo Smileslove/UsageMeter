@@ -612,6 +612,20 @@ fn is_hop_by_hop_response_header(name: &str) -> bool {
 fn openai_endpoint_url(target_base_url: &str, path: &str) -> String {
     let base = target_base_url.trim_end_matches('/');
     let raw_path = path.trim_start_matches('/');
+    let base_ends_with_v1 = reqwest::Url::parse(base)
+        .ok()
+        .is_some_and(|url| url.path().trim_end_matches('/').rsplit('/').next() == Some("v1"));
+    let raw_path = if base_ends_with_v1 {
+        raw_path
+            .strip_prefix("v1")
+            .filter(|suffix| {
+                suffix.is_empty() || suffix.starts_with('/') || suffix.starts_with('?')
+            })
+            .map(|suffix| suffix.strip_prefix('/').unwrap_or(suffix))
+            .unwrap_or(raw_path)
+    } else {
+        raw_path
+    };
     format!("{}/{}", base, raw_path)
 }
 
@@ -1363,10 +1377,22 @@ mod tests {
     }
 
     #[test]
-    fn preserves_raw_request_paths() {
+    fn avoids_duplicate_v1_prefix_without_rewriting_other_paths() {
         assert_eq!(
-            openai_endpoint_url("https://api.openai.com/v1", "/v1/v1/responses"),
-            "https://api.openai.com/v1/v1/v1/responses"
+            openai_endpoint_url("https://api.openai.com/v1", "/v1/responses"),
+            "https://api.openai.com/v1/responses"
+        );
+        assert_eq!(
+            openai_endpoint_url("https://api.example.com/api/v1", "/v1/responses?mode=fast"),
+            "https://api.example.com/api/v1/responses?mode=fast"
+        );
+        assert_eq!(
+            openai_endpoint_url("https://api.example.com/v2", "/v1/responses"),
+            "https://api.example.com/v2/v1/responses"
+        );
+        assert_eq!(
+            openai_endpoint_url("https://api.example.com/v1", "/v1beta/responses"),
+            "https://api.example.com/v1/v1beta/responses"
         );
         assert_eq!(
             openai_endpoint_url("https://chatgpt.com/backend-api/codex", "/v1/responses"),
