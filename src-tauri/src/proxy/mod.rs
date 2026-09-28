@@ -41,5 +41,7 @@ pub use gemini_config::{GeminiConfigManager, GeminiSourceRegistry};
 pub use opencode_config::{OpenCodeConfigManager, OpenCodeSourceRegistry};
 pub use reasonix_config::{ReasonixConfigManager, ReasonixSourceRegistry};
 pub use server::ProxyServer;
-pub use source_detector::{compute_source_id, normalize_handle_id, normalize_source_id};
+pub use source_detector::{
+    compute_source_id, normalize_handle_id, normalize_source_id, register_source_to_settings,
+};
 pub use types::*;

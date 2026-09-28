@@ -1,5 +1,7 @@
 use super::LocalUsageDatabase;
-use crate::proxy::{ClaudeConfigManager, CodexConfigManager, GeminiConfigManager};
+use crate::proxy::{
+    ClaudeConfigManager, CodexConfigManager, GeminiConfigManager, OpenCodeConfigManager,
+};
 use crate::subscription::{ClaudeSubscriptionProvider, GeminiSubscriptionProvider};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::PathBuf;
@@ -12,6 +14,19 @@ fn watched_config_paths() -> Vec<PathBuf> {
     let codex = CodexConfigManager::new();
     let claude = ClaudeConfigManager::new();
     let gemini = GeminiConfigManager::new();
+    let opencode = OpenCodeConfigManager::new();
+    let opencode_auth = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".local")
+                .join("share")
+        })
+        .join("opencode")
+        .join("auth.json");
     vec![
         codex.config_path().clone(),
         codex.auth_path().clone(),
@@ -19,6 +34,8 @@ fn watched_config_paths() -> Vec<PathBuf> {
         ClaudeSubscriptionProvider::oauth_credentials_path(),
         gemini.config_path().clone(),
         GeminiSubscriptionProvider::oauth_credentials_path(),
+        opencode.config_path().clone(),
+        opencode_auth,
     ]
 }
 
@@ -83,7 +100,7 @@ fn run_watcher(config_paths: Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
-/// Starts one native filesystem watcher for direct Codex, Claude, and Gemini configuration files.
+/// Starts one native filesystem watcher for direct Codex, Claude, Gemini, and OpenCode configuration files.
 /// Scanner-based observation remains as a fallback for tools whose config directories do not
 /// exist yet at startup.
 pub fn start_passive_attribution_watcher() {

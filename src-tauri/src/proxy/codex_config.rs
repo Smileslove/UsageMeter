@@ -256,7 +256,10 @@ impl CodexConfigManager {
             .parse::<DocumentMut>()
             .map_err(|e| format!("Failed to parse Codex config.toml: {}", e))?;
         let auth_json = self.read_auth_json()?;
-        let auth_mode = detect_auth_mode(auth_json.as_ref());
+        // A provider-scoped bearer token is an explicit third-party route even when auth.json
+        // still contains the user's official ChatGPT OAuth login state.
+        let config_api_key = extract_config_api_key_from_doc(&doc);
+        let auth_mode = effective_auth_mode(auth_json.as_ref(), config_api_key.as_deref());
         let provider_id = detect_provider_id(&doc)?;
         let had_chatgpt_base_url = chatgpt_base_url(&doc).is_some();
         let real_base_url = match auth_mode {
@@ -338,7 +341,11 @@ impl CodexConfigManager {
         let doc = config_toml
             .parse::<DocumentMut>()
             .map_err(|e| format!("Failed to parse Codex config.toml: {}", e))?;
-        let auth_mode = detect_auth_mode(self.read_auth_json()?.as_ref());
+        let auth_json = self.read_auth_json()?;
+        let auth_mode = effective_auth_mode(
+            auth_json.as_ref(),
+            extract_config_api_key_from_doc(&doc).as_deref(),
+        );
 
         if auth_mode == CodexAuthMode::ChatGpt {
             return Ok(chatgpt_base_url(&doc)
@@ -410,17 +417,20 @@ impl CodexConfigManager {
         url_identity::extract_source_id_from_proxy_url(base_url, &["codex"])
     }
 
-    /// 读取 Codex 在 `auth.json` 中保存的完整 API key（ApiKey 模式）。
+    /// 读取 Codex 保存的完整 API key（ApiKey 模式）。
     ///
-    /// 仅返回非空 `OPENAI_API_KEY`；ChatGPT(OAuth) 模式或缺失时返回 None。
-    /// 用于多工具中转额度查询，读取后即时使用、不持久化。
+    /// Codex 的第三方 provider 可能将 key 放在 config.toml 的
+    /// `experimental_bearer_token`，同时保留 auth.json 中的官方 OAuth 登录态。
+    /// auth.json 中的 `OPENAI_API_KEY` 优先，provider 作用域 bearer token 作为回退。
+    /// ChatGPT(OAuth) 模式或凭据缺失时返回 None。读取后即时使用、不持久化。
     pub fn read_api_key(&self) -> Option<String> {
-        let auth = self.read_auth_json().ok()??;
-        auth.get("OPENAI_API_KEY")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
+        let auth = self.read_auth_json().ok().flatten();
+        if let Some(api_key) = auth.as_ref().and_then(extract_auth_api_key) {
+            return Some(api_key);
+        }
+
+        let config_toml = fs::read_to_string(&self.config_path).ok()?;
+        extract_config_api_key(&config_toml)
     }
 
     fn read_auth_json(&self) -> Result<Option<serde_json::Value>, String> {
@@ -468,10 +478,10 @@ fn detect_provider_id(doc: &DocumentMut) -> Result<String, String> {
         return Ok(ROOT_PROVIDER_ID.to_string());
     }
 
-    if let Some(providers) = doc.get("model_providers").and_then(Item::as_table) {
+    if let Some(providers) = doc.get("model_providers").and_then(Item::as_table_like) {
         for (key, item) in providers.iter() {
             if item
-                .as_table()
+                .as_table_like()
                 .and_then(|table| table.get("base_url"))
                 .and_then(Item::as_str)
                 .is_some()
@@ -493,12 +503,61 @@ fn provider_base_url(doc: &DocumentMut, provider_id: &str) -> Option<String> {
     }
 
     doc.get("model_providers")?
-        .as_table()?
+        .as_table_like()?
         .get(provider_id)?
-        .as_table()?
+        .as_table_like()?
         .get("base_url")?
         .as_str()
         .map(str::to_string)
+}
+
+fn extract_auth_api_key(auth: &serde_json::Value) -> Option<String> {
+    auth.get("OPENAI_API_KEY")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string)
+}
+
+/// Extracts the active Codex provider's inline bearer token. This is the shape used when a
+/// third-party provider must coexist with the official ChatGPT OAuth credentials in auth.json.
+fn extract_config_api_key(config_toml: &str) -> Option<String> {
+    if !config_toml.contains("experimental_bearer_token") {
+        return None;
+    }
+    let doc = config_toml.parse::<DocumentMut>().ok()?;
+    extract_config_api_key_from_doc(&doc)
+}
+
+fn extract_config_api_key_from_doc(doc: &DocumentMut) -> Option<String> {
+    let provider_id = detect_provider_id(doc).ok();
+    let provider_token = provider_id
+        .as_deref()
+        .filter(|provider_id| *provider_id != ROOT_PROVIDER_ID)
+        .and_then(|provider_id| {
+            doc.get("model_providers")
+                .and_then(Item::as_table_like)
+                .and_then(|providers| providers.get(provider_id))
+                .and_then(Item::as_table_like)
+                .and_then(|provider| provider.get("experimental_bearer_token"))
+                .and_then(Item::as_str)
+        });
+    provider_token
+        .or_else(|| doc.get("experimental_bearer_token").and_then(Item::as_str))
+        .map(str::trim)
+        .filter(|key| !key.is_empty() && *key != "PROXY_MANAGED")
+        .map(str::to_string)
+}
+
+fn effective_auth_mode(
+    auth: Option<&serde_json::Value>,
+    config_api_key: Option<&str>,
+) -> CodexAuthMode {
+    if config_api_key.is_some_and(|key| !key.trim().is_empty()) {
+        CodexAuthMode::ApiKey
+    } else {
+        detect_auth_mode(auth)
+    }
 }
 
 fn chatgpt_base_url(doc: &DocumentMut) -> Option<String> {
@@ -755,6 +814,89 @@ codex_hooks = true
             }
         });
         assert_eq!(detect_auth_mode(Some(&auth)), CodexAuthMode::ChatGpt);
+    }
+
+    #[test]
+    fn extracts_provider_scoped_bearer_token_when_auth_json_has_no_api_key() {
+        let config = r#"
+model_provider = "custom"
+
+[model_providers.custom]
+base_url = "https://api.example.com/v1"
+experimental_bearer_token = "sk-third-party-token"
+"#;
+
+        assert_eq!(
+            extract_config_api_key(config).as_deref(),
+            Some("sk-third-party-token")
+        );
+    }
+
+    #[test]
+    fn provider_bearer_token_overrides_preserved_chatgpt_oauth_mode() {
+        let auth = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {"access_token": "oauth-token"}
+        });
+        let config = r#"
+model_provider = "custom"
+
+[model_providers.custom]
+base_url = "https://api.example.com/v1"
+experimental_bearer_token = "sk-third-party-token"
+"#;
+        let doc = config.parse::<DocumentMut>().unwrap();
+        let token = extract_config_api_key_from_doc(&doc);
+
+        assert_eq!(
+            effective_auth_mode(Some(&auth), token.as_deref()),
+            CodexAuthMode::ApiKey
+        );
+        assert_eq!(
+            provider_base_url(&doc, "custom").as_deref(),
+            Some("https://api.example.com/v1")
+        );
+    }
+
+    #[test]
+    fn extracts_bearer_token_from_inline_provider_table() {
+        let config = r#"
+model_provider = "custom"
+model_providers = { custom = { base_url = "https://api.example.com/v1", experimental_bearer_token = "sk-inline-token" } }
+"#;
+
+        assert_eq!(
+            extract_config_api_key(config).as_deref(),
+            Some("sk-inline-token")
+        );
+        let doc = config.parse::<DocumentMut>().unwrap();
+        assert_eq!(detect_provider_id(&doc).unwrap(), "custom");
+        assert_eq!(
+            provider_base_url(&doc, "custom").as_deref(),
+            Some("https://api.example.com/v1")
+        );
+    }
+
+    #[test]
+    fn auth_json_api_key_takes_precedence_over_config_bearer_token() {
+        let auth = serde_json::json!({"OPENAI_API_KEY": "sk-auth-token"});
+        assert_eq!(
+            extract_auth_api_key(&auth).as_deref(),
+            Some("sk-auth-token")
+        );
+    }
+
+    #[test]
+    fn ignores_external_proxy_bearer_placeholder() {
+        let config = r#"
+model_provider = "custom"
+
+[model_providers.custom]
+base_url = "http://127.0.0.1:15721/v1"
+experimental_bearer_token = "PROXY_MANAGED"
+"#;
+
+        assert_eq!(extract_config_api_key(config), None);
     }
 
     #[test]

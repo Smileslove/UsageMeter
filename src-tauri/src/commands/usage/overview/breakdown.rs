@@ -5,7 +5,7 @@ use crate::models::{
     OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
 };
 use crate::proxy::compute_source_id;
-use crate::unified_usage::{normalize_model_bucket, MergedRequestFact};
+use crate::unified_usage::{normalize_model_bucket, CoverageOrigin, MergedRequestFact};
 use std::collections::HashMap;
 
 type BreakdownAccumulator = FactAccumulator;
@@ -159,6 +159,18 @@ fn source_meta_for_fact(settings: &AppSettings, fact: &MergedRequestFact) -> Bre
                 icon: source.icon.clone(),
             };
         }
+        // The source can be newly inferred from a direct provider config while this refresh
+        // still carries the previous settings snapshot. Preserve that resolved identity.
+        return BreakdownMeta {
+            id: source_id.to_string(),
+            label: fact
+                .source_label
+                .clone()
+                .unwrap_or_else(|| source_label_from_url(fact.request_base_url.as_deref())),
+            kind: "source".to_string(),
+            color: Some("#9CA3AF".to_string()),
+            icon: None,
+        };
     }
     if fact.attribution_method == crate::unified_usage::AttributionMethod::Manual {
         return BreakdownMeta {
@@ -207,15 +219,10 @@ fn source_meta_for_fact(settings: &AppSettings, fact: &MergedRequestFact) -> Bre
         };
     }
 
-    // Best-effort fallback for local-only records that have no api_key_prefix (never
-    // reconstructable without the real Authorization header) but do carry a request_base_url
-    // (e.g. Codex local-only facts filled from the currently-configured upstream — see
-    // unified_usage::service::merge_realtime_range's codex_fallback_base_url). Only attribute
-    // when exactly one registered source shares that base_url; 0 or 2+ matches stay ambiguous
-    // and fall through to __unknown__ rather than guessing wrong. This is inherently a
-    // heuristic based on Codex's *current* config, not necessarily what was active when a
-    // historical local-only record was produced.
-    if fact.api_key_prefix.is_none() {
+    // Proxy facts without a key prefix may still be identified by a unique base URL. Local-only
+    // facts are intentionally excluded: their URL is absent and must come from the timestamped
+    // passive-attribution interval, never from the current client configuration.
+    if fact.coverage_origin != CoverageOrigin::LocalOnly && fact.api_key_prefix.is_none() {
         if let Some(base_url) = fact
             .request_base_url
             .as_deref()
@@ -549,9 +556,7 @@ mod tests {
     }
 
     #[test]
-    fn source_meta_falls_back_to_single_base_url_match_without_api_key_prefix() {
-        // Codex local-only fact: no api_key_prefix (not reconstructable), but request_base_url
-        // was best-effort filled from Codex's currently-configured upstream.
+    fn proxy_source_meta_falls_back_to_single_base_url_match_without_api_key_prefix() {
         let mut settings = AppSettings::default();
         settings.source_aware.sources = vec![test_source(
             "src-codex",
@@ -575,6 +580,33 @@ mod tests {
         let meta = source_meta_for_fact(&settings, &fact);
         assert_eq!(meta.id, "src-codex");
         assert_eq!(meta.label, "sui-xiang.com");
+    }
+
+    #[test]
+    fn local_source_meta_does_not_guess_from_base_url() {
+        let mut settings = AppSettings::default();
+        settings.source_aware.sources = vec![test_source(
+            "src-codex",
+            "https://sui-xiang.com",
+            "sui-xiang.com",
+        )];
+
+        let mut fact = test_fact(
+            "codex",
+            "gpt-5",
+            10,
+            20,
+            0.0,
+            None,
+            Some("https://sui-xiang.com"),
+            Some(200),
+            None,
+            None,
+        );
+        fact.coverage_origin = CoverageOrigin::LocalOnly;
+
+        let meta = source_meta_for_fact(&settings, &fact);
+        assert_eq!(meta.id, "__unknown__");
     }
 
     #[test]

@@ -3,7 +3,10 @@ use crate::models::{
     AppSettings, OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID, OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
     OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
 };
-use crate::proxy::{ClaudeConfigManager, CodexAuthMode, CodexConfigManager, GeminiConfigManager};
+use crate::proxy::{
+    ClaudeConfigManager, CodexAuthMode, CodexConfigManager, GeminiConfigManager,
+    OpenCodeConfigManager, OpenCodeSourceRegistry,
+};
 use crate::subscription::{ClaudeSubscriptionProvider, GeminiSubscriptionProvider};
 use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -163,6 +166,18 @@ fn source_id_for_config(settings: &AppSettings, base_url: &str, api_key: &str) -
     matches.next().is_none().then(|| source.id.clone())
 }
 
+fn register_direct_source(
+    settings: &AppSettings,
+    api_key: &str,
+    base_url: &str,
+) -> (AppSettings, Option<String>) {
+    let mut effective_settings =
+        crate::settings::load_settings_blocking().unwrap_or_else(|_| settings.clone());
+    crate::proxy::register_source_to_settings(&mut effective_settings, api_key, base_url);
+    let source_id = source_id_for_config(&effective_settings, base_url, api_key);
+    (effective_settings, source_id)
+}
+
 impl LocalUsageDatabase {
     pub(super) fn create_passive_attribution_tables(
         conn: &rusqlite::Connection,
@@ -205,8 +220,10 @@ impl LocalUsageDatabase {
     ) -> Result<bool, String> {
         let codex_changed = self.observe_codex_passive_attribution(settings, observed_at_ms)?;
         let claude_changed = self.observe_claude_passive_attribution(settings, observed_at_ms)?;
-        let gemini_changed = self.observe_gemini_passive_attribution(observed_at_ms)?;
-        Ok(codex_changed || claude_changed || gemini_changed)
+        let gemini_changed = self.observe_gemini_passive_attribution(settings, observed_at_ms)?;
+        let opencode_changed =
+            self.observe_opencode_passive_attribution(settings, observed_at_ms)?;
+        Ok(codex_changed || claude_changed || gemini_changed || opencode_changed)
     }
 
     fn observe_codex_passive_attribution(
@@ -241,7 +258,23 @@ impl LocalUsageDatabase {
         let Some(api_key) = manager.read_api_key() else {
             return Ok(false);
         };
-        let source_id = source_id_for_config(settings, &snapshot.real_base_url, &api_key);
+        // Direct Codex providers do not pass through UsageMeter, so their source cannot be
+        // auto-registered from a proxy request. Register the non-secret identity observed in
+        // config.toml and use the updated snapshot for this attribution interval.
+        let mut effective_settings = settings.clone();
+        let registration = crate::proxy::register_source_to_settings(
+            &mut effective_settings,
+            &api_key,
+            &snapshot.real_base_url,
+        );
+        if registration.is_new {
+            if let Err(error) = crate::settings::save_settings_internal(effective_settings.clone())
+            {
+                eprintln!("[usagemeter] failed to persist Codex source: {error}");
+            }
+        }
+        let source_id =
+            source_id_for_config(&effective_settings, &snapshot.real_base_url, &api_key);
         let credential_id = credential_id(&api_key);
         self.record_passive_attribution_snapshot(PassiveAttributionSnapshot {
             tool: "codex",
@@ -261,9 +294,6 @@ impl LocalUsageDatabase {
         settings: &AppSettings,
         observed_at_ms: i64,
     ) -> Result<bool, String> {
-        if has_claude_environment_override() {
-            return Ok(false);
-        }
         let manager = ClaudeConfigManager::new();
         let Ok(claude_settings) = manager.read_settings() else {
             return Ok(false);
@@ -278,7 +308,14 @@ impl LocalUsageDatabase {
             .get_api_key()
             .filter(|api_key| !api_key.trim().is_empty())
         {
-            let source_id = source_id_for_config(settings, &base_url, &api_key);
+            let (effective_settings, source_id) =
+                register_direct_source(settings, &api_key, &base_url);
+            if effective_settings.source_aware.sources.len() != settings.source_aware.sources.len()
+            {
+                if let Err(error) = crate::settings::save_settings_internal(effective_settings) {
+                    eprintln!("[usagemeter] failed to persist Claude source: {error}");
+                }
+            }
             let credential_id = credential_id(&api_key);
             return self.record_passive_attribution_snapshot(PassiveAttributionSnapshot {
                 tool: "claude_code",
@@ -291,6 +328,9 @@ impl LocalUsageDatabase {
                 plan_is_confirmed: false,
                 observed_at_ms,
             });
+        }
+        if has_claude_environment_override() {
+            return Ok(false);
         }
         if normalized_source_base_url(Some(&base_url)).is_some()
             || !ClaudeSubscriptionProvider::new().has_claude_oauth()
@@ -311,7 +351,41 @@ impl LocalUsageDatabase {
         })
     }
 
-    fn observe_gemini_passive_attribution(&self, observed_at_ms: i64) -> Result<bool, String> {
+    fn observe_gemini_passive_attribution(
+        &self,
+        settings: &AppSettings,
+        observed_at_ms: i64,
+    ) -> Result<bool, String> {
+        let manager = GeminiConfigManager::new();
+        if let Ok(route) = manager.read_live_snapshot() {
+            if !GeminiConfigManager::is_usagemeter_proxy_url(&route.real_base_url) {
+                if let Some(api_key) = manager.read_api_key() {
+                    let (effective_settings, source_id) =
+                        register_direct_source(settings, &api_key, &route.real_base_url);
+                    if effective_settings.source_aware.sources.len()
+                        != settings.source_aware.sources.len()
+                    {
+                        if let Err(error) =
+                            crate::settings::save_settings_internal(effective_settings)
+                        {
+                            eprintln!("[usagemeter] failed to persist Gemini source: {error}");
+                        }
+                    }
+                    let credential_id = credential_id(&api_key);
+                    return self.record_passive_attribution_snapshot(PassiveAttributionSnapshot {
+                        tool: "gemini",
+                        provider_id: "google",
+                        base_url: &route.real_base_url,
+                        auth_mode: "api_key",
+                        credential_id: &credential_id,
+                        source_id: source_id.as_deref(),
+                        plan_type: None,
+                        plan_is_confirmed: false,
+                        observed_at_ms,
+                    });
+                }
+            }
+        }
         if !gemini_oauth_is_eligible() {
             return Ok(false);
         }
@@ -323,6 +397,71 @@ impl LocalUsageDatabase {
             auth_mode: "gemini_oauth",
             credential_id: &credential_id,
             source_id: Some(OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID),
+            plan_type: None,
+            plan_is_confirmed: false,
+            observed_at_ms,
+        })
+    }
+
+    fn observe_opencode_passive_attribution(
+        &self,
+        settings: &AppSettings,
+        observed_at_ms: i64,
+    ) -> Result<bool, String> {
+        let manager = OpenCodeConfigManager::new();
+        let Ok(snapshot) = manager.read_live_snapshot() else {
+            return Ok(false);
+        };
+        let mut effective_settings =
+            crate::settings::load_settings_blocking().unwrap_or_else(|_| settings.clone());
+        let mut candidates = Vec::new();
+        for provider in snapshot.providers {
+            let base_url = match OpenCodeConfigManager::extract_provider_and_source_from_proxy_url(
+                &provider.original_base_url,
+            ) {
+                Some((_, source_id)) => match OpenCodeSourceRegistry::new().get(&source_id) {
+                    Some(handle) => handle.real_base_url,
+                    None => continue,
+                },
+                None => provider.original_base_url,
+            };
+            if OpenCodeConfigManager::is_usagemeter_proxy_url(&base_url) {
+                continue;
+            }
+            let Some(api_key) = manager
+                .read_provider_api_key(&provider.provider_id)
+                .ok()
+                .flatten()
+            else {
+                continue;
+            };
+            candidates.push((provider.provider_id, base_url, api_key));
+        }
+        // Local OpenCode facts do not carry provider identity. Only infer a source when the
+        // current config has one API-key provider; otherwise attribution would be ambiguous.
+        let Some((provider_id, base_url, api_key)) = (candidates.len() == 1)
+            .then(|| candidates.into_iter().next())
+            .flatten()
+        else {
+            return Ok(false);
+        };
+        let registration =
+            crate::proxy::register_source_to_settings(&mut effective_settings, &api_key, &base_url);
+        if registration.is_new {
+            if let Err(error) = crate::settings::save_settings_internal(effective_settings.clone())
+            {
+                eprintln!("[usagemeter] failed to persist OpenCode source: {error}");
+            }
+        }
+        let source_id = source_id_for_config(&effective_settings, &base_url, &api_key);
+        let credential_id = credential_id(&api_key);
+        self.record_passive_attribution_snapshot(PassiveAttributionSnapshot {
+            tool: "opencode",
+            provider_id: &provider_id,
+            base_url: &base_url,
+            auth_mode: "api_key",
+            credential_id: &credential_id,
+            source_id: source_id.as_deref(),
             plan_type: None,
             plan_is_confirmed: false,
             observed_at_ms,
@@ -482,6 +621,34 @@ impl LocalUsageDatabase {
                     format!("Failed to extend passive attribution interval: {error}")
                 })?;
                 false
+            }
+            Some((
+                id,
+                _,
+                previous_provider,
+                previous_base_url,
+                previous_auth_mode,
+                previous_credential_id,
+                previous_source_id,
+                _,
+            )) if previous_source_id.is_none()
+                && source_id.is_some()
+                && previous_provider == provider_id
+                && previous_base_url == base_url
+                && previous_auth_mode == auth_mode
+                && previous_credential_id == credential_id =>
+            {
+                tx.execute(
+                    "UPDATE passive_attribution_intervals
+                     SET config_digest = ?1, source_id = ?2,
+                         confirmed_until_ms = MAX(confirmed_until_ms, ?3)
+                     WHERE id = ?4",
+                    params![digest, source_id, now, id],
+                )
+                .map_err(|error| {
+                    format!("Failed to enrich passive attribution interval: {error}")
+                })?;
+                true
             }
             _ => {
                 tx.execute(
@@ -766,6 +933,38 @@ mod tests {
             .expect("load intervals");
         assert_eq!(intervals.len(), 2);
         assert_eq!(intervals[1].source_id.as_deref(), Some("source-two"));
+    }
+
+    #[test]
+    fn source_resolution_enriches_existing_route_without_moving_interval_start() {
+        let (_directory, db) = temp_db();
+        db.record_passive_attribution_snapshot(snapshot(
+            "codex",
+            "custom",
+            "https://api.example.com/v1",
+            "credential-one",
+            None,
+            100,
+        ))
+        .expect("record unresolved route");
+        assert!(db
+            .record_passive_attribution_snapshot(snapshot(
+                "codex",
+                "custom",
+                "https://api.example.com/v1",
+                "credential-one",
+                Some("source-one"),
+                200,
+            ))
+            .expect("enrich route source"));
+
+        let intervals = db
+            .passive_attribution_intervals_for_range(0, 300)
+            .expect("load intervals");
+        assert_eq!(intervals.len(), 1);
+        assert_eq!(intervals[0].valid_from_ms, 100);
+        assert_eq!(intervals[0].confirmed_until_ms, 200);
+        assert_eq!(intervals[0].source_id.as_deref(), Some("source-one"));
     }
 
     #[test]

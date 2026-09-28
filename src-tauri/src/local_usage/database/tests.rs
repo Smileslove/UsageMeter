@@ -897,7 +897,7 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
             |row| row.get(0),
         )
         .expect("read schema version");
-    assert_eq!(schema_version, "33");
+    assert_eq!(schema_version, "34");
     for table in ["local_sessions", "remote_sessions"] {
         let columns: Vec<String> = conn
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -1094,16 +1094,16 @@ fn local_session_scope_round_trips_from_database() {
 }
 
 #[test]
-fn v33_migration_clears_unified_performance_materialization() {
+fn v34_migration_clears_stale_unified_materialization() {
     let (tmpdir, db) = temp_db();
     let path = tmpdir.path().join("local_usage.db");
     {
         let conn = db.conn.lock().unwrap();
         conn.execute(
-            "UPDATE local_sync_state SET state_value = '32' WHERE state_key = 'schema_version'",
+            "UPDATE local_sync_state SET state_value = '33' WHERE state_key = 'schema_version'",
             [],
         )
-        .expect("set schema version to 32");
+        .expect("set schema version to 33");
         conn.execute(
             "INSERT INTO unified_daily_materialized_facts (
                 local_date, request_key, session_id, tool, timestamp_sec, timestamp_ms,
@@ -1116,7 +1116,7 @@ fn v33_migration_clears_unified_performance_materialization() {
     }
     drop(db);
 
-    let migrated = LocalUsageDatabase::new_with_path(&path).expect("migrate to v33");
+    let migrated = LocalUsageDatabase::new_with_path(&path).expect("migrate to v34");
     let conn = migrated.conn.lock().unwrap();
     let schema_version: String = conn
         .query_row(
@@ -1133,7 +1133,7 @@ fn v33_migration_clears_unified_performance_materialization() {
         )
         .expect("count materialized facts");
 
-    assert_eq!(schema_version, "33");
+    assert_eq!(schema_version, "34");
     assert_eq!(materialized_count, 0);
 }
 
@@ -2766,7 +2766,7 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
             .get_local_sync_state("schema_version")
             .unwrap()
             .as_deref(),
-        Some("33")
+        Some("34")
     );
     assert!(
         reopened

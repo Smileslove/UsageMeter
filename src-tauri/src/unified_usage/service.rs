@@ -29,10 +29,7 @@ use super::query_support::{
 use super::types::{has_partial_coverage, CoverageOrigin, MergedCoverage, MergedRequestFact};
 use crate::models::{AppSettings, ToolFilter, UsageQueryFilter};
 use crate::proxy::ProxyMergeCacheSignature;
-use crate::proxy::{
-    CodexConfigManager, CodexSourceRegistry, ProjectStats, ProjectToolStats, ProxyDatabase,
-    SessionStats, UsageRecord,
-};
+use crate::proxy::{ProjectStats, ProjectToolStats, ProxyDatabase, SessionStats, UsageRecord};
 use crate::session::{wsl_distro_from_path, SessionMeta};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -748,7 +745,7 @@ async fn merge_realtime_range(
     // 是合并路径上的同步重活，移入阻塞线程池，避免占住 tauri async runtime 的
     // 工作线程。
     let records_database = local_db.clone();
-    let (local_records, session_meta_by_id, message_to_session, codex_fallback_base_url) =
+    let (local_records, session_meta_by_id, message_to_session) =
         tauri::async_runtime::spawn_blocking(move || {
             let mut local_sessions_all = records_database.get_all_sessions(&tool_filter)?;
             local_sessions_all.extend(records_database.get_remote_sessions(&tool_filter)?);
@@ -776,21 +773,7 @@ async fn merge_realtime_range(
             local_records.retain(|record| seen_local_keys.insert(request_key_for_local(record)));
             let session_meta_by_id = build_local_meta_index(&local_sessions);
             let message_to_session = build_message_to_session_index(&local_records);
-            let codex_fallback_base_url =
-                if local_records.iter().any(|record| record.tool == "codex") {
-                    CodexConfigManager::new()
-                        .active_source_id()
-                        .and_then(|id| CodexSourceRegistry::new().get(&id))
-                        .map(|handle| handle.real_base_url)
-                } else {
-                    None
-                };
-            Ok::<_, String>((
-                local_records,
-                session_meta_by_id,
-                message_to_session,
-                codex_fallback_base_url,
-            ))
+            Ok::<_, String>((local_records, session_meta_by_id, message_to_session))
         })
         .await
         .map_err(|e| format!("Task error: {}", e))??;
@@ -819,7 +802,6 @@ async fn merge_realtime_range(
         include_errors,
         pricings: pricings.to_vec(),
         pricing_match_mode: pricing_match_mode.to_string(),
-        codex_fallback_base_url,
     };
     let mut facts = tauri::async_runtime::spawn_blocking(move || merge_realtime_facts(input))
         .await

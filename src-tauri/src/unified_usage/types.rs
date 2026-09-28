@@ -720,12 +720,7 @@ pub(crate) fn matches_source_filter(fact: &MergedRequestFact, filter: &SourceFil
 }
 
 impl MergedRequestFact {
-    pub fn from_local(
-        record: &LocalRequestRecord,
-        meta: Option<&SessionMeta>,
-        cost: f64,
-        fallback_base_url: Option<&str>,
-    ) -> Self {
+    pub fn from_local(record: &LocalRequestRecord, meta: Option<&SessionMeta>, cost: f64) -> Self {
         let project_name = meta.and_then(|m| m.project_name.clone());
         let project_path = meta.and_then(|m| m.cwd.clone());
 
@@ -734,11 +729,10 @@ impl MergedRequestFact {
             session_id: record.session_id.clone(),
             project_name,
             project_path,
-            // api_key_prefix is never reconstructable for local-only records (no Authorization
-            // header was observed); request_base_url can be best-effort filled by the caller
-            // from Codex's currently-configured upstream (see service.rs's codex_fallback_base_url).
+            // Local-only records have no observed Authorization header or request URL. Their
+            // source identity is resolved later from the timestamped attribution interval.
             api_key_prefix: None,
-            request_base_url: fallback_base_url.map(str::to_string),
+            request_base_url: None,
             tool: record.tool.clone(),
             timestamp_sec: record.timestamp,
             timestamp_ms: record.timestamp.saturating_mul(1000),
@@ -1117,7 +1111,7 @@ mod tests {
         // Local transcript requests are treated as successful 200s, but proxy-only performance
         // fields must remain absent.
         let local = local_with(100, 200, 50, 60, "sess", 1_700_000_000);
-        let fact = MergedRequestFact::from_local(&local, None, 0.05, None);
+        let fact = MergedRequestFact::from_local(&local, None, 0.05);
         assert!(matches!(fact.coverage_origin, CoverageOrigin::LocalOnly));
         assert_eq!(fact.status_code, Some(200));
         assert_eq!(fact.duration_ms, None);
@@ -1130,7 +1124,7 @@ mod tests {
     fn local_only_has_no_source_label() {
         // 本地 transcript 没有 source 维度，必须明确为 None 进入「未识别来源」桶
         let local = local_with(100, 200, 0, 0, "sess", 1_700_000_000);
-        let fact = MergedRequestFact::from_local(&local, None, 0.0, None);
+        let fact = MergedRequestFact::from_local(&local, None, 0.0);
         assert_eq!(fact.source_label, None);
     }
 
@@ -1140,7 +1134,7 @@ mod tests {
         local.tool = "qoder_work_cn".to_string();
         local.model = "gm51model".to_string();
 
-        let fact = MergedRequestFact::from_local(&local, None, 0.0, None);
+        let fact = MergedRequestFact::from_local(&local, None, 0.0);
 
         assert_eq!(local.model, "gm51model");
         assert_eq!(fact.model, "GLM-5.2");
@@ -1207,7 +1201,7 @@ mod tests {
         let merged = MergedRequestFact::merge_proxy_preferred(&proxy, &local, None, 0.0);
         assert_eq!(merged.canonical_request_key, "claude_code:msg-1");
 
-        let local_only = MergedRequestFact::from_local(&local, None, 0.0, None);
+        let local_only = MergedRequestFact::from_local(&local, None, 0.0);
         assert_eq!(local_only.canonical_request_key, "claude_code:msg-1");
 
         let proxy_only = MergedRequestFact::from_proxy(&proxy, None);
@@ -1546,20 +1540,10 @@ mod tests {
     }
 
     #[test]
-    fn from_local_uses_fallback_base_url_when_provided() {
+    fn from_local_leaves_source_identity_unset() {
         let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
-        let fact = MergedRequestFact::from_local(&local, None, 0.0, Some("https://sui-xiang.com"));
-        assert_eq!(
-            fact.request_base_url.as_deref(),
-            Some("https://sui-xiang.com")
-        );
+        let fact = MergedRequestFact::from_local(&local, None, 0.0);
         assert!(fact.api_key_prefix.is_none());
-    }
-
-    #[test]
-    fn from_local_leaves_request_base_url_none_without_fallback() {
-        let local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
-        let fact = MergedRequestFact::from_local(&local, None, 0.0, None);
         assert!(fact.request_base_url.is_none());
     }
 

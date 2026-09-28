@@ -138,16 +138,22 @@ pub(crate) fn apply_passive_attribution(
             ));
             continue;
         }
-        let Some(source) = settings
+        fact.request_base_url = Some(interval.base_url.clone());
+        if let Some(source) = settings
             .source_aware
             .sources
             .iter()
             .find(|source| source.id == source_id)
-        else {
-            continue;
-        };
-        fact.request_base_url = Some(interval.base_url.clone());
-        apply_source(fact, source, AttributionMethod::ConfigInferred);
+        {
+            apply_source(fact, source, AttributionMethod::ConfigInferred);
+        } else {
+            // A direct provider may have been auto-registered during this same refresh while
+            // the caller still holds the previous settings snapshot. Keep the resolved source
+            // visible instead of dropping it into the unknown bucket until the next reload.
+            fact.attribution_source_id = Some(source_id.to_string());
+            fact.attribution_method = AttributionMethod::ConfigInferred;
+            fact.source_label = Some(interval.base_url.clone());
+        }
     }
     Ok(())
 }
@@ -229,6 +235,34 @@ mod tests {
         apply_passive_attribution(&database, &mut facts, &settings).expect("resolve source");
         assert_eq!(facts[0].attribution_method, AttributionMethod::Unattributed);
         assert_eq!(facts[0].attribution_source_id, None);
+    }
+
+    #[test]
+    fn newly_registered_source_remains_visible_before_settings_reload() {
+        let (_directory, database) = temp_db();
+        database
+            .record_passive_attribution_snapshot(snapshot(Some("new-source"), 1_000))
+            .expect("record route");
+        database
+            .record_passive_attribution_snapshot(snapshot(Some("new-source"), 2_000))
+            .expect("confirm route");
+        let mut facts = vec![local_fact()];
+
+        apply_passive_attribution(&database, &mut facts, &AppSettings::default())
+            .expect("resolve source without refreshed settings");
+
+        assert_eq!(
+            facts[0].attribution_source_id.as_deref(),
+            Some("new-source")
+        );
+        assert_eq!(
+            facts[0].source_label.as_deref(),
+            Some("https://api.example.com/v1")
+        );
+        assert_eq!(
+            facts[0].attribution_method,
+            AttributionMethod::ConfigInferred
+        );
     }
 
     #[test]
@@ -325,6 +359,89 @@ mod tests {
             &facts[0],
             &SourceFilter::OfficialOpenAiOAuth
         ));
+    }
+
+    #[test]
+    fn local_facts_follow_historical_intervals_across_a_codex_config_switch() {
+        let (_directory, database) = temp_db();
+        let oauth_snapshot = |observed_at_ms| PassiveAttributionSnapshot {
+            tool: "codex",
+            provider_id: "openai",
+            base_url: "https://chatgpt.com/backend-api/codex",
+            auth_mode: "chatgpt_oauth",
+            credential_id: "oauth-credential",
+            source_id: Some(OFFICIAL_OPENAI_OAUTH_SOURCE_ID),
+            plan_type: Some("plus"),
+            plan_is_confirmed: true,
+            observed_at_ms,
+        };
+        database
+            .record_passive_attribution_snapshot(oauth_snapshot(1_000))
+            .expect("record OAuth route");
+        database
+            .record_passive_attribution_snapshot(oauth_snapshot(2_000))
+            .expect("confirm OAuth route");
+        database
+            .record_passive_attribution_snapshot(PassiveAttributionSnapshot {
+                tool: "codex",
+                provider_id: "openai",
+                base_url: "https://api.example.com/v1",
+                auth_mode: "api_key",
+                credential_id: "api-credential",
+                source_id: Some("api-source"),
+                plan_type: None,
+                plan_is_confirmed: false,
+                observed_at_ms: 3_000,
+            })
+            .expect("record API route");
+        database
+            .record_passive_attribution_snapshot(PassiveAttributionSnapshot {
+                tool: "codex",
+                provider_id: "openai",
+                base_url: "https://api.example.com/v1",
+                auth_mode: "api_key",
+                credential_id: "api-credential",
+                source_id: Some("api-source"),
+                plan_type: None,
+                plan_is_confirmed: false,
+                observed_at_ms: 4_000,
+            })
+            .expect("confirm API route");
+
+        let mut settings = AppSettings::default();
+        settings.source_aware.sources = vec![source("api-source", "https://api.example.com/v1")];
+        let mut gap_fact = local_fact();
+        gap_fact.canonical_request_key = "codex:gap".to_string();
+        gap_fact.timestamp_sec = 2;
+        gap_fact.timestamp_ms = 2_500;
+        let mut api_fact = local_fact();
+        api_fact.canonical_request_key = "codex:api".to_string();
+        api_fact.timestamp_sec = 3;
+        api_fact.timestamp_ms = 3_500;
+        let mut facts = vec![local_fact(), gap_fact, api_fact];
+
+        apply_passive_attribution(&database, &mut facts, &settings)
+            .expect("apply historical attribution");
+
+        assert_eq!(
+            facts[0].attribution_source_id.as_deref(),
+            Some(OFFICIAL_OPENAI_OAUTH_SOURCE_ID)
+        );
+        assert_eq!(
+            facts[0].request_base_url.as_deref(),
+            Some("https://chatgpt.com/backend-api/codex")
+        );
+        assert_eq!(facts[1].attribution_method, AttributionMethod::Unattributed);
+        assert_eq!(facts[1].attribution_source_id, None);
+        assert_eq!(facts[1].request_base_url, None);
+        assert_eq!(
+            facts[2].attribution_source_id.as_deref(),
+            Some("api-source")
+        );
+        assert_eq!(
+            facts[2].request_base_url.as_deref(),
+            Some("https://api.example.com/v1")
+        );
     }
 
     #[test]

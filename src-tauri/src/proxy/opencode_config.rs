@@ -478,12 +478,13 @@ impl OpenCodeConfigManager {
     /// 从合并后的有效配置读取 provider 级 `options.apiKey`。
     pub fn read_provider_api_key(&self, provider_id: &str) -> Result<Option<String>, String> {
         let config = self.read_effective_merged_json()?;
-        Ok(config
+        let configured = config
             .pointer(&format!("/provider/{provider_id}/options/apiKey"))
             .and_then(|value| value.as_str())
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(str::to_string))
+            .map(str::to_string);
+        Ok(configured.or_else(|| read_opencode_auth_api_key(provider_id)))
     }
 
     fn read_effective_config(&self) -> Result<OpenCodeEffectiveConfig, String> {
@@ -841,6 +842,29 @@ impl OpenCodeConfigManager {
             || path.starts_with("/opencode/source/")
             || path.starts_with("/opencode/provider/")
     }
+}
+
+fn read_opencode_auth_api_key(provider_id: &str) -> Option<String> {
+    let auth_path = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".local")
+                .join("share")
+        })
+        .join("opencode")
+        .join("auth.json");
+    let value: Value = serde_json::from_str(&fs::read_to_string(auth_path).ok()?).ok()?;
+    let entry = value.get(provider_id)?;
+    (entry.get("type").and_then(Value::as_str) == Some("api"))
+        .then(|| entry.get("key").and_then(Value::as_str))
+        .flatten()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 impl Default for OpenCodeConfigManager {

@@ -234,10 +234,31 @@ impl GeminiConfigManager {
             })
     }
 
+    /// 读取当前 Gemini CLI 的 API Key；密钥仅供内存中的归因计算使用。
+    pub fn read_api_key(&self) -> Option<String> {
+        let content = self.read_env().ok().unwrap_or_default();
+        API_KEY_ENV_KEYS
+            .iter()
+            .find_map(|key| env_get(&content, key))
+            .or_else(|| {
+                API_KEY_ENV_KEYS.iter().find_map(|key| {
+                    std::env::var(key)
+                        .ok()
+                        .map(|value| value.trim().to_string())
+                        .filter(|value| !value.is_empty())
+                })
+            })
+            .filter(|value| !value.trim().is_empty())
+    }
+
     /// 读取当前 .env 中的真实路由状态（GOOGLE_GEMINI_BASE_URL）。
     pub fn read_live_snapshot(&self) -> Result<GeminiRouteState, String> {
         let content = self.read_env()?;
-        match env_get(&content, ENV_KEY) {
+        match env_get(&content, ENV_KEY).or_else(|| {
+            std::env::var(ENV_KEY)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        }) {
             Some(value) if !value.trim().is_empty() => Ok(GeminiRouteState {
                 had_base_url: true,
                 real_base_url: value,

@@ -22,7 +22,6 @@ pub(super) struct RealtimeMergeInput {
     pub(super) include_errors: bool,
     pub(super) pricings: Vec<ModelPricingConfig>,
     pub(super) pricing_match_mode: String,
-    pub(super) codex_fallback_base_url: Option<String>,
 }
 
 pub(crate) fn build_coverage(facts: &[MergedRequestFact]) -> MergedCoverage {
@@ -77,7 +76,6 @@ pub(super) fn merge_realtime_facts(input: RealtimeMergeInput) -> Vec<MergedReque
         include_errors,
         pricings,
         pricing_match_mode,
-        codex_fallback_base_url,
     } = input;
     let mut attached_proxy_records = raw_proxy_records;
     attach_proxy_session_ids(&mut attached_proxy_records, &message_to_session);
@@ -188,15 +186,7 @@ pub(super) fn merge_realtime_facts(input: RealtimeMergeInput) -> Vec<MergedReque
                     &pricing_match_mode,
                     &mut pricing_cache,
                 );
-                let fallback_base_url = (local.tool == "codex")
-                    .then_some(codex_fallback_base_url.as_deref())
-                    .flatten();
-                merged.push(MergedRequestFact::from_local(
-                    local,
-                    meta,
-                    cost,
-                    fallback_base_url,
-                ));
+                merged.push(MergedRequestFact::from_local(local, meta, cost));
             }
             (None, None) => {}
         }
@@ -266,7 +256,6 @@ mod tests {
             include_errors: true,
             pricings: Vec::new(),
             pricing_match_mode: "fuzzy".to_string(),
-            codex_fallback_base_url: None,
         }
     }
 
@@ -336,28 +325,18 @@ mod tests {
     }
 
     #[test]
-    fn codex_local_fact_uses_prepared_fallback_base_url() {
+    fn codex_local_fact_has_no_request_base_url() {
         let local = local("codex", "local-only-id", 1_700_000_000);
-        let mut input = input(vec![local]);
-        input.codex_fallback_base_url = Some("https://codex.example.test".to_string());
-
-        let facts = merge_realtime_facts(input);
+        let facts = merge_realtime_facts(input(vec![local]));
 
         assert_eq!(facts.len(), 1);
-        assert_eq!(
-            facts[0].request_base_url.as_deref(),
-            Some("https://codex.example.test")
-        );
+        assert!(facts[0].request_base_url.is_none());
     }
 
     #[test]
     fn coverage_marks_mixed_sources_as_partial_performance_coverage() {
-        let local = MergedRequestFact::from_local(
-            &local("claude_code", "local", 1_700_000_000),
-            None,
-            0.0,
-            None,
-        );
+        let local =
+            MergedRequestFact::from_local(&local("claude_code", "local", 1_700_000_000), None, 0.0);
         let proxy =
             MergedRequestFact::from_proxy(&proxy("claude_code", "proxy", 1_700_000_001_000), None);
 
