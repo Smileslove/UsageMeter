@@ -181,4 +181,20 @@ describe('monitor store refreshUsage timeout & auto-refresh guard', () => {
     await vi.advanceTimersByTimeAsync(30000 + 400)
     expect(callsFor('refresh_usage_bundle')).toBe(3)
   })
+
+  it('uses the updated refresh interval after the scheduler restarts', async () => {
+    vi.useFakeTimers()
+    mockSuccessfulInvoke()
+    const store = useMonitorStore()
+
+    store.startAutoRefresh()
+    store.settings.refreshIntervalSeconds = 5
+    store.startAutoRefresh()
+
+    await vi.advanceTimersByTimeAsync(4999)
+    expect(callsFor('refresh_usage_bundle')).toBe(0)
+
+    await vi.advanceTimersByTimeAsync(1 + 400)
+    expect(callsFor('refresh_usage_bundle')).toBe(1)
+  })
 })

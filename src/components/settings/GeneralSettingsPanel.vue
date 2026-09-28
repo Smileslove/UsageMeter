@@ -49,6 +49,7 @@ const handleRefreshIntervalChange = async () => {
   localRefreshInterval.value = value
   store.settings.refreshIntervalSeconds = value
   await store.saveSettings()
+  store.startAutoRefresh()
 }
 
 const handleDayBoundaryModeChange = async () => {

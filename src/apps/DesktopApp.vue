@@ -55,6 +55,8 @@ onMounted(async () => {
     // 初始化失败不阻塞 UI：数据区显示空态，导航与页面骨架仍可操作
     console.error('[DesktopApp] store.initialize 失败（导航与骨架仍可用）:', error)
   }
+  // 桌面窗口有独立的 WebView 和 Pinia store，需要自行启动用量轮询。
+  store.startAutoRefresh()
   await nextTick()
   applyResolvedTheme(store.settings.theme)
 
@@ -83,6 +85,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  store.stopAutoRefresh()
   if (mediaQuery) {
     mediaQuery.removeEventListener('change', handleSystemThemeChange)
   }
