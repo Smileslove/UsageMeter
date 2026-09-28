@@ -24,6 +24,7 @@ import type { GatewayBaseUrlPreview, GatewayCredentialRecovery, GatewayDispatchS
 import ProxyControlPanel from '../components/settings/ProxyControlPanel.vue'
 import CcSwitchCompatPanel from '../components/settings/CcSwitchCompatPanel.vue'
 import SettingsSwitch from '../components/settings/SettingsSwitch.vue'
+import SegmentedControl from '../components/SegmentedControl.vue'
 
 const store = useMonitorStore()
 const profiles = ref<GatewayProfile[]>([])
@@ -528,9 +529,16 @@ onUnmounted(() => {
 
 <template>
   <section class="space-y-3 pb-3">
-    <nav class="gateway-tabs px-1 pt-1" :aria-label="t(locale, 'gateway.title')">
+    <SegmentedControl
+      tag="nav"
+      :active-index="activePanel === 'takeover' ? 0 : 1"
+      :aria-label="t(locale, 'gateway.title')"
+      role="tablist"
+      class="gateway-tabs px-1 pt-1"
+    >
       <button
         type="button"
+        role="tab"
         class="gateway-tabs__item"
         :class="{ 'gateway-tabs__item--on': activePanel === 'takeover' }"
         :aria-selected="activePanel === 'takeover'"
@@ -540,6 +548,7 @@ onUnmounted(() => {
       </button>
       <button
         type="button"
+        role="tab"
         class="gateway-tabs__item"
         :class="{ 'gateway-tabs__item--on': activePanel === 'manual' }"
         :aria-selected="activePanel === 'manual'"
@@ -547,7 +556,7 @@ onUnmounted(() => {
       >
         {{ t(locale, 'gateway.tabs.manualAccess') }}
       </button>
-    </nav>
+    </SegmentedControl>
 
     <div v-if="feedback && !editing" :class="['rounded-xl border px-3 py-2 text-[10.5px] leading-snug', feedback === 'error' ? 'border-red-500/20 bg-red-500/8 text-red-600 dark:text-red-300' : 'border-emerald-500/20 bg-emerald-500/8 text-emerald-600 dark:text-emerald-300']">
       {{ feedbackMessage }}
@@ -739,8 +748,7 @@ onUnmounted(() => {
 }
 
 .gateway-tabs__item--on {
-  background: var(--theme-accent-primary);
-  box-shadow: 0 2px 6px color-mix(in srgb, var(--theme-accent-primary) 30%, transparent);
+  background: transparent;
   color: var(--theme-accent-contrast);
 }
 

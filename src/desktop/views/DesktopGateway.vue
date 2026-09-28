@@ -28,6 +28,7 @@ import type { DraftProfile, GatewayDraftInput } from './gateway/gatewayTypes'
 import type { GatewayProfile, GatewayStatus } from '../../types'
 import ProxyControlPanel from '../../components/settings/ProxyControlPanel.vue'
 import CcSwitchCompatPanel from '../../components/settings/CcSwitchCompatPanel.vue'
+import SegmentedControl from '../../components/SegmentedControl.vue'
 import GatewayStatusBar from './gateway/GatewayStatusBar.vue'
 import GatewayProfileList from './gateway/GatewayProfileList.vue'
 import GatewayProfileEditor from './gateway/GatewayProfileEditor.vue'
@@ -269,11 +270,18 @@ onUnmounted(() => {
     />
 
     <!-- 页内 tabs：工具接管 / 手动接入（保持现有领域边界） -->
-    <nav class="flex w-fit shrink-0 gap-0.5 rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] p-0.5" :aria-label="t(locale, 'gateway.title')">
+    <SegmentedControl
+      tag="nav"
+      :active-index="activePanel === 'takeover' ? 0 : 1"
+      :aria-label="t(locale, 'gateway.title')"
+      role="tablist"
+      class="flex w-fit shrink-0 gap-0.5 rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] p-0.5"
+    >
       <button
         type="button"
+        role="tab"
         class="rounded-md px-3.5 py-1 text-xs font-semibold transition-colors"
-        :class="activePanel === 'takeover' ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'"
+        :class="activePanel === 'takeover' ? 'text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'"
         :aria-selected="activePanel === 'takeover'"
         @click="activePanel = 'takeover'"
       >
@@ -281,14 +289,15 @@ onUnmounted(() => {
       </button>
       <button
         type="button"
+        role="tab"
         class="rounded-md px-3.5 py-1 text-xs font-semibold transition-colors"
-        :class="activePanel === 'manual' ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'"
+        :class="activePanel === 'manual' ? 'text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'"
         :aria-selected="activePanel === 'manual'"
         @click="activePanel = 'manual'"
       >
         {{ t(locale, 'gateway.tabs.manualAccess') }}
       </button>
-    </nav>
+    </SegmentedControl>
 
     <div v-if="feedback && !editing" :class="['shrink-0 rounded-lg border px-3 py-2 text-xs leading-snug', feedback === 'error' ? 'border-red-500/20 bg-red-500/8 text-red-600 dark:text-red-300' : 'border-emerald-500/20 bg-emerald-500/8 text-emerald-600 dark:text-emerald-300']">
       {{ feedbackMessage }}

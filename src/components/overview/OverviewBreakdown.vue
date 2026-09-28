@@ -7,6 +7,7 @@ import { formatCost, formatRequestCount, formatTokenValue } from '../../utils/fo
 import { resolveToolLobeIcon } from '../../iconConfig'
 import { formatToolDisplayName } from '../../utils/toolDisplay'
 import LobeIcon from '../LobeIcon.vue'
+import SegmentedControl from '../SegmentedControl.vue'
 import type { OverviewBreakdownItem } from '../../types'
 
 const store = useMonitorStore()
@@ -163,17 +164,22 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
           {{ t(locale, 'overview.attribution') }}
         </h3>
       </div>
-      <div class="sort-control" :aria-label="t(locale, 'overview.sortBy')">
+      <SegmentedControl
+        :active-index="Math.max(0, sortOptions.findIndex(option => option.value === effectiveSortMetric))"
+        :aria-label="t(locale, 'overview.sortBy')"
+        class="sort-control"
+      >
         <button
           v-for="option in sortOptions"
           :key="option.value"
+          :aria-pressed="effectiveSortMetric === option.value"
           type="button"
           :class="effectiveSortMetric === option.value ? 'active' : ''"
           @click="selectedSortMetric = option.value"
         >
           {{ option.label }}
         </button>
-      </div>
+      </SegmentedControl>
     </div>
 
     <div v-if="store.overviewBreakdownLoading && !breakdown" class="overview-empty dark:!border-white/10 dark:!bg-[#15161A] dark:!text-gray-500">
@@ -319,10 +325,11 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
 }
 
 .sort-control {
+  isolation: isolate;
   display: inline-flex;
   flex-shrink: 0;
   align-items: center;
-  gap: 0.15rem;
+  gap: 0;
   border: 1px solid color-mix(in srgb, var(--theme-text-primary) 7%, transparent);
   border-radius: 999px;
   background: color-mix(in srgb, var(--theme-text-primary) 9%, transparent);
@@ -335,6 +342,7 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
 }
 
 .sort-control button {
+  flex: 1;
   min-width: 2.1rem;
   border: 0;
   border-radius: 999px;
@@ -344,7 +352,7 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
   font-weight: 700;
   line-height: 1;
   color: var(--theme-text-tertiary);
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition: color 0.18s ease;
 }
 
 .sort-control button:hover {
@@ -352,7 +360,6 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
 }
 
 .sort-control button.active {
-  background: var(--theme-accent-primary);
   color: var(--theme-accent-contrast);
 }
 

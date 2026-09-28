@@ -12,6 +12,7 @@ import { useDesktopAnalyticsStore } from '../../stores/desktopAnalytics'
 import { formatMetric, metricLabel } from '../../composables/useTrendChart'
 import { t } from '../../../i18n'
 import { formatCost, formatRequestCount, formatTokenValue } from '../../../utils/format'
+import SegmentedControl from '../../../components/SegmentedControl.vue'
 import {
   formatLocalDate,
   getMonthDayCount,
@@ -167,10 +168,11 @@ function monthCalendarTooltip(day: DayActivity): string {
           </span>
         </h3>
         <div class="flex items-center gap-1.5">
-          <div
-            class="flex items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
-            role="group"
+          <SegmentedControl
+            :active-index="Math.max(0, METRICS.findIndex(metric => metric.value === analytics.analyticsMetric))"
             :aria-label="t(locale, 'desktop.analytics.toolbarMetric')"
+            tone="soft"
+            class="flex items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
           >
             <button
               v-for="m in METRICS"
@@ -179,7 +181,7 @@ function monthCalendarTooltip(day: DayActivity): string {
               class="rounded-md px-2 py-1 text-xs font-medium transition-colors duration-150"
               :class="
                 analytics.analyticsMetric === m.value
-                  ? 'bg-[var(--theme-accent-soft)] text-[var(--theme-accent-primary)]'
+                    ? 'text-[var(--theme-accent-primary)]'
                   : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'
               "
               :aria-pressed="analytics.analyticsMetric === m.value"
@@ -187,7 +189,7 @@ function monthCalendarTooltip(day: DayActivity): string {
             >
               {{ t(locale, m.key) }}
             </button>
-          </div>
+          </SegmentedControl>
           <button
             type="button"
             class="grid h-7 w-7 place-items-center rounded-lg text-[var(--theme-text-tertiary)] transition-colors duration-150 hover:bg-[var(--theme-bg-hover)] hover:text-[var(--theme-text-primary)]"

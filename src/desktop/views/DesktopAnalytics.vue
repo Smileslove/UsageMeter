@@ -26,6 +26,7 @@ import TrendView from './analytics/TrendView.vue'
 import BreakdownView from './analytics/BreakdownView.vue'
 import ActivityView from './analytics/ActivityView.vue'
 import PerformanceView from './analytics/PerformanceView.vue'
+import SegmentedControl from '../../components/SegmentedControl.vue'
 
 const store = useMonitorStore()
 const nav = useDesktopNavigationStore()
@@ -176,10 +177,12 @@ onMounted(() => {
 <template>
   <section class="flex flex-col gap-4">
     <!-- 顶部 tabs：趋势 / 构成 / 活跃度 / 性能（设计 7.2） -->
-    <div
-      class="flex w-fit items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
-      role="tablist"
+    <SegmentedControl
+      :active-index="Math.max(0, viewTabs.findIndex(tab => tab.value === analytics.analyticsView))"
       :aria-label="t(locale, 'desktop.analytics.tabsLabel')"
+      role="tablist"
+      tone="soft"
+      class="flex w-fit items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
     >
       <button
         v-for="tab in viewTabs"
@@ -190,14 +193,14 @@ onMounted(() => {
         class="rounded-md px-3 py-1.5 text-xs font-medium transition-colors duration-150"
         :class="
           analytics.analyticsView === tab.value
-            ? 'bg-[var(--theme-accent-soft)] text-[var(--theme-accent-primary)]'
+            ? 'text-[var(--theme-accent-primary)]'
             : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'
         "
         @click="analytics.analyticsView = tab.value"
       >
         {{ t(locale, tab.key) }}
       </button>
-    </div>
+    </SegmentedControl>
 
     <!-- 工具栏：时间范围 / 粒度 / 主指标 / 比较 / 导出占位（设计 7.3） -->
     <AnalyticsToolbar />

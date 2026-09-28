@@ -23,6 +23,7 @@ import {
 } from '../../../types'
 import { formatToolDisplayName } from '../../../utils/toolDisplay'
 import { useFocusTrap } from '../../composables/useFocusTrap'
+import SegmentedControl from '../../../components/SegmentedControl.vue'
 
 const store = useMonitorStore()
 const analytics = useDesktopAnalyticsStore()
@@ -143,10 +144,11 @@ const activeToolLabel = computed(() => {
 <template>
   <div class="flex flex-wrap items-center gap-2">
     <!-- 时间范围：页面内部工具栏读写 analyticsWindow -->
-    <div
-      class="flex items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
-      role="group"
+    <SegmentedControl
+      :active-index="Math.max(0, WINDOW_ORDER.indexOf(analytics.analyticsWindow))"
       :aria-label="t(locale, 'desktop.analytics.toolbarRange')"
+      tone="soft"
+      class="flex items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
     >
       <button
         v-for="w in WINDOW_ORDER"
@@ -155,7 +157,7 @@ const activeToolLabel = computed(() => {
         class="rounded-md px-2 py-1 text-xs font-medium transition-colors duration-150"
         :class="
           analytics.analyticsWindow === w
-            ? 'bg-[var(--theme-accent-soft)] text-[var(--theme-accent-primary)]'
+            ? 'text-[var(--theme-accent-primary)]'
             : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'
         "
         :aria-pressed="analytics.analyticsWindow === w"
@@ -163,13 +165,14 @@ const activeToolLabel = computed(() => {
       >
         {{ windowNameLabel(locale, w) }}
       </button>
-    </div>
+    </SegmentedControl>
 
     <!-- 粒度：自动 / 小时 / 天；不合法组合禁用并说明 -->
-    <div
-      class="flex items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
-      role="group"
+    <SegmentedControl
+      :active-index="Math.max(0, granularityOptions.findIndex(option => option.value === analytics.analyticsGranularity))"
       :aria-label="t(locale, 'desktop.analytics.toolbarGranularity')"
+      tone="soft"
+      class="flex items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
     >
       <button
         v-for="g in granularityOptions"
@@ -178,7 +181,7 @@ const activeToolLabel = computed(() => {
         class="rounded-md px-2 py-1 text-xs font-medium transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40"
         :class="
           analytics.analyticsGranularity === g.value
-            ? 'bg-[var(--theme-accent-soft)] text-[var(--theme-accent-primary)]'
+            ? 'text-[var(--theme-accent-primary)]'
             : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'
         "
         :disabled="granularityDisabled(g.value)"
@@ -188,13 +191,14 @@ const activeToolLabel = computed(() => {
       >
         {{ t(locale, g.key) }}
       </button>
-    </div>
+    </SegmentedControl>
 
     <!-- 主指标：费用 / 请求 / Token -->
-    <div
-      class="flex items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
-      role="group"
+    <SegmentedControl
+      :active-index="Math.max(0, METRICS.findIndex(metric => metric.value === analytics.analyticsMetric))"
       :aria-label="t(locale, 'desktop.analytics.toolbarMetric')"
+      tone="soft"
+      class="flex items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
     >
       <button
         v-for="m in METRICS"
@@ -203,7 +207,7 @@ const activeToolLabel = computed(() => {
         class="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors duration-150"
         :class="
           analytics.analyticsMetric === m.value
-            ? 'bg-[var(--theme-accent-soft)] text-[var(--theme-accent-primary)]'
+            ? 'text-[var(--theme-accent-primary)]'
             : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'
         "
         :aria-pressed="analytics.analyticsMetric === m.value"
@@ -215,13 +219,14 @@ const activeToolLabel = computed(() => {
         ></span>
         {{ t(locale, m.key) }}
       </button>
-    </div>
+    </SegmentedControl>
 
     <!-- 比较：无 / 上一等长周期 -->
-    <div
-      class="flex items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
-      role="group"
+    <SegmentedControl
+      :active-index="Math.max(0, compareOptions.findIndex(option => option.value === analytics.analyticsCompare))"
       :aria-label="t(locale, 'desktop.analytics.toolbarCompare')"
+      tone="soft"
+      class="flex items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
     >
       <button
         v-for="c in compareOptions"
@@ -230,7 +235,7 @@ const activeToolLabel = computed(() => {
         class="rounded-md px-2 py-1 text-xs font-medium transition-colors duration-150"
         :class="
           analytics.analyticsCompare === c.value
-            ? 'bg-[var(--theme-accent-soft)] text-[var(--theme-accent-primary)]'
+            ? 'text-[var(--theme-accent-primary)]'
             : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'
         "
         :aria-pressed="analytics.analyticsCompare === c.value"
@@ -238,7 +243,7 @@ const activeToolLabel = computed(() => {
       >
         {{ t(locale, c.key) }}
       </button>
-    </div>
+    </SegmentedControl>
 
     <!-- 筛选摘要（设计 7.3）：模型/项目组合多选，全局来源/工具只读展示 -->
     <div class="relative">

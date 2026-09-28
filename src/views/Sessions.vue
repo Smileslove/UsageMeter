@@ -6,6 +6,7 @@ import type { RequestRecord, SessionStats } from '../types'
 import SessionDetailModal from '../components/SessionDetailModal.vue'
 import RequestDetailModal from '../components/RequestDetailModal.vue'
 import SessionSourceFilter from '../components/SessionSourceFilter.vue'
+import SegmentedControl from '../components/SegmentedControl.vue'
 import LobeIcon from '../components/LobeIcon.vue'
 import { useSessionDisplay } from '../composables/useSessionDisplay'
 import { SESSION_SOURCE_TOOLS, useSessionViewData } from '../composables/useSessionViewData'
@@ -212,9 +213,14 @@ onUnmounted(() => {
 <template>
   <div class="space-y-2 animate-in fade-in zoom-in-95 duration-300 pb-4 min-h-full">
     <!-- 顶部视图切换 Tabs -->
-    <div class="session-tabs sticky top-0 z-10 mb-2 backdrop-blur-md">
+    <SegmentedControl
+      :active-index="Math.max(0, ['recent', 'requests', 'projects'].indexOf(activeTab))"
+      :aria-label="t(store.settings.locale, 'sessions.title')"
+      class="session-tabs sticky top-0 z-10 mb-2 backdrop-blur-md"
+    >
       <button
         type="button"
+        :aria-pressed="activeTab === 'recent'"
         class="session-tabs__item"
         :class="{ 'session-tabs__item--on': activeTab === 'recent' }"
         @click="activeTab = 'recent'"
@@ -223,6 +229,7 @@ onUnmounted(() => {
       </button>
       <button
         type="button"
+        :aria-pressed="activeTab === 'requests'"
         class="session-tabs__item"
         :class="{ 'session-tabs__item--on': activeTab === 'requests' }"
         @click="activeTab = 'requests'"
@@ -231,13 +238,14 @@ onUnmounted(() => {
       </button>
       <button
         type="button"
+        :aria-pressed="activeTab === 'projects'"
         class="session-tabs__item"
         :class="{ 'session-tabs__item--on': activeTab === 'projects' }"
         @click="activeTab = 'projects'"
       >
         {{ t(store.settings.locale, 'sessions.tabs.projects') }}
       </button>
-    </div>
+    </SegmentedControl>
 
     <SessionSourceFilter
       v-if="activeTab === 'recent' || activeTab === 'requests'"
@@ -650,8 +658,7 @@ onUnmounted(() => {
 
 .session-tabs__item--on {
   color: var(--theme-accent-contrast);
-  background: var(--theme-accent-primary);
-  box-shadow: 0 2px 6px color-mix(in srgb, var(--theme-accent-primary) 30%, transparent);
+  background: transparent;
 }
 
 .request-card__status {

@@ -1045,9 +1045,7 @@ body {
   border-color: color-mix(in srgb, var(--theme-chart-series-3) 20%, var(--theme-border-default)) !important;
 }
 
-/* Shared segmented control used by StatisticsTrendChart and StatisticsModelList.
-   Active segment is accent-filled; track uses color-mix so it adapts to any palette.
-   Dark overrides use iOS-style vibrancy values (not resolvable via CSS variables). */
+/* Shared metric focus control used by StatisticsTrendChart and StatisticsModelList. */
 .trend-seg {
   display: inline-flex;
   align-items: center;
@@ -1084,8 +1082,7 @@ body {
 .trend-seg__item--on {
   color: var(--theme-accent-contrast);
   font-weight: 700;
-  background: var(--theme-accent-primary);
-  box-shadow: 0 2px 6px color-mix(in srgb, var(--theme-accent-primary) 30%, transparent);
+  background: transparent;
 }
 
 .trend-seg__dot {
@@ -1122,7 +1119,7 @@ body {
 }
 
 :root[data-appearance='dark'] .trend-seg__item--on {
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--theme-accent-primary) 35%, transparent);
+  background: transparent;
 }
 
 /* 桌面主窗口语义 token（设计文档 5.3 表）。

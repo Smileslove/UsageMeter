@@ -10,6 +10,7 @@ import { t } from '../../i18n'
 import { formatCost, formatDurationMs, formatRate, formatRequestCount, formatTokenValue } from '../../utils/format'
 import type { AppLocale, StatisticsModelBreakdown, StatisticsTrendPoint } from '../../types'
 import { useMonitorStore } from '../../stores/monitor'
+import SegmentedControl from '../SegmentedControl.vue'
 
 const store = useMonitorStore()
 
@@ -544,7 +545,11 @@ onBeforeUnmount(() => {
       <div class="rounded-xl bg-white p-2 dark:bg-neutral-700/80">
         <div class="mb-1.5 flex items-center justify-between">
           <p class="text-[10px] font-semibold text-gray-500 dark:text-gray-300">{{ t(locale, 'statistics.modelTrend') }}</p>
-          <div class="trend-seg">
+          <SegmentedControl
+            :active-index="focusedTrendMetric ? (['requests', 'tokens', 'cost', 'rate'] as const).indexOf(focusedTrendMetric) : -1"
+            :aria-label="t(locale, 'statistics.modelTrend')"
+            class="trend-seg"
+          >
             <button
               v-for="metric in (['requests', 'tokens', 'cost', 'rate'] as const)"
               :key="metric"
@@ -556,7 +561,7 @@ onBeforeUnmount(() => {
               <span class="trend-seg__dot" :style="{ backgroundColor: trendColors[metric] }" />
               <span class="trend-seg__label">{{ trendMetricLabel(metric) }}</span>
             </button>
-          </div>
+          </SegmentedControl>
         </div>
         <div v-if="selectedModel.trend.length" class="h-[116px]">
           <v-chart class="h-full w-full" :option="trendOptions" autoresize />

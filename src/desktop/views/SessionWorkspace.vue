@@ -15,6 +15,7 @@ import { useSessionDisplay } from '../../composables/useSessionDisplay'
 import { useClipboard } from '../composables/useClipboard'
 import LobeIcon from '../../components/LobeIcon.vue'
 import DesktopActivity from './DesktopActivity.vue'
+import SegmentedControl from '../../components/SegmentedControl.vue'
 
 const props = defineProps<{
   sessionKey: string
@@ -284,7 +285,12 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
     </div>
 
     <!-- tabs -->
-    <div class="flex shrink-0 gap-0.5 self-start rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] p-0.5" role="tablist" :aria-label="t(locale, 'desktop.workspace.tabsLabel')">
+    <SegmentedControl
+      :active-index="Math.max(0, ['summary', 'activity', 'requests', 'models', 'files'].indexOf(activeTab))"
+      :aria-label="t(locale, 'desktop.workspace.tabsLabel')"
+      role="tablist"
+      class="flex shrink-0 gap-0.5 self-start rounded-lg border border-[var(--theme-border-subtle)] bg-[var(--theme-bg-surface)] p-0.5"
+    >
       <button
         v-for="tab in [['summary', 'desktop.workspace.tabSummary'], ['activity', 'desktop.workspace.tabActivity'], ['requests', 'desktop.workspace.tabRequests'], ['models', 'desktop.workspace.tabModels'], ['files', 'desktop.workspace.tabFiles']] as const"
         :key="tab[0]"
@@ -292,12 +298,12 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
         role="tab"
         :aria-selected="activeTab === tab[0]"
         class="rounded-md px-3 py-1 text-xs font-semibold transition-colors"
-        :class="activeTab === tab[0] ? 'bg-[var(--theme-accent-primary)] text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'"
+        :class="activeTab === tab[0] ? 'text-[var(--theme-accent-contrast)]' : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'"
         @click="activeTab = tab[0]"
       >
         {{ t(locale, tab[1]) }}
       </button>
-    </div>
+    </SegmentedControl>
 
     <!-- 加载 / 错误 -->
     <div v-if="detailLoading && !session" class="flex justify-center py-16">

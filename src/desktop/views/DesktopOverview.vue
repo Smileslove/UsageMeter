@@ -23,6 +23,7 @@ import {
 import { useMonitorStore } from '../../stores/monitor'
 import { useDesktopNavigationStore } from '../stores/desktopNavigation'
 import { rangeQueryForWindow, useDesktopAnalyticsStore } from '../stores/desktopAnalytics'
+import SegmentedControl from '../../components/SegmentedControl.vue'
 import { t, windowNameLabel } from '../../i18n'
 import {
   buildTrendChartOption,
@@ -511,10 +512,11 @@ onUnmounted(() => {
               <Activity :size="14" class="shrink-0" aria-hidden="true" />
               {{ t(locale, 'desktop.overview.trendTitle') }}
             </h3>
-            <div
-              class="flex items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
-              role="group"
+            <SegmentedControl
+              :active-index="Math.max(0, trendMetrics.findIndex(metric => metric === analytics.analyticsMetric))"
               :aria-label="t(locale, 'desktop.overview.trendMetric')"
+              tone="soft"
+              class="flex items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
             >
               <button
                 v-for="m in trendMetrics"
@@ -523,7 +525,7 @@ onUnmounted(() => {
                 class="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium transition-colors duration-150"
                 :class="
                   analytics.analyticsMetric === m
-                    ? 'bg-[var(--theme-accent-soft)] text-[var(--theme-accent-primary)]'
+                    ? 'text-[var(--theme-accent-primary)]'
                     : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'
                 "
                 :aria-pressed="analytics.analyticsMetric === m"
@@ -532,7 +534,7 @@ onUnmounted(() => {
                 <span class="h-1.5 w-1.5 rounded-full" :style="{ backgroundColor: metricColor(m) }"></span>
                 {{ metricLabel(m) }}
               </button>
-            </div>
+            </SegmentedControl>
           </div>
 
           <div v-if="trendPoints.length" class="h-[240px]">

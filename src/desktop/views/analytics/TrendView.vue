@@ -29,6 +29,7 @@ import {
   formatTokenValue
 } from '../../../utils/format'
 import type { StatisticsMetric, StatisticsTotals, StatisticsTrendPoint } from '../../../types'
+import SegmentedControl from '../../../components/SegmentedControl.vue'
 
 registerChartComponents()
 
@@ -280,7 +281,13 @@ function drillToPeak(row: PeakRow): void {
             </span>
           </h3>
           <!-- 子序列切换（设计 7.4）：主指标之外可查看 Token 细分口径；total 跟随主指标 -->
-          <div v-if="points.length" class="trend-seg" role="tablist" :aria-label="t(locale, 'desktop.analytics.tabsMetric')">
+          <SegmentedControl
+            v-if="points.length"
+            :active-index="Math.max(0, subSeriesOptions.findIndex(option => option.value === subSeries))"
+            :aria-label="t(locale, 'desktop.analytics.tabsMetric')"
+            role="tablist"
+            class="trend-seg"
+          >
             <button
               v-for="option in subSeriesOptions"
               :key="option.value"
@@ -292,7 +299,7 @@ function drillToPeak(row: PeakRow): void {
             >
               <span class="trend-seg__label">{{ t(locale, option.labelKey) }}</span>
             </button>
-          </div>
+          </SegmentedControl>
         </div>
         <button
           v-if="peakRows.length"

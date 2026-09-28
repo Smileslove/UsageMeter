@@ -7,6 +7,7 @@ import { formatRequestCount, formatTokenValue, formatCost } from '../utils/forma
 import { WINDOW_ORDER, type WindowName } from '../types'
 import { pickEffectiveWindow } from '../utils/windowFallback'
 import LimitSurvivalCard from './overview/LimitSurvivalCard.vue'
+import SegmentedControl from './SegmentedControl.vue'
 
 const store = useMonitorStore()
 
@@ -174,19 +175,22 @@ function detailPairSizeClass(first: string, second: string): string {
 <template>
   <div v-if="summaryWindowData" class="summary-panel dark:!border-white/10 dark:!bg-[#0F1013]">
     <!-- 时间范围选择器 -->
-    <div class="summary-window-tabs">
+    <SegmentedControl
+      :active-index="Math.max(0, WINDOW_ORDER.indexOf(store.settings.summaryWindow as WindowName))"
+      :aria-label="t(store.settings.locale, 'settings.summaryWindow')"
+      class="summary-window-tabs"
+    >
       <button
         v-for="window in WINDOW_ORDER"
         :key="window"
-        :class="[
-          'summary-window-tab',
-          store.settings.summaryWindow === window ? 'active' : ''
-        ]"
+        type="button"
+        :aria-pressed="store.settings.summaryWindow === window"
+        :class="['summary-window-tab', store.settings.summaryWindow === window ? 'active' : '']"
         @click="selectWindow(window)"
       >
         {{ getWindowLabel(window) }}
       </button>
-    </div>
+    </SegmentedControl>
 
     <!-- 2x2 卡片网格 -->
     <div class="summary-grid" :class="{ 'summary-grid-pending': isWindowDataPending }">
@@ -362,8 +366,9 @@ function detailPairSizeClass(first: string, second: string): string {
 }
 
 .summary-window-tabs {
+  isolation: isolate;
   display: flex;
-  gap: 0.25rem;
+  gap: 0;
   padding: 0.125rem;
   background: color-mix(in srgb, var(--theme-text-primary) 10%, transparent);
   border-radius: 0.5rem;
@@ -386,6 +391,7 @@ function detailPairSizeClass(first: string, second: string): string {
   transition: all 0.15s ease;
   white-space: nowrap;
   text-align: center;
+  position: relative;
 }
 
 .summary-window-tab:hover {
@@ -395,9 +401,8 @@ function detailPairSizeClass(first: string, second: string): string {
 
 .summary-window-tab.active {
   color: var(--theme-accent-contrast);
-  background: var(--theme-accent-primary);
+  background: transparent;
   font-weight: 600;
-  box-shadow: 0 2px 6px color-mix(in srgb, var(--theme-accent-primary) 28%, transparent);
 }
 
 .summary-grid {

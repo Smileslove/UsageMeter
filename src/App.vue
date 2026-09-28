@@ -13,6 +13,7 @@ import Sessions from './views/Sessions.vue'
 import Settings from './views/Settings.vue'
 import Gateway from './views/Gateway.vue'
 import UpdateDialog from './components/UpdateDialog.vue'
+import SegmentedControl from './components/SegmentedControl.vue'
 import SourceSelector from './components/SourceSelector.vue'
 import ToolSelector from './components/ToolSelector.vue'
 import ThemeSelector from './components/ThemeSelector.vue'
@@ -349,16 +350,22 @@ onUnmounted(() => {
       </div>
 
       <!-- Segmented Control -->
-      <nav class="segmented-control flex rounded-[18px] p-0.5 backdrop-blur-xl">
+      <SegmentedControl
+        tag="nav"
+        :active-index="Math.max(0, navItems.findIndex(item => item.id === currentView))"
+        class="segmented-control flex w-full rounded-[18px] p-0.5 backdrop-blur-xl"
+      >
         <button
           v-for="item in navItems"
           :key="item.id"
+          type="button"
           @click="currentView = item.id"
-          :class="['flex-1 flex justify-center items-center py-1 rounded-[15px] text-xs font-semibold transition-all', currentView === item.id ? 'segmented-control__item segmented-control__item--active' : 'segmented-control__item segmented-control__item--idle']"
+          :aria-current="currentView === item.id ? 'page' : undefined"
+          :class="['flex-1 flex justify-center items-center py-1 rounded-[15px] text-xs font-semibold transition-colors duration-200', currentView === item.id ? 'segmented-control__item segmented-control__item--active' : 'segmented-control__item segmented-control__item--idle']"
         >
           {{ t(store.settings.locale, item.key) }}
         </button>
-      </nav>
+      </SegmentedControl>
     </header>
 
     <!-- View Content -->
@@ -588,14 +595,14 @@ onUnmounted(() => {
   box-shadow: var(--theme-shadow-inline);
 }
 .segmented-control {
+  isolation: isolate;
   border: 1px solid color-mix(in srgb, var(--theme-text-primary) 7%, transparent);
   background: color-mix(in srgb, var(--theme-text-primary) 10%, transparent);
   box-shadow: inset 0 0.5px 0 color-mix(in srgb, var(--theme-text-primary) 5%, transparent);
 }
 .segmented-control__item--active {
-  background: var(--theme-accent-primary);
+  background: transparent;
   color: var(--theme-accent-contrast);
-  box-shadow: 0 2px 6px color-mix(in srgb, var(--theme-accent-primary) 30%, transparent);
 }
 .segmented-control__item--idle {
   color: var(--theme-text-tertiary);
@@ -609,9 +616,8 @@ onUnmounted(() => {
   box-shadow: none;
 }
 :root[data-appearance='dark'] .segmented-control__item--active {
-  background: var(--theme-accent-primary);
+  background: transparent;
   color: var(--theme-accent-contrast);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--theme-accent-primary) 35%, transparent);
 }
 :root[data-appearance='dark'] .segmented-control__item--idle {
   color: var(--theme-dark-idle-label);

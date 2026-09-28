@@ -18,6 +18,7 @@ import {
 import { metricValueOfBreakdownItem } from '../../../utils/metric'
 import { formatToolDisplayName } from '../../../utils/toolDisplay'
 import { usePerformanceAvailability } from '../../composables/usePerformanceAvailability'
+import SegmentedControl from '../../../components/SegmentedControl.vue'
 import type { OverviewBreakdownItem, ProjectStats } from '../../../types'
 
 const store = useMonitorStore()
@@ -192,10 +193,11 @@ const { hasPerformance } = usePerformanceAvailability(store)
 <template>
   <div class="flex flex-col gap-3">
     <div class="flex flex-wrap items-center gap-2">
-      <div
-        class="flex items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
-        role="group"
+      <SegmentedControl
+        :active-index="Math.max(0, dimensionOptions.findIndex(option => option.value === dimension))"
         :aria-label="t(locale, 'desktop.analytics.dimensionLabel')"
+        tone="soft"
+        class="flex items-center gap-0.5 rounded-lg border border-[var(--theme-border-default)] p-0.5"
       >
         <button
           v-for="d in dimensionOptions"
@@ -204,7 +206,7 @@ const { hasPerformance } = usePerformanceAvailability(store)
           class="rounded-md px-2 py-1 text-xs font-medium transition-colors duration-150"
           :class="
             dimension === d.value
-              ? 'bg-[var(--theme-accent-soft)] text-[var(--theme-accent-primary)]'
+            ? 'text-[var(--theme-accent-primary)]'
               : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'
           "
           :aria-pressed="dimension === d.value"
@@ -212,7 +214,7 @@ const { hasPerformance } = usePerformanceAvailability(store)
         >
           {{ t(locale, d.key) }}
         </button>
-      </div>
+      </SegmentedControl>
     </div>
 
     <div class="rounded-lg border border-[var(--theme-border-default)] p-4" style="background: var(--theme-surface-gradient)">

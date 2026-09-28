@@ -10,6 +10,7 @@ import { formatCost, formatRequestCount, formatTokenValue } from '../../utils/fo
 import type { AppLocale, StatisticsMetric, StatisticsTrendPoint } from '../../types'
 import { useMonitorStore } from '../../stores/monitor'
 import { themeColorVar } from '../../theme'
+import SegmentedControl from '../SegmentedControl.vue'
 
 const store = useMonitorStore()
 
@@ -36,6 +37,7 @@ const trendMetrics: Array<{ value: StatisticsMetric; color: string; key: string 
 const selectedMetric = ref<StatisticsMetric | null>(null)
 const hoveredMetric = ref<StatisticsMetric | null>(null)
 const activeMetric = computed(() => hoveredMetric.value ?? selectedMetric.value)
+const activeMetricIndex = computed(() => trendMetrics.findIndex(item => item.value === activeMetric.value))
 
 function toggleMetric(metric: StatisticsMetric) {
   selectedMetric.value = selectedMetric.value === metric ? null : metric
@@ -190,7 +192,11 @@ const chartOptions = computed(() => {
   <section class="trend-chart rounded-xl p-3">
     <div class="mb-2 flex items-center justify-between gap-2">
       <p class="text-[11px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'statistics.trend') }}</p>
-      <div class="trend-seg">
+      <SegmentedControl
+        :active-index="activeMetricIndex"
+        :aria-label="t(locale, 'statistics.trend')"
+        class="trend-seg"
+      >
         <button
           v-for="item in trendMetrics"
           :key="item.value"
@@ -204,7 +210,7 @@ const chartOptions = computed(() => {
           <span class="trend-seg__dot" :style="{ backgroundColor: item.color }" />
           <span class="trend-seg__label">{{ metricLabel(item.value) }}</span>
         </button>
-      </div>
+      </SegmentedControl>
     </div>
     <div v-if="points.length" class="h-[138px]">
       <v-chart class="h-full w-full" :option="chartOptions" autoresize />
