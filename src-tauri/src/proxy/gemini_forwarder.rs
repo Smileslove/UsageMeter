@@ -19,7 +19,7 @@
 use super::collector::UsageCollector;
 use super::request_body::ForwardRequestBody;
 use super::sse::SseEventReader;
-use super::types::{RequestContext, UsageRecord};
+use super::types::{elapsed_millis, output_tokens_per_second, RequestContext, UsageRecord};
 use crate::net::HttpClientFactory;
 use async_stream::stream;
 use bytes::Bytes;
@@ -253,6 +253,7 @@ impl GeminiForwarder {
                     context,
                     status_code,
                     None,
+                    None,
                 )
                 .await;
             }
@@ -266,7 +267,7 @@ impl GeminiForwarder {
 
     async fn record_error(&self, context: &RequestContext, status_code: u16) {
         let now = chrono::Utc::now().timestamp_millis();
-        let duration_ms = now.saturating_sub(context.start_time_ms) as u64;
+        let duration_ms = context.start_time.elapsed().as_millis() as u64;
         let mut record = UsageRecord {
             timestamp: now,
             message_id: format!("gemini_error_{}_{}", now, status_code),
@@ -298,7 +299,6 @@ impl GeminiForwarder {
         let collector = self.usage_collector.clone();
         let usage_candidate = Arc::new(Mutex::new(None::<GeminiUsage>));
         let first_token_time = Arc::new(Mutex::new(None::<Instant>));
-        let ttft_start = std::time::Instant::now();
         let context_for_finish = context.clone();
         let stream = response.bytes_stream();
         // 在 stream! 宏外复制超时配置，避免 &self 逃逸
@@ -308,12 +308,16 @@ impl GeminiForwarder {
             let mut reader = SseEventReader::new();
             let mut stream = std::pin::pin!(stream);
             let idle_timeout = idle_timeout;
+            let mut completed_normally = false;
 
             loop {
                 let chunk_result = match idle_timeout {
                     Some(timeout) => match tokio::time::timeout(timeout, stream.next()).await {
                         Ok(Some(next)) => next,
-                        Ok(None) => break,
+                        Ok(None) => {
+                            completed_normally = true;
+                            break;
+                        }
                         Err(_) => {
                             yield Err(std::io::Error::other(
                                 "SSE stream idle timeout: no data from upstream",
@@ -321,10 +325,13 @@ impl GeminiForwarder {
                             break;
                         }
                     },
-                    None => match stream.next().await {
-                        Some(next) => next,
-                        None => break,
-                    },
+                None => match stream.next().await {
+                    Some(next) => next,
+                    None => {
+                        completed_normally = true;
+                        break;
+                    }
+                },
                 };
 
                 match chunk_result {
@@ -380,11 +387,27 @@ impl GeminiForwarder {
 
                 let usage = usage_candidate.lock().await.take();
                 let ttft_ms = first_token_time.lock().await.map(|instant| {
-                    let elapsed_ms = instant.duration_since(ttft_start).as_millis() as u64;
-                    elapsed_ms.max(1)
+                    elapsed_millis(context_for_finish.start_time, instant)
                 });
-                record_usage_optional(collector, usage, context_for_finish, status_code, ttft_ms)
-                    .await;
+                let generation_duration = if completed_normally
+                    && usage.as_ref().map(|usage| usage.output_tokens > 0).unwrap_or(false)
+                {
+                    first_token_time
+                        .lock()
+                        .await
+                        .and_then(|first| Instant::now().checked_duration_since(first))
+                } else {
+                    None
+                };
+                record_usage_optional(
+                    collector,
+                    usage,
+                    context_for_finish,
+                    status_code,
+                    ttft_ms,
+                    generation_duration,
+                )
+                .await;
             }
         };
 
@@ -400,16 +423,14 @@ async fn record_usage_optional(
     context: RequestContext,
     status_code: u16,
     ttft_ms: Option<u64>,
+    generation_duration: Option<Duration>,
 ) {
     let now = chrono::Utc::now().timestamp_millis();
-    let duration_ms = now.saturating_sub(context.start_time_ms) as u64;
+    let duration_ms = context.start_time.elapsed().as_millis() as u64;
     match usage {
         Some(usage) => {
-            let output_tokens_per_second = if duration_ms > 0 {
-                Some(usage.output_tokens as f64 / (duration_ms as f64 / 1000.0))
-            } else {
-                None
-            };
+            let output_tokens_per_second =
+                output_tokens_per_second(usage.output_tokens, generation_duration);
             let message_id = if usage.message_id.is_empty() {
                 format!("gemini_{}_{}", now, duration_ms)
             } else {
@@ -574,18 +595,38 @@ fn gemini_first_token_candidate(value: &Value) -> bool {
                     .get("content")
                     .and_then(|content| content.get("parts"))
                     .and_then(|parts| parts.as_array())
-                    .map(|parts| {
-                        parts.iter().any(|part| {
-                            part.get("text")
-                                .and_then(|t| t.as_str())
-                                .map(|t| !t.is_empty())
-                                .unwrap_or(false)
-                        })
-                    })
+                    .map(|parts| parts.iter().any(gemini_part_has_output_payload))
                     .unwrap_or(false)
             })
         })
         .unwrap_or(false)
+}
+
+fn gemini_part_has_output_payload(part: &Value) -> bool {
+    [
+        "text",
+        "functionCall",
+        "executableCode",
+        "codeExecutionResult",
+        "inlineData",
+        "fileData",
+    ]
+    .iter()
+    .any(|key| {
+        part.get(*key)
+            .map(gemini_payload_is_non_empty)
+            .unwrap_or(false)
+    })
+}
+
+fn gemini_payload_is_non_empty(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(values) => values.iter().any(gemini_payload_is_non_empty),
+        Value::Object(values) => !values.is_empty(),
+        Value::Bool(_) | Value::Number(_) => true,
+    }
 }
 
 fn parse_gemini_usage(value: &Value) -> Option<GeminiUsage> {
@@ -718,6 +759,30 @@ mod tests {
             "candidates": [{"content": {"parts": [{"text": ""}]}}]
         });
         assert!(!gemini_first_token_candidate(&empty));
+    }
+
+    #[test]
+    fn first_token_candidate_detects_non_text_generation_parts() {
+        let function_call = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{"functionCall": {"name": "get_weather", "args": {}}}]
+                }
+            }]
+        });
+        assert!(gemini_first_token_candidate(&function_call));
+
+        let inline_data = serde_json::json!({
+            "candidates": [{
+                "content": {"parts": [{"inlineData": {"mimeType": "image/png", "data": "AA=="}}]}
+            }]
+        });
+        assert!(gemini_first_token_candidate(&inline_data));
+
+        let metadata_only = serde_json::json!({
+            "candidates": [{"content": {"parts": [{"text": ""}]}}]
+        });
+        assert!(!gemini_first_token_candidate(&metadata_only));
     }
 
     #[test]

@@ -19,6 +19,7 @@ pub(super) struct FactAccumulator {
     pub(super) rate_sum: f64,
     pub(super) rate_count: u64,
     pub(super) rate_output_tokens: u64,
+    /// Derived generation duration (output tokens / per-request rate), not request latency.
     pub(super) rate_duration_ms: u64,
     pub(super) min_rate: Option<f64>,
     pub(super) max_rate: Option<f64>,
@@ -86,12 +87,13 @@ impl FactAccumulator {
             *self.status_code_counts.entry(status_code).or_insert(0) += request_count;
         }
 
-        if let (Some(duration_ms), Some(rate)) = (fact.duration_ms, fact.output_tokens_per_second) {
-            if duration_ms > 0 && rate > 0.0 {
+        if let Some(rate) = fact.output_tokens_per_second {
+            if fact.output_tokens > 0 && rate.is_finite() && rate > 0.0 {
                 self.rate_sum += rate;
                 self.rate_count += 1;
                 self.rate_output_tokens += fact.output_tokens;
-                self.rate_duration_ms += duration_ms;
+                self.rate_duration_ms +=
+                    ((fact.output_tokens as f64 / rate) * 1000.0).round() as u64;
                 self.min_rate = Some(self.min_rate.map_or(rate, |current| current.min(rate)));
                 self.max_rate = Some(self.max_rate.map_or(rate, |current| current.max(rate)));
             }

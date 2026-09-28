@@ -13,9 +13,12 @@ use std::collections::{HashMap, HashSet};
 
 fn merged_stat_capability_from_facts(facts: &[MergedRequestFact]) -> StatisticsCapability {
     let has_status_codes = facts.iter().any(|fact| fact.status_code.is_some());
-    let has_performance = facts
-        .iter()
-        .any(|fact| fact.output_tokens_per_second.is_some() || fact.ttft_ms.is_some());
+    let has_performance = facts.iter().any(|fact| {
+        fact.ttft_ms.is_some_and(|value| value > 0)
+            || fact
+                .output_tokens_per_second
+                .is_some_and(|rate| fact.output_tokens > 0 && rate.is_finite() && rate > 0.0)
+    });
 
     StatisticsCapability {
         has_basic_usage: true,
@@ -77,8 +80,6 @@ pub(super) fn build_merged_statistics(
             status_codes.sort_by(|a, b| a.status_code.cmp(&b.status_code));
 
             let has_status = !status_codes.is_empty();
-            let has_perf = acc.rate_count > 0 || acc.ttft_count > 0;
-
             StatisticsModelBreakdown {
                 model_name: model_name.clone(),
                 request_count: acc.request_count,
@@ -101,8 +102,8 @@ pub(super) fn build_merged_statistics(
                         0.0
                     }
                 },
-                avg_tokens_per_second: has_perf
-                    .then_some(acc.rate_sum / acc.rate_count.max(1) as f64),
+                avg_tokens_per_second: (acc.rate_count > 0)
+                    .then_some(acc.rate_sum / acc.rate_count as f64),
                 avg_ttft_ms: (acc.ttft_count > 0).then_some(acc.ttft_sum / acc.ttft_count as f64),
                 error_requests: has_status
                     .then_some(acc.client_error_requests + acc.server_error_requests),
@@ -444,5 +445,33 @@ mod tests {
             .iter()
             .all(|model| model.status_codes.is_empty()));
         assert_eq!(summary.models[0].model_name, "unknown");
+    }
+
+    #[test]
+    fn build_merged_statistics_does_not_report_zero_rate_for_ttft_only_data() {
+        let facts = vec![test_fact(
+            "s1",
+            1200,
+            "model-a",
+            10,
+            20,
+            0,
+            0,
+            0.0,
+            CoverageOrigin::ProxyOnly,
+            Some(200),
+            Some(0.0),
+            Some(250),
+        )];
+
+        let summary = build_merged_statistics(&facts, &test_query());
+
+        assert!(summary.capability.has_performance);
+        assert_eq!(
+            summary.performance.as_ref().unwrap().avg_tokens_per_second,
+            0.0
+        );
+        assert!(summary.models[0].avg_tokens_per_second.is_none());
+        assert_eq!(summary.models[0].avg_ttft_ms, Some(250.0));
     }
 }

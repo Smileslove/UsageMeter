@@ -136,7 +136,7 @@ impl LocalUsageDatabase {
             entry.cache_read_tokens += fact.cache_read_tokens;
             entry.total_cost += fact.estimated_cost;
             if let Some(rate) = fact.output_tokens_per_second {
-                if rate > 0.0 {
+                if fact.output_tokens > 0 && rate.is_finite() && rate > 0.0 {
                     entry.rate_sum += rate;
                     entry.rate_count += 1;
                 }

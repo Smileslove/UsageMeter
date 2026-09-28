@@ -167,7 +167,8 @@ impl ProxyDatabase {
                     AVG(ttft_ms) as avg_ttft_ms,
                     SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END) as success_requests,
                     SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) as error_requests,
-                    COALESCE(SUM(estimated_cost), 0) as estimated_cost
+                    COALESCE(SUM(estimated_cost), 0) as estimated_cost,
+                    AVG(output_tokens_per_second) as avg_output_tokens_per_second
                 FROM usage_records
                 WHERE session_id = ?1
                 GROUP BY session_id
@@ -185,11 +186,7 @@ impl ProxyDatabase {
                 let total_cache_create_tokens: i64 = row.get(5)?;
                 let total_cache_read_tokens: i64 = row.get(6)?;
 
-                let avg_rate = if total_duration_ms > 0 {
-                    (total_output_tokens as f64) / (total_duration_ms as f64 / 1000.0)
-                } else {
-                    0.0
-                };
+                let avg_rate = row.get::<_, Option<f64>>(15)?.unwrap_or(0.0);
 
                 Ok(SessionStats {
                     session_id: row.get(0)?,
@@ -269,7 +266,8 @@ impl ProxyDatabase {
                     AVG(ttft_ms) as avg_ttft_ms,
                     SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END) as success_requests,
                     SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) as error_requests,
-                    COALESCE(SUM(estimated_cost), 0) as estimated_cost
+                    COALESCE(SUM(estimated_cost), 0) as estimated_cost,
+                    AVG(output_tokens_per_second) as avg_output_tokens_per_second
                 FROM usage_records
                 WHERE session_id IS NOT NULL
                   AND session_id != ''
@@ -296,11 +294,7 @@ impl ProxyDatabase {
                     let total_cache_create_tokens: i64 = row.get(5)?;
                     let total_cache_read_tokens: i64 = row.get(6)?;
 
-                    let avg_rate = if total_duration_ms > 0 {
-                        (total_output_tokens as f64) / (total_duration_ms as f64 / 1000.0)
-                    } else {
-                        0.0
-                    };
+                    let avg_rate = row.get::<_, Option<f64>>(15)?.unwrap_or(0.0);
 
                     Ok(SessionStats {
                         session_id: row.get(0)?,
@@ -357,16 +351,16 @@ impl ProxyDatabase {
                 SELECT
                     COUNT(*) as request_count,
                     COALESCE(SUM(output_tokens), 0) as total_output_tokens,
-                    COALESCE(SUM(duration_ms), 0) as total_duration_ms,
-                    CASE
-                        WHEN SUM(duration_ms) > 0
-                        THEN SUM(output_tokens) * 1000.0 / SUM(duration_ms)
-                        ELSE 0
-                    END as avg_rate
+                    CAST(ROUND(COALESCE(SUM(
+                        CASE WHEN output_tokens_per_second > 0
+                             THEN output_tokens * 1000.0 / output_tokens_per_second
+                             ELSE 0 END
+                    ), 0)) AS INTEGER) as total_generation_duration_ms,
+                    COALESCE(AVG(output_tokens_per_second), 0) as avg_rate
                 FROM usage_records
                 WHERE timestamp >= ?1
-                  AND duration_ms > 0
-                  AND output_tokens_per_second IS NOT NULL
+                  AND output_tokens > 0
+                  AND output_tokens_per_second > 0
                 "#,
                 [cutoff_ms],
                 |row| {
@@ -473,6 +467,7 @@ mod tests {
                 estimated_cost: 1.25,
                 client_tool: "claude_code".to_string(),
                 duration_ms: 1000,
+                output_tokens_per_second: Some(20.0),
                 request_start_time: 1_715_000_000_000,
                 request_end_time: 1_715_000_001_000,
                 ..Default::default()
@@ -491,6 +486,7 @@ mod tests {
                 estimated_cost: 2.75,
                 client_tool: "claude_code".to_string(),
                 duration_ms: 500,
+                output_tokens_per_second: Some(100.0),
                 request_start_time: 1_715_000_002_000,
                 request_end_time: 1_715_000_002_500,
                 ..Default::default()
@@ -511,6 +507,49 @@ mod tests {
         assert_eq!(stats.models.len(), 2);
         assert_eq!(stats.total_input_tokens, 150);
         assert_eq!(stats.total_output_tokens, 275);
+        assert_eq!(stats.avg_output_tokens_per_second, 60.0);
+    }
+
+    #[test]
+    fn window_rate_stats_average_valid_per_request_rates() {
+        let (_tmp, db) = temp_db();
+        insert_usage_record(
+            &db,
+            &UsageRecord {
+                timestamp: 1_715_000_000_000,
+                message_id: "rate-slow".to_string(),
+                output_tokens: 200,
+                duration_ms: 10_000,
+                output_tokens_per_second: Some(20.0),
+                ..Default::default()
+            },
+            "known",
+        );
+        insert_usage_record(
+            &db,
+            &UsageRecord {
+                timestamp: 1_715_000_001_000,
+                message_id: "rate-fast".to_string(),
+                output_tokens: 75,
+                duration_ms: 500,
+                output_tokens_per_second: Some(100.0),
+                ..Default::default()
+            },
+            "known",
+        );
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build runtime");
+        let stats = runtime
+            .block_on(db.get_window_rate_stats(1_714_999_000_000))
+            .expect("get rate stats");
+
+        assert_eq!(stats.request_count, 2);
+        assert_eq!(stats.total_output_tokens, 275);
+        assert_eq!(stats.total_duration_ms, 10_750);
+        assert_eq!(stats.avg_output_tokens_per_second, 60.0);
     }
 
     #[test]

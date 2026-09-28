@@ -346,7 +346,7 @@ fn build_daily_model_summaries_from_facts(
         entry.cache_read_tokens += fact.cache_read_tokens;
         entry.total_cost += fact.estimated_cost;
         if let Some(rate) = fact.output_tokens_per_second {
-            if rate > 0.0 {
+            if fact.output_tokens > 0 && rate.is_finite() && rate > 0.0 {
                 entry.rate_sum += rate;
                 entry.rate_count += 1;
             }
@@ -557,8 +557,16 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
 
     let mut model_totals: HashMap<String, ModelAgg> = HashMap::new();
     let mut model_day_map: HashMap<String, HashMap<i64, StatisticsTrendPoint>> = HashMap::new();
+    let mut performance_rate_sum = 0.0_f64;
+    let mut performance_rate_count = 0_u64;
+    let mut performance_ttft_sum = 0.0_f64;
+    let mut performance_ttft_count = 0_u64;
     for row in model_rows {
         let use_visible_only = !include_errors;
+        performance_rate_sum += row.rate_sum;
+        performance_rate_count += row.rate_count;
+        performance_ttft_sum += row.ttft_sum;
+        performance_ttft_count += row.ttft_count;
         let agg = model_totals.entry(row.model_name.clone()).or_default();
         agg.request_count += if use_visible_only {
             row.visible_request_count
@@ -711,9 +719,7 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
     totals.model_count = models.len() as u64;
     let capability = StatisticsCapability {
         has_basic_usage: true,
-        has_performance: models
-            .iter()
-            .any(|model| model.avg_tokens_per_second.is_some() || model.avg_ttft_ms.is_some()),
+        has_performance: performance_rate_count > 0 || performance_ttft_count > 0,
         has_status_codes: total_success_requests
             + total_client_error_requests
             + total_server_error_requests
@@ -749,22 +755,17 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
             .filter_map(|m| m.avg_ttft_ms.map(|v| (m.model_name.clone(), v)))
             .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
             .map(|m| m.0);
-        let rate_values: Vec<f64> = models
-            .iter()
-            .filter_map(|m| m.avg_tokens_per_second)
-            .collect();
-        let ttft_values: Vec<f64> = models.iter().filter_map(|m| m.avg_ttft_ms).collect();
         Some(StatisticsPerformance {
-            request_count: models.iter().map(|m| m.request_count).sum(),
-            avg_tokens_per_second: if rate_values.is_empty() {
+            request_count: performance_rate_count.max(performance_ttft_count),
+            avg_tokens_per_second: if performance_rate_count == 0 {
                 0.0
             } else {
-                rate_values.iter().sum::<f64>() / rate_values.len() as f64
+                performance_rate_sum / performance_rate_count as f64
             },
-            avg_ttft_ms: if ttft_values.is_empty() {
+            avg_ttft_ms: if performance_ttft_count == 0 {
                 0.0
             } else {
-                ttft_values.iter().sum::<f64>() / ttft_values.len() as f64
+                performance_ttft_sum / performance_ttft_count as f64
             },
             slowest_model,
             fastest_model,

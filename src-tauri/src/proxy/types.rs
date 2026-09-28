@@ -7,7 +7,7 @@ use crate::models::AppSettings;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::RwLock;
 
 /// 代理配置
@@ -83,7 +83,7 @@ pub struct ProxyStatus {
 /// - `request_start_time`: 请求开始时间（收到请求时）
 /// - `request_end_time`: 请求结束时间（响应完成时）
 /// - `duration_ms`: 请求总耗时（毫秒）
-/// - `output_tokens_per_second`: 输出 Token 生成速率（tokens/s），仅当 duration > 0 时计算
+/// - `output_tokens_per_second`: 完整流式响应中，输出 Token 数除以首个非空输出到流结束的时长
 ///
 /// 状态码字段：
 /// - `status_code`: HTTP 响应状态码（如 200、400、500 等）
@@ -131,9 +131,9 @@ pub struct UsageRecord {
     pub request_start_time: i64,
     /// 请求结束时间（Unix 毫秒）
     pub request_end_time: i64,
-    /// 请求耗时（毫秒）
+    /// 请求总耗时（毫秒，从入口到响应结束）
     pub duration_ms: u64,
-    /// 输出 Token 生成速率（tokens/s）
+    /// 输出 Token 生成速率（tokens/s，仅可靠流式请求）
     pub output_tokens_per_second: Option<f64>,
     /// 首 Token 生成时间（毫秒）
     /// 从请求开始到第一个输出 Token 生成的时间
@@ -221,6 +221,23 @@ impl Default for UsageRecord {
             gateway_request_id: None,
         }
     }
+}
+
+pub(super) fn output_tokens_per_second(
+    output_tokens: u64,
+    generation_duration: Option<Duration>,
+) -> Option<f64> {
+    let seconds = generation_duration?.as_secs_f64();
+    if output_tokens == 0 || !seconds.is_finite() || seconds <= 0.0 {
+        return None;
+    }
+
+    let rate = output_tokens as f64 / seconds;
+    rate.is_finite().then_some(rate)
+}
+
+pub(super) fn elapsed_millis(start: Instant, end: Instant) -> u64 {
+    end.saturating_duration_since(start).as_millis().max(1) as u64
 }
 
 fn default_client_tool() -> String {
@@ -631,6 +648,20 @@ impl ClaudeSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_rate_requires_positive_tokens_and_generation_time() {
+        assert_eq!(
+            output_tokens_per_second(100, Some(Duration::from_secs(2))),
+            Some(50.0)
+        );
+        assert_eq!(
+            output_tokens_per_second(0, Some(Duration::from_secs(2))),
+            None
+        );
+        assert_eq!(output_tokens_per_second(100, Some(Duration::ZERO)), None);
+        assert_eq!(output_tokens_per_second(100, None), None);
+    }
 
     #[test]
     fn gateway_provenance_defaults_and_context_mapping_are_compatible() {

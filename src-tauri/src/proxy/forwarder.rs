@@ -157,7 +157,7 @@ impl RequestForwarder {
 
             // 即使是错误响应，也记录请求（无 token 数据，但有状态码）
             let request_end_time = chrono::Utc::now().timestamp_millis();
-            let duration_ms = request_end_time - context.start_time_ms;
+            let duration_ms = context.start_time.elapsed().as_millis() as i64;
 
             let mut record = UsageRecord {
                 timestamp: request_end_time,
@@ -230,8 +230,8 @@ impl RequestForwarder {
         status_code: u16,
         headers: Vec<(String, String)>,
     ) -> Result<ForwardResult, String> {
-        // TTFT 从收到上游响应头开始计时
-        let ttft_start_time = std::time::Instant::now();
+        // 使用请求入口的单调时钟，包含上游等待时间并与其它协议一致。
+        let ttft_start_time = context.start_time;
 
         // 创建流上下文用于使用量收集
         let stream_context = StreamContext {
@@ -290,14 +290,14 @@ impl RequestForwarder {
         status_code: u16,
         headers: Vec<(String, String)>,
     ) -> Result<ForwardResult, String> {
-        let request_end_time = chrono::Utc::now().timestamp_millis();
         let request_start_time = context.start_time_ms;
-        let duration_ms = request_end_time - request_start_time;
 
         let body = response
             .bytes()
             .await
             .map_err(|e| format!("Failed to read response body: {}", e))?;
+        let request_end_time = chrono::Utc::now().timestamp_millis();
+        let duration_ms = context.start_time.elapsed().as_millis() as u64;
 
         let parsed_usage = serde_json::from_slice::<serde_json::Value>(&body)
             .ok()
@@ -330,11 +330,6 @@ impl RequestForwarder {
     ) {
         match usage {
             Some(usage) => {
-                let output_tokens_per_second = if duration_ms > 0 {
-                    Some((usage.output_tokens as f64) / (duration_ms as f64 / 1000.0))
-                } else {
-                    None
-                };
                 let mut record = UsageRecord {
                     timestamp: request_end_time,
                     message_id: usage.message_id,
@@ -349,7 +344,7 @@ impl RequestForwarder {
                     request_start_time,
                     request_end_time,
                     duration_ms,
-                    output_tokens_per_second,
+                    output_tokens_per_second: None,
                     ttft_ms: None,
                     status_code,
                     estimated_cost: 0.0,

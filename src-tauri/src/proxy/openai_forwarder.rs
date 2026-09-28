@@ -3,7 +3,7 @@
 use super::collector::UsageCollector;
 use super::request_body::ForwardRequestBody;
 use super::sse::SseEventReader;
-use super::types::{RequestContext, UsageRecord};
+use super::types::{elapsed_millis, output_tokens_per_second, RequestContext, UsageRecord};
 use crate::net::HttpClientFactory;
 use async_stream::stream;
 use bytes::Bytes;
@@ -243,7 +243,7 @@ impl OpenAiForwarder {
 
     async fn record_error(&self, context: &RequestContext, status_code: u16) {
         let now = chrono::Utc::now().timestamp_millis();
-        let duration_ms = now.saturating_sub(context.start_time_ms) as u64;
+        let duration_ms = context.start_time.elapsed().as_millis() as u64;
         let mut record = UsageRecord {
             timestamp: now,
             message_id: format!("codex_error_{}_{}", now, status_code),
@@ -285,6 +285,7 @@ impl OpenAiForwarder {
             context,
             status_code,
             None,
+            None,
         )
         .await;
     }
@@ -298,8 +299,6 @@ impl OpenAiForwarder {
         let collector = self.usage_collector.clone();
         let usage_candidate = Arc::new(Mutex::new(None::<OpenAiUsage>));
         let first_token_time = Arc::new(Mutex::new(None::<Instant>));
-        // TTFT 从收到上游响应头开始计时
-        let ttft_start = std::time::Instant::now();
         let context_for_finish = context.clone();
         let stream = response.bytes_stream();
         // 在 stream! 宏外复制超时配置，避免 &self 逃逸
@@ -309,12 +308,16 @@ impl OpenAiForwarder {
             let mut reader = SseEventReader::new();
             let mut stream = std::pin::pin!(stream);
             let idle_timeout = idle_timeout;
+            let mut completed_normally = false;
 
             loop {
                 let chunk_result = match idle_timeout {
                     Some(timeout) => match tokio::time::timeout(timeout, stream.next()).await {
                         Ok(Some(next)) => next,
-                        Ok(None) => break,
+                        Ok(None) => {
+                            completed_normally = true;
+                            break;
+                        }
                         Err(_) => {
                             yield Err(std::io::Error::other(
                                 "SSE stream idle timeout: no data from upstream",
@@ -322,10 +325,13 @@ impl OpenAiForwarder {
                             break;
                         }
                     },
-                    None => match stream.next().await {
-                        Some(next) => next,
-                        None => break,
-                    },
+                None => match stream.next().await {
+                    Some(next) => next,
+                    None => {
+                        completed_normally = true;
+                        break;
+                    }
+                },
                 };
 
                 match chunk_result {
@@ -378,15 +384,25 @@ impl OpenAiForwarder {
 
             let usage = usage_candidate.lock().await.take();
             let ttft_ms = first_token_time.lock().await.map(|instant| {
-                let elapsed_ms = instant.duration_since(ttft_start).as_millis() as u64;
-                elapsed_ms.max(1)
+                elapsed_millis(context_for_finish.start_time, instant)
             });
+            let generation_duration = if completed_normally
+                && usage.as_ref().map(|usage| usage.output_tokens > 0).unwrap_or(false)
+            {
+                first_token_time
+                    .lock()
+                    .await
+                    .and_then(|first| Instant::now().checked_duration_since(first))
+            } else {
+                None
+            };
             record_usage_with_collector_optional(
                 collector,
                 usage,
                 context_for_finish,
                 status_code,
                 ttft_ms,
+                generation_duration,
             )
             .await;
         };
@@ -403,14 +419,12 @@ async fn record_usage_with_collector(
     context: RequestContext,
     status_code: u16,
     ttft_ms: Option<u64>,
+    generation_duration: Option<Duration>,
 ) {
     let now = chrono::Utc::now().timestamp_millis();
-    let duration_ms = now.saturating_sub(context.start_time_ms) as u64;
-    let output_tokens_per_second = if duration_ms > 0 {
-        Some(usage.output_tokens as f64 / (duration_ms as f64 / 1000.0))
-    } else {
-        None
-    };
+    let duration_ms = context.start_time.elapsed().as_millis() as u64;
+    let output_tokens_per_second =
+        output_tokens_per_second(usage.output_tokens, generation_duration);
     let message_id = if usage.message_id.is_empty() {
         next_openai_fallback_message_id(now)
     } else {
@@ -462,14 +476,23 @@ async fn record_usage_with_collector_optional(
     context: RequestContext,
     status_code: u16,
     ttft_ms: Option<u64>,
+    generation_duration: Option<Duration>,
 ) {
     match usage {
         Some(usage) => {
-            record_usage_with_collector(collector, usage, context, status_code, ttft_ms).await;
+            record_usage_with_collector(
+                collector,
+                usage,
+                context,
+                status_code,
+                ttft_ms,
+                generation_duration,
+            )
+            .await;
         }
         None => {
             let now = chrono::Utc::now().timestamp_millis();
-            let duration_ms = now.saturating_sub(context.start_time_ms) as u64;
+            let duration_ms = context.start_time.elapsed().as_millis() as u64;
             let mut record = UsageRecord {
                 timestamp: now,
                 message_id: format!("codex_usage_missing_{}_{}", now, status_code),
@@ -662,9 +685,23 @@ fn value_has_output_payload(value: &Value) -> bool {
         }
 
         if let Some(function) = object.get("function") {
-            if value_has_output_payload(function) {
+            if function
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| !name.trim().is_empty())
+                || value_has_output_payload(function)
+            {
                 return true;
             }
+        }
+
+        if object.get("type").and_then(Value::as_str) == Some("function_call")
+            && object
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| !name.trim().is_empty())
+        {
+            return true;
         }
 
         return false;
@@ -1132,6 +1169,33 @@ mod tests {
 
         assert!(first_token_candidate(&reasoning));
         assert!(first_token_candidate(&tool_call));
+    }
+
+    #[test]
+    fn first_token_candidate_accepts_tool_name_before_arguments() {
+        let chat_tool_name = serde_json::json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": ""
+                        }
+                    }]
+                }
+            }]
+        });
+        let response_tool_name = serde_json::json!({
+            "type": "response.output_item.added",
+            "item": {
+                "type": "function_call",
+                "name": "get_weather",
+                "arguments": ""
+            }
+        });
+
+        assert!(first_token_candidate(&chat_tool_name));
+        assert!(first_token_candidate(&response_tool_name));
     }
 
     #[test]

@@ -897,7 +897,7 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
             |row| row.get(0),
         )
         .expect("read schema version");
-    assert_eq!(schema_version, "32");
+    assert_eq!(schema_version, "33");
     for table in ["local_sessions", "remote_sessions"] {
         let columns: Vec<String> = conn
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -1091,6 +1091,50 @@ fn local_session_scope_round_trips_from_database() {
     let sessions = db.get_all_sessions(&ToolFilter::All).unwrap();
     assert_eq!(sessions.len(), 1);
     assert_eq!(sessions[0].scope.as_deref(), Some("project"));
+}
+
+#[test]
+fn v33_migration_clears_unified_performance_materialization() {
+    let (tmpdir, db) = temp_db();
+    let path = tmpdir.path().join("local_usage.db");
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE local_sync_state SET state_value = '32' WHERE state_key = 'schema_version'",
+            [],
+        )
+        .expect("set schema version to 32");
+        conn.execute(
+            "INSERT INTO unified_daily_materialized_facts (
+                local_date, request_key, session_id, tool, timestamp_sec, timestamp_ms,
+                model, coverage_origin, duration_ms, output_tokens_per_second, ttft_ms
+             ) VALUES ('2026-01-01', 'proxy:req-1', 's', 'claude_code', 1, 1000,
+                       'model', 'proxy_only', 2000, 40.0, 300)",
+            [],
+        )
+        .expect("insert stale performance materialization");
+    }
+    drop(db);
+
+    let migrated = LocalUsageDatabase::new_with_path(&path).expect("migrate to v33");
+    let conn = migrated.conn.lock().unwrap();
+    let schema_version: String = conn
+        .query_row(
+            "SELECT state_value FROM local_sync_state WHERE state_key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read schema version");
+    let materialized_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM unified_daily_materialized_facts",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count materialized facts");
+
+    assert_eq!(schema_version, "33");
+    assert_eq!(materialized_count, 0);
 }
 
 #[test]
@@ -2722,7 +2766,7 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
             .get_local_sync_state("schema_version")
             .unwrap()
             .as_deref(),
-        Some("32")
+        Some("33")
     );
     assert!(
         reopened

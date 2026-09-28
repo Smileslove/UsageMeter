@@ -1,6 +1,6 @@
 use super::ProxyDatabase;
 use crate::models::ModelPricingConfig;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -375,6 +375,69 @@ impl ProxyDatabase {
         Self::normalize_legacy_opencode_native_session_ids(conn)
     }
 
+    pub(super) fn migrate_rate_metrics(conn: &Connection) -> Result<bool, String> {
+        let version = conn
+            .query_row(
+                "SELECT state_value FROM daily_rollup_state WHERE state_key = 'rate_semantics_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| format!("Failed to query proxy rate semantics version: {e}"))?;
+        if version.as_deref() == Some("2") {
+            return Ok(false);
+        }
+
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| format!("Failed to start proxy rate semantics migration: {e}"))?;
+        let stale_records: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM usage_records
+                 WHERE output_tokens_per_second IS NOT NULL OR ttft_ms IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("Failed to count stale proxy rate metrics: {e}"))?;
+        let stale_sessions: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM session_stats
+                 WHERE avg_output_tokens_per_second != 0 OR avg_ttft_ms != 0",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("Failed to count stale proxy session metrics: {e}"))?;
+        let now = chrono::Utc::now().timestamp_millis();
+
+        tx.execute(
+            "UPDATE usage_records
+             SET output_tokens_per_second = NULL, ttft_ms = NULL, updated_at = ?1
+             WHERE output_tokens_per_second IS NOT NULL OR ttft_ms IS NOT NULL",
+            params![now],
+        )
+        .map_err(|e| format!("Failed to clear stale proxy rate metrics: {e}"))?;
+        tx.execute(
+            "UPDATE session_stats
+             SET avg_output_tokens_per_second = 0, avg_ttft_ms = 0
+             WHERE avg_output_tokens_per_second != 0 OR avg_ttft_ms != 0",
+            [],
+        )
+        .map_err(|e| format!("Failed to clear stale proxy session metrics: {e}"))?;
+        tx.execute(
+            "INSERT INTO daily_rollup_state (state_key, state_value, updated_at)
+             VALUES ('rate_semantics_version', '2', ?1)
+             ON CONFLICT(state_key) DO UPDATE
+             SET state_value = excluded.state_value,
+                 updated_at = excluded.updated_at",
+            params![chrono::Utc::now().timestamp()],
+        )
+        .map_err(|e| format!("Failed to store proxy rate semantics version: {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit proxy rate semantics migration: {e}"))?;
+
+        Ok(stale_records > 0 || stale_sessions > 0)
+    }
+
     fn normalize_legacy_opencode_native_session_ids(
         conn: &Connection,
     ) -> Result<Vec<String>, String> {
@@ -477,11 +540,7 @@ impl ProxyDatabase {
             SELECT
                 session_id,
                 COALESCE(SUM(duration_ms), 0),
-                CASE
-                    WHEN COALESCE(SUM(duration_ms), 0) > 0
-                    THEN COALESCE(SUM(output_tokens), 0) * 1000.0 / COALESCE(SUM(duration_ms), 0)
-                    ELSE 0
-                END,
+                COALESCE(AVG(output_tokens_per_second), 0),
                 COALESCE(AVG(ttft_ms), 0),
                 COUNT(*),
                 COALESCE(SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END), 0),
@@ -706,6 +765,47 @@ mod tests {
             |row| row.get::<_, i64>(0),
         )
         .expect("read merge cache generation")
+    }
+
+    #[test]
+    fn rate_semantics_migration_clears_unreconstructable_legacy_metrics_once() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        ProxyDatabase::create_tables(&conn).expect("create tables");
+        conn.execute(
+            "INSERT INTO usage_records (
+                timestamp, message_id, storage_dedupe_key, output_tokens,
+                output_tokens_per_second, ttft_ms
+             ) VALUES (1, 'm1', 'key-m1', 100, 50.0, 400)",
+            [],
+        )
+        .expect("insert legacy usage metrics");
+        conn.execute(
+            "INSERT INTO session_stats (
+                session_id, avg_output_tokens_per_second, avg_ttft_ms
+             ) VALUES ('s1', 50.0, 400.0)",
+            [],
+        )
+        .expect("insert legacy session metrics");
+
+        assert!(ProxyDatabase::migrate_rate_metrics(&conn).expect("migrate legacy metrics"));
+        let usage_metrics: (Option<f64>, Option<i64>) = conn
+            .query_row(
+                "SELECT output_tokens_per_second, ttft_ms FROM usage_records WHERE message_id = 'm1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read migrated usage metrics");
+        let session_metrics: (f64, f64) = conn
+            .query_row(
+                "SELECT avg_output_tokens_per_second, avg_ttft_ms FROM session_stats WHERE session_id = 's1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read migrated session metrics");
+
+        assert_eq!(usage_metrics, (None, None));
+        assert_eq!(session_metrics, (0.0, 0.0));
+        assert!(!ProxyDatabase::migrate_rate_metrics(&conn).expect("rerun migration"));
     }
 
     #[test]

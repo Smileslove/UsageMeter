@@ -1486,7 +1486,7 @@ fn build_fact_backed_session_stats(
             total_duration_ms += duration_ms;
         }
         if let Some(rate) = fact.output_tokens_per_second {
-            if rate > 0.0 {
+            if fact.output_tokens > 0 && rate.is_finite() && rate > 0.0 {
                 rate_sum += rate;
                 rate_count += 1;
             }

@@ -200,11 +200,20 @@ impl ProxyDatabase {
         // 迁移旧表结构（添加新字段）。若迁移规范化了历史 Proxy 记录，
         // 在 Proxy 事务完成后使对应 Local 物化日期失效。
         let normalized_history_dates = Self::migrate_schema(&conn)?;
+        Self::create_merge_cache_generation_tracking(&conn)?;
+        let rate_metrics_changed = Self::migrate_rate_metrics(&conn)?;
         conn.execute("DROP INDEX IF EXISTS idx_usage_storage_key", [])
             .map_err(|e| format!("Failed to drop redundant storage key index: {e}"))?;
-        Self::invalidate_local_materialization_after_proxy_commit(&normalized_history_dates)?;
-        Self::create_merge_cache_generation_tracking(&conn)?;
-
+        if rate_metrics_changed {
+            let local_db = crate::local_usage::LocalUsageDatabase::get_global().map_err(|e| {
+                format!("Failed to open Local database for Proxy rate migration: {e}")
+            })?;
+            local_db.clear_unified_materialization().map_err(|e| {
+                format!("Failed to clear Local materialization after Proxy rate migration: {e}")
+            })?;
+        } else {
+            Self::invalidate_local_materialization_after_proxy_commit(&normalized_history_dates)?;
+        }
         // 创建模型价格表
         Self::create_model_pricing_table_static(&conn)?;
 
@@ -302,6 +311,7 @@ pub struct WindowAggregate {
 pub struct WindowRateStats {
     pub request_count: i64,
     pub total_output_tokens: i64,
+    /// Derived sum of per-request generation durations, not end-to-end latency.
     pub total_duration_ms: i64,
     pub avg_output_tokens_per_second: f64,
 }

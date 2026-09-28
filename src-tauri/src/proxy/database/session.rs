@@ -256,7 +256,8 @@ impl ProxyDatabase {
                 GROUP_CONCAT(DISTINCT model) as models,
                 AVG(ttft_ms) as avg_ttft_ms,
                 SUM(CASE WHEN status_code < 400 THEN 1 ELSE 0 END) as success_requests,
-                SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) as error_requests
+                SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) as error_requests,
+                AVG(output_tokens_per_second) as avg_output_tokens_per_second
             FROM usage_records
             WHERE message_id IN ({})
             "#,
@@ -277,11 +278,7 @@ impl ProxyDatabase {
             let total_cache_read_tokens: i64 = row.get(4)?;
 
             // 计算平均生成速率
-            let avg_rate = if total_duration_ms > 0 {
-                (total_output_tokens as f64) / (total_duration_ms as f64 / 1000.0)
-            } else {
-                0.0
-            };
+            let avg_rate = row.get::<_, Option<f64>>(12)?.unwrap_or(0.0);
 
             // 获取第一个模型用于定价
             let first_model = models_str.split(',').next().unwrap_or("");
@@ -396,10 +393,12 @@ impl ProxyDatabase {
             conn.execute(
                 r#"
                 UPDATE session_stats SET
-                    avg_output_tokens_per_second = CASE
-                        WHEN total_duration_ms > 0 THEN total_output_tokens * 1000.0 / total_duration_ms
-                        ELSE 0
-                    END
+                    avg_output_tokens_per_second = COALESCE(
+                        (SELECT AVG(output_tokens_per_second) FROM usage_records WHERE session_id = ?1), 0
+                    ),
+                    avg_ttft_ms = COALESCE(
+                        (SELECT AVG(ttft_ms) FROM usage_records WHERE session_id = ?1), 0
+                    )
                 WHERE session_id = ?1
                 "#,
                 [session_id],
@@ -412,13 +411,14 @@ impl ProxyDatabase {
                     session_id, total_duration_ms, total_input_tokens, total_output_tokens,
                     total_cache_create_tokens, total_cache_read_tokens, proxy_request_count,
                     success_requests, error_requests, first_request_time, last_request_time,
-                    avg_output_tokens_per_second, last_updated, models, estimated_cost
+                    avg_output_tokens_per_second, avg_ttft_ms, last_updated, models, estimated_cost
                 ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, 1,
                     CASE WHEN ?7 < 400 THEN 1 ELSE 0 END,
                     CASE WHEN ?7 >= 400 THEN 1 ELSE 0 END,
                     ?8, ?9,
-                    CASE WHEN ?2 > 0 THEN ?4 * 1000.0 / ?2 ELSE 0 END,
+                    COALESCE((SELECT AVG(output_tokens_per_second) FROM usage_records WHERE session_id = ?1), 0),
+                    COALESCE((SELECT AVG(ttft_ms) FROM usage_records WHERE session_id = ?1), 0),
                     ?10, ?11, 0
                 )
                 "#,

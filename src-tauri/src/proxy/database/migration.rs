@@ -18,6 +18,7 @@ impl ProxyDatabase {
             i64,         // status_code: 状态码
             String,      // model: 模型名称
             Option<f64>, // ttft_ms: TTFT（毫秒）
+            Option<f64>, // output_tokens_per_second: 已验证的逐请求速率
         );
         // SessionAggregate: 按 session_id 聚合的统计数据
         type SessionAggregate = (
@@ -33,6 +34,7 @@ impl ProxyDatabase {
             i64,                               // request_count: 请求数
             std::collections::HashSet<String>, // 模型集合
             Vec<f64>,                          // TTFT 值列表
+            Vec<f64>,                          // 逐请求速率值列表
         );
 
         let now = chrono::Utc::now().timestamp_millis();
@@ -90,7 +92,8 @@ impl ProxyDatabase {
                         request_end_time,
                         status_code,
                         model,
-                        ttft_ms
+                        ttft_ms,
+                        output_tokens_per_second
                     FROM usage_records
                     WHERE session_id IS NULL OR session_id = ''
                     ORDER BY timestamp
@@ -112,6 +115,7 @@ impl ProxyDatabase {
                         row.get(10)?,
                         row.get::<_, String>(11)?,
                         row.get::<_, Option<f64>>(12)?,
+                        row.get::<_, Option<f64>>(13)?,
                     ))
                 })
                 .map_err(|e| format!("Failed to execute migration query: {}", e))?
@@ -164,6 +168,7 @@ impl ProxyDatabase {
             status_code,
             model,
             ttft_ms,
+            output_tokens_per_second,
         ) in records
         {
             let historical_date = {
@@ -188,6 +193,7 @@ impl ProxyDatabase {
                     0,                                // 错误数
                     std::collections::HashSet::new(), // 模型集合
                     Vec::new(),                       // TTFT 值列表
+                    Vec::new(),                       // 逐请求速率值列表
                 ));
 
                 entry.0 += 1;
@@ -208,6 +214,11 @@ impl ProxyDatabase {
                 }
                 if let Some(ttft) = ttft_ms {
                     entry.11.push(ttft);
+                }
+                if let Some(rate) = output_tokens_per_second
+                    .filter(|rate| output > 0 && rate.is_finite() && *rate > 0.0)
+                {
+                    entry.12.push(rate);
                 }
             } else {
                 unmatched += 1;
@@ -302,11 +313,12 @@ impl ProxyDatabase {
                 error,
                 models,
                 ttfts,
+                rates,
             ),
         ) in session_aggregates
         {
-            let avg_rate = if duration > 0 {
-                (output as f64) * 1000.0 / (duration as f64)
+            let avg_rate = if !rates.is_empty() {
+                rates.iter().sum::<f64>() / rates.len() as f64
             } else {
                 0.0
             };
@@ -343,6 +355,13 @@ impl ProxyDatabase {
                         error_requests = error_requests + ?9,
                         last_request_time = MAX(last_request_time, ?10),
                         first_request_time = COALESCE(first_request_time, ?11),
+                        avg_output_tokens_per_second = COALESCE(
+                            (SELECT AVG(output_tokens_per_second)
+                             FROM usage_records WHERE session_id = ?1), 0
+                        ),
+                        avg_ttft_ms = COALESCE(
+                            (SELECT AVG(ttft_ms) FROM usage_records WHERE session_id = ?1), 0
+                        ),
                         last_updated = ?12
                     WHERE session_id = ?1
                     "#,

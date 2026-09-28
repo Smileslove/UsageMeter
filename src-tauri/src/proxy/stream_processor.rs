@@ -4,7 +4,7 @@
 
 use super::collector::UsageCollector;
 use super::sse::SseEventReader;
-use super::types::UsageRecord;
+use super::types::{output_tokens_per_second, UsageRecord};
 use async_stream::stream;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
@@ -39,6 +39,8 @@ pub struct UsageData {
     pub status_code: u16,
     /// 首 Token 生成时间（毫秒）
     pub ttft_ms: Option<u64>,
+    pub generation_duration: Option<Duration>,
+    has_final_usage: bool,
     /// API Key 前缀（用于来源识别）
     pub api_key_prefix: Option<String>,
     /// 实际请求目标 base_url
@@ -62,7 +64,7 @@ struct SseUsageCollectorInner {
     start_time: Instant,
     on_complete: UsageCallback,
     finished: AtomicBool,
-    /// 首 Token 时间（检测到第一个 content_block_delta 的时间）
+    /// 首 Token 时间（检测到第一个非空输出 delta 的时间）
     first_token_time: Mutex<Option<Instant>>,
 }
 
@@ -86,8 +88,7 @@ impl SseUsageCollector {
 
     /// 推送 SSE 事件以供后续处理
     pub async fn push(&self, event: Value) {
-        // 检测首个 content_block_delta 事件（首 Token 生成）
-        if event.get("type").and_then(|v| v.as_str()) == Some("content_block_delta") {
+        if anthropic_first_output_candidate(&event) {
             let mut first_time = self.inner.first_token_time.lock().await;
             if first_time.is_none() {
                 *first_time = Some(Instant::now());
@@ -99,10 +100,11 @@ impl SseUsageCollector {
     }
 
     /// 完成收集并触发完成回调
-    pub async fn finish(&self) {
+    pub async fn finish(&self, completed_normally: bool) {
         if self.inner.finished.swap(true, Ordering::SeqCst) {
             return;
         }
+        let finish_time = Instant::now();
 
         let events = {
             let mut guard = self.inner.events.lock().await;
@@ -110,18 +112,25 @@ impl SseUsageCollector {
         };
 
         // 计算首 Token 生成时间（TTFT）
-        let ttft_ms = {
+        let first_token_time = {
             let first_time = self.inner.first_token_time.lock().await;
-            first_time.map(|t| {
-                let duration = t.duration_since(self.inner.start_time);
-                duration.as_millis() as u64
-            })
+            *first_time
         };
+        let ttft_ms = first_token_time.map(|t| {
+            t.saturating_duration_since(self.inner.start_time)
+                .as_millis()
+                .max(1) as u64
+        });
 
         // 从收集的事件中解析使用量。流正常结束但缺少 Usage 时仍触发回调，
         // 由持久化层记录 599 accounting error，避免静默漏统。
         let usage = parse_usage_from_events(&events).map(|mut usage| {
             usage.ttft_ms = ttft_ms;
+            usage.generation_duration = if completed_normally && usage.has_final_usage {
+                first_token_time.and_then(|first| finish_time.checked_duration_since(first))
+            } else {
+                None
+            };
             usage
         });
         (self.inner.on_complete)(usage);
@@ -186,10 +195,13 @@ fn parse_usage_from_events(events: &[Value]) -> Option<UsageData> {
                             .get("input_tokens")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(usage.input_tokens);
-                        usage.output_tokens = delta_usage
+                        if let Some(output_tokens) = delta_usage
                             .get("output_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(usage.output_tokens);
+                            .and_then(|value| value.as_u64())
+                        {
+                            usage.output_tokens = output_tokens;
+                            usage.has_final_usage = true;
+                        }
                         // 缓存字段在 message_delta 中也是累积值，覆盖 message_start 的初始值
                         usage.cache_create_tokens = delta_usage
                             .get("cache_creation_input_tokens")
@@ -218,6 +230,27 @@ fn parse_usage_from_events(events: &[Value]) -> Option<UsageData> {
     }
 }
 
+fn anthropic_first_output_candidate(event: &Value) -> bool {
+    match event.get("type").and_then(|value| value.as_str()) {
+        Some("content_block_delta") => event
+            .get("delta")
+            .and_then(Value::as_object)
+            .map(|delta| {
+                ["text", "thinking", "partial_json", "data"]
+                    .iter()
+                    .any(|key| {
+                        delta
+                            .get(*key)
+                            .and_then(Value::as_str)
+                            .map(|value| !value.is_empty())
+                            .unwrap_or(false)
+                    })
+            })
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
 // ============================================================================
 // 透传流创建器
 // ============================================================================
@@ -239,12 +272,16 @@ pub fn create_passthrough_stream(
     stream! {
         let mut reader = SseEventReader::new();
         let mut stream = std::pin::pin!(stream);
+        let mut completed_normally = false;
 
         loop {
             let chunk_result = match streaming_idle_timeout {
                 Some(timeout) => match tokio::time::timeout(timeout, stream.next()).await {
                     Ok(Some(next)) => next,
-                    Ok(None) => break,
+                    Ok(None) => {
+                        completed_normally = true;
+                        break;
+                    }
                     Err(_) => {
                         yield Err(std::io::Error::other(
                             "SSE stream idle timeout: no data from upstream",
@@ -254,7 +291,10 @@ pub fn create_passthrough_stream(
                 },
                 None => match stream.next().await {
                     Some(next) => next,
-                    None => break,
+                    None => {
+                        completed_normally = true;
+                        break;
+                    }
                 },
             };
 
@@ -292,7 +332,7 @@ pub fn create_passthrough_stream(
             .await;
 
         // 流结束，完成使用量收集
-        collector.finish().await;
+        collector.finish(completed_normally).await;
     }
 }
 
@@ -305,8 +345,7 @@ pub fn create_passthrough_stream(
 /// 统一的计算逻辑：
 /// - input_tokens: 原始输入 Token（不含缓存）
 /// - total_tokens: input_tokens + cache_create_tokens + cache_read_tokens + output_tokens
-/// - duration_ms: 请求耗时（从 start_time 到当前时间）
-/// - output_tokens_per_second: output_tokens / (duration_ms / 1000)
+/// - output_tokens_per_second: 完整流式请求中 output_tokens / 首个非空输出至流结束时长
 pub fn create_database_collector(
     usage_collector: Arc<UsageCollector>,
     context: StreamContext,
@@ -330,7 +369,7 @@ pub fn create_database_collector(
         // 计算请求结束时间和耗时
         let request_end_time = chrono::Utc::now().timestamp_millis();
         // 使用 StreamContext 中传递的真实开始时间
-        let duration_ms = request_end_time.saturating_sub(request_start_time) as u64;
+        let duration_ms = start_time.elapsed().as_millis() as u64;
         let usage = usage.unwrap_or_default();
         let has_usage = !usage.message_id.is_empty()
             || !usage.model.is_empty()
@@ -338,23 +377,25 @@ pub fn create_database_collector(
             || usage.output_tokens > 0
             || usage.cache_create_tokens > 0
             || usage.cache_read_tokens > 0;
+        let usage_complete = usage.has_final_usage;
 
         let total_tokens = usage.input_tokens
             + usage.cache_create_tokens
             + usage.cache_read_tokens
             + usage.output_tokens;
 
-        let output_tokens_per_second = if duration_ms > 0 && has_usage {
-            Some((usage.output_tokens as f64) / (duration_ms as f64 / 1000.0))
+        let output_tokens_per_second = if has_usage {
+            output_tokens_per_second(usage.output_tokens, usage.generation_duration)
         } else {
             None
         };
 
-        let effective_status_code = if !has_usage && (200..300).contains(&status_code) {
-            USAGE_MISSING_STATUS_CODE
-        } else {
-            status_code
-        };
+        let effective_status_code =
+            if (!has_usage || !usage_complete) && (200..300).contains(&status_code) {
+                USAGE_MISSING_STATUS_CODE
+            } else {
+                status_code
+            };
         let message_id = if usage.message_id.is_empty() {
             format!(
                 "anthropic_usage_missing_{}_{}",
@@ -396,7 +437,7 @@ pub fn create_database_collector(
         record.gateway_caller_label = gateway_caller_label.clone();
         record.usage_source = usage_source.clone();
         record.gateway_request_id = gateway_request_id.clone();
-        if !has_usage {
+        if !has_usage || !usage_complete {
             record.usage_source = crate::proxy::types::default_usage_source();
         }
 
@@ -586,8 +627,8 @@ mod tests {
             captured.lock().unwrap().push(usage);
         });
 
-        collector.finish().await;
-        collector.finish().await;
+        collector.finish(true).await;
+        collector.finish(true).await;
 
         let results = results.lock().unwrap();
         assert_eq!(results.len(), 1);
@@ -618,12 +659,76 @@ mod tests {
             }))
             .await;
 
-        collector.finish().await;
+        collector.finish(true).await;
 
         let results = results.lock().unwrap();
         let usage = results[0].as_ref().expect("parsed usage");
         assert_eq!(usage.message_id, "msg_usage");
         assert_eq!(usage.input_tokens, 12);
         assert_eq!(usage.output_tokens, 8);
+        assert!(usage.has_final_usage);
+    }
+
+    #[tokio::test]
+    async fn incomplete_anthropic_stream_keeps_ttft_but_has_no_rate_duration() {
+        let results = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = results.clone();
+        let collector = SseUsageCollector::new(Instant::now(), move |usage| {
+            captured.lock().unwrap().push(usage);
+        });
+        collector
+            .push(serde_json::json!({
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "hello"}
+            }))
+            .await;
+        collector
+            .push(serde_json::json!({
+                "type": "message_delta",
+                "usage": {"output_tokens": 8}
+            }))
+            .await;
+
+        collector.finish(false).await;
+
+        let results = results.lock().unwrap();
+        let usage = results[0].as_ref().expect("parsed usage");
+        assert!(usage.ttft_ms.is_some());
+        assert_eq!(usage.generation_duration, None);
+    }
+
+    #[test]
+    fn anthropic_usage_without_final_message_delta_is_incomplete() {
+        let usage = parse_usage_from_events(&[serde_json::json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_partial",
+                "model": "claude-sonnet",
+                "usage": {"input_tokens": 12}
+            }
+        })])
+        .expect("message_start usage is retained for accounting");
+        assert_eq!(usage.input_tokens, 12);
+        assert!(!usage.has_final_usage);
+    }
+
+    #[test]
+    fn anthropic_first_output_detection_ignores_empty_and_metadata_deltas() {
+        assert!(!anthropic_first_output_candidate(&serde_json::json!({
+            "type": "content_block_start",
+            "content_block": {"type": "tool_use", "name": "tool"}
+        })));
+        assert!(!anthropic_first_output_candidate(&serde_json::json!({
+            "type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": ""}
+        })));
+        assert!(!anthropic_first_output_candidate(&serde_json::json!({
+            "type": "content_block_delta",
+            "delta": {"type": "signature_delta", "signature": "sig"}
+        })));
+        assert!(anthropic_first_output_candidate(&serde_json::json!({
+            "type": "content_block_delta",
+            "delta": {"type": "thinking_delta", "thinking": "reasoning"}
+        })));
     }
 }

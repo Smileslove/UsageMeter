@@ -322,7 +322,10 @@ pub(super) fn build_overview_breakdown_from_facts(
         add_breakdown_fact(&mut model_map, model_meta_for_fact(fact), fact);
         has_cost |= fact.estimated_cost > 0.0;
         has_status |= fact.status_code.is_some();
-        has_performance |= fact.output_tokens_per_second.is_some() || fact.ttft_ms.is_some();
+        has_performance |= fact.ttft_ms.is_some_and(|value| value > 0)
+            || fact
+                .output_tokens_per_second
+                .is_some_and(|rate| fact.output_tokens > 0 && rate.is_finite() && rate > 0.0);
     }
 
     let capability = OverviewBreakdownCapability {
@@ -502,6 +505,31 @@ mod tests {
         assert_eq!(breakdown.tool_ranking[0].label, "__unknown__");
         assert_eq!(breakdown.model_ranking[0].label, "__unknown__");
         assert!((breakdown.model_ranking[0].percent - (40.0 / 60.0 * 100.0)).abs() < 0.0001);
+    }
+
+    #[test]
+    fn build_overview_breakdown_ignores_invalid_rate_samples() {
+        let settings = AppSettings::default();
+        let breakdown = build_overview_breakdown_from_facts(
+            &settings,
+            "5h".to_string(),
+            1234,
+            &[test_fact(
+                "claude_code",
+                "model-a",
+                10,
+                20,
+                0.0,
+                None,
+                None,
+                Some(200),
+                Some(0.0),
+                None,
+            )],
+        );
+
+        assert!(!breakdown.capability.has_performance);
+        assert!(breakdown.model_ranking[0].avg_tokens_per_second.is_none());
     }
 
     fn test_source(id: &str, base_url: &str, display_name: &str) -> ApiSource {

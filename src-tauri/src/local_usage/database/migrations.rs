@@ -20,7 +20,7 @@ impl LocalUsageDatabase {
 
     pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 32 {
+        if schema_version >= 33 {
             return Ok(());
         }
         let mut cleared_runtime_caches = false;
@@ -1092,6 +1092,25 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to update v32 schema version: {e}"))?;
             tx.commit()
                 .map_err(|e| format!("Failed to commit v32 schema migration: {e}"))?;
+        }
+
+        if schema_version < 33 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v33 schema migration: {e}"))?;
+            Self::clear_unified_materialization_tx(&tx, chrono::Utc::now().timestamp())?;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '33', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v33 schema version: {e}"))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v33 schema migration: {e}"))?;
+            cleared_runtime_caches = true;
         }
 
         if cleared_runtime_caches {
