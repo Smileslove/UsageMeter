@@ -312,7 +312,6 @@ onUnmounted(() => {
   <main class="app-shell relative flex h-full w-full flex-col overflow-hidden rounded-[23px] antialiased">
     <div class="app-shell__bg pointer-events-none absolute inset-0"></div>
     <div class="app-shell__hairline pointer-events-none absolute inset-x-5 top-0 h-px"></div>
-    <div class="app-shell__divider pointer-events-none absolute inset-x-4 top-[78px] h-px"></div>
     <!-- Header -->
     <header class="relative shrink-0 flex flex-col gap-2 px-5 pt-3.5 pb-0.5 drag-region bg-transparent">
       <div class="flex items-center justify-between relative px-1">
@@ -386,7 +385,6 @@ onUnmounted(() => {
         </button>
       </div>
     </div>
-    <div class="app-shell__fade-top pointer-events-none absolute inset-x-0 top-[78px] z-10 h-2"></div>
     <div class="app-shell__fade-bottom pointer-events-none absolute inset-x-0 bottom-0 z-10 h-9"></div>
   </main>
 
@@ -577,12 +575,6 @@ onUnmounted(() => {
 }
 .app-shell__hairline {
   background: var(--theme-effect-hairline);
-}
-.app-shell__divider {
-  background: var(--theme-divider-default);
-}
-.app-shell__fade-top {
-  background: var(--theme-effect-fade-top);
 }
 .app-shell__fade-bottom {
   background: var(--theme-effect-fade-bottom);
