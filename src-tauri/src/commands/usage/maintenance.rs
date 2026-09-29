@@ -59,6 +59,14 @@ pub async fn get_opencode_schema_status(
     .map_err(|e| format!("join error: {e}"))?
 }
 
+#[tauri::command]
+pub async fn get_deepseek_harness_scan_status(
+) -> Result<crate::session::deepseek_harness_reader::DeepSeekHarnessScanStatus, String> {
+    tauri::async_runtime::spawn_blocking(crate::session::deepseek_harness_reader::scan_status)
+        .await
+        .map_err(|_| "deepseek_harness_status_failed".to_string())
+}
+
 /// 清理孤立的本地事实（来源文件已消失的请求记录）。
 ///
 /// `older_than_days`：仅清理 `created_at` 早于该天数的孤立行；传 0 表示全部清理。

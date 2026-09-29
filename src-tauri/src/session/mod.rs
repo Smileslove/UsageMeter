@@ -6,6 +6,7 @@ mod claude_reader;
 pub(crate) mod codex_reader;
 pub(crate) mod constants;
 mod copilot_cli_reader;
+pub(crate) mod deepseek_harness_reader;
 mod gemini_reader;
 mod hermes_reader;
 mod meta;

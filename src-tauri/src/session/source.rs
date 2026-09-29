@@ -40,6 +40,10 @@ pub trait SessionSource: Sync {
     fn scan(&self) -> SourceSnapshot;
     fn parse(&self, session: &SessionFile) -> Result<ParsedSessionData, String>;
 
+    fn try_scan(&self) -> Result<SourceSnapshot, String> {
+        Ok(self.scan())
+    }
+
     fn source_kind(&self) -> SourceKind {
         SourceKind::Transcript
     }
@@ -59,7 +63,7 @@ pub trait UsageSource: SessionSource {
     }
 
     fn collect(&self) -> Result<SourceSnapshot, String> {
-        Ok(self.scan())
+        self.try_scan()
     }
 }
 

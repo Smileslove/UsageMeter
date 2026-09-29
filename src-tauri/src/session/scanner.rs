@@ -229,12 +229,20 @@ fn load_parsed_session(
             true
         }
         Err(err) => {
-            eprintln!(
-                "[UsageMeter] Failed to parse session {} ({}): {}",
-                session_file.session_id, session_file.file_path, err
-            );
+            log_parse_error(session_file, &err);
             false
         }
+    }
+}
+
+fn log_parse_error(session_file: &SessionFile, error: &str) {
+    if session_file.tool == super::constants::TOOL_DEEPSEEK_HARNESS {
+        eprintln!("[UsageMeter] Failed to parse DeepSeek Harness session: {error}");
+    } else {
+        eprintln!(
+            "[UsageMeter] Failed to parse session {} ({}): {}",
+            session_file.session_id, session_file.file_path, error
+        );
     }
 }
 
@@ -278,9 +286,6 @@ fn apply_source_snapshot(entry: &mut CacheEntry, snapshot: SourceSnapshot) {
             .cloned()
             .collect(),
     };
-    let changed_set: HashSet<String> = changed_or_new_ids.iter().cloned().collect();
-    remove_sessions(entry, &changed_set);
-
     // 最旧会话优先，保证原始会话先占据 message_id，fork 会话只贡献新增消息。
     let mut to_parse: Vec<&SessionFile> = changed_or_new_ids
         .iter()
@@ -292,19 +297,38 @@ fn apply_source_snapshot(entry: &mut CacheEntry, snapshot: SourceSnapshot) {
             .then(a.session_id.cmp(&b.session_id))
     });
 
+    let mut parsed = Vec::new();
+    let mut had_parse_error = false;
     for file in to_parse {
-        let _ = load_parsed_session(
+        match parse_session_file(file) {
+            Ok(data) => parsed.push((file, data)),
+            Err(error) => {
+                had_parse_error = true;
+                log_parse_error(file, &error);
+            }
+        }
+    }
+    let parsed_ids: HashSet<String> = parsed
+        .iter()
+        .map(|(file, _)| file.session_id.clone())
+        .collect();
+    remove_sessions(entry, &parsed_ids);
+    for (file, data) in parsed {
+        merge_parsed_session(
             &mut entry.data,
             &mut entry.requests,
             &mut entry.message_to_session,
             &mut entry.session_fingerprints,
             file,
+            data,
         );
     }
 
-    entry
-        .source_scan_fingerprints
-        .insert(source_id.clone(), snapshot.scan_fingerprint);
+    if !had_parse_error {
+        entry
+            .source_scan_fingerprints
+            .insert(source_id.clone(), snapshot.scan_fingerprint);
+    }
     entry.source_session_ids.insert(source_id, current_ids);
 }
 
@@ -813,7 +837,7 @@ mod tests {
     /// 将扫描器可能读取的全部环境变量隔离到临时空目录，Drop 时恢复。
     /// 覆盖 session/ 各 reader 实际读取的变量（grep env::var 确认）：
     /// HOME / XDG_DATA_HOME / OPENCODE_HOME / OPENCODE_DB / REASONIX_HOME /
-    /// HERMES_HOME / LOCALAPPDATA。
+    /// HERMES_HOME / DSH_HOME / LOCALAPPDATA。
     struct EnvGuard {
         /// 每个变量在隔离前的原始值，Drop 时据此恢复。
         vars: Vec<(&'static str, Option<OsString>)>,
@@ -833,6 +857,7 @@ mod tests {
                     ("OPENCODE_DB", std::env::var_os("OPENCODE_DB")),
                     ("REASONIX_HOME", std::env::var_os("REASONIX_HOME")),
                     ("HERMES_HOME", std::env::var_os("HERMES_HOME")),
+                    ("DSH_HOME", std::env::var_os("DSH_HOME")),
                     ("LOCALAPPDATA", std::env::var_os("LOCALAPPDATA")),
                 ],
             };
@@ -916,6 +941,44 @@ mod tests {
         );
         // s1 未重解析：指纹保持首次值
         assert_eq!(entry.session_fingerprints.get("proj::s1"), Some(&10));
+    }
+
+    #[test]
+    fn changed_session_parse_failure_keeps_previous_cached_facts() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("s1.jsonl");
+        write_claude_transcript(&path, &[("m1", 10)]);
+        let mut entry = empty_cache_entry();
+        let original = make_session_file_at("proj::s1", &path, 100, 10);
+        apply_source_snapshot(
+            &mut entry,
+            make_snapshot(
+                TOOL_CLAUDE_CODE,
+                SourceUpdateMode::PerSession,
+                vec![original],
+                1,
+            ),
+        );
+        assert_eq!(entry.requests.len(), 1);
+
+        let mut changed = make_session_file_at("proj::s1", &path, 101, 11);
+        changed.tool = "unsupported_tool".to_string();
+        apply_source_snapshot(
+            &mut entry,
+            make_snapshot(
+                TOOL_CLAUDE_CODE,
+                SourceUpdateMode::PerSession,
+                vec![changed],
+                2,
+            ),
+        );
+        assert_eq!(entry.requests.len(), 1);
+        assert_eq!(entry.requests[0].message_id, "m1");
+        assert_eq!(entry.session_fingerprints.get("proj::s1"), Some(&10));
+        assert_eq!(
+            entry.source_scan_fingerprints.get(TOOL_CLAUDE_CODE),
+            Some(&1)
+        );
     }
 
     #[test]

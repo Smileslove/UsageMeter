@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { getOpenCodeSchemaStatus, type OpenCodeSchemaStatus } from '../../api/usageApi'
+import { computed, onMounted, ref, watch } from 'vue'
+import { getDeepSeekHarnessScanStatus, getOpenCodeSchemaStatus, type DeepSeekHarnessScanStatus, type OpenCodeSchemaStatus } from '../../api/usageApi'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
 import LobeIcon from '../LobeIcon.vue'
@@ -8,7 +8,52 @@ import { TOOL_LOBE_ICONS } from '../../iconConfig'
 
 const store = useMonitorStore()
 const opencodeSchema = ref<OpenCodeSchemaStatus | null>(null)
+const deepseekHarnessStatus = ref<DeepSeekHarnessScanStatus | null>(null)
+const deepseekHarnessRoot = ref('')
+const deepseekHarnessSaveError = ref(false)
+const deepseekHarnessSaving = ref(false)
 const qoderExpanded = ref(false)
+
+watch(() => store.settings.deepseekHarnessSessionRoot, value => {
+  deepseekHarnessRoot.value = value || ''
+}, { immediate: true })
+
+const deepseekHarnessStatusKey = computed(() => {
+  const code = deepseekHarnessStatus.value?.errorCode
+  if (code === 'deepseek_harness_format_unsupported') return 'settings.localScanDeepSeekHarnessFormatUnsupported'
+  if (code === 'deepseek_harness_root_not_absolute') return 'settings.localScanDeepSeekHarnessInvalidPath'
+  if (code) return 'settings.localScanDeepSeekHarnessUnavailable'
+  return deepseekHarnessStatus.value?.sessionCount
+    ? 'settings.localScanDeepSeekHarnessFound'
+    : 'settings.localScanDeepSeekHarnessNotFound'
+})
+
+const loadDeepSeekHarnessStatus = async () => {
+  try {
+    deepseekHarnessStatus.value = await getDeepSeekHarnessScanStatus()
+  } catch {
+    deepseekHarnessStatus.value = { root: null, sessionCount: 0, errorCode: 'deepseek_harness_status_failed' }
+  }
+}
+
+const saveDeepSeekHarnessRoot = async () => {
+  const next = deepseekHarnessRoot.value.trim() || null
+  if (next === store.settings.deepseekHarnessSessionRoot) return
+  store.settings.deepseekHarnessSessionRoot = next
+  deepseekHarnessSaveError.value = false
+  deepseekHarnessSaving.value = true
+  try {
+    await store.saveSettings()
+    await loadDeepSeekHarnessStatus()
+    void store.refreshUsage().catch(() => {})
+  } catch {
+    await store.loadSettings()
+    deepseekHarnessRoot.value = store.settings.deepseekHarnessSessionRoot || ''
+    deepseekHarnessSaveError.value = true
+  } finally {
+    deepseekHarnessSaving.value = false
+  }
+}
 
 const qoderSources = [
   { icon: TOOL_LOBE_ICONS.qoder_cli, labelKey: 'settings.localScanQoderCli', pathKey: 'settings.localScanQoderCliPath' },
@@ -28,6 +73,7 @@ const loadOpenCodeSchemaStatus = async () => {
 
 onMounted(() => {
   loadOpenCodeSchemaStatus()
+  loadDeepSeekHarnessStatus()
 })
 
 function compactPath(path: string | null | undefined): string {
@@ -62,6 +108,35 @@ function compactPath(path: string | null | undefined): string {
           <div class="min-w-0">
             <div class="text-[10.5px] font-medium leading-none text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.localScanCodex') }}</div>
             <div class="mt-0.5 break-all font-mono text-[9px] leading-tight text-gray-400 dark:text-gray-500">{{ t(store.settings.locale, 'settings.localScanCodexPath') }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rounded-lg border border-gray-100 bg-white px-2.5 py-1.5 dark:border-neutral-800 dark:bg-neutral-950">
+        <div class="flex items-start gap-2">
+          <div class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-gray-50 dark:bg-neutral-800">
+            <LobeIcon :slug="TOOL_LOBE_ICONS.deepseek_harness" :size="15" @error="() => {}" />
+          </div>
+          <div class="min-w-0 flex-1">
+            <div class="text-[10.5px] font-medium leading-none text-gray-700 dark:text-gray-200">{{ t(store.settings.locale, 'settings.localScanDeepSeekHarness') }}</div>
+            <div class="mt-0.5 break-all font-mono text-[9px] leading-tight text-gray-400 dark:text-gray-500">{{ compactPath(deepseekHarnessStatus?.root) || t(store.settings.locale, 'settings.localScanDeepSeekHarnessPath') }}</div>
+            <div v-if="deepseekHarnessStatus" aria-live="polite" class="mt-1 text-[10px] leading-tight" :class="deepseekHarnessStatus.errorCode ? 'text-amber-600 dark:text-amber-400' : 'text-gray-500 dark:text-gray-400'">
+              {{ t(store.settings.locale, deepseekHarnessStatusKey, { count: deepseekHarnessStatus.sessionCount }) }}
+            </div>
+            <div class="mt-1 text-[10px] leading-tight text-gray-400 dark:text-gray-500">{{ t(store.settings.locale, 'settings.localScanDeepSeekHarnessUsageNote') }}</div>
+            <label class="mt-1.5 block text-[10px] text-gray-600 dark:text-gray-300" for="deepseek-harness-root">{{ t(store.settings.locale, 'settings.localScanDeepSeekHarnessRootLabel') }}</label>
+            <input
+              id="deepseek-harness-root"
+              v-model="deepseekHarnessRoot"
+              type="text"
+              :disabled="deepseekHarnessSaving"
+              :aria-busy="deepseekHarnessSaving"
+              class="mt-0.5 min-h-8 w-full min-w-0 rounded border border-gray-200 bg-white px-2 py-1 font-mono text-[10.5px] text-gray-700 outline-none focus:border-[var(--theme-accent-primary)] disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-900 dark:text-gray-200"
+              :placeholder="t(store.settings.locale, 'settings.localScanDeepSeekHarnessRootPlaceholder')"
+              @change="saveDeepSeekHarnessRoot"
+            >
+            <div v-if="deepseekHarnessSaving" class="mt-1 text-[10px] text-gray-500 dark:text-gray-400">{{ t(store.settings.locale, 'common.saving') }}</div>
+            <div v-if="deepseekHarnessSaveError" role="alert" class="mt-1 text-[10px] text-red-600 dark:text-red-400">{{ t(store.settings.locale, 'settings.localScanDeepSeekHarnessSaveFailed') }}</div>
           </div>
         </div>
       </div>

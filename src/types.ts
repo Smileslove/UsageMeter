@@ -218,6 +218,7 @@ export interface AppSettings {
   autoCheckUpdate: boolean              // 启动时自动检查更新
   skippedUpdateVersion: string          // 已跳过的版本号（空字符串表示不跳过）
   wslScan: WslScanSettings              // WSL 被动扫描设置
+  deepseekHarnessSessionRoot: string | null // 可选的 Harness 会话根目录
   deepIndexLevel: string                // 深度索引级别：'off' | 'structured' | 'fulltext' | 'ondemand'
   deepIndexRetentionDays: number        // 深度索引保留期限（天，默认 90）
 }

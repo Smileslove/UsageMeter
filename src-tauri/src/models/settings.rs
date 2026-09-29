@@ -483,6 +483,18 @@ pub fn default_client_tool_profiles() -> Vec<ClientToolProfile> {
             icon: Some("codex".to_string()),
         },
         ClientToolProfile {
+            id: "deepseek_harness".to_string(),
+            tool: "deepseek_harness".to_string(),
+            display_name: Some("DeepSeek Harness".to_string()),
+            path_prefix: "deepseek-harness".to_string(),
+            target_base_url: None,
+            enabled: false,
+            auto_detected: false,
+            first_seen_ms: now,
+            last_seen_ms: now,
+            icon: Some("deepseek".to_string()),
+        },
+        ClientToolProfile {
             id: "openclaw".to_string(),
             tool: "openclaw".to_string(),
             display_name: Some("OpenClaw".to_string()),
@@ -1001,6 +1013,9 @@ pub struct AppSettings {
     pub skipped_update_version: String,
     #[serde(default)]
     pub wsl_scan: WslScanSettings,
+    /// 可选的 DeepSeek Harness 会话根目录；空值遵循 DSH_HOME / ~/.dsh/sessions。
+    #[serde(default)]
+    pub deepseek_harness_session_root: Option<String>,
     /// 深度事件索引级别（"off"|"structured"|"ondemand"；fulltext 留 M3）。
     /// 见设计文档 11.3。
     #[serde(default = "default_deep_index_level")]
@@ -1230,6 +1245,7 @@ impl Default for AppSettings {
             auto_check_update: default_auto_check_update(),
             skipped_update_version: String::new(),
             wsl_scan: WslScanSettings::default(),
+            deepseek_harness_session_root: None,
             deep_index_level: default_deep_index_level(),
             deep_index_retention_days: default_deep_index_retention_days(),
         }

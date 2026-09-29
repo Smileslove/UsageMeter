@@ -98,6 +98,12 @@ pub fn persisted_deep_index_level() -> String {
         .unwrap_or_else(|_| crate::models::default_deep_index_level())
 }
 
+/// Read-only preference lookup for the local scanner. A malformed preferences file must
+/// abort this source's scan instead of making a previously configured root look deleted.
+pub fn persisted_deepseek_harness_session_root() -> Result<Option<String>, String> {
+    Ok(load_preferences_file()?.and_then(|settings| settings.deepseek_harness_session_root))
+}
+
 /// 读取偏好文件的 `settingsVersion`。文件缺失或无法解析时按 1（旧版）处理：
 /// 这样 settings.json 缺失、仅 app_config.db 存有旧设置的路径（0.10.x 全字段
 /// 存储形态）同样进入存量迁移判定。
@@ -147,6 +153,7 @@ fn apply_preferences(settings: &mut AppSettings, preferences: AppSettings) {
     settings.auto_check_update = preferences.auto_check_update;
     settings.skipped_update_version = preferences.skipped_update_version;
     settings.wsl_scan = preferences.wsl_scan;
+    settings.deepseek_harness_session_root = preferences.deepseek_harness_session_root;
     settings.source_aware.active_source_filter = preferences.source_aware.active_source_filter;
     settings.client_tools.active_tool_filter = preferences.client_tools.active_tool_filter;
 }
@@ -366,6 +373,11 @@ fn normalize_settings(settings: &mut AppSettings) -> Result<(), String> {
     migrate_day_boundary(settings);
     migrate_gateway(settings);
     migrate_deep_index_level(settings);
+    settings.deepseek_harness_session_root = settings
+        .deepseek_harness_session_root
+        .as_ref()
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty());
     Ok(())
 }
 

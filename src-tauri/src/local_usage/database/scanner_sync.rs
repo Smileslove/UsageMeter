@@ -135,7 +135,7 @@ impl LocalUsageDatabase {
         );
 
         let stage_started = Instant::now();
-        let file_backed_sessions = scan_file_backed_session_files();
+        let (file_backed_sessions, unavailable_tools) = scan_file_backed_session_files();
         log_sync_stage(
             "file_backed_scan",
             stage_started,
@@ -144,7 +144,7 @@ impl LocalUsageDatabase {
 
         let file_backed_count = file_backed_sessions.len();
         let stage_started = Instant::now();
-        self.sync_file_backed_sessions(file_backed_sessions)?;
+        self.sync_file_backed_sessions(file_backed_sessions, &unavailable_tools)?;
         log_sync_stage("file_backed_sync", stage_started, file_backed_count);
 
         let stage_started = Instant::now();
@@ -336,14 +336,29 @@ impl LocalUsageDatabase {
         Ok(())
     }
 
-    fn sync_file_backed_sessions(&self, scanned_sessions: Vec<SessionFile>) -> Result<(), String> {
+    fn sync_file_backed_sessions(
+        &self,
+        scanned_sessions: Vec<SessionFile>,
+        unavailable_tools: &[&str],
+    ) -> Result<(), String> {
         let current_ids: HashSet<String> = scanned_sessions
             .iter()
             .map(|session| session.session_id.clone())
             .collect();
         let cached_fingerprints = self.load_source_fingerprints("session_group", None)?;
         let cached_ids: HashSet<String> = cached_fingerprints.keys().cloned().collect();
-        let removed_ids: Vec<String> = cached_ids.difference(&current_ids).cloned().collect();
+        let mut protected_ids = HashSet::new();
+        for tool in unavailable_tools {
+            protected_ids.extend(
+                self.load_source_fingerprints("session_group", Some(tool))?
+                    .into_keys(),
+            );
+        }
+        let removed_ids: Vec<String> = cached_ids
+            .difference(&current_ids)
+            .filter(|session_id| !protected_ids.contains(*session_id))
+            .cloned()
+            .collect();
 
         let mut dirty_sessions: Vec<DirtySessionSync> = scanned_sessions
             .into_iter()
@@ -355,10 +370,16 @@ impl LocalUsageDatabase {
                         let (meta, requests) = match parse_session_file_for_storage(&session) {
                             Ok(parsed) => parsed,
                             Err(err) => {
-                                eprintln!(
-                                    "[UsageMeter] Failed to sync session {} from {}: {}",
-                                    session.session_id, session.file_path, err
-                                );
+                                if session.tool == crate::session::constants::TOOL_DEEPSEEK_HARNESS {
+                                    eprintln!(
+                                        "[UsageMeter] Failed to sync DeepSeek Harness session: {err}"
+                                    );
+                                } else {
+                                    eprintln!(
+                                        "[UsageMeter] Failed to sync session {} from {}: {}",
+                                        session.session_id, session.file_path, err
+                                    );
+                                }
                                 return None;
                             }
                         };
@@ -686,6 +707,16 @@ impl LocalUsageDatabase {
                 params![session_id.as_str()],
             )
             .map_err(|e| format!("Failed to clear stale local session row: {}", e))?;
+
+            // A format migration can move one logical session from session.vN.jsonl
+            // to session.vN+1.jsonl. Keep only its selected generation active.
+            tx.execute(
+                "UPDATE local_source_files
+                 SET deleted_at = ?4, deletion_reason = 'superseded'
+                 WHERE session_id = ?1 AND file_role = ?2 AND file_path != ?3 AND deleted_at IS NULL",
+                params![session_id.as_str(), file_role.as_str(), file_path.as_str(), now],
+            )
+            .map_err(|e| format!("Failed to retire previous session source file: {e}"))?;
 
             tx.execute(
                 "INSERT INTO local_source_files (
@@ -1189,23 +1220,19 @@ mod tests {
         let transcript = _tmp.path().join("s1.jsonl");
         write_claude_transcript(&transcript, &[("m1", 10), ("m2", 20)]);
 
-        db.sync_file_backed_sessions(vec![make_file_backed_session(
-            "proj::s1",
-            &transcript,
-            100,
-            111,
-        )])
+        db.sync_file_backed_sessions(
+            vec![make_file_backed_session("proj::s1", &transcript, 100, 111)],
+            &[],
+        )
         .expect("first sync");
         assert_eq!(claude_facts(&db).len(), 2);
 
         // 磁盘内容已完全变化（新消息 m9），但 fingerprint 字段相同 → 必须跳过解析
         write_claude_transcript(&transcript, &[("m9", 90)]);
-        db.sync_file_backed_sessions(vec![make_file_backed_session(
-            "proj::s1",
-            &transcript,
-            100,
-            111,
-        )])
+        db.sync_file_backed_sessions(
+            vec![make_file_backed_session("proj::s1", &transcript, 100, 111)],
+            &[],
+        )
         .expect("second sync with unchanged fingerprint");
 
         let facts = claude_facts(&db);
@@ -1224,23 +1251,19 @@ mod tests {
         let transcript = _tmp.path().join("s1.jsonl");
         write_claude_transcript(&transcript, &[("m1", 10), ("m2", 20)]);
 
-        db.sync_file_backed_sessions(vec![make_file_backed_session(
-            "proj::s1",
-            &transcript,
-            100,
-            111,
-        )])
+        db.sync_file_backed_sessions(
+            vec![make_file_backed_session("proj::s1", &transcript, 100, 111)],
+            &[],
+        )
         .expect("first sync");
         assert_eq!(claude_facts(&db).len(), 2);
 
         // 追加一条消息 + fingerprint 变化 → 触发重新解析（upsert，不重复写行）
         write_claude_transcript(&transcript, &[("m1", 10), ("m2", 20), ("m3", 30)]);
-        db.sync_file_backed_sessions(vec![make_file_backed_session(
-            "proj::s1",
-            &transcript,
-            100,
-            222,
-        )])
+        db.sync_file_backed_sessions(
+            vec![make_file_backed_session("proj::s1", &transcript, 100, 222)],
+            &[],
+        )
         .expect("second sync with changed fingerprint");
 
         let facts = claude_facts(&db);
@@ -1266,17 +1289,15 @@ mod tests {
         let transcript = _tmp.path().join("s1.jsonl");
         write_claude_transcript(&transcript, &[("m1", 10)]);
 
-        db.sync_file_backed_sessions(vec![make_file_backed_session(
-            "proj::s1",
-            &transcript,
-            100,
-            111,
-        )])
+        db.sync_file_backed_sessions(
+            vec![make_file_backed_session("proj::s1", &transcript, 100, 111)],
+            &[],
+        )
         .expect("first sync");
         assert_eq!(claude_facts(&db).len(), 1);
 
         // 扫描结果不再包含该会话 → removed_ids 走软删路径
-        db.sync_file_backed_sessions(vec![])
+        db.sync_file_backed_sessions(vec![], &[])
             .expect("sync without session");
 
         let conn = db.conn.lock().unwrap();
@@ -1304,5 +1325,53 @@ mod tests {
             )
             .unwrap();
         assert_eq!(marked, 1);
+    }
+
+    #[test]
+    fn unavailable_file_source_does_not_soft_delete_existing_facts() {
+        let _guard = env_lock();
+        let (_tmp, db) = temp_db();
+        let transcript = _tmp.path().join("s1.jsonl");
+        write_claude_transcript(&transcript, &[("m1", 10)]);
+        db.sync_file_backed_sessions(
+            vec![make_file_backed_session("proj::s1", &transcript, 100, 111)],
+            &[],
+        )
+        .unwrap();
+
+        db.sync_file_backed_sessions(vec![], &["claude_code"])
+            .unwrap();
+        let facts = claude_facts(&db);
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].source_file_present, Some(true));
+    }
+
+    #[test]
+    fn changing_selected_generation_retires_previous_source_path() {
+        let _guard = env_lock();
+        let (_tmp, db) = temp_db();
+        let old_path = _tmp.path().join("session.v3.jsonl");
+        let new_path = _tmp.path().join("session.v4.jsonl");
+        write_claude_transcript(&old_path, &[("m1", 10)]);
+        write_claude_transcript(&new_path, &[("m1", 10)]);
+        db.sync_file_backed_sessions(
+            vec![make_file_backed_session("proj::s1", &old_path, 100, 111)],
+            &[],
+        )
+        .unwrap();
+        db.sync_file_backed_sessions(
+            vec![make_file_backed_session("proj::s1", &new_path, 100, 222)],
+            &[],
+        )
+        .unwrap();
+
+        let conn = db.conn.lock().unwrap();
+        let active: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM local_source_files WHERE session_id = 'proj::s1' AND deleted_at IS NULL",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(active, 1);
+        drop(conn);
+        assert_eq!(claude_facts(&db).len(), 1);
     }
 }

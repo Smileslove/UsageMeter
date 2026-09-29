@@ -33,6 +33,12 @@ export interface OpenCodeSchemaStatus {
   }
 }
 
+export interface DeepSeekHarnessScanStatus {
+  root: string | null
+  sessionCount: number
+  errorCode: string | null
+}
+
 export function getStatisticsSummary(
   query: StatisticsSummaryQuery,
   settings: AppSettings
@@ -54,4 +60,8 @@ export function rebuildLocalUsageCache(): Promise<void> {
 
 export function getOpenCodeSchemaStatus(): Promise<OpenCodeSchemaStatus> {
   return invoke('get_opencode_schema_status')
+}
+
+export function getDeepSeekHarnessScanStatus(): Promise<DeepSeekHarnessScanStatus> {
+  return invoke('get_deepseek_harness_scan_status')
 }
