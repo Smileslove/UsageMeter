@@ -590,6 +590,13 @@ pub(super) fn inspect_codex_rollout_identity(path: &Path) -> Option<CodexRollout
     })
 }
 
+/// Return the root session id used by the scanner to group rollout files.
+/// Activity indexing must use the same identity rule so a date directory cannot
+/// accidentally merge unrelated sessions.
+pub(crate) fn codex_rollout_root_session_id(path: &Path) -> Option<String> {
+    inspect_codex_rollout_identity_cached(path).map(|identity| identity.root_session_id)
+}
+
 // ── 文本提取 ──────────────────────────────────────────────────────────────────
 
 fn extract_codex_session_name(payload: &serde_json::Value) -> Option<String> {

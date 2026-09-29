@@ -23,7 +23,7 @@
 //! 不绘制伪树。
 
 use crate::activity::adapter::{
-    parse_payload_cursor, read_payload_line, slice_payload_page, validate_payload_path,
+    parse_payload_cursor, read_payload_line, slice_payload_page, validate_payload_fingerprint,
     ActivityError, ActivityIndexBatch, NewAgentNode, NewEventRequestLink, NewSessionEvent,
     NewToolInvocation, SessionActivityAdapter, SessionSourceRef,
 };
@@ -477,7 +477,12 @@ impl SessionActivityAdapter for ClaudeAdapter {
             .filter(|value| *value >= 1)
             .unwrap_or(1) as usize;
         // 21.5 路径安全：只读 .jsonl、大小 ≤ 512MB，否则 Unavailable。
-        if validate_payload_path(&source_ref.source_file_path).is_err() {
+        if validate_payload_fingerprint(
+            &source_ref.source_file_path,
+            source_ref.fingerprint.as_deref(),
+        )
+        .is_err()
+        {
             return Ok(RedactedPayloadPage {
                 content: String::new(),
                 truncated: false,
@@ -499,7 +504,7 @@ impl SessionActivityAdapter for ClaudeAdapter {
         let text = if section == "raw" {
             line.trim_end().to_string()
         } else {
-            extract_section_text(&json, section)?
+            extract_section_text(&json, section, source_ref.event_key.as_deref())?
         };
         let redacted = redact_text(&text);
         // cursor 偏移超界或落在 UTF-8 多字节字符中间 → Unavailable，不 panic。
@@ -591,7 +596,11 @@ fn event_key_for(
 
 /// 按 payload 行结构与 section 提取文本（供 on-demand payload 读取）；
 /// 未知 section 报 Unsupported。
-fn extract_section_text(json: &Value, section: &str) -> Result<String, ActivityError> {
+fn extract_section_text(
+    json: &Value,
+    section: &str,
+    event_key: Option<&str>,
+) -> Result<String, ActivityError> {
     let Some(content) = json
         .get("message")
         .and_then(|message| message.get("content"))
@@ -600,6 +609,10 @@ fn extract_section_text(json: &Value, section: &str) -> Result<String, ActivityE
         return Ok(String::new());
     };
     let mut out = String::new();
+    // Claude emits several content blocks on one JSONL line. Event keys carry
+    // the block index; old rows without an event key intentionally retain the
+    // historical all-block fallback.
+    let block_index = event_key.and_then(claude_event_block_index);
     let mut push = |piece: String| {
         if !out.is_empty() {
             out.push('\n');
@@ -608,7 +621,10 @@ fn extract_section_text(json: &Value, section: &str) -> Result<String, ActivityE
     };
     match section {
         "summary" => {
-            for block in content {
+            for (index, block) in content.iter().enumerate() {
+                if block_index.is_some_and(|target| target != index) {
+                    continue;
+                }
                 if block.get("type").and_then(Value::as_str) == Some("text") {
                     if let Some(text) = block.get("text").and_then(Value::as_str) {
                         push(text.to_string());
@@ -617,7 +633,10 @@ fn extract_section_text(json: &Value, section: &str) -> Result<String, ActivityE
             }
         }
         "input" => {
-            for block in content {
+            for (index, block) in content.iter().enumerate() {
+                if block_index.is_some_and(|target| target != index) {
+                    continue;
+                }
                 if block.get("type").and_then(Value::as_str) == Some("tool_use") {
                     if let Some(input) = block.get("input") {
                         push(serde_json::to_string(input).unwrap_or_default());
@@ -626,7 +645,10 @@ fn extract_section_text(json: &Value, section: &str) -> Result<String, ActivityE
             }
         }
         "output" => {
-            for block in content {
+            for (index, block) in content.iter().enumerate() {
+                if block_index.is_some_and(|target| target != index) {
+                    continue;
+                }
                 if block.get("type").and_then(Value::as_str) == Some("tool_result") {
                     if let Some(result_content) = block.get("content") {
                         push(tool_result_content_text(result_content));
@@ -641,6 +663,23 @@ fn extract_section_text(json: &Value, section: &str) -> Result<String, ActivityE
         }
     }
     Ok(out)
+}
+
+fn claude_event_block_index(event_key: &str) -> Option<usize> {
+    let mut parts = event_key.rsplit(':');
+    let last = parts.next()?;
+    let parse_index = |segment: &str| {
+        segment
+            .split_once("#f")
+            .map(|(base, _)| base)
+            .unwrap_or(segment)
+            .parse::<usize>()
+            .ok()
+    };
+    if let Some(index) = parse_index(last) {
+        return Some(index);
+    }
+    parse_index(parts.next()?)
 }
 
 /// tool_result.content 文本化：字符串原样；text 块数组按序拼接。
@@ -1125,6 +1164,7 @@ mod tests {
             source_file_path: path.clone(),
             source_offset: Some(3),
             fingerprint: None,
+            event_key: None,
         };
         let page = adapter
             .read_payload(&call_ref, "input", DEFAULT_MAX_BYTES, None)
@@ -1146,6 +1186,7 @@ mod tests {
             source_file_path: path.clone(),
             source_offset: Some(4),
             fingerprint: None,
+            event_key: None,
         };
         let page = adapter
             .read_payload(&output_ref, "output", DEFAULT_MAX_BYTES, None)
@@ -1158,6 +1199,7 @@ mod tests {
             source_file_path: path.clone(),
             source_offset: Some(1),
             fingerprint: None,
+            event_key: None,
         };
         let page = adapter
             .read_payload(&summary_ref, "summary", DEFAULT_MAX_BYTES, None)
@@ -1170,6 +1212,7 @@ mod tests {
             source_file_path: path,
             source_offset: Some(2),
             fingerprint: None,
+            event_key: None,
         };
         let page = adapter
             .read_payload(&raw_ref, "raw", DEFAULT_MAX_BYTES, None)
@@ -1181,6 +1224,34 @@ mod tests {
             .read_payload(&raw_ref, "bogus", DEFAULT_MAX_BYTES, None)
             .expect_err("unsupported section");
         assert!(err.to_string().starts_with("ERR_ACTIVITY_UNSUPPORTED"));
+    }
+
+    #[test]
+    fn reads_only_the_event_block_when_event_key_has_block_index() {
+        let (_dir, path) = write_fixture(&[json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "id": "msg-multi",
+                "content": [
+                    {"type": "tool_use", "id": "tool-a", "name": "Bash", "input": {"command": "first"}},
+                    {"type": "tool_use", "id": "tool-b", "name": "Bash", "input": {"command": "second"}}
+                ]
+            }
+        })]);
+        let adapter = ClaudeAdapter;
+        let source_ref = SafeSourceRef {
+            source_file_id: None,
+            source_file_path: path,
+            source_offset: Some(1),
+            fingerprint: None,
+            event_key: Some("claude:root:msg-multi:1:tool-b".to_string()),
+        };
+        let page = adapter
+            .read_payload(&source_ref, "input", DEFAULT_MAX_BYTES, None)
+            .expect("read payload");
+        assert!(page.content.contains("second"));
+        assert!(!page.content.contains("first"));
     }
 
     #[test]
@@ -1199,6 +1270,7 @@ mod tests {
             source_file_path: path,
             source_offset: Some(1),
             fingerprint: None,
+            event_key: None,
         };
         let page = adapter
             .read_payload(&source_ref, "summary", DEFAULT_MAX_BYTES, None)
@@ -1220,6 +1292,7 @@ mod tests {
             source_file_path: zh_path,
             source_offset: Some(1),
             fingerprint: None,
+            event_key: None,
         };
         let page = adapter
             .read_payload(
@@ -1238,6 +1311,7 @@ mod tests {
             source_file_path: "/nonexistent/claude-y.jsonl".to_string(),
             source_offset: Some(1),
             fingerprint: None,
+            event_key: None,
         };
         let page = adapter
             .read_payload(&missing_ref, "input", DEFAULT_MAX_BYTES, None)

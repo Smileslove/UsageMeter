@@ -71,6 +71,10 @@ const closeInspector = () => {
   if (!wideMode.value) inspectorOpen.value = false
   selectedEvent.value = null
 }
+watch(activeSessionKey, () => {
+  selectedEvent.value = null
+  inspectorOpen.value = false
+})
 
 // ============ 导出对话框开关（对话框本体与导出状态在 ExportDialog 子组件内） ============
 const exportDialogOpen = ref(false)
@@ -114,7 +118,7 @@ onUnmounted(() => {
       <div v-else class="min-w-0 flex-1" />
 
       <!-- 跨会话搜索（9.8：fulltext 档可用；结果跳转该会话活动页） -->
-      <GlobalSearchPanel v-if="showPicker" @jump="jumpToSession" />
+      <GlobalSearchPanel v-if="showPicker" :fulltext-enabled="fulltextEnabled" @jump="jumpToSession" />
 
       <!-- 能力状态徽标 -->
       <span

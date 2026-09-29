@@ -17,7 +17,7 @@
 //! 不伪装精确匹配。
 
 use crate::activity::adapter::{
-    parse_payload_cursor, read_payload_line, slice_payload_page, validate_payload_path,
+    parse_payload_cursor, read_payload_line, slice_payload_page, validate_payload_fingerprint,
     ActivityError, ActivityIndexBatch, NewAgentNode, NewEventRequestLink, NewSessionEvent,
     NewToolInvocation, SessionActivityAdapter, SessionSourceRef,
 };
@@ -148,7 +148,12 @@ impl SessionActivityAdapter for CodexAdapter {
         }
 
         let actor_agent_key = if identity.is_subagent {
-            let agent_key = format!("{}:subagent:{}", source.session_id, identity.thread_id);
+            let agent_key = format!(
+                "{}:subagent:{}:{}",
+                source.session_id,
+                identity.thread_id,
+                source_namespace(&source.primary_file_path)
+            );
             agents.push(NewAgentNode {
                 agent_key: agent_key.clone(),
                 parent_agent_key: None,
@@ -290,8 +295,10 @@ impl SessionActivityAdapter for CodexAdapter {
                             request_links.push(NewEventRequestLink {
                                 event_key,
                                 request_key: format!(
-                                    "codex:{}:{}",
-                                    source.session_id, request_index
+                                    "codex:{}:{}:{}",
+                                    source.session_id,
+                                    source_namespace(&source.primary_file_path),
+                                    request_index
                                 ),
                                 strength: RequestLinkStrength::TimeWindow,
                             });
@@ -357,17 +364,27 @@ impl SessionActivityAdapter for CodexAdapter {
                                 .get("call_id")
                                 .and_then(Value::as_str)
                                 .map(str::to_string);
-                            let invocation_key = call_id.clone().unwrap_or_else(|| {
-                                // call_id 缺失回退到行号；同一会话有多个 rollout
-                                // 文件（fork/子代理）时同号行会互相覆盖，回退键
-                                // 必须带来源文件标识保证跨文件唯一。
-                                format!(
-                                    "codex:{}:{}:line:{}",
-                                    source.session_id,
-                                    source_file_tag(&source.primary_file_path),
-                                    line_index
-                                )
-                            });
+                            let invocation_key = call_id
+                                .as_deref()
+                                .map(|call_id| {
+                                    format!(
+                                        "codex:{}:{}:{}",
+                                        source.session_id,
+                                        source_namespace(&source.primary_file_path),
+                                        call_id
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    // call_id 缺失回退到行号；同一会话有多个 rollout
+                                    // 文件（fork/子代理）时同号行会互相覆盖，回退键
+                                    // 必须带来源文件标识保证跨文件唯一。
+                                    format!(
+                                        "codex:{}:{}:line:{}",
+                                        source.session_id,
+                                        source_namespace(&source.primary_file_path),
+                                        line_index
+                                    )
+                                });
                             // custom_tool_call 的入参在 `input` 字段（可为 diff 文本，
                             // 不一定是 JSON）；function_call 的入参是 JSON 字符串。
                             let (input_text, input_keys) = if is_custom {
@@ -539,7 +556,12 @@ impl SessionActivityAdapter for CodexAdapter {
             .filter(|value| *value >= 1)
             .unwrap_or(1) as usize;
         // 21.5 路径安全：只读 .jsonl、大小 ≤ 512MB，否则 Unavailable。
-        if validate_payload_path(&source_ref.source_file_path).is_err() {
+        if validate_payload_fingerprint(
+            &source_ref.source_file_path,
+            source_ref.fingerprint.as_deref(),
+        )
+        .is_err()
+        {
             return Ok(RedactedPayloadPage {
                 content: String::new(),
                 truncated: false,
@@ -666,21 +688,13 @@ fn codex_event_key(session_id: &str, line_index: u64) -> String {
     format!("codex:{session_id}:{line_index}")
 }
 
-/// 来源文件的稳定短标识（供 call_id 缺失时回退键去冲突）：取路径最后两个
-/// component 拼 `_`（如 `sessions/rollout-1.jsonl` → `sessions_rollout-1.jsonl`），
-/// 空路径回退 `unknown`。同一会话的多个 rollout 文件路径尾段不同 → 键唯一。
-fn source_file_tag(path: &str) -> String {
-    let components: Vec<&str> = path
-        .split(['/', '\\'])
-        .filter(|component| !component.is_empty())
-        .collect();
-    let start = components.len().saturating_sub(2);
-    let tag = components[start..].join("_");
-    if tag.is_empty() {
-        "unknown".to_string()
-    } else {
-        tag
-    }
+/// Opaque deterministic source namespace for cross-rollout keys. Do not put
+/// path components in event/request/agent identifiers returned to the UI.
+fn source_namespace(path: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 // ── 文本提取 ──────────────────────────────────────────────────────────────────
@@ -1091,7 +1105,7 @@ mod tests {
         // 请求关联：TimeWindow + 合成 id
         assert_eq!(batch.request_links.len(), 1);
         let link = &batch.request_links[0];
-        assert_eq!(link.request_key, "codex:codex::sess-1:1".to_string());
+        assert!(link.request_key.starts_with("codex:codex::sess-1:"));
         assert_eq!(link.strength, RequestLinkStrength::TimeWindow);
         assert_eq!(link.event_key, batch.events[4].event_key);
 
@@ -1289,15 +1303,17 @@ mod tests {
 
         assert_eq!(batch.agents.len(), 1);
         let agent = &batch.agents[0];
-        assert_eq!(
-            agent.agent_key,
-            "codex::sub-uuid-1:subagent:sub-uuid-1".to_string()
-        );
+        assert!(agent
+            .agent_key
+            .starts_with("codex::sub-uuid-1:subagent:sub-uuid-1:"));
         assert_eq!(agent.relation_level, AgentRelationLevel::FlagOnly);
         assert_eq!(agent.display_kind.as_deref(), Some("subagent"));
 
         assert!(batch.events.iter().all(|event| {
-            event.actor_agent_key.as_deref() == Some("codex::sub-uuid-1:subagent:sub-uuid-1")
+            event
+                .actor_agent_key
+                .as_deref()
+                .is_some_and(|key| key.starts_with("codex::sub-uuid-1:subagent:sub-uuid-1:"))
         }));
     }
 
@@ -1341,10 +1357,10 @@ mod tests {
         assert_eq!(batch.events.len(), 1);
         assert_eq!(batch.events[0].kind, SessionEventKind::SystemEvent);
         assert_eq!(batch.request_links.len(), 1);
-        assert_eq!(
-            batch.request_links[0].request_key,
-            "codex:codex::fork-session-id:1"
-        );
+        assert!(batch.request_links[0]
+            .request_key
+            .starts_with("codex:codex::fork-session-id:"));
+        assert!(batch.request_links[0].request_key.ends_with(":1"));
     }
 
     #[test]
@@ -1358,6 +1374,7 @@ mod tests {
             source_file_path: path.clone(),
             source_offset: Some(4),
             fingerprint: None,
+            event_key: None,
         };
         let page = adapter
             .read_payload(&call_ref, "input", DEFAULT_MAX_BYTES, None)
@@ -1376,6 +1393,7 @@ mod tests {
             source_file_path: zh_path,
             source_offset: Some(1),
             fingerprint: None,
+            event_key: None,
         };
         let page = adapter
             .read_payload(
@@ -1401,6 +1419,7 @@ mod tests {
             source_file_path: path.clone(),
             source_offset: Some(5),
             fingerprint: None,
+            event_key: None,
         };
         let page = adapter
             .read_payload(&output_ref, "output", DEFAULT_MAX_BYTES, None)
@@ -1413,6 +1432,7 @@ mod tests {
             source_file_path: path,
             source_offset: Some(2),
             fingerprint: None,
+            event_key: None,
         };
         let page = adapter
             .read_payload(&raw_ref, "raw", DEFAULT_MAX_BYTES, None)
@@ -1429,6 +1449,7 @@ mod tests {
             source_file_path: "/nonexistent/rollout-x.jsonl".to_string(),
             source_offset: Some(1),
             fingerprint: None,
+            event_key: None,
         };
         let page = adapter
             .read_payload(&source_ref, "input", DEFAULT_MAX_BYTES, None)
@@ -1516,7 +1537,13 @@ mod tests {
             key_a, key_b,
             "fallback invocation keys must be unique across rollout files"
         );
-        assert!(key_a.contains("rollout-test"), "key a: {key_a}");
-        assert!(key_b.contains("rollout-2"), "key b: {key_b}");
+        assert!(
+            key_a.starts_with("codex:codex::sess-multi:"),
+            "key a: {key_a}"
+        );
+        assert!(
+            key_b.starts_with("codex:codex::sess-multi:"),
+            "key b: {key_b}"
+        );
     }
 }

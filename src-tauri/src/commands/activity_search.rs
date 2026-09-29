@@ -106,7 +106,7 @@ pub async fn search_session_activity(
         super::commands::lazy_ensure_indexed_without_db_lock(
             &session_key,
             db::ActivityPersistencePolicy::FullText,
-        );
+        )?;
         activity_db(|conn| {
             let (keys, total) = fts::search_session(conn, &session_key, &query, offset, limit)?;
             let items = db::query_events_by_keys(conn, &keys)?;

@@ -267,6 +267,9 @@ pub struct SafeSourceRef {
     pub source_file_path: String,
     pub source_offset: Option<i64>,
     pub fingerprint: Option<String>,
+    /// Internal locator for adapters that need sub-line block precision.
+    #[serde(skip)]
+    pub event_key: Option<String>,
 }
 
 /// 会话事件列表项。
@@ -499,6 +502,7 @@ mod tests {
                 source_file_path: "~/.claude/projects/x.jsonl".to_string(),
                 source_offset: Some(1024),
                 fingerprint: Some("abc".to_string()),
+                event_key: None,
             },
         };
         let json = serde_json::to_string(&item).expect("serialize item");

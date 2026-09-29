@@ -65,9 +65,9 @@ fn compute_source_fingerprint(files: &[String]) -> Result<String, String> {
 /// - `claude_code`：subagent transcript 位于 primary 同名子目录的
 ///   `subagents/` 下（`~/.claude/projects/{project}/{root}/subagents/*.jsonl`，
 ///   归组规则与 `session::claude_reader::derive_root_session_id` 的目录布局一致）；
-/// - `codex`：同一会话 uuid 目录下按时间段拆分的多个 `rollout-*.jsonl`
-///   （`~/.codex/sessions/{uuid}/rollout-*.jsonl`）都属于同一会话。
-///   跨目录的 subagent 线程（独立 uuid）M2 不追踪：适配器能力只声明
+/// - `codex`：同一日期目录下按时间段拆分的多个 `rollout-*.jsonl`，但只
+///   收集 `session_meta` 中 root session id 与 primary 相同的文件。跨目录的
+///   subagent 线程（独立 uuid）M2 不追踪：适配器能力只声明
 ///   [`AgentRelationLevel::FlagOnly`]，不承诺跨目录归组。
 /// - 其他工具：仅 primary（M2 未注册对应适配器，正常不会走到）。
 fn discover_related_files(tool: &str, primary_file_path: &str) -> Vec<String> {
@@ -91,13 +91,27 @@ fn discover_related_files(tool: &str, primary_file_path: &str) -> Vec<String> {
         }
         crate::session::constants::TOOL_CODEX => {
             if let Some(parent) = primary.parent() {
+                let primary_root =
+                    crate::session::codex_reader::codex_rollout_root_session_id(primary);
                 if let Ok(entries) = std::fs::read_dir(parent) {
                     extra.extend(
                         entries
                             .flatten()
                             .filter(|entry| {
                                 let name = entry.file_name().to_string_lossy().to_string();
-                                name.starts_with("rollout-") && name.ends_with(".jsonl")
+                                if !(name.starts_with("rollout-") && name.ends_with(".jsonl")) {
+                                    return false;
+                                }
+                                let candidate = entry.path();
+                                match (
+                                    &primary_root,
+                                    crate::session::codex_reader::codex_rollout_root_session_id(
+                                        &candidate,
+                                    ),
+                                ) {
+                                    (Some(root), Some(candidate_root)) => root == &candidate_root,
+                                    _ => false,
+                                }
                             })
                             .map(|entry| entry.path().to_string_lossy().to_string()),
                     );
@@ -123,20 +137,22 @@ fn discover_related_files(tool: &str, primary_file_path: &str) -> Vec<String> {
 ///    并同步重写该文件内的 `parent_event_key`/工具调用/请求关联引用
 ///    （引用只发生在文件内部，跨文件无引用）。文件发现顺序稳定，故
 ///    重复索引产出一致批次。
-/// 2. **sequence 冲突**：各文件 sequence 都从 1 开始。合并后按
-///    （文件顺序，文件内原 sequence）稳定排序并重写为全局 1..N——
-///    `sort_by_key` 稳定，同 sequence 元素保持文件间先后，文件内相对
-///    顺序不变，事件顺序稳定可重放。
+/// 2. **sequence 冲突**：各文件 sequence 都从 1 开始。合并后按事件时间、
+///    来源文件、来源行号和原 sequence 做稳定排序，再重写为全局 1..N，
+///    避免多 rollout 交错时按文件拼接造成时间线倒序。
 fn merge_batches(session_key: &str, batches: Vec<ActivityIndexBatch>) -> ActivityIndexBatch {
     let mut out = ActivityIndexBatch {
         session_key: session_key.to_string(),
         ..ActivityIndexBatch::default()
     };
     let mut seen_keys: HashSet<String> = HashSet::new();
+    let mut seen_invocations: HashSet<String> = HashSet::new();
+    let mut seen_agents: HashSet<String> = HashSet::new();
     // 单文件内旧键 → 新键（仅冲突文件有映射）。
     let mut remap: HashMap<String, String> = HashMap::new();
     for (file_idx, batch) in batches.iter().enumerate() {
         remap.clear();
+        let mut agent_remap: HashMap<String, String> = HashMap::new();
         for event in &batch.events {
             let key = &event.event_key;
             if file_idx > 0 && seen_keys.contains(key) {
@@ -146,7 +162,25 @@ fn merge_batches(session_key: &str, batches: Vec<ActivityIndexBatch>) -> Activit
         }
         let rewrite =
             |key: &str| -> String { remap.get(key).cloned().unwrap_or_else(|| key.to_string()) };
+        for agent in &batch.agents {
+            let mut agent = agent.clone();
+            let original_agent_key = agent.agent_key.clone();
+            if !seen_agents.insert(agent.agent_key.clone()) {
+                agent.agent_key = format!("{}#f{file_idx}", agent.agent_key);
+                if let Some(parent) = agent.parent_agent_key.as_mut() {
+                    *parent = format!("{}#f{file_idx}", parent);
+                }
+            }
+            agent_remap.insert(original_agent_key, agent.agent_key.clone());
+            out.agents.push(agent);
+        }
         for event in &batch.events {
+            let actor_agent_key = event
+                .actor_agent_key
+                .as_deref()
+                .and_then(|key| agent_remap.get(key))
+                .cloned()
+                .or_else(|| event.actor_agent_key.clone());
             out.events.push(NewSessionEvent {
                 event_key: rewrite(&event.event_key),
                 parent_event_key: event
@@ -154,15 +188,18 @@ fn merge_batches(session_key: &str, batches: Vec<ActivityIndexBatch>) -> Activit
                     .as_deref()
                     .map(rewrite)
                     .or_else(|| event.parent_event_key.clone()),
+                actor_agent_key,
                 ..event.clone()
             });
         }
-        for agent in &batch.agents {
-            out.agents.push(agent.clone());
-        }
         for invocation in &batch.tool_invocations {
+            let mut invocation_key = invocation.invocation_key.clone();
+            if !seen_invocations.insert(invocation_key.clone()) {
+                invocation_key = format!("{}#f{file_idx}", invocation_key);
+            }
             out.tool_invocations.push(NewToolInvocation {
                 event_key: rewrite(&invocation.event_key),
+                invocation_key,
                 ..invocation.clone()
             });
         }
@@ -173,8 +210,15 @@ fn merge_batches(session_key: &str, batches: Vec<ActivityIndexBatch>) -> Activit
             });
         }
     }
-    // 保持文件顺序（primary → 后续文件），sequence 全局重排；
-    // 时间线顺序由写入层的 (timestamp_ms, source_offset, event_index) 排序键保证。
+    out.events.sort_by(|left, right| {
+        left.timestamp_ms
+            .is_none()
+            .cmp(&right.timestamp_ms.is_none())
+            .then_with(|| left.timestamp_ms.cmp(&right.timestamp_ms))
+            .then_with(|| left.source_file_path.cmp(&right.source_file_path))
+            .then_with(|| left.source_offset.cmp(&right.source_offset))
+            .then_with(|| left.sequence.cmp(&right.sequence))
+    });
     for (index, event) in out.events.iter_mut().enumerate() {
         event.sequence = (index + 1) as i64;
     }
@@ -195,9 +239,14 @@ fn index_session_files(
             primary_file_path: file.clone(),
             source_file_id: None,
         };
-        let batch = adapter
+        let mut batch = adapter
             .index_session(&file_source)
             .map_err(|error| error.to_string())?;
+        if let Ok(fingerprint) = file_fingerprint(file) {
+            for event in &mut batch.events {
+                event.payload_hash = Some(fingerprint.clone());
+            }
+        }
         batches.push(batch);
     }
     Ok(merge_batches(&source.session_id, batches))
@@ -689,8 +738,8 @@ mod tests {
         assert_eq!(sequences, vec![1, 2, 3, 4]);
         // 冲突键重写：第二文件的重复键追加 #f1，引用同步重写。
         assert_eq!(merged.events[0].event_key, "codex:sess-1:1");
-        assert_eq!(merged.events[1].event_key, "codex:sess-1:2");
-        assert_eq!(merged.events[2].event_key, "codex:sess-1:1#f1");
+        assert_eq!(merged.events[1].event_key, "codex:sess-1:1#f1");
+        assert_eq!(merged.events[2].event_key, "codex:sess-1:2");
         assert_eq!(merged.events[3].event_key, "codex:sess-1:2#f1");
         assert_eq!(
             merged.events[3].parent_event_key.as_deref(),
@@ -733,6 +782,35 @@ mod tests {
         std::fs::write(&bare, b"{}").expect("write bare");
         let files = discover_related_files(TOOL_CLAUDE_CODE, &bare.to_string_lossy());
         assert_eq!(files, vec![bare.to_string_lossy().to_string()]);
+    }
+
+    #[test]
+    fn discover_related_files_keeps_codex_rollouts_in_same_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let primary = dir.path().join("rollout-primary.jsonl");
+        let same = dir.path().join("rollout-same.jsonl");
+        let other = dir.path().join("rollout-other.jsonl");
+        let meta = |id: &str| {
+            format!(
+                "{}\n{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"user_message\",\"message\":\"hello\"}}}}\n",
+                json!({"type":"session_meta","payload":{"id":id}})
+            )
+        };
+        std::fs::write(&primary, meta("root-1")).expect("write primary");
+        std::fs::write(&same, meta("root-1")).expect("write same");
+        std::fs::write(&other, meta("root-2")).expect("write other");
+
+        let files = discover_related_files(
+            crate::session::constants::TOOL_CODEX,
+            &primary.to_string_lossy(),
+        );
+        assert_eq!(
+            files,
+            vec![
+                primary.to_string_lossy().to_string(),
+                same.to_string_lossy().to_string(),
+            ]
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! 本模块提供扫描和提取本地会话数据的功能。
 
 mod claude_reader;
-mod codex_reader;
+pub(crate) mod codex_reader;
 pub(crate) mod constants;
 mod copilot_cli_reader;
 mod gemini_reader;
@@ -19,7 +19,7 @@ mod registry;
 mod scanner;
 mod shared;
 mod source;
-mod wsl;
+pub(crate) mod wsl;
 
 pub(crate) use hermes_reader::scan_hermes_sessions;
 #[allow(unused_imports)]

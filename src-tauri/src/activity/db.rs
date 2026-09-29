@@ -689,6 +689,7 @@ fn row_to_event_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionEventLi
             source_file_path: redact_home_path(&row.get::<_, String>(11)?),
             source_offset: row.get(12)?,
             fingerprint: row.get(13)?,
+            event_key: None,
         },
     })
 }

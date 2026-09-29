@@ -52,6 +52,14 @@ export function useActivityData() {
   let eventsOffset = 0
   let loadGeneration = 0
 
+  const ensureRebuildSucceeded = async (scope: string) => {
+    const result = await rebuildSessionActivityIndex(scope)
+    if (result.sessionsFailed > 0 || result.errors.length > 0) {
+      throw new Error(result.errors[0] || 'ERR_ACTIVITY_REBUILD_FAILED')
+    }
+    return result
+  }
+
   const deepIndexEnabled = computed(() => store.settings.deepIndexLevel !== 'off')
   const capabilityLevel = computed(() => summary.value?.capability.level ?? null)
   const relationLevel = computed(() => summary.value?.capability.agentRelations ?? 'none')
@@ -154,7 +162,7 @@ export function useActivityData() {
       if (!s) {
         building.value = true
         try {
-          await rebuildSessionActivityIndex(`session:${key}`)
+          await ensureRebuildSucceeded(`session:${key}`)
           if (generation !== loadGeneration) return
           s = await getSessionActivitySummary(store.settings, key)
         } finally {
@@ -196,7 +204,7 @@ export function useActivityData() {
     building.value = true
     error.value = ''
     try {
-      await rebuildSessionActivityIndex(`session:${key}`)
+      await ensureRebuildSucceeded(`session:${key}`)
       await loadSession(key)
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e)

@@ -93,20 +93,16 @@ fn ensure_source_indexed_without_db_lock(
 }
 
 /// 查询路径的懒索引：DB 锁只用于定位、指纹读取和最终短事务；源文件发现、
-/// 解析与指纹复核均在锁外完成。失败不阻断既有统计查询。
+/// 解析与指纹复核均在锁外完成。失败必须反馈给调用方，避免把旧快照伪装成最新数据。
 pub(super) fn lazy_ensure_indexed_without_db_lock(
     session_key: &str,
     policy: db::ActivityPersistencePolicy,
-) {
+) -> Result<(), String> {
     let source = activity_db(|conn| indexer::find_source_ref(conn, session_key));
     match source {
-        Ok(Some(source)) => {
-            if let Err(error) = ensure_source_indexed_without_db_lock(&source, policy) {
-                eprintln!("[UsageMeter] Deep index lazy sync failed: {error}");
-            }
-        }
-        Ok(None) => {}
-        Err(error) => eprintln!("[UsageMeter] Deep index lazy source lookup failed: {error}"),
+        Ok(Some(source)) => ensure_source_indexed_without_db_lock(&source, policy).map(|_| ()),
+        Ok(None) => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -144,7 +140,7 @@ pub async fn get_session_activity_summary(
         let _ = activity_db(|conn| {
             maintenance::maybe_auto_purge(conn, settings.deep_index_retention_days)
         });
-        lazy_ensure_indexed_without_db_lock(&session_key, policy);
+        lazy_ensure_indexed_without_db_lock(&session_key, policy)?;
         activity_db(|conn| db::query_activity_summary(conn, &session_key))
     })
     .await
@@ -182,7 +178,7 @@ pub async fn get_session_events(
         let _ = activity_db(|conn| {
             maintenance::maybe_auto_purge(conn, settings.deep_index_retention_days)
         });
-        lazy_ensure_indexed_without_db_lock(&session_key, policy);
+        lazy_ensure_indexed_without_db_lock(&session_key, policy)?;
         activity_db(|conn| db::query_events(conn, &session_key, filter.as_ref(), offset, limit))
     })
     .await
@@ -203,7 +199,7 @@ pub async fn get_session_agents(
         if deep_index_policy() != policy {
             return Ok(Vec::new());
         }
-        lazy_ensure_indexed_without_db_lock(&session_key, policy);
+        lazy_ensure_indexed_without_db_lock(&session_key, policy)?;
         activity_db(|conn| db::query_agents(conn, &session_key))
     })
     .await
@@ -224,7 +220,7 @@ pub async fn get_session_tool_summary(
         if deep_index_policy() != policy {
             return Ok(Vec::new());
         }
-        lazy_ensure_indexed_without_db_lock(&session_key, policy);
+        lazy_ensure_indexed_without_db_lock(&session_key, policy)?;
         activity_db(|conn| db::query_tool_summary(conn, &session_key))
     })
     .await
@@ -289,14 +285,17 @@ pub async fn get_session_event_payload(
                 // 会话行缺失（local_sessions 清理后深度表残留）：不伪造可读内容。
                 return Ok(None);
             };
+            if crate::activity::adapter::validate_payload_source_path(&source_file_path).is_err() {
+                return Ok(None);
+            }
             Ok(Some((
                 tool,
                 SafeSourceRef {
                     source_file_id: None,
                     source_file_path,
                     source_offset,
-                    // M2 适配器未回填 payload_hash，指纹校验留给 M3。
                     fingerprint: payload_hash,
+                    event_key: Some(event_key.clone()),
                 },
             )))
         })?;
@@ -433,6 +432,7 @@ struct ExportEventRow {
     summary: Option<String>,
     source_file_path: String,
     source_offset: Option<i64>,
+    payload_hash: Option<String>,
     tool: Option<ToolInvocationSummary>,
     request_links: Vec<RequestEventLink>,
     /// include_payloads 时填充 `{section: 脱敏文本}`，否则 Null。
@@ -496,7 +496,7 @@ fn query_export_events(
     let mut stmt = conn
         .prepare(
             "SELECT e.event_key, e.sequence, e.timestamp_ms, e.kind, e.status,
-                    e.summary_redacted, e.source_file_path, e.source_offset,
+                    e.summary_redacted, e.source_file_path, e.source_offset, e.payload_hash,
                     ti.invocation_key, ti.tool_name, ti.family, ti.duration_ms,
                     ti.input_bytes, ti.output_bytes, ti.input_keys_json, ti.result_kind
              FROM session_events e
@@ -507,21 +507,21 @@ fn query_export_events(
         .map_err(|error| format!("ERR_ACTIVITY_EXPORT_PREPARE_EVENTS: {error}"))?;
     let rows = stmt
         .query_map(params![session_key], |row| {
-            let invocation_key: Option<String> = row.get(8)?;
+            let invocation_key: Option<String> = row.get(9)?;
             let tool = match &invocation_key {
                 Some(invocation_key) => {
-                    let raw_name: String = row.get(9)?;
-                    let input_keys_json: String = row.get(14)?;
+                    let raw_name: String = row.get(10)?;
+                    let input_keys_json: String = row.get(15)?;
                     Some(ToolInvocationSummary {
                         invocation_key: invocation_key.clone(),
                         raw_name: raw_name.clone(),
                         normalized_name: raw_name,
-                        family: row.get(10)?,
-                        duration_ms: row.get(11)?,
-                        input_bytes: row.get(12)?,
-                        output_bytes: row.get(13)?,
+                        family: row.get(11)?,
+                        duration_ms: row.get(12)?,
+                        input_bytes: row.get(13)?,
+                        output_bytes: row.get(14)?,
                         input_keys: serde_json::from_str(&input_keys_json).unwrap_or_default(),
-                        result_kind: row.get(15)?,
+                        result_kind: row.get(16)?,
                     })
                 }
                 None => None,
@@ -538,6 +538,7 @@ fn query_export_events(
                 summary: row.get(5)?,
                 source_file_path: row.get(6)?,
                 source_offset: row.get(7)?,
+                payload_hash: row.get(8)?,
                 tool,
                 request_links: Vec::new(),
                 payload: serde_json::Value::Null,
@@ -892,8 +893,14 @@ fn finish_session_activity_export(
                     source_file_id: None,
                     source_file_path: event.source_file_path.clone(),
                     source_offset: event.source_offset,
-                    fingerprint: None,
+                    fingerprint: event.payload_hash.clone(),
+                    event_key: Some(event.event_key.clone()),
                 };
+                if crate::activity::adapter::validate_payload_source_path(&event.source_file_path)
+                    .is_err()
+                {
+                    continue;
+                }
                 let (payload, bytes) = read_event_payload(
                     adapter,
                     &source_ref,

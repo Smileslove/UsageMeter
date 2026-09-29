@@ -4,6 +4,8 @@
 //! 本模块不允许输出任何原始 secret —— 所有规则只做“替换为占位符”，
 //! 不保留被替换值的任何片段。
 
+use serde_json::Value;
+
 /// 常见 secret 值占位符。
 const REDACTED: &str = "[redacted]";
 
@@ -33,7 +35,64 @@ const SECRET_KEYS: &[&str] = &[
     "private_key",
     "private-key",
     "privatekey",
+    "authorization",
+    "proxy_authorization",
+    "proxy-authorization",
 ];
+
+fn normalized_secret_key(key: &str) -> String {
+    key.chars()
+        .filter(|ch| !matches!(ch, '-' | '_'))
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn is_structured_secret_key(key: &str) -> bool {
+    matches!(
+        normalized_secret_key(key).as_str(),
+        "apikey"
+            | "xapikey"
+            | "accesstoken"
+            | "authorization"
+            | "proxyauthorization"
+            | "authtoken"
+            | "refreshtoken"
+            | "clientsecret"
+            | "secret"
+            | "password"
+            | "passwd"
+            | "pwd"
+            | "token"
+            | "privatekey"
+    )
+}
+
+/// Recursively redact values under secret JSON object keys. Return `None` when
+/// no key was changed so ordinary JSON/text keeps its original representation.
+fn redact_structured_json(text: &str) -> Option<String> {
+    let mut value: Value = serde_json::from_str(text.trim()).ok()?;
+    let mut changed = false;
+    fn visit(value: &mut Value, changed: &mut bool) {
+        match value {
+            Value::Object(object) => {
+                for (key, child) in object.iter_mut() {
+                    if is_structured_secret_key(key) {
+                        *child = Value::String(REDACTED.to_string());
+                        *changed = true;
+                    } else {
+                        visit(child, changed);
+                    }
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(|item| visit(item, changed)),
+            _ => {}
+        }
+    }
+    visit(&mut value, &mut changed);
+    changed
+        .then(|| serde_json::to_string(&value).ok())
+        .flatten()
+}
 
 /// 词边界判断：ASCII 字母/数字/下划线视为词内字符（用于 `sk-`、`Bearer`、
 /// key 名的前后边界，避免把 `ask-why`、`myBearer`、`api_keyX` 误伤）。
@@ -368,6 +427,8 @@ fn redact_secret_kv(text: &str) -> String {
 /// kv 规则最后运行，把已替换占位符也整段覆盖（`api_key=sk-[redacted]` →
 /// `api_key=[redacted]`）。
 pub fn redact_secret(text: &str) -> String {
+    let structured = redact_structured_json(text);
+    let text = structured.as_deref().unwrap_or(text);
     let text = redact_auth_headers(text);
     let text = redact_private_key_pem(&text);
     let text = redact_bearer_tokens(&text);
@@ -609,6 +670,30 @@ mod tests {
             redact_secret("ApiKey = abcdefgh12345678"),
             "ApiKey = [redacted]"
         );
+        assert_eq!(
+            redact_secret("authorization=secret-header"),
+            "authorization=[redacted]"
+        );
+    }
+
+    #[test]
+    fn redacts_nested_json_secret_fields_without_leaking_values() {
+        let input = r#"{"apiKey":"secret-api","nested":{"accessToken":"secret-token"},"headers":{"Authorization":"secret-auth"},"items":[{"password":"secret-pass"}],"model":"safe"}"#;
+        let output = redact_secret(input);
+        assert!(!output.contains("secret-api"));
+        assert!(!output.contains("secret-token"));
+        assert!(!output.contains("secret-auth"));
+        assert!(!output.contains("secret-pass"));
+        assert!(output.contains(r#""apiKey":"[redacted]""#));
+        assert!(output.contains(r#""accessToken":"[redacted]""#));
+        assert!(output.contains(r#""Authorization":"[redacted]""#));
+        assert!(output.contains(r#""model":"safe""#));
+    }
+
+    #[test]
+    fn keeps_non_secret_json_text_format_when_no_structured_key_matches() {
+        let input = r#"{ "model": "safe", "message": "hello" }"#;
+        assert_eq!(redact_secret(input), input);
     }
 
     #[test]

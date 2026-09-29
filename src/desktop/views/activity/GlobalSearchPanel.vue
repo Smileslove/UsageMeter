@@ -17,6 +17,10 @@ const emit = defineEmits<{
   jump: [hit: GlobalSearchHit]
 }>()
 
+defineProps<{
+  fulltextEnabled: boolean
+}>()
+
 const store = useMonitorStore()
 const locale = computed(() => store.settings.locale)
 
@@ -74,8 +78,9 @@ const jumpToSession = (hit: GlobalSearchHit) => {
       type="button"
       class="theme-button-secondary inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold"
       :aria-label="t(locale, 'desktop.activity.globalSearch')"
-      :title="t(locale, 'desktop.activity.globalSearch')"
       :aria-expanded="globalSearchOpen"
+      :disabled="!fulltextEnabled"
+      :title="fulltextEnabled ? t(locale, 'desktop.activity.globalSearch') : t(locale, 'desktop.activity.searchFtsDisabled')"
       @click="globalSearchOpen = !globalSearchOpen"
     >
       <Globe class="h-3.5 w-3.5" aria-hidden="true" />

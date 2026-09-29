@@ -13,6 +13,9 @@ use std::path::Path;
 
 /// payload 源文件大小上限（字节；21.5 安全验收：超过不读取，直接 Unavailable）。
 pub(crate) const PAYLOAD_MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
+/// Individual JSONL lines are bounded separately so a malformed one cannot
+/// allocate the entire file while locating a payload.
+pub(crate) const PAYLOAD_MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 /// 解析分页 cursor：`"B{n}"` → 行内脱敏文本字节偏移；`None` 表示从头读。
 /// 非法格式（非 `B` 前缀、空、负数、非数字）返回 `None`，调用方按
@@ -45,6 +48,66 @@ pub(crate) fn validate_payload_path(path: &str) -> Result<(), ()> {
     Ok(())
 }
 
+/// Lightweight source fingerprint shared by indexing and on-demand reads.
+/// It intentionally uses metadata only; the activity index stores this value
+/// per event so a replaced source file cannot be read under an old event key.
+pub(crate) fn payload_source_fingerprint(path: &str) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let mtime = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| (duration.as_secs(), duration.subsec_nanos()))
+        .unwrap_or((0, 0));
+    Some(format!("{}.{:09}:{}", mtime.0, mtime.1, metadata.len()))
+}
+
+pub(crate) fn validate_payload_fingerprint(path: &str, expected: Option<&str>) -> Result<(), ()> {
+    validate_payload_path(path)?;
+    if let Some(expected) = expected {
+        if payload_source_fingerprint(path).as_deref() != Some(expected) {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+/// Enforce that an IPC payload path belongs to a supported local session root.
+/// Canonicalization also rejects symlinks escaping those roots.
+pub(crate) fn validate_payload_source_path(path: &str) -> Result<(), ()> {
+    validate_payload_path(path)?;
+    let canonical = std::fs::canonicalize(path).map_err(|_| ())?;
+    let Some(home) = dirs::home_dir() else {
+        return Err(());
+    };
+    let roots = [
+        home.join(".claude").join("projects"),
+        home.join(".config").join("claude").join("projects"),
+        home.join(".codex").join("sessions"),
+    ];
+    let native_match = roots.iter().any(|root| {
+        std::fs::canonicalize(root)
+            .map(|root| canonical.starts_with(root))
+            .unwrap_or(false)
+    });
+    #[cfg(windows)]
+    let wsl_match = crate::session::wsl::scan_config_if_enabled()
+        .map(|cfg| {
+            crate::session::wsl::claude_projects_roots(&cfg)
+                .into_iter()
+                .chain(crate::session::wsl::codex_session_roots(&cfg))
+                .any(|root| {
+                    std::fs::canonicalize(root)
+                        .map(|root| canonical.starts_with(root))
+                        .unwrap_or(false)
+                })
+        })
+        .unwrap_or(false);
+    #[cfg(not(windows))]
+    let wsl_match = false;
+    (native_match || wsl_match).then_some(()).ok_or(())
+}
+
 /// 打开源文件并定位到第 `line_no` 行（1-based）。文件不存在或行号超过
 /// 文件长度返回 `Ok(None)`（Unavailable 语义）；IO 失败返回 `Err`。
 pub(crate) fn read_payload_line(
@@ -57,13 +120,39 @@ pub(crate) fn read_payload_line(
     };
     let mut reader = BufReader::new(file);
     let mut line = String::new();
-    for _ in 0..line_no {
+    for line_index in 0..line_no {
         line.clear();
-        let read = reader
-            .read_line(&mut line)
-            .map_err(|_| ActivityError::Io("failed to read payload source line".to_string()))?;
-        if read == 0 {
-            return Ok(None);
+        loop {
+            let (consumed, finished) = {
+                let buffer = reader.fill_buf().map_err(|_| {
+                    ActivityError::Io("failed to read payload source line".to_string())
+                })?;
+                if buffer.is_empty() {
+                    return if !line.is_empty() && line_index + 1 == line_no {
+                        Ok(Some(line))
+                    } else {
+                        Ok(None)
+                    };
+                }
+                let take = buffer
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map(|index| index + 1)
+                    .unwrap_or(buffer.len());
+                if line.len().saturating_add(take) > PAYLOAD_MAX_LINE_BYTES {
+                    return Err(ActivityError::Io(
+                        "payload source line exceeds size limit".to_string(),
+                    ));
+                }
+                line.push_str(std::str::from_utf8(&buffer[..take]).map_err(|_| {
+                    ActivityError::Io("payload source line is not utf8".to_string())
+                })?);
+                (take, buffer[..take].contains(&b'\n'))
+            };
+            reader.consume(consumed);
+            if finished {
+                break;
+            }
         }
     }
     Ok(Some(line))
@@ -260,5 +349,25 @@ mod tests {
         assert_eq!(parse_payload_cursor(Some("B")), None);
         assert_eq!(parse_payload_cursor(Some("1")), None);
         assert_eq!(parse_payload_cursor(Some("B1x")), None);
+    }
+
+    #[test]
+    fn payload_fingerprint_rejects_replaced_source() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rollout.jsonl");
+        std::fs::write(&path, b"{}\n").expect("write fixture");
+        assert!(
+            validate_payload_fingerprint(&path.to_string_lossy(), Some("stale-fingerprint"))
+                .is_err()
+        );
+        assert!(validate_payload_fingerprint(&path.to_string_lossy(), None).is_ok());
+    }
+
+    #[test]
+    fn payload_path_requires_jsonl_and_size_limit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let txt = dir.path().join("payload.txt");
+        std::fs::write(&txt, b"{}").expect("write fixture");
+        assert!(validate_payload_path(&txt.to_string_lossy()).is_err());
     }
 }

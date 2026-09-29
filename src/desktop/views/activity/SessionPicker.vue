@@ -59,7 +59,12 @@ const loadMoreSessions = async () => {
 }
 
 const ensureSessions = async () => {
-  if (store.sessions.length > 0) return
+  if (store.sessions.length > 0) {
+    // The store may already contain an initial page loaded by another view.
+    // Start the next request after those rows to avoid fetching page one again.
+    sessionsOffset = store.sessions.length
+    return
+  }
   const count = await store.fetchSessions(100, 0, false)
   sessionsOffset = count
   if (count < 100) sessionsAllLoaded.value = true
