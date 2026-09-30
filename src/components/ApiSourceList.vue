@@ -434,15 +434,16 @@ const deletingSource = computed(() => {
         leave-from-class="opacity-100"
         leave-to-class="opacity-0"
       >
-        <div v-if="showMergeDialog" class="theme-backdrop fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div class="theme-modal-panel w-full max-w-xs rounded-2xl p-5">
-            <h4 class="mb-1 text-sm font-semibold text-[var(--theme-text-primary)]">
-              {{ t(store.settings.locale, 'sources.mergeInto') }}
-            </h4>
-            <p class="mb-3 text-xs text-[var(--theme-text-tertiary)]">
-              {{ t(store.settings.locale, 'sources.mergeConfirm') }}
-            </p>
-            <div class="space-y-1.5">
+        <div v-if="showMergeDialog" class="theme-modal-backdrop fixed inset-0 z-[90] flex items-center justify-center" @click.self="showMergeDialog = false">
+          <div class="theme-modal-shell max-w-[360px]" role="dialog" aria-modal="true">
+            <header class="theme-modal-header">
+              <div>
+                <h4 class="text-sm font-semibold text-[var(--theme-text-primary)]">{{ t(store.settings.locale, 'sources.mergeInto') }}</h4>
+                <p class="mt-1 text-xs text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'sources.mergeConfirm') }}</p>
+              </div>
+              <button type="button" class="theme-modal-close -mr-2 -mt-2" :aria-label="t(store.settings.locale, 'common.close')" @click="showMergeDialog = false"><X class="h-4 w-4" /></button>
+            </header>
+            <div class="theme-modal-body space-y-1.5">
               <button
                 v-for="target in mergeTargets"
                 :key="target.id"
@@ -461,7 +462,7 @@ const deletingSource = computed(() => {
                 <span class="text-xs text-[var(--theme-text-primary)]">{{ getSourceName(target) }}</span>
               </button>
             </div>
-            <div class="flex gap-2 mt-4">
+            <div class="theme-modal-actions">
               <button
                 @click="showMergeDialog = false"
                 class="theme-button-secondary flex-1 rounded-xl py-2 text-[12px] font-medium transition-colors"
@@ -493,19 +494,19 @@ const deletingSource = computed(() => {
         leave-from-class="opacity-100"
         leave-to-class="opacity-0"
       >
-        <div v-if="showDeleteDialog" class="theme-backdrop fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div class="theme-modal-panel w-full max-w-xs rounded-2xl p-5">
-            <div class="flex flex-col items-center text-center mb-4">
+        <div v-if="showDeleteDialog" class="theme-modal-backdrop fixed inset-0 z-[90] flex items-center justify-center" @click.self="showDeleteDialog = false">
+          <div class="theme-modal-shell max-w-[360px]" role="dialog" aria-modal="true">
+            <header class="theme-modal-header">
+              <div class="flex min-w-0 items-center gap-3">
               <div class="theme-status-danger mb-3 flex h-10 w-10 items-center justify-center rounded-full border">
                 <AlertTriangle class="w-5 h-5 text-red-500" />
               </div>
-              <h4 class="text-sm font-semibold text-[var(--theme-text-primary)]">
-                {{ t(store.settings.locale, 'sources.delete') }}
-              </h4>
-              <p class="mt-1 text-xs text-[var(--theme-text-tertiary)]">
-                {{ t(store.settings.locale, 'sources.deleteConfirm') }}
-              </p>
-            </div>
+              <div><h4 class="text-sm font-semibold text-[var(--theme-text-primary)]">{{ t(store.settings.locale, 'sources.delete') }}</h4><p class="mt-1 text-xs text-[var(--theme-text-tertiary)]">{{ t(store.settings.locale, 'sources.deleteConfirm') }}</p></div>
+              </div>
+              <button type="button" class="theme-modal-close -mr-2 -mt-2" :aria-label="t(store.settings.locale, 'common.close')" @click="showDeleteDialog = false"><X class="h-4 w-4" /></button>
+            </header>
+
+            <div class="theme-modal-body">
 
             <div v-if="deletingSource" class="theme-surface-muted mb-3 flex items-center gap-2 rounded-xl border p-2.5">
               <span
@@ -526,7 +527,8 @@ const deletingSource = computed(() => {
               </span>
             </label>
 
-            <div class="flex gap-2">
+            </div>
+            <div class="theme-modal-actions">
               <button
                 @click="showDeleteDialog = false"
                 class="theme-button-secondary flex-1 rounded-xl py-2 text-[12px] font-medium transition-colors"

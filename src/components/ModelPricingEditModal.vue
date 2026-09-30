@@ -103,13 +103,13 @@ const isValid = () => {
 </script>
 
 <template>
-  <div class="p-3 w-72">
+  <div class="flex min-h-0 w-full flex-col">
     <!-- 标题 -->
-    <div class="flex items-center justify-between mb-3">
+    <div class="theme-modal-header !border-b-0 !bg-transparent">
       <h3 class="text-[13px] font-semibold text-[var(--theme-text-primary)]">
         {{ isEdit ? t(props.locale, 'settings.modelPricingEdit') : t(props.locale, 'settings.modelPricingAdd') }}
       </h3>
-      <button @click="emit('close')" class="rounded-lg p-1 transition-colors hover:bg-gray-100">
+      <button @click="emit('close')" class="theme-modal-close -mr-2 -mt-2" :aria-label="t(props.locale, 'common.close')">
         <svg class="h-3.5 w-3.5 text-[var(--theme-text-tertiary)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
         </svg>
@@ -117,7 +117,7 @@ const isValid = () => {
     </div>
 
     <!-- 表单 -->
-    <div class="space-y-2">
+    <div class="theme-modal-body space-y-2 !pt-0">
       <!-- 模型 ID -->
       <div>
         <label class="mb-0.5 block text-[10px] text-[var(--theme-text-secondary)]">{{ t(props.locale, 'settings.modelPricingModelId') }}</label>
@@ -220,7 +220,7 @@ const isValid = () => {
     </div>
 
     <!-- 按钮 -->
-    <div class="theme-divider mt-3 flex gap-2 border-t pt-2">
+    <div class="theme-modal-actions">
       <button
         @click="emit('close')"
         class="theme-button-secondary flex-1 rounded-lg py-1.5 text-xs transition-colors"

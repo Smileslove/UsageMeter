@@ -240,19 +240,20 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="p-3 w-72">
+  <div class="flex min-h-0 w-full flex-col">
     <!-- 标题 -->
-    <div class="flex items-center justify-between mb-3">
+    <div class="theme-modal-header !border-b-0 !bg-transparent">
       <h3 class="text-[13px] font-semibold text-[var(--theme-text-primary)]">
         {{ t(store.settings.locale, 'settings.pricingApplyTitle') }}
       </h3>
-      <button @click="handleClose" class="rounded-lg p-1 transition-colors hover:bg-gray-100">
+      <button @click="handleClose" class="theme-modal-close -mr-2 -mt-2" :aria-label="t(store.settings.locale, 'common.close')">
         <svg class="h-3.5 w-3.5 text-[var(--theme-text-tertiary)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
         </svg>
       </button>
     </div>
 
+    <div class="theme-modal-body !pt-0">
     <!-- 模型信息（一行） -->
     <div class="theme-surface-muted mb-3 flex items-center gap-2 rounded-lg border px-2 py-1.5">
       <span class="theme-badge-muted shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium">
@@ -565,7 +566,9 @@ onUnmounted(() => {
     </div>
 
     <!-- 按钮 -->
-    <div class="theme-divider flex gap-2 border-t pt-2">
+    </div>
+
+    <div class="theme-modal-actions">
       <button
         @click="handleClose"
         class="theme-button-secondary flex-1 rounded-lg py-1.5 text-xs transition-colors"

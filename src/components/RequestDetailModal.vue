@@ -89,32 +89,32 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
   <Teleport to="#app">
     <div
       v-if="visible && request"
-      class="request-detail-modal fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/45 p-3 backdrop-blur-md sm:p-6"
+      class="request-detail-modal detail-modal-backdrop theme-modal-backdrop fixed inset-0 z-[90] flex items-center justify-center"
       style="-webkit-app-region: no-drag; app-region: no-drag"
       @click.self="emit('close')"
     >
-      <div class="request-detail-modal__surface flex max-h-[calc(100vh-24px)] w-full max-w-3xl flex-col overflow-hidden rounded-[28px] shadow-[0_24px_80px_rgba(15,23,42,0.22)] sm:max-h-[calc(100vh-48px)]" style="-webkit-app-region: no-drag; app-region: no-drag">
-        <header class="request-detail-modal__header flex shrink-0 items-start justify-between gap-4 px-5 pb-5 pt-5 sm:px-8 sm:pb-6 sm:pt-7">
+      <div class="request-detail-modal__surface detail-modal-shell flex flex-col overflow-hidden" style="-webkit-app-region: no-drag; app-region: no-drag">
+        <header class="request-detail-modal__header detail-modal-header">
           <div class="min-w-0 flex-1">
-            <div class="flex flex-wrap items-center gap-2.5 text-sm">
+            <div class="detail-modal-meta flex flex-wrap items-center gap-2.5">
               <span class="request-detail-status" :class="requestStatusClasses(request)">
                 <component :is="requestStatusIcon" class="h-4 w-4" :stroke-width="2.4" aria-hidden="true" />
                 {{ requestStatusLabel(request) }}
               </span>
-              <span class="text-slate-300 dark:text-slate-600" aria-hidden="true">•</span>
-              <span class="text-slate-500 dark:text-slate-400">{{ formatTime(request.timestampSec) }}</span>
+              <span class="detail-modal-meta-separator" aria-hidden="true">•</span>
+              <span class="detail-modal-meta-time">{{ formatTime(request.timestampSec) }}</span>
             </div>
-            <h2 class="mt-4 truncate text-[clamp(1.5rem,4vw,2.45rem)] font-bold leading-none tracking-[-0.03em] text-slate-950 dark:text-slate-50">{{ requestModelLabel(request) }}</h2>
-            <p class="mt-2 truncate text-sm font-medium text-slate-500 dark:text-slate-400 sm:text-base">
-              {{ requestProjectLabel(request) }} <span class="mx-1 text-slate-300 dark:text-slate-600">/</span> {{ requestToolLabel(request.tool) }} <span class="mx-1 text-slate-300 dark:text-slate-600">/</span> {{ requestSourceLabel(request) }}
+            <h2 class="detail-modal-title truncate">{{ requestModelLabel(request) }}</h2>
+            <p class="detail-modal-subtitle truncate">
+              {{ requestProjectLabel(request) }} <span class="mx-1 text-[var(--theme-border-strong)]">/</span> {{ requestToolLabel(request.tool) }} <span class="mx-1 text-[var(--theme-border-strong)]">/</span> {{ requestSourceLabel(request) }}
             </p>
           </div>
-          <button type="button" class="request-detail-close shrink-0 rounded-full p-3 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-500/20 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white" :aria-label="t(store.settings.locale, 'common.close')" :title="t(store.settings.locale, 'common.close')" @click="emit('close')">
+          <button type="button" class="request-detail-close detail-modal-close shrink-0" :aria-label="t(store.settings.locale, 'common.close')" :title="t(store.settings.locale, 'common.close')" @click="emit('close')">
             <X class="h-5 w-5" :stroke-width="2" aria-hidden="true" />
           </button>
         </header>
 
-        <div class="request-detail-modal__body min-h-0 flex-1 overflow-y-auto px-5 pb-5 sm:px-8 sm:pb-8">
+        <div class="request-detail-modal__body detail-modal-body min-h-0 flex-1 overflow-y-auto">
           <div class="grid grid-cols-4 gap-2 sm:gap-3">
             <div class="request-detail-metric"><div class="request-detail-metric__icon request-detail-metric__icon--blue"><FileText class="h-5 w-5" aria-hidden="true" /></div><span>{{ t(store.settings.locale, 'sessions.requestTotalTokens') }}</span><strong>{{ formatTokens(request.totalTokens) }}</strong></div>
             <div class="request-detail-metric"><div class="request-detail-metric__icon request-detail-metric__icon--green"><DollarSign class="h-5 w-5" aria-hidden="true" /></div><span>{{ t(store.settings.locale, 'sessions.cost') }}</span><strong>{{ formatCost(request.estimatedCost) }}</strong></div>
@@ -218,16 +218,17 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 .request-detail-modal__body::-webkit-scrollbar-track { background: transparent; }
 .request-detail-modal__body::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--theme-text-tertiary) 45%, transparent); }
 @media (max-width: 639px) {
-  .request-detail-modal { padding: 8px; }
-  .request-detail-modal__surface { max-height: calc(100vh - 16px); border-radius: 20px; }
-  .request-detail-modal__header { gap: 6px; padding: 11px 14px 10px; }
-  .request-detail-modal__header h2 { margin-top: 7px; font-size: 22px; }
-  .request-detail-modal__header p { margin-top: 4px; font-size: 11px; }
+  .request-detail-modal { padding: 14px; }
+  .request-detail-modal__surface { max-height: calc(100vh - 28px); border-radius: 20px; }
+  .request-detail-modal__header { gap: 6px; padding: 12px 14px 11px; }
+  .request-detail-modal__header h2 { margin-top: 6px; font-size: 22px; }
+  .request-detail-modal__header p { margin-top: 3px; font-size: 11px; }
   .request-detail-status { gap: 4px; padding: 4px 8px; font-size: 10px; }
   .request-detail-status svg { width: 13px; height: 13px; }
-  .request-detail-close { padding: 6px; }
-  .request-detail-close svg { width: 16px; height: 16px; }
-  .request-detail-modal__body { padding: 8px 14px 12px; }
+  .request-detail-close { padding: 0; }
+  .request-detail-close { min-width: 44px; min-height: 44px; }
+  .request-detail-close svg { width: 18px; height: 18px; }
+  .request-detail-modal__body { padding: 10px 14px 14px; }
   .request-detail-metric { border-radius: 12px; padding: 7px 5px 8px; box-shadow: none; }
   .request-detail-metric__icon { width: 24px; height: 24px; margin-bottom: 5px; border-radius: 8px; }
   .request-detail-metric__icon svg { width: 15px; height: 15px; }

@@ -19,21 +19,21 @@ const emit = defineEmits<{
   <Teleport to="body">
     <div
       v-if="open"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+      class="theme-modal-backdrop fixed inset-0 z-[90] flex items-center justify-center"
       @click.self="emit('cancel')"
     >
-      <div class="w-[320px] overflow-hidden rounded-2xl border border-white/70 bg-white shadow-xl dark:border-neutral-800 dark:bg-[#1C1C1E]" @click.stop>
-        <div class="p-4">
-          <h3 class="text-sm font-semibold text-gray-900 dark:text-gray-100">
+      <div class="theme-modal-shell max-w-[360px]" role="dialog" aria-modal="true" @click.stop>
+        <div class="theme-modal-body !overflow-visible">
+          <h3 class="text-sm font-semibold text-[var(--theme-text-primary)]">
             {{ title }}
           </h3>
-          <p class="mt-2 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+          <p class="mt-2 text-xs leading-relaxed text-[var(--theme-text-secondary)]">
             {{ body }}
           </p>
         </div>
-        <div class="flex border-t border-gray-100 dark:border-neutral-800">
+        <div class="theme-modal-actions !p-0">
           <button
-            class="flex-1 py-2.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-neutral-800"
+            class="theme-button-secondary min-h-11 flex-1 rounded-none border-0 text-xs font-medium shadow-none"
             :disabled="busy"
             @click="emit('cancel')"
           >
@@ -41,10 +41,10 @@ const emit = defineEmits<{
           </button>
           <button
             :class="[
-              'flex-1 border-l py-2.5 text-xs font-medium transition-colors disabled:opacity-50 dark:border-neutral-800',
+              'min-h-11 flex-1 border-l text-xs font-medium transition-colors disabled:opacity-50',
               tone === 'warning'
-                ? 'border-gray-100 text-amber-600 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-500/10'
-                : 'border-gray-100 text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/10'
+                ? 'border-[var(--theme-border-subtle)] text-amber-600 hover:bg-amber-500/10 dark:text-amber-400'
+                : 'border-[var(--theme-border-subtle)] text-red-600 hover:bg-red-500/10 dark:text-red-400'
             ]"
             :disabled="busy"
             @click="emit('confirm')"

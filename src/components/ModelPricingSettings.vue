@@ -641,8 +641,8 @@ const formatTime = (timestamp: number | null): string => {
 
     <!-- 编辑模态框 -->
     <Teleport to="body">
-      <div v-if="showEditModal" class="theme-backdrop fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="showEditModal = false">
-        <div class="theme-modal-panel overflow-hidden rounded-2xl" @click.stop>
+      <div v-if="showEditModal" class="theme-modal-backdrop fixed inset-0 z-[90] flex items-center justify-center" @click.self="showEditModal = false">
+        <div class="theme-modal-shell max-w-[392px]" role="dialog" aria-modal="true" @click.stop>
           <!-- 保存错误提示 -->
           <div v-if="saveError" class="theme-status-danger mx-3 mt-3 rounded-lg border px-2.5 py-2 text-xs">
             {{ t(store.settings.locale, 'settings.modelPricingSaveError') }}: {{ saveError }}
@@ -660,8 +660,8 @@ const formatTime = (timestamp: number | null): string => {
 
     <!-- 删除确认弹窗 -->
     <Teleport to="body">
-      <div v-if="showDeleteConfirm" class="theme-backdrop fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="showDeleteConfirm = false">
-        <div class="theme-modal-panel w-[280px] overflow-hidden rounded-2xl" @click.stop>
+      <div v-if="showDeleteConfirm" class="theme-modal-backdrop fixed inset-0 z-[90] flex items-center justify-center" @click.self="showDeleteConfirm = false">
+        <div class="theme-modal-shell max-w-[360px]" role="dialog" aria-modal="true" @click.stop>
           <div class="p-4">
             <div class="text-center">
               <div class="theme-status-danger mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full border">
@@ -677,7 +677,7 @@ const formatTime = (timestamp: number | null): string => {
               </p>
             </div>
           </div>
-          <div class="theme-divider flex border-t">
+          <div class="theme-modal-actions !p-0">
             <button
               @click="showDeleteConfirm = false"
               class="flex-1 py-2.5 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-gray-50"
@@ -697,8 +697,8 @@ const formatTime = (timestamp: number | null): string => {
 
     <!-- 价格应用弹窗 -->
     <Teleport to="body">
-      <div v-if="showApplyModal && applyingPricing" class="theme-backdrop fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="showApplyModal = false">
-        <div class="theme-modal-panel overflow-hidden rounded-2xl" @click.stop>
+      <div v-if="showApplyModal && applyingPricing" class="theme-modal-backdrop fixed inset-0 z-[90] flex items-center justify-center" @click.self="showApplyModal = false">
+        <div class="theme-modal-shell max-w-[420px]" role="dialog" aria-modal="true" @click.stop>
           <PricingApplyModal
             :pricing="applyingPricing"
             @close="showApplyModal = false"

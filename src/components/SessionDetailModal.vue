@@ -18,6 +18,7 @@ import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
 import type { SessionStats } from '../types'
 import { formatCost as formatCostUtil, formatTokenValue } from '../utils/format'
+import { formatToolDisplayName } from '../utils/toolDisplay'
 
 const props = defineProps<{ visible: boolean; session: SessionStats | null }>()
 const emit = defineEmits<{ close: [] }>()
@@ -88,6 +89,11 @@ const displaySessionTitle = computed(() => {
   if (session.projectName?.trim()) return session.projectName
   return t(store.settings.locale, 'sessions.untitled')
 })
+const displayToolName = computed(() => (
+  props.session?.tool
+    ? formatToolDisplayName(props.session.tool, store.settings.locale, store.settings.clientTools.profiles)
+    : ''
+))
 const displayProjectBadge = computed(() => {
   const session = props.session
   if (!session) return ''
@@ -126,26 +132,32 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
   <Teleport to="#app">
     <div
       v-if="visible && session"
-      class="session-detail-modal fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/45 p-3 backdrop-blur-md sm:p-6"
+      class="session-detail-modal detail-modal-backdrop theme-modal-backdrop fixed inset-0 z-[90] flex items-center justify-center"
       style="-webkit-app-region: no-drag; app-region: no-drag"
       @click.self="emit('close')"
     >
-      <div class="session-detail-modal__surface flex max-h-[calc(100vh-24px)] w-full max-w-3xl flex-col overflow-hidden rounded-[28px] shadow-[0_24px_80px_rgba(15,23,42,0.22)] sm:max-h-[calc(100vh-48px)]" style="-webkit-app-region: no-drag; app-region: no-drag">
-        <header class="session-detail-modal__header flex shrink-0 items-start justify-between gap-3 px-5 pb-4 pt-5 sm:px-8 sm:pb-5 sm:pt-6">
+      <div class="session-detail-modal__surface detail-modal-shell flex flex-col overflow-hidden" style="-webkit-app-region: no-drag; app-region: no-drag">
+        <header class="session-detail-modal__header detail-modal-header">
           <div class="min-w-0 flex-1">
-            <div v-if="displayProjectBadge" class="session-detail-project" :class="projectBadgeClasses">
-              <Folder class="h-3.5 w-3.5" aria-hidden="true" />
-              <span class="truncate">{{ displayProjectBadge }}</span>
+            <div class="session-detail-meta">
+              <div v-if="displayProjectBadge" class="session-detail-project" :class="projectBadgeClasses">
+                <Folder class="h-3.5 w-3.5" aria-hidden="true" />
+                <span class="truncate">{{ displayProjectBadge }}</span>
+              </div>
+              <span v-if="displayProjectBadge" class="session-detail-meta-separator" aria-hidden="true">•</span>
+              <span class="session-detail-meta-time">{{ formatTime(session.lastRequestTime) }}</span>
             </div>
-            <h2 class="mt-2 line-clamp-2 text-[clamp(1.2rem,3vw,1.8rem)] font-bold leading-tight tracking-[-0.025em] text-slate-950 dark:text-slate-50">{{ displaySessionTitle }}</h2>
-            <p class="mt-1 truncate text-xs font-medium text-slate-500 dark:text-slate-400">{{ session.models.join(', ') }}</p>
+            <h2 class="detail-modal-title line-clamp-2">{{ displaySessionTitle }}</h2>
+            <p class="detail-modal-subtitle truncate">
+              {{ session.models.join(', ') }}<span v-if="displayToolName" class="mx-1.5 text-[var(--theme-border-strong)]">/</span>{{ displayToolName }}
+            </p>
           </div>
-          <button type="button" class="session-detail-close shrink-0 rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-500/20 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white" :aria-label="t(store.settings.locale, 'common.close')" :title="t(store.settings.locale, 'common.close')" @click="emit('close')">
+          <button type="button" class="session-detail-close detail-modal-close shrink-0" :aria-label="t(store.settings.locale, 'common.close')" :title="t(store.settings.locale, 'common.close')" @click="emit('close')">
             <X class="h-5 w-5" aria-hidden="true" />
           </button>
         </header>
 
-        <div class="session-detail-modal__body min-h-0 flex-1 overflow-y-auto px-5 pb-5 sm:px-8 sm:pb-7">
+        <div class="session-detail-modal__body detail-modal-body min-h-0 flex-1 overflow-y-auto">
           <div v-if="sessionHasPartialCoverage || projectHint" class="session-detail-notice">
             <Info class="h-4 w-4 shrink-0" aria-hidden="true" />
             <div class="min-w-0">
@@ -206,6 +218,9 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 .session-detail-modal__body::-webkit-scrollbar-track { background: transparent; }
 .session-detail-modal__body::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--theme-text-tertiary) 45%, transparent); }
 .session-detail-project { display: inline-flex; max-width: 100%; align-items: center; gap: 5px; border-radius: 999px; padding: 4px 8px; font-size: 10px; font-weight: 700; }
+.session-detail-meta { display: flex; min-width: 0; align-items: center; gap: 6px; }
+.session-detail-meta-separator { color: var(--theme-border-strong); font-size: 13px; }
+.session-detail-meta-time { color: var(--theme-text-secondary); font-size: 11px; font-weight: 600; }
 .session-detail-project--named { color: #6450b8; background: rgba(124,58,237,.1); }
 .session-detail-project--global { color: var(--theme-text-secondary); background: var(--theme-bg-surface-muted); }
 .session-detail-project--unknown { color: var(--theme-status-warning-fg); background: var(--theme-status-warning-bg); }
@@ -213,20 +228,20 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 .session-detail-notice { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; border: 1px solid var(--theme-border-default); border-radius: 12px; background: var(--theme-bg-surface-muted); padding: 8px 10px; color: var(--theme-text-secondary); font-size: 11px; line-height: 1.4; }
 .session-detail-notice > svg { color: var(--theme-accent-primary); }
 .session-detail-notice__meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 3px; color: var(--theme-text-tertiary); font-size: 10px; }
-.session-detail-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-.session-detail-metric { min-width: 0; border: 1px solid var(--theme-border-subtle); border-radius: 16px; background: var(--theme-bg-surface); padding: 11px 9px 10px; box-shadow: var(--theme-shadow-inline); }
+.session-detail-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.session-detail-metric { min-width: 0; border: 1px solid var(--theme-border-subtle); border-radius: 18px; background: var(--theme-bg-surface); padding: 16px 14px 15px; box-shadow: var(--theme-shadow-inline); }
 .session-detail-metric__icon, .session-detail-section__icon { display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; }
-.session-detail-metric__icon { width: 30px; height: 30px; margin-bottom: 7px; }
+.session-detail-metric__icon { width: 38px; height: 38px; margin-bottom: 12px; }
 .session-detail-metric__icon--blue, .session-detail-section__icon--blue { color: #1769e0; background: rgba(59,130,246,.11); }
 .session-detail-metric__icon--green, .session-detail-section__icon--green { color: #07885f; background: rgba(16,185,129,.11); }
 .session-detail-metric__icon--violet { color: #7c3aed; background: rgba(124,58,237,.1); }
-.session-detail-metric > span { display: block; overflow: hidden; color: var(--theme-text-secondary); font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.session-detail-metric strong { display: block; margin-top: 4px; overflow: hidden; color: var(--theme-text-primary); font-family: var(--font-mono); font-size: 16px; font-variant-numeric: tabular-nums; font-weight: 750; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
-.session-detail-metric small { color: var(--theme-text-tertiary); font-size: 9px; }
-.session-detail-section { margin-top: 8px; border: 1px solid var(--theme-border-subtle); border-radius: 16px; background: var(--theme-bg-surface); padding: 11px 12px; box-shadow: var(--theme-shadow-inline); }
+.session-detail-metric > span { display: block; overflow: hidden; color: var(--theme-text-secondary); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.session-detail-metric strong { display: block; margin-top: 6px; overflow: hidden; color: var(--theme-text-primary); font-family: var(--font-mono); font-size: clamp(1.15rem,3vw,1.7rem); font-variant-numeric: tabular-nums; font-weight: 750; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
+.session-detail-metric small { display: block; margin-top: 4px; color: var(--theme-text-tertiary); font-size: 11px; }
+.session-detail-section { margin-top: 16px; border: 1px solid var(--theme-border-subtle); border-radius: 20px; background: var(--theme-bg-surface); padding: 18px; box-shadow: var(--theme-shadow-inline); }
 .session-detail-section__title { display: flex; align-items: center; gap: 7px; }
-.session-detail-section__icon { width: 26px; height: 26px; }
-.session-detail-section__title h3 { color: var(--theme-text-primary); font-size: 14px; font-weight: 750; letter-spacing: -0.015em; }
+.session-detail-section__icon { width: 34px; height: 34px; }
+.session-detail-section__title h3 { color: var(--theme-text-primary); font-size: 18px; font-weight: 750; letter-spacing: -0.02em; }
 .session-detail-ratio { margin-top: 9px; }
 .session-detail-ratio__bar { display: flex; height: 7px; overflow: hidden; border-radius: 999px; background: var(--theme-bg-surface-muted); }
 .session-detail-ratio__bar span:first-child { background: #22c7d6; }
@@ -256,29 +271,29 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 .session-detail-context__prompt { grid-column: 1 / -1; }
 .session-detail-context__prompt strong { font-family: var(--font-sans); line-height: 1.35; white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 @media (max-width: 639px) {
-  .session-detail-modal { padding: 8px; }
-  .session-detail-modal__surface { max-height: calc(100vh - 16px); border-radius: 20px; }
-  .session-detail-modal__header { gap: 6px; padding: 10px 14px 9px; }
-  .session-detail-modal__header h2 { margin-top: 6px; font-size: 21px; }
+  .session-detail-modal { padding: 14px; }
+  .session-detail-modal__surface { max-height: calc(100vh - 28px); border-radius: 20px; }
+  .session-detail-modal__header { gap: 6px; padding: 12px 14px 11px; }
+  .session-detail-modal__header h2 { margin-top: 6px; font-size: 22px; }
   .session-detail-modal__header p { margin-top: 3px; font-size: 10px; }
   .session-detail-project { padding: 3px 7px; font-size: 9px; }
   .session-detail-project svg { width: 12px; height: 12px; }
-  .session-detail-close { min-width: 40px; min-height: 40px; }
+  .session-detail-close { min-width: 44px; min-height: 44px; }
   .session-detail-close svg { width: 18px; height: 18px; }
-  .session-detail-modal__body { padding: 7px 14px 11px; }
+  .session-detail-modal__body { padding: 10px 14px 14px; }
   .session-detail-notice { margin-bottom: 7px; padding: 7px 8px; font-size: 10px; }
   .session-detail-notice__meta { font-size: 9px; }
-  .session-detail-metrics { gap: 5px; }
+  .session-detail-metrics { gap: 8px; }
   .session-detail-metric { border-radius: 12px; padding: 7px 5px 8px; box-shadow: none; }
   .session-detail-metric__icon { width: 24px; height: 24px; margin-bottom: 5px; border-radius: 8px; }
   .session-detail-metric__icon svg { width: 14px; height: 14px; }
   .session-detail-metric > span { font-size: 9px; }
   .session-detail-metric strong { margin-top: 3px; font-size: 14px; }
   .session-detail-metric small { font-size: 8px; }
-  .session-detail-section { margin-top: 7px; padding: 9px; border-radius: 14px; box-shadow: none; }
-  .session-detail-section__icon { width: 23px; height: 23px; }
-  .session-detail-section__icon svg { width: 13px; height: 13px; }
-  .session-detail-section__title h3 { font-size: 13px; }
+  .session-detail-section { margin-top: 8px; padding: 9px; border-radius: 14px; box-shadow: none; }
+  .session-detail-section__icon { width: 24px; height: 24px; }
+  .session-detail-section__icon svg { width: 14px; height: 14px; }
+  .session-detail-section__title h3 { font-size: 14px; }
   .session-detail-ratio { margin-top: 7px; }
   .session-detail-ratio__bar { height: 6px; }
   .session-detail-ratio__legend { margin-top: 5px; font-size: 9px; }

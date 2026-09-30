@@ -137,11 +137,10 @@ function escapeHtml(value: string): string {
     >
       <div
         v-if="updaterStore.isDialogOpen && updaterStore.updateInfo"
-        class="fixed inset-0 z-[70] flex items-center justify-center px-4 backdrop-blur-[3px]"
-        style="background: color-mix(in srgb, var(--theme-text-primary) 22%, transparent);"
+        class="theme-modal-backdrop fixed inset-0 z-[90] flex items-center justify-center"
         @click.self="updaterStore.closeDialog()"
       >
-        <div class="theme-border theme-surface-elevated h-[min(88vh,596px)] w-full max-w-[392px] overflow-hidden rounded-[28px] border" style="box-shadow: var(--theme-shadow-card);">
+        <div class="theme-modal-shell h-[min(88vh,596px)] max-w-[392px]">
           <div class="relative flex h-full flex-col overflow-hidden px-5 pb-3.5 pt-4">
             <div
               class="pointer-events-none absolute inset-x-0 top-0 h-28"

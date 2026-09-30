@@ -88,18 +88,18 @@ const copyExportPath = async () => {
   <div
     v-if="open"
     ref="dialogRoot"
-    class="fixed inset-0 z-50 flex items-center justify-center p-4"
+    class="theme-modal-backdrop fixed inset-0 z-[90] flex items-center justify-center"
     role="dialog"
     aria-modal="true"
     :aria-label="t(locale, 'desktop.activity.exportDialogTitle')"
   >
-    <div class="absolute inset-0 bg-black/40" @click="closeExportDialog"></div>
-    <div class="theme-surface-elevated relative w-full max-w-md rounded-xl border p-4 shadow-xl">
-      <div class="flex items-center justify-between gap-2">
+    <div class="absolute inset-0" @click="closeExportDialog"></div>
+    <div class="theme-modal-shell relative max-w-[420px]" @click.stop>
+      <div class="theme-modal-header">
         <h3 class="text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ t(locale, 'desktop.activity.exportDialogTitle') }}</h3>
         <button
           type="button"
-          class="rounded p-1 text-[var(--theme-text-quaternary)] hover:bg-[var(--theme-bg-hover)]"
+          class="theme-modal-close -mr-2 -mt-2"
           :aria-label="t(locale, 'common.close')"
           :title="t(locale, 'common.close')"
           @click="closeExportDialog"
@@ -109,7 +109,7 @@ const copyExportPath = async () => {
       </div>
 
       <!-- 范围预览 -->
-      <div class="mt-3 space-y-2">
+      <div class="theme-modal-body space-y-2">
         <div class="flex items-center gap-2">
           <span class="w-24 shrink-0 text-xs font-semibold text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.activity.exportFormat') }}</span>
           <label class="flex cursor-pointer items-center gap-1.5 text-xs text-[var(--theme-text-secondary)]">
@@ -186,7 +186,7 @@ const copyExportPath = async () => {
       </div>
 
       <!-- 操作 -->
-      <div class="mt-4 flex justify-end gap-2">
+      <div class="theme-modal-actions justify-end">
         <button
           type="button"
           class="theme-button-secondary inline-flex h-8 items-center rounded-lg px-3 text-xs font-semibold disabled:opacity-60"

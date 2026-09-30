@@ -622,17 +622,17 @@ onUnmounted(() => {
     </template>
 
     <Teleport to="body">
-      <div v-if="editing" class="theme-backdrop fixed inset-0 z-[80] flex items-center justify-center p-4" @click.self="cancelEditing">
-        <form class="max-h-[calc(100vh-2rem)] w-full max-w-[380px] overflow-y-auto rounded-2xl border border-[var(--theme-border-default)] bg-[var(--theme-bg-surface)] shadow-2xl" role="dialog" aria-modal="true" @submit.prevent="saveProfile">
-          <header class="flex items-start justify-between border-b border-[var(--theme-border-default)] px-4 py-3.5">
+      <div v-if="editing" class="theme-modal-backdrop fixed inset-0 z-[90] flex items-center justify-center" @click.self="cancelEditing">
+        <form class="theme-modal-shell max-w-[420px]" role="dialog" aria-modal="true" @submit.prevent="saveProfile">
+          <header class="theme-modal-header">
             <div class="min-w-0">
               <h2 class="text-[14px] font-bold text-[var(--theme-text-primary)]">{{ draft.id ? t(locale, 'gateway.editProfile') : t(locale, 'gateway.newProfile') }}</h2>
               <p class="mt-1 truncate text-[10px] text-[var(--theme-text-tertiary)]">{{ selectedProtocolLabel }}</p>
             </div>
-            <button type="button" class="theme-icon-button -mr-1 -mt-1 rounded-lg p-2" :title="t(locale, 'gateway.cancel')" :aria-label="t(locale, 'gateway.cancel')" @click="cancelEditing"><X class="h-4 w-4" /></button>
+            <button type="button" class="theme-modal-close -mr-2 -mt-2" :title="t(locale, 'gateway.cancel')" :aria-label="t(locale, 'gateway.cancel')" @click="cancelEditing"><X class="h-4 w-4" /></button>
           </header>
 
-          <div class="space-y-2.5 p-4">
+          <div class="theme-modal-body space-y-2.5">
             <section v-if="!keyPanel" class="theme-surface-muted overflow-hidden rounded-xl border">
               <label class="flex h-11 items-center gap-3 px-3">
                 <span class="w-[66px] shrink-0 text-[10px] font-semibold text-[var(--theme-text-secondary)]">{{ t(locale, 'gateway.name') }}</span>
@@ -709,7 +709,7 @@ onUnmounted(() => {
             <p v-else-if="feedback === 'copied'" class="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-300"><Check class="h-3 w-3" />{{ t(locale, 'gateway.copied') }}</p>
           </div>
 
-          <footer class="flex gap-2 border-t border-[var(--theme-border-default)] px-4 py-3">
+          <footer class="theme-modal-actions">
             <button v-if="keyPanel" type="button" class="inline-flex flex-1 items-center justify-center rounded-lg border border-[var(--theme-border-default)] px-3 py-2 text-[10.5px] font-semibold text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-hover)]" @click="keyPanel = null">{{ t(locale, 'gateway.cancel') }}</button>
             <template v-else><button type="button" class="rounded-lg border border-[var(--theme-border-default)] px-3 text-[10.5px] font-semibold text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-hover)]" @click="cancelEditing">{{ t(locale, 'gateway.cancel') }}</button><button type="submit" class="inline-flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg bg-[var(--theme-accent-primary)] px-3 py-2 text-[10.5px] font-semibold text-[var(--theme-accent-contrast)] shadow-sm transition-opacity disabled:opacity-50" :disabled="saving"><Save class="h-3.5 w-3.5" />{{ draft.id ? t(locale, 'gateway.update') : t(locale, 'gateway.save') }}</button></template>
           </footer>
