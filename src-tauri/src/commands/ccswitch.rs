@@ -3,6 +3,7 @@
 use crate::proxy::ccswitch_compat::{
     self, poll_should_trigger_clean, try_clean_ccswitch_db, CcSwitchEnv, CleanReport,
 };
+use crate::proxy::ProxyDatabase;
 use tauri::{Emitter, State};
 
 use super::usage::ProxyState;
@@ -21,6 +22,9 @@ pub struct CcSwitchCompatStatus {
     pub pending_clean: bool,
     /// 最近一次清洗失败的错误码（如 ccswitchSchemaMismatch），成功后为 None。
     pub last_error_code: Option<String>,
+    pub imported_requests: u64,
+    pub last_import_at_ms: Option<i64>,
+    pub last_import_error_code: Option<String>,
 }
 
 #[tauri::command]
@@ -50,6 +54,13 @@ pub async fn get_ccswitch_compat_status(
     }
 
     let compat_state = ccswitch_compat::read_compat_state();
+    let import_state = tauri::async_runtime::spawn_blocking(|| {
+        ProxyDatabase::get_global()
+            .and_then(|database| database.ccswitch_import_state().ok())
+            .unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default();
     Ok(CcSwitchCompatStatus {
         installed,
         running,
@@ -59,7 +70,74 @@ pub async fn get_ccswitch_compat_status(
         last_report: compat_state.last_report,
         pending_clean: compat_state.pending_clean,
         last_error_code: compat_state.last_error_code,
+        imported_requests: import_state.total_imported,
+        last_import_at_ms: import_state.last_import_at_ms,
+        last_import_error_code: import_state.last_error_code,
     })
+}
+
+/// Import one bounded batch of CC Switch proxy logs. Both the source read and local write run
+/// off the async executor; failures only update integration status and never affect forwarding.
+fn import_ccswitch_logs_once() {
+    let Ok(database) = ProxyDatabase::get_or_create_global() else {
+        return;
+    };
+    let Ok(mut state) = database.ccswitch_import_state() else {
+        return;
+    };
+    let env = CcSwitchEnv::new();
+    if !env.db_exists() {
+        return;
+    }
+    let batch = match env.read_proxy_usage_batch(&state) {
+        Ok(Some(batch)) => batch,
+        Ok(None) => {
+            if state.last_error_code.take().is_some() {
+                let _ = database.save_ccswitch_import_state(&state);
+            }
+            return;
+        }
+        Err(code) => {
+            if state.last_error_code.as_deref() != Some(code.as_str()) {
+                state.last_error_code = Some(code.clone());
+                let _ = database.save_ccswitch_import_state(&state);
+                eprintln!("[ccswitch-import] import paused: {code}");
+            }
+            return;
+        }
+    };
+
+    state.cursor_created_at = batch.last_created_at;
+    state.cursor_request_id = batch.last_request_id;
+    state.last_import_at_ms = Some(chrono::Utc::now().timestamp_millis());
+    state.last_error_code = None;
+    let imported = match database.insert_ccswitch_batch(&batch.records, &state) {
+        Ok(imported) => imported,
+        Err(_) => {
+            state.last_error_code = Some("ccswitchImportWriteFailed".to_string());
+            let _ = database.save_ccswitch_import_state(&state);
+            eprintln!("[ccswitch-import] local batch write failed");
+            return;
+        }
+    };
+
+    if imported > 0 {
+        eprintln!("[ccswitch-import] imported {imported} proxy request(s)");
+    }
+}
+
+pub fn spawn_ccswitch_log_importer() {
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            if let Err(error) =
+                tauri::async_runtime::spawn_blocking(import_ccswitch_logs_once).await
+            {
+                eprintln!("[ccswitch-import] worker failed: {error}");
+            }
+        }
+    });
 }
 
 /// 手动清洗 cc-switch 供应商库。cc-switch 运行中返回错误码 `ccswitchRunning`（绝不强清）。

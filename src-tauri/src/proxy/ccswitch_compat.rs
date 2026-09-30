@@ -15,8 +15,9 @@
 //! 清洗遵循"不猜上游"原则：source_id 无法在 registry 中解析时不改写记录，只计入
 //! `unresolved` 并交由 UI 提示。
 
-use super::types::ClaudeSettings;
+use super::types::{ClaudeSettings, UsageRecord};
 use super::url_identity;
+use crate::proxy::database::CcSwitchImportState;
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -36,6 +37,14 @@ const DEFAULT_CCSWITCH_PROXY_PORT: u16 = 15721;
 const MAX_DB_BACKUPS: usize = 5;
 /// 打开 cc-switch DB 时的 busy 等待上限。
 const DB_BUSY_TIMEOUT: Duration = Duration::from_millis(2000);
+const IMPORT_BUSY_TIMEOUT: Duration = Duration::from_millis(150);
+const IMPORT_BATCH_SIZE: usize = 200;
+
+pub(crate) struct CcSwitchUsageBatch {
+    pub records: Vec<UsageRecord>,
+    pub last_created_at: i64,
+    pub last_request_id: String,
+}
 
 // ---------------------------------------------------------------------------
 // 环境检测
@@ -100,6 +109,278 @@ impl CcSwitchEnv {
         .ok()
         .and_then(|port| u16::try_from(port).ok())
     }
+
+    pub(crate) fn read_proxy_usage_batch(
+        &self,
+        state: &CcSwitchImportState,
+    ) -> Result<Option<CcSwitchUsageBatch>, String> {
+        let db_path = self.db_path();
+        if !db_path.is_file() {
+            return Ok(None);
+        }
+        let conn = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|_| "ccswitchDbOpenFailed".to_string())?;
+        let _ = conn.busy_timeout(IMPORT_BUSY_TIMEOUT);
+
+        let mut columns_stmt = conn
+            .prepare("PRAGMA table_info(proxy_request_logs)")
+            .map_err(|_| "ccswitchSchemaMismatch".to_string())?;
+        let columns = columns_stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|_| "ccswitchSchemaMismatch".to_string())?
+            .collect::<Result<std::collections::HashSet<_>, _>>()
+            .map_err(|_| "ccswitchSchemaMismatch".to_string())?;
+        let required = [
+            "request_id",
+            "app_type",
+            "model",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "total_cost_usd",
+            "latency_ms",
+            "status_code",
+            "created_at",
+        ];
+        if required.iter().any(|column| !columns.contains(*column)) {
+            return Err("ccswitchSchemaMismatch".to_string());
+        }
+
+        let semantics_column = if columns.contains("input_token_semantics") {
+            "input_token_semantics"
+        } else {
+            "0"
+        };
+        let session_column = if columns.contains("session_id") {
+            "session_id"
+        } else {
+            "NULL"
+        };
+        let duration_column = if columns.contains("duration_ms") {
+            "duration_ms"
+        } else {
+            "NULL"
+        };
+        let first_token_column = if columns.contains("first_token_ms") {
+            "first_token_ms"
+        } else {
+            "NULL"
+        };
+        let data_source_filter = if columns.contains("data_source") {
+            "data_source = 'proxy'"
+        } else {
+            "1 = 1"
+        };
+        let stable_before = chrono::Utc::now().timestamp().saturating_sub(2);
+        let sql = format!(
+            "SELECT request_id, app_type, model, input_tokens, output_tokens,
+                    cache_read_tokens, cache_creation_tokens, {semantics_column},
+                    total_cost_usd, latency_ms, {first_token_column}, {duration_column},
+                    status_code, {session_column}, created_at
+             FROM proxy_request_logs
+             WHERE {data_source_filter}
+               AND created_at < ?3
+               AND (created_at > ?1 OR (created_at = ?1 AND request_id > ?2))
+             ORDER BY created_at ASC, request_id ASC LIMIT ?4"
+        );
+        let mut statement = conn
+            .prepare(&sql)
+            .map_err(|_| "ccswitchSchemaMismatch".to_string())?;
+        let rows = statement
+            .query_map(
+                rusqlite::params![
+                    state.cursor_created_at,
+                    &state.cursor_request_id,
+                    stable_before,
+                    IMPORT_BATCH_SIZE as i64
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, i64>(9)?,
+                        row.get::<_, Option<i64>>(10)?,
+                        row.get::<_, Option<i64>>(11)?,
+                        row.get::<_, i64>(12)?,
+                        row.get::<_, Option<String>>(13)?,
+                        row.get::<_, i64>(14)?,
+                    ))
+                },
+            )
+            .map_err(|_| "ccswitchDbBusy".to_string())?;
+
+        let mut records = Vec::new();
+        let mut last_created_at = state.cursor_created_at;
+        let mut last_request_id = state.cursor_request_id.clone();
+        let mut scanned = 0;
+        for row in rows {
+            let (
+                request_id,
+                app_type,
+                model,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+                input_token_semantics,
+                total_cost_usd,
+                latency_ms,
+                first_token_ms,
+                duration_ms,
+                status_code,
+                session_id,
+                created_at,
+            ) = row.map_err(|_| "ccswitchDbBusy".to_string())?;
+            scanned += 1;
+            last_created_at = created_at;
+            last_request_id = request_id.clone();
+            if let Some(record) = ccswitch_proxy_record(
+                request_id,
+                &app_type,
+                model,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+                input_token_semantics,
+                &total_cost_usd,
+                latency_ms,
+                first_token_ms,
+                duration_ms,
+                status_code,
+                session_id,
+                created_at,
+            )? {
+                records.push(record);
+            }
+        }
+
+        if scanned == 0 {
+            Ok(None)
+        } else {
+            Ok(Some(CcSwitchUsageBatch {
+                records,
+                last_created_at,
+                last_request_id,
+            }))
+        }
+    }
+}
+
+fn ccswitch_tool_id(app_type: &str) -> Option<&'static str> {
+    match app_type {
+        "claude" => Some(crate::session::constants::TOOL_CLAUDE_CODE),
+        "codex" => Some(crate::session::constants::TOOL_CODEX),
+        "gemini" => Some(crate::session::constants::TOOL_GEMINI),
+        "opencode" => Some(crate::session::constants::TOOL_OPENCODE),
+        "openclaw" => Some(crate::session::constants::TOOL_OPENCLAW),
+        "hermes" => Some(crate::session::constants::TOOL_HERMES),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ccswitch_proxy_record(
+    request_id: String,
+    app_type: &str,
+    model: String,
+    stored_input: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_creation_tokens: i64,
+    input_token_semantics: i64,
+    total_cost_usd: &str,
+    latency_ms: i64,
+    first_token_ms: Option<i64>,
+    duration_ms: Option<i64>,
+    status_code: i64,
+    session_id: Option<String>,
+    created_at: i64,
+) -> Result<Option<UsageRecord>, String> {
+    let Some(tool_id) = ccswitch_tool_id(app_type) else {
+        return Ok(None);
+    };
+    let cached_tokens = cache_read_tokens
+        .max(0)
+        .saturating_add(cache_creation_tokens.max(0));
+    let input_tokens = match (app_type, input_token_semantics) {
+        ("codex" | "gemini", 1) if stored_input >= cached_tokens => stored_input - cached_tokens,
+        ("codex" | "gemini", 0) if stored_input >= cache_read_tokens.max(0) => {
+            stored_input - cache_read_tokens.max(0)
+        }
+        ("codex" | "gemini", 2) => stored_input,
+        (_, _) => stored_input,
+    }
+    .max(0) as u64;
+    let output_tokens = output_tokens.max(0) as u64;
+    let cache_read_tokens = cache_read_tokens.max(0) as u64;
+    let cache_creation_tokens = cache_creation_tokens.max(0) as u64;
+    let timestamp = if created_at > 0 {
+        created_at.saturating_mul(1000)
+    } else {
+        0
+    };
+    let duration_ms = duration_ms
+        .filter(|duration| *duration >= 0)
+        .unwrap_or(latency_ms.max(0)) as u64;
+    let request_start_time = timestamp.saturating_sub(duration_ms.min(i64::MAX as u64) as i64);
+    let ttft_ms = first_token_ms
+        .filter(|value| *value >= 0)
+        .map(|value| value as u64);
+    let output_tokens_per_second = ttft_ms
+        .filter(|ttft| duration_ms > *ttft && output_tokens > 0)
+        .map(|ttft| output_tokens as f64 * 1000.0 / (duration_ms - ttft) as f64);
+    let estimated_cost = total_cost_usd
+        .parse::<f64>()
+        .map_err(|_| "ccswitchInvalidCost".to_string())?;
+    if !estimated_cost.is_finite() || estimated_cost < 0.0 {
+        return Err("ccswitchInvalidCost".to_string());
+    }
+    let canonical_key = format!("{tool_id}:{request_id}");
+    let resolved_session_id = if tool_id == crate::session::constants::TOOL_CODEX {
+        session_id.map(|id| format!("codex::{id}"))
+    } else {
+        None
+    };
+    let record = UsageRecord {
+        timestamp,
+        message_id: request_id.clone(),
+        storage_dedupe_key: Some(format!("ccswitch:{request_id}")),
+        canonical_request_key: Some(canonical_key),
+        input_tokens,
+        output_tokens,
+        cache_create_tokens: cache_creation_tokens,
+        cache_read_tokens,
+        total_tokens: input_tokens
+            .saturating_add(output_tokens)
+            .saturating_add(cache_read_tokens)
+            .saturating_add(cache_creation_tokens),
+        model,
+        session_id: resolved_session_id,
+        request_start_time,
+        request_end_time: timestamp,
+        duration_ms,
+        output_tokens_per_second,
+        ttft_ms,
+        status_code: status_code.clamp(0, u16::MAX as i64) as u16,
+        estimated_cost,
+        pricing_snapshot_id: Some("cc-switch".to_string()),
+        cost_locked: true,
+        client_tool: tool_id.to_string(),
+        proxy_profile_id: Some(format!("ccswitch:{app_type}")),
+        ingress_kind: "ccswitch_proxy".to_string(),
+        usage_source: "provider".to_string(),
+        ..UsageRecord::default()
+    };
+    Ok(Some(record))
 }
 
 impl Default for CcSwitchEnv {
@@ -1432,5 +1713,111 @@ mod tests {
         assert_eq!(env.proxy_listen_port(), DEFAULT_CCSWITCH_PROXY_PORT);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn proxy_log_import_filters_session_rows_and_normalizes_codex_tokens() {
+        let root = unique_test_dir("usage_import");
+        fs::create_dir_all(&root).unwrap();
+        let db_path = root.join("cc-switch.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE proxy_request_logs (
+                request_id TEXT PRIMARY KEY, app_type TEXT NOT NULL, model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+                cache_read_tokens INTEGER NOT NULL, cache_creation_tokens INTEGER NOT NULL,
+                input_token_semantics INTEGER NOT NULL DEFAULT 0,
+                total_cost_usd TEXT NOT NULL, latency_ms INTEGER NOT NULL,
+                first_token_ms INTEGER, duration_ms INTEGER, status_code INTEGER NOT NULL,
+                session_id TEXT, created_at INTEGER NOT NULL,
+                data_source TEXT NOT NULL DEFAULT 'proxy'
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO proxy_request_logs
+             (request_id, app_type, model, input_tokens, output_tokens, cache_read_tokens,
+              cache_creation_tokens, input_token_semantics, total_cost_usd, latency_ms,
+              first_token_ms, duration_ms, status_code, session_id, created_at, data_source)
+             VALUES ('req-1', 'codex', 'gpt-5', 100, 5, 20, 10, 1, '0.125', 900,
+                     200, 900, 200, 'thread-1', 1700000000, 'proxy')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO proxy_request_logs
+             (request_id, app_type, model, input_tokens, output_tokens, cache_read_tokens,
+              cache_creation_tokens, total_cost_usd, latency_ms, status_code, created_at,
+              data_source)
+             VALUES ('session-1', 'codex', 'gpt-5', 100, 5, 20, 0, '0.125', 900, 200,
+                     1700000001, 'codex_session')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let env = CcSwitchEnv { dir: root };
+        let batch = env
+            .read_proxy_usage_batch(&CcSwitchImportState::default())
+            .unwrap()
+            .expect("proxy log batch");
+        assert_eq!(batch.records.len(), 1);
+        let record = &batch.records[0];
+        assert_eq!(record.client_tool, "codex");
+        assert_eq!(record.input_tokens, 70);
+        assert_eq!(record.cache_read_tokens, 20);
+        assert_eq!(record.cache_create_tokens, 10);
+        assert_eq!(record.total_tokens, 105);
+        assert_eq!(record.estimated_cost, 0.125);
+        assert_eq!(record.session_id.as_deref(), Some("codex::thread-1"));
+        assert!(record.cost_locked);
+        assert_eq!(record.storage_dedupe_key.as_deref(), Some("ccswitch:req-1"));
+
+        let _ = fs::remove_dir_all(env.dir);
+    }
+
+    #[test]
+    fn proxy_log_input_semantics_keep_claude_fresh_tokens_and_legacy_codex_rules() {
+        let legacy = ccswitch_proxy_record(
+            "legacy".to_string(),
+            "codex",
+            "gpt-5".to_string(),
+            100,
+            0,
+            20,
+            10,
+            0,
+            "0",
+            100,
+            None,
+            None,
+            200,
+            None,
+            1_700_000_000,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(legacy.input_tokens, 80);
+
+        let claude = ccswitch_proxy_record(
+            "claude-1".to_string(),
+            "claude",
+            "claude-sonnet".to_string(),
+            100,
+            0,
+            20,
+            10,
+            1,
+            "0",
+            100,
+            None,
+            None,
+            200,
+            None,
+            1_700_000_000,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(claude.input_tokens, 100);
     }
 }

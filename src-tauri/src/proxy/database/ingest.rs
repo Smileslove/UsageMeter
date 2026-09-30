@@ -2,7 +2,7 @@ use super::session;
 use super::ProxyDatabase;
 use crate::models::ModelPricingConfig;
 use crate::proxy::types::UsageRecord;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
 impl ProxyDatabase {
     fn current_pricing_context(&self) -> (Vec<ModelPricingConfig>, String, String) {
@@ -142,6 +142,163 @@ impl ProxyDatabase {
             }
         }
         Ok(id)
+    }
+
+    pub(crate) fn ccswitch_import_state(&self) -> Result<super::CcSwitchImportState, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {e}"))?;
+        let value = conn
+            .query_row(
+                "SELECT state_value FROM ccswitch_import_state WHERE state_key = 'state'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| format!("Failed to read CC Switch import state: {e}"))?;
+        value
+            .map(|json| serde_json::from_str(&json).map_err(|e| e.to_string()))
+            .transpose()
+            .map(|state| state.unwrap_or_default())
+            .map_err(|e| format!("Failed to decode CC Switch import state: {e}"))
+    }
+
+    pub(crate) fn save_ccswitch_import_state(
+        &self,
+        state: &super::CcSwitchImportState,
+    ) -> Result<(), String> {
+        let json = serde_json::to_string(state)
+            .map_err(|e| format!("Failed to encode CC Switch import state: {e}"))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {e}"))?;
+        conn.execute(
+            "INSERT INTO ccswitch_import_state (state_key, state_value, updated_at)
+             VALUES ('state', ?1, ?2)
+             ON CONFLICT(state_key) DO UPDATE SET
+                state_value = excluded.state_value,
+                updated_at = excluded.updated_at",
+            rusqlite::params![json, chrono::Utc::now().timestamp()],
+        )
+        .map_err(|e| format!("Failed to save CC Switch import state: {e}"))?;
+        Ok(())
+    }
+
+    pub(crate) fn insert_ccswitch_batch(
+        &self,
+        records: &[UsageRecord],
+        state: &super::CcSwitchImportState,
+    ) -> Result<usize, String> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| format!("Failed to lock connection: {e}"))?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|e| format!("Failed to start CC Switch import transaction: {e}"))?;
+        let mut touched_dates = std::collections::HashSet::new();
+        let mut imported = 0usize;
+        {
+            let mut statement = tx
+                .prepare(
+                    "INSERT INTO usage_records
+                     (timestamp, message_id, storage_dedupe_key, canonical_request_key,
+                      input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
+                      model, session_id, session_resolution_state, message_id_conflicted,
+                      request_start_time, request_end_time, duration_ms,
+                      output_tokens_per_second, ttft_ms, status_code, estimated_cost,
+                      pricing_snapshot_id, cost_locked, api_key_prefix, request_base_url,
+                      client_tool, proxy_profile_id, client_detection_method, ingress_kind,
+                      gateway_profile_id, gateway_caller_label, usage_source,
+                      gateway_request_id, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                             ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, 1, NULL, NULL,
+                             ?21, ?22, 'ccswitch_proxy_log', 'ccswitch_proxy', NULL, NULL, 'provider',
+                             NULL, ?23)
+                     ON CONFLICT(storage_dedupe_key) DO NOTHING",
+                )
+                .map_err(|e| format!("Failed to prepare CC Switch import: {e}"))?;
+            for record in records {
+                let storage_key = Self::computed_storage_dedupe_key(record);
+                let canonical_key = session::computed_canonical_request_key(record);
+                let session_state = session::computed_session_resolution_state(record);
+                let changed = statement
+                    .execute(rusqlite::params![
+                        record.timestamp,
+                        &record.message_id,
+                        storage_key,
+                        canonical_key,
+                        record.input_tokens as i64,
+                        record.output_tokens as i64,
+                        record.cache_create_tokens as i64,
+                        record.cache_read_tokens as i64,
+                        &record.model,
+                        &record.session_id,
+                        session_state,
+                        if record.message_id_conflicted { 1 } else { 0 },
+                        record.request_start_time,
+                        record.request_end_time,
+                        record.duration_ms as i64,
+                        record.output_tokens_per_second,
+                        record.ttft_ms.map(|value| value as i64),
+                        record.status_code as i64,
+                        record.estimated_cost,
+                        &record.pricing_snapshot_id,
+                        &record.client_tool,
+                        &record.proxy_profile_id,
+                        chrono::Utc::now().timestamp(),
+                    ])
+                    .map_err(|e| format!("Failed to import CC Switch request: {e}"))?;
+                if changed > 0 {
+                    imported += 1;
+                    let date = Self::record_local_date(record.timestamp);
+                    if date < Self::today_local_date() {
+                        touched_dates.insert(date);
+                    }
+                }
+            }
+        }
+
+        for date in &touched_dates {
+            Self::refresh_daily_summary_for_date_conn(&tx, date)?;
+        }
+        let persisted_state = tx
+            .query_row(
+                "SELECT state_value FROM ccswitch_import_state WHERE state_key = 'state'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|e| format!("Failed to read CC Switch import state: {e}"))?
+            .and_then(|json| serde_json::from_str::<super::CcSwitchImportState>(&json).ok());
+        let mut updated_state = state.clone();
+        updated_state.total_imported = persisted_state
+            .map(|persisted| persisted.total_imported)
+            .unwrap_or(state.total_imported)
+            .saturating_add(imported as u64);
+        let json = serde_json::to_string(&updated_state)
+            .map_err(|e| format!("Failed to encode CC Switch import state: {e}"))?;
+        tx.execute(
+            "INSERT INTO ccswitch_import_state (state_key, state_value, updated_at)
+             VALUES ('state', ?1, ?2)
+             ON CONFLICT(state_key) DO UPDATE SET
+                state_value = excluded.state_value,
+                updated_at = excluded.updated_at",
+            rusqlite::params![json, chrono::Utc::now().timestamp()],
+        )
+        .map_err(|e| format!("Failed to persist CC Switch import state: {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit CC Switch import: {e}"))?;
+
+        if !touched_dates.is_empty() {
+            if let Ok(local_db) = crate::local_usage::LocalUsageDatabase::get_global() {
+                let dates: Vec<_> = touched_dates.into_iter().collect();
+                let _ = local_db.invalidate_unified_materialization_dates(&dates);
+            }
+        }
+        Ok(imported)
     }
 
     pub(super) fn refresh_daily_summary_for_date_conn(
@@ -422,6 +579,62 @@ mod tests {
             Some("gw-request-roundtrip")
         );
         assert!(!records[0].cost_locked);
+    }
+
+    #[tokio::test]
+    async fn ccswitch_batch_is_idempotent_and_persists_cursor_atomically() {
+        let temp = tempfile::tempdir().expect("temp database directory");
+        let database = ProxyDatabase::new_with_path(&temp.path().join("proxy_data.db"))
+            .expect("open proxy database");
+        let now = chrono::Utc::now().timestamp_millis();
+        let record = UsageRecord {
+            timestamp: now,
+            message_id: "cc-request-1".to_string(),
+            storage_dedupe_key: Some("ccswitch:cc-request-1".to_string()),
+            canonical_request_key: Some("codex:cc-request-1".to_string()),
+            input_tokens: 70,
+            cache_read_tokens: 20,
+            cache_create_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 105,
+            model: "gpt-5".to_string(),
+            client_tool: "codex".to_string(),
+            ingress_kind: "ccswitch_proxy".to_string(),
+            usage_source: "provider".to_string(),
+            estimated_cost: 0.012,
+            cost_locked: true,
+            ..Default::default()
+        };
+        let state = super::super::CcSwitchImportState {
+            cursor_created_at: now / 1000,
+            cursor_request_id: "cc-request-1".to_string(),
+            last_import_at_ms: Some(now),
+            ..Default::default()
+        };
+
+        let first_insert = database
+            .insert_ccswitch_batch(&[record.clone()], &state)
+            .unwrap();
+        let stored = database
+            .get_records_since(now.saturating_sub(1))
+            .await
+            .unwrap();
+        assert_eq!(first_insert, 1, "stored records: {stored:?}");
+        assert_eq!(
+            database.insert_ccswitch_batch(&[record], &state).unwrap(),
+            0
+        );
+        let stored_state = database.ccswitch_import_state().unwrap();
+        assert_eq!(stored_state.cursor_request_id, "cc-request-1");
+        assert_eq!(stored_state.total_imported, 1);
+        assert_eq!(
+            database
+                .get_records_since(now.saturating_sub(1))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]

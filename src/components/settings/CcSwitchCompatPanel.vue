@@ -50,6 +50,16 @@ const lastCleanText = computed(() => {
   return t(locale.value, 'settings.ccswitch.lastCleanAt', { time })
 })
 
+const proxyImportText = computed(() => {
+  if (!compat.lastImportAtMs) {
+    return t(locale.value, 'settings.ccswitch.proxyImportWaiting')
+  }
+  return t(locale.value, 'settings.ccswitch.proxyImportStatus', {
+    count: compat.importedRequests,
+    time: new Date(compat.lastImportAtMs).toLocaleString(locale.value)
+  })
+})
+
 const lastReportText = computed(() => {
   const report = compat.lastReport
   if (!report) return null
@@ -126,6 +136,15 @@ onUnmounted(() => {
       <p class="text-[11px] leading-snug text-gray-400 dark:text-gray-500">
         {{ t(locale, 'settings.ccswitch.desc') }}
       </p>
+
+      <div class="space-y-0.5">
+        <p class="text-[10.5px] leading-snug text-gray-500 dark:text-gray-400">
+          {{ proxyImportText }}
+        </p>
+        <p v-if="compat.lastImportErrorCode" class="text-[10.5px] leading-snug text-amber-600 dark:text-amber-400">
+          {{ t(locale, 'settings.ccswitch.proxyImportError') }}
+        </p>
+      </div>
 
       <!-- 礼让状态 -->
       <div

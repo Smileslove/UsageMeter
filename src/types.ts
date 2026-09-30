@@ -395,6 +395,9 @@ export interface CcSwitchCompatStatus {
   pendingClean: boolean
   /** 最近一次清理失败的错误码（如 ccswitchSchemaMismatch），成功后为空 */
   lastErrorCode?: string | null
+  importedRequests: number
+  lastImportAtMs?: number | null
+  lastImportErrorCode?: string | null
 }
 
 export interface WindowUsage {

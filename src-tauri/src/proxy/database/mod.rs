@@ -32,6 +32,16 @@ pub struct ProxyDayDependencySnapshot {
     pub max_updated_at: i64,
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CcSwitchImportState {
+    pub cursor_created_at: i64,
+    pub cursor_request_id: String,
+    pub last_import_at_ms: Option<i64>,
+    pub total_imported: u64,
+    pub last_error_code: Option<String>,
+}
+
 mod filters;
 mod ingest;
 mod migration;

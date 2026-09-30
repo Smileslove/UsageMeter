@@ -108,6 +108,12 @@ impl ProxyDatabase {
                 updated_at INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS ccswitch_import_state (
+                state_key TEXT PRIMARY KEY,
+                state_value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS model_usage (
                 date TEXT NOT NULL,
                 model TEXT NOT NULL,

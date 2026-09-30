@@ -16,6 +16,9 @@ export const useCcSwitchCompatStore = defineStore('ccswitchCompat', {
     lastCleanAtMs: null as number | null,
     lastReport: null as CcSwitchCleanReport | null,
     pendingClean: false,
+    importedRequests: 0,
+    lastImportAtMs: null as number | null,
+    lastImportErrorCode: null as string | null,
     /** 后端持久化的最近一次自动清理失败错误码（如 ccswitchSchemaMismatch） */
     lastErrorCode: null as string | null,
     loading: false,
@@ -38,6 +41,9 @@ export const useCcSwitchCompatStore = defineStore('ccswitchCompat', {
         this.lastReport = status.lastReport ?? null
         this.pendingClean = status.pendingClean
         this.lastErrorCode = status.lastErrorCode ?? null
+        this.importedRequests = status.importedRequests
+        this.lastImportAtMs = status.lastImportAtMs ?? null
+        this.lastImportErrorCode = status.lastImportErrorCode ?? null
         this.initialized = true
       } catch (e) {
         console.error('Failed to fetch cc-switch compat status:', e)

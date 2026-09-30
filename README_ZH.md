@@ -30,7 +30,7 @@ UsageMeter 是一款面向 AI 编程工具重度用户的本地优先托盘应�
 | 能力 | 当前覆盖范围 |
 | --- | --- |
 | 本地历史扫描 | Claude Code、Codex CLI、OpenClaw、OpenCode、Qoder CLI / IDE / IDE CN / Work / Work CN、Gemini CLI、GitHub Copilot CLI、Hermes Agent |
-| 代理接管与请求采集 | Claude Code、Codex、OpenCode 全局配置路由、Reasonix 全局配置、Gemini CLI 基于环境变量的配置；为 Claude Code 与 Codex 提供 cc-switch 共存保护 |
+| 代理接管与请求采集 | Claude Code、Codex、OpenCode 全局配置路由、Reasonix 全局配置、Gemini CLI 基于环境变量的配置；提供 cc-switch 接管礼让与代理日志只读导入 |
 | 本地 API 网关 | 支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、Gemini GenerateContent；每个配置保存一个上游凭据，并生成一个本地客户端 Key |
 | 来源 / 供应商归因 | 代理流量自动识别来源，支持来源命名、合并、删除、Key 前缀备注、来源级过滤 |
 | 官方或账号额度查询 | Codex ChatGPT OAuth、Claude、Gemini CLI、GitHub Copilot |

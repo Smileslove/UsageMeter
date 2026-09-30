@@ -401,6 +401,7 @@ pub fn run() {
             // 启动时尝试清洗 cc-switch 供应商库中残留的 UsageMeter 代理地址
             // （cc-switch 运行中会自动推迟到其退出后的监控 tick）
             commands::spawn_ccswitch_auto_clean(Some(app.handle().clone()), "startup");
+            commands::spawn_ccswitch_log_importer();
 
             // 启动时执行 session_stats 表数据迁移（一次性）
             // 将现有 usage_records 中的数据聚合到 session_stats 表
