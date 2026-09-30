@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowDown, ArrowUp, Copy, ExternalLink, X } from 'lucide-vue-next'
+import { Activity, ArrowDown, ArrowUp, ArrowDownToLine, ArrowUpFromLine, BarChart3, Code2, Copy, Database, DollarSign, ExternalLink, FileCheck2, FileText, Info, Link2, Timer, X, Zap } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { useDesktopNavigationStore } from '../../desktop/stores/desktopNavigation'
 import { t } from '../../i18n'
@@ -518,21 +518,22 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
       </div>
 
       <!-- 覆盖式抽屉 -->
-      <DrawerShell :open="drawerOpen && !!selectedRequest" :aria-label="t(locale, 'desktop.sessions.drawerTitle')" @close="closeDrawer">
+      <DrawerShell width="w-[min(360px,42vw)]" :open="drawerOpen && !!selectedRequest" :aria-label="t(locale, 'desktop.sessions.drawerTitle')" @close="closeDrawer">
         <template v-if="selectedRequest">
-            <div class="flex items-start justify-between gap-2 border-b border-[var(--theme-border-default)] px-3 py-2.5">
-              <div class="min-w-0">
-                <div class="mb-1 flex items-center gap-1.5">
+            <div class="desktop-detail-drawer__header">
+              <div class="min-w-0 flex-1">
+                <div class="desktop-detail-drawer__meta">
                   <StatusBadge v-if="selectedRequest.coverageOrigin !== 'local_only'" :label="requestStatusLabel(selectedRequest)" :cls="requestStatusClasses(selectedRequest)" />
-                  <span class="text-xs text-[var(--theme-text-tertiary)]">{{ formatTime(selectedRequest.timestampSec) }}</span>
+                  <span class="desktop-detail-drawer__dot" aria-hidden="true">•</span>
+                  <span>{{ formatTime(selectedRequest.timestampSec) }}</span>
                 </div>
-                <h3 class="truncate text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ requestModelLabel(selectedRequest) }}</h3>
-                <p class="mt-0.5 truncate text-xs text-[var(--theme-text-tertiary)]">{{ requestProjectLabel(selectedRequest) }} / {{ requestToolLabel(selectedRequest.tool) }} / {{ requestSourceLabel(selectedRequest) }}</p>
+                <h3 class="desktop-detail-drawer__title truncate">{{ requestModelLabel(selectedRequest) }}</h3>
+                <p class="desktop-detail-drawer__subtitle truncate">{{ requestProjectLabel(selectedRequest) }} <span>/</span> {{ requestToolLabel(selectedRequest.tool) }} <span>/</span> {{ requestSourceLabel(selectedRequest) }}</p>
               </div>
-              <div class="flex shrink-0 items-start gap-1">
+              <div class="desktop-detail-drawer__header-actions">
                 <button
                   type="button"
-                  class="inline-flex items-center gap-1 rounded-lg border border-[var(--theme-border-default)] px-2 py-1 text-xs font-semibold text-[var(--theme-text-secondary)] transition-colors hover:border-[var(--theme-accent-primary)] hover:text-[var(--theme-accent-primary)]"
+                  class="desktop-detail-drawer__open"
                   :title="t(locale, 'desktop.requests.openInSession')"
                   @click="openInSession"
                 >
@@ -541,7 +542,7 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
                 </button>
                 <button
                   type="button"
-                  class="shrink-0 rounded-lg p-1 transition-colors hover:bg-[var(--theme-bg-hover)]"
+                  class="desktop-detail-drawer__close"
                   :aria-label="t(locale, 'common.close')"
                   :title="t(locale, 'common.close')"
                   @click="closeDrawer"
@@ -551,37 +552,50 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
               </div>
             </div>
 
-            <div class="space-y-3 p-3">
-              <div class="grid grid-cols-3 gap-2">
-                <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
-                  <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'common.totalTokens') }}</div>
-                  <div class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest.totalTokens) }}</div>
+            <div class="desktop-detail-drawer__body">
+              <div class="desktop-detail-drawer__metrics">
+                <div class="desktop-detail-drawer__metric">
+                  <span class="desktop-detail-drawer__metric-icon desktop-detail-drawer__metric-icon--blue"><FileText class="h-4 w-4" /></span>
+                  <div class="desktop-detail-drawer__metric-copy"><span>{{ t(locale, 'common.totalTokens') }}</span><strong>{{ formatTokens(selectedRequest.totalTokens) }}</strong></div>
                 </div>
-                <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
-                  <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.cost') }}</div>
-                  <div class="font-mono text-xs font-semibold text-[var(--theme-chart-cost)]">{{ formatCost(selectedRequest.estimatedCost) }}</div>
+                <div class="desktop-detail-drawer__metric">
+                  <span class="desktop-detail-drawer__metric-icon desktop-detail-drawer__metric-icon--green"><DollarSign class="h-4 w-4" /></span>
+                  <div class="desktop-detail-drawer__metric-copy"><span>{{ t(locale, 'sessions.cost') }}</span><strong class="desktop-detail-drawer__metric-value--cost">{{ formatCost(selectedRequest.estimatedCost) }}</strong></div>
                 </div>
-                <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
-                  <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.duration') }}</div>
-                  <div class="font-mono text-xs font-semibold text-[var(--theme-text-primary)]">{{ formatDuration(selectedRequest.durationMs) }}</div>
+                <div class="desktop-detail-drawer__metric">
+                  <span class="desktop-detail-drawer__metric-icon desktop-detail-drawer__metric-icon--blue"><Timer class="h-4 w-4" /></span>
+                  <div class="desktop-detail-drawer__metric-copy"><span>{{ t(locale, 'sessions.duration') }}</span><strong>{{ formatDuration(selectedRequest.durationMs) }}</strong></div>
+                </div>
+                <div class="desktop-detail-drawer__metric">
+                  <span class="desktop-detail-drawer__metric-icon desktop-detail-drawer__metric-icon--violet"><Database class="h-4 w-4" /></span>
+                  <div class="desktop-detail-drawer__metric-copy"><span>{{ t(locale, 'statistics.cacheHitRate') }}</span><strong>{{ selectedRequest.totalTokens > 0 ? `${((selectedRequest.cacheReadTokens / selectedRequest.totalTokens) * 100).toFixed(1)}%` : '—' }}</strong></div>
                 </div>
               </div>
 
-              <section class="theme-surface-muted rounded-lg border px-3 py-2">
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.input') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest.inputTokens) }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.output') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest.outputTokens) }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheCreate') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest.cacheCreateTokens) }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.cacheRead') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ formatTokens(selectedRequest.cacheReadTokens) }}</span></div>
+              <section class="desktop-detail-drawer__section">
+                <div class="desktop-detail-drawer__section-title"><span class="desktop-detail-drawer__section-icon desktop-detail-drawer__section-icon--blue"><FileText class="h-4 w-4" /></span><h4>{{ t(locale, 'sessions.requestTokenBreakdown') }}</h4></div>
+                <div class="desktop-detail-drawer__rows">
+                  <div><span><ArrowDownToLine class="h-3.5 w-3.5" />{{ t(locale, 'sessions.input') }}</span><strong>{{ formatTokens(selectedRequest.inputTokens) }}</strong></div>
+                  <div><span><ArrowUpFromLine class="h-3.5 w-3.5" />{{ t(locale, 'sessions.output') }}</span><strong>{{ formatTokens(selectedRequest.outputTokens) }}</strong></div>
+                  <div><span><Database class="h-3.5 w-3.5" />{{ t(locale, 'statistics.cacheCreate') }}</span><strong>{{ formatTokens(selectedRequest.cacheCreateTokens) }}</strong></div>
+                  <div><span><Database class="h-3.5 w-3.5" />{{ t(locale, 'statistics.cacheRead') }}</span><strong>{{ formatTokens(selectedRequest.cacheReadTokens) }}</strong></div>
+                </div>
+                <p class="desktop-detail-drawer__note"><Info class="h-3.5 w-3.5" />{{ t(locale, 'sessions.requestCacheHitHint') }}</p>
               </section>
 
-              <section class="theme-surface-muted rounded-lg border px-3 py-2">
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.ttft') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ requestHasProxyPerformance(selectedRequest) ? formatDuration(selectedRequest.ttftMs) : '—' }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'metrics.tokensPerSecond') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ requestHasProxyPerformance(selectedRequest) && selectedRequest.outputTokensPerSecond ? `${selectedRequest.outputTokensPerSecond.toFixed(1)}t/s` : '—' }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.status') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ selectedRequest.statusCode || '—' }}</span></div>
-                <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.requestCoverage') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ requestCoverageLabel(selectedRequest.coverageOrigin) }}</span></div>
+              <section class="desktop-detail-drawer__section">
+                <div class="desktop-detail-drawer__section-title"><span class="desktop-detail-drawer__section-icon desktop-detail-drawer__section-icon--green"><BarChart3 class="h-4 w-4" /></span><h4>{{ t(locale, 'sessions.requestDetailsTitle') }}</h4></div>
+                <div class="desktop-detail-drawer__detail-grid">
+                  <div><span><Timer class="h-3.5 w-3.5" />{{ t(locale, 'sessions.ttft') }}</span><strong>{{ requestHasProxyPerformance(selectedRequest) ? formatDuration(selectedRequest.ttftMs) : '—' }}</strong></div>
+                  <div><span><Zap class="h-3.5 w-3.5" />{{ t(locale, 'metrics.tokensPerSecond') }}</span><strong>{{ requestHasProxyPerformance(selectedRequest) && selectedRequest.outputTokensPerSecond ? `${selectedRequest.outputTokensPerSecond.toFixed(1)}t/s` : '—' }}</strong></div>
+                  <div><span><Code2 class="h-3.5 w-3.5" />{{ t(locale, 'statistics.status') }}</span><strong>{{ selectedRequest.statusCode || '—' }}</strong></div>
+                  <div><span><FileCheck2 class="h-3.5 w-3.5" />{{ t(locale, 'sessions.requestCoverage') }}</span><strong>{{ requestCoverageLabel(selectedRequest.coverageOrigin) }}</strong></div>
+                </div>
               </section>
 
-              <section class="theme-surface-muted rounded-lg border px-3 py-2">
+              <details class="desktop-detail-drawer__advanced">
+                <summary><Activity class="h-3.5 w-3.5" />{{ t(locale, 'sessions.reconciliation') }}</summary>
+                <div class="desktop-detail-drawer__advanced-grid">
                 <div class="flex items-center justify-between gap-2 py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.reconciliationStatus') }}</span><span class="text-right text-xs font-medium text-[var(--theme-text-secondary)]">{{ requestReconciliationStatusLabel(selectedRequest) }}</span></div>
                 <div class="flex items-center justify-between gap-2 py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.accountingRole') }}</span><span class="text-right text-xs font-medium text-[var(--theme-text-secondary)]">{{ requestAccountingRoleLabel(selectedRequest) }}</span></div>
                 <div class="flex items-center justify-between gap-2 py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.reconciliationConfidence') }}</span><span class="text-right text-xs font-medium text-[var(--theme-text-secondary)]">{{ requestReconciliationConfidenceLabel(selectedRequest) }}</span></div>
@@ -589,9 +603,11 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
                 <div v-if="selectedRequest.reconciliationMethod" class="flex items-center justify-between gap-2 py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.reconciliationMethod') }}</span><span class="max-w-52 truncate text-right font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedRequest.reconciliationMethod">{{ selectedRequest.reconciliationMethod }}</span></div>
                 <div v-if="selectedRequest.localObservationKey" class="flex items-center justify-between gap-2 py-1"><span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.localObservationKey') }}</span><span class="max-w-52 truncate text-right font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedRequest.localObservationKey">{{ requestObservationIdLabel(selectedRequest.localObservationKey) }}</span></div>
                 <div v-if="selectedRequest.proxyObservationId" class="flex items-center justify-between gap-2 py-1"><span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.proxyObservationId') }}</span><span class="max-w-52 truncate text-right font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedRequest.proxyObservationId">{{ requestObservationIdLabel(selectedRequest.proxyObservationId) }}</span></div>
-              </section>
+                </div>
+              </details>
 
-              <section class="theme-surface-muted rounded-lg border px-3 py-2">
+              <section class="desktop-detail-drawer__section desktop-detail-drawer__source-section">
+                <div class="desktop-detail-drawer__section-title"><span class="desktop-detail-drawer__section-icon desktop-detail-drawer__section-icon--violet"><Link2 class="h-4 w-4" /></span><h4>{{ t(locale, 'sessions.requestSourceTitle') }}</h4></div>
                 <div class="flex items-center justify-between gap-2 py-1">
                   <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'common.source') }}</span>
                   <span class="flex min-w-0 items-center gap-1">
@@ -674,3 +690,354 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
     />
   </div>
 </template>
+
+<style scoped>
+.desktop-detail-drawer__header {
+  display: flex;
+  flex-shrink: 0;
+  align-items: flex-start;
+  gap: 10px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  background: var(--theme-surface-gradient);
+  padding: 16px 14px 14px;
+}
+
+.desktop-detail-drawer__meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.desktop-detail-drawer__dot {
+  color: var(--theme-border-strong);
+}
+
+.desktop-detail-drawer__title {
+  margin-top: 8px;
+  color: var(--theme-text-primary);
+  font-size: 20px;
+  font-weight: 750;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.desktop-detail-drawer__subtitle {
+  margin-top: 5px;
+  color: var(--theme-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.desktop-detail-drawer__subtitle span {
+  margin: 0 4px;
+  color: var(--theme-border-strong);
+}
+
+.desktop-detail-drawer__header-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.desktop-detail-drawer__open {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--theme-border-default);
+  border-radius: 9px;
+  padding: 0 8px;
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+  font-weight: 650;
+  transition: border-color 150ms ease, color 150ms ease, background-color 150ms ease;
+}
+
+.desktop-detail-drawer__open:hover {
+  border-color: var(--theme-accent-primary);
+  color: var(--theme-accent-primary);
+  background: var(--theme-accent-soft);
+}
+
+.desktop-detail-drawer__close {
+  display: inline-flex;
+  min-width: 40px;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  color: var(--theme-text-tertiary);
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.desktop-detail-drawer__close:hover {
+  background: var(--theme-bg-hover);
+  color: var(--theme-text-primary);
+}
+
+.desktop-detail-drawer__body {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--theme-text-tertiary) 42%, transparent) transparent;
+}
+
+.desktop-detail-drawer__body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.desktop-detail-drawer__body::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-text-tertiary) 42%, transparent);
+}
+
+.desktop-detail-drawer__metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.desktop-detail-drawer__metric {
+  display: flex;
+  min-width: 0;
+  min-height: 48px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 12px;
+  background: var(--theme-bg-surface);
+  padding: 7px 9px;
+  box-shadow: var(--theme-shadow-inline);
+}
+
+.desktop-detail-drawer__metric-icon,
+.desktop-detail-drawer__section-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+}
+
+.desktop-detail-drawer__metric-icon {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+}
+
+.desktop-detail-drawer__metric-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 5px;
+}
+
+.desktop-detail-drawer__metric-icon--blue,
+.desktop-detail-drawer__section-icon--blue {
+  color: #1769e0;
+  background: rgb(59 130 246 / 11%);
+}
+
+.desktop-detail-drawer__metric-icon--green,
+.desktop-detail-drawer__section-icon--green {
+  color: #07885f;
+  background: rgb(16 185 129 / 11%);
+}
+
+.desktop-detail-drawer__metric-icon--violet,
+.desktop-detail-drawer__section-icon--violet {
+  color: #7c3aed;
+  background: rgb(124 58 237 / 10%);
+}
+
+.desktop-detail-drawer__metric-copy > span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--theme-text-secondary);
+  font-size: 10px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-detail-drawer__metric-copy strong {
+  flex-shrink: 0;
+  overflow: hidden;
+  color: var(--theme-text-primary);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-detail-drawer__metric-value--cost {
+  color: var(--theme-chart-cost) !important;
+}
+
+.desktop-detail-drawer__section {
+  margin-top: 10px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 15px;
+  background: var(--theme-bg-surface);
+  padding: 11px 12px;
+  box-shadow: var(--theme-shadow-inline);
+}
+
+.desktop-detail-drawer__section-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.desktop-detail-drawer__section-icon {
+  width: 26px;
+  height: 26px;
+}
+
+.desktop-detail-drawer__section-title h4 {
+  color: var(--theme-text-primary);
+  font-size: 14px;
+  font-weight: 750;
+  letter-spacing: -0.015em;
+}
+
+.desktop-detail-drawer__rows {
+  margin-top: 7px;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--theme-bg-surface-muted);
+}
+
+.desktop-detail-drawer__rows > div,
+.desktop-detail-drawer__detail-grid > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 29px;
+  border-bottom: 1px solid var(--theme-border-default);
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+}
+
+.desktop-detail-drawer__rows > div:last-child,
+.desktop-detail-drawer__detail-grid > div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.desktop-detail-drawer__rows > div {
+  padding: 3px 9px;
+}
+
+.desktop-detail-drawer__rows span,
+.desktop-detail-drawer__detail-grid span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.desktop-detail-drawer__rows span svg,
+.desktop-detail-drawer__detail-grid span svg {
+  flex-shrink: 0;
+  color: var(--theme-accent-primary);
+}
+
+.desktop-detail-drawer__rows strong,
+.desktop-detail-drawer__detail-grid strong {
+  color: var(--theme-text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  text-align: right;
+}
+
+.desktop-detail-drawer__note {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  margin-top: 7px;
+  color: var(--theme-text-tertiary);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.desktop-detail-drawer__note svg {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.desktop-detail-drawer__detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 12px;
+  margin-top: 5px;
+}
+
+.desktop-detail-drawer__detail-grid > div {
+  min-height: 33px;
+  padding: 4px 0;
+}
+
+.desktop-detail-drawer__detail-grid > div:nth-child(odd) {
+  padding-right: 8px;
+}
+
+.desktop-detail-drawer__detail-grid > div:nth-child(even) {
+  padding-left: 8px;
+  border-left: 1px solid var(--theme-border-default);
+}
+
+.desktop-detail-drawer__advanced {
+  margin-top: 10px;
+  border: 1px solid var(--theme-border-default);
+  border-radius: 13px;
+  background: var(--theme-bg-surface-muted);
+  padding: 9px 10px;
+}
+
+.desktop-detail-drawer__advanced summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--theme-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.desktop-detail-drawer__advanced summary::-webkit-details-marker {
+  display: none;
+}
+
+.desktop-detail-drawer__advanced-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2px;
+  margin-top: 7px;
+}
+
+.desktop-detail-drawer__advanced-grid > div {
+  min-width: 0;
+  border-bottom: 1px solid var(--theme-border-default);
+}
+
+.desktop-detail-drawer__advanced-grid > div:last-child {
+  border-bottom: 0;
+}
+
+.desktop-detail-drawer__source-section {
+  margin-bottom: 2px;
+}
+</style>
