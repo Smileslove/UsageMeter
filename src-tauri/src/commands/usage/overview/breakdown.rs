@@ -324,6 +324,9 @@ pub(super) fn build_overview_breakdown_from_facts(
     let mut has_performance = false;
 
     for fact in facts {
+        if !fact.is_accounting_primary() {
+            continue;
+        }
         add_breakdown_fact(&mut source_map, source_meta_for_fact(settings, fact), fact);
         add_breakdown_fact(&mut tool_map, tool_meta_for_fact(settings, fact), fact);
         add_breakdown_fact(&mut model_map, model_meta_for_fact(fact), fact);
@@ -399,6 +402,7 @@ mod tests {
             source_label: None,
             attribution_source_id: None,
             attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
+            reconciliation: crate::unified_usage::ReconciliationMetadata::default(),
         }
     }
 

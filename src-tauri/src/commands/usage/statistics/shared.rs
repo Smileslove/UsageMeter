@@ -103,6 +103,9 @@ pub(super) fn collect_day_activity_from_facts(
     settings: &AppSettings,
 ) {
     for fact in facts {
+        if !fact.is_accounting_primary() {
+            continue;
+        }
         let date =
             crate::utils::business_time::business_date_for_timestamp(fact.timestamp_sec, settings);
         let entry = day_map.entry(date).or_default();

@@ -1,6 +1,7 @@
 use crate::models::{AppSettings, ToolFilter};
 use crate::unified_usage::{
     has_partial_coverage, normalize_model_bucket, CoverageOrigin, MergedRequestFact,
+    ReconciliationMetadata,
 };
 use rusqlite::{params, OptionalExtension};
 use std::collections::{HashMap, HashSet};
@@ -21,6 +22,68 @@ fn decode_pricing_fingerprint(value: i64) -> u64 {
     value as u64
 }
 
+fn materialization_discriminator(fact: &MergedRequestFact) -> String {
+    let observation = fact
+        .reconciliation
+        .local_observation_key
+        .as_deref()
+        .or(fact.reconciliation.proxy_observation_id.as_deref())
+        .unwrap_or("");
+    format!(
+        "{}:{}:{}:{}:{}:{}:{}:{}",
+        fact.reconciliation.observation_sources.as_storage_str(),
+        fact.tool,
+        observation,
+        fact.timestamp_ms,
+        fact.model,
+        fact.input_tokens,
+        fact.output_tokens,
+        fact.total_tokens,
+    )
+}
+
+/// SQLite uses `(local_date, request_key)` as the materialized primary key.
+/// A canonical key is normally unique, but malformed/ambiguous observations can
+/// legitimately share it. Keep every fact and make only the storage key unique;
+/// reconciliation metadata still carries the original observation identities.
+fn unique_materialization_keys(facts: &[(String, MergedRequestFact)]) -> Vec<String> {
+    let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, (key, _)) in facts.iter().enumerate() {
+        groups.entry(key.clone()).or_default().push(index);
+    }
+
+    let mut used: HashSet<String> = groups.keys().cloned().collect();
+    let mut result = vec![String::new(); facts.len()];
+    for (base_key, indices) in groups {
+        if indices.len() == 1 {
+            result[indices[0]] = base_key;
+            continue;
+        }
+
+        let mut ranked = indices;
+        ranked.sort_by(|left, right| {
+            materialization_discriminator(&facts[*left].1)
+                .cmp(&materialization_discriminator(&facts[*right].1))
+                .then_with(|| left.cmp(right))
+        });
+        for index in ranked {
+            let root = format!(
+                "{base_key}#fact:{}",
+                materialization_discriminator(&facts[index].1)
+            );
+            let mut candidate = root.clone();
+            let mut ordinal = 1usize;
+            while used.contains(&candidate) {
+                candidate = format!("{root}:{ordinal}");
+                ordinal += 1;
+            }
+            used.insert(candidate.clone());
+            result[index] = candidate;
+        }
+    }
+    result
+}
+
 impl LocalUsageDatabase {
     fn build_unified_daily_summary(
         local_date: &str,
@@ -36,6 +99,9 @@ impl LocalUsageDatabase {
         let mut success_models = HashSet::new();
 
         for fact in facts {
+            if !fact.is_accounting_primary() {
+                continue;
+            }
             let request_count = fact.request_count.max(1);
             summary.request_count += request_count;
             let visible = fact.status_code.map(|code| code < 300).unwrap_or(true);
@@ -104,6 +170,9 @@ impl LocalUsageDatabase {
     ) -> Vec<UnifiedDailyModelSummaryRow> {
         let mut by_model: HashMap<String, UnifiedDailyModelSummaryRow> = HashMap::new();
         for fact in facts {
+            if !fact.is_accounting_primary() {
+                continue;
+            }
             let model_name = normalize_model_bucket(&fact.tool, &fact.model);
             let entry =
                 by_model
@@ -281,6 +350,17 @@ impl LocalUsageDatabase {
     ) -> Result<UnifiedDayLocalSnapshot, String> {
         let (start_epoch, end_epoch) =
             Self::local_date_epoch_bounds_with_settings(local_date, settings)?;
+        self.get_unified_local_snapshot_for_range(start_epoch, end_epoch)
+    }
+
+    /// Returns the local/remote dependency fingerprint for an arbitrary half-open
+    /// range. Reconciliation uses a small context window around each materialized
+    /// business day so a cross-boundary match invalidates both affected days.
+    pub fn get_unified_local_snapshot_for_range(
+        &self,
+        start_epoch: i64,
+        end_epoch: i64,
+    ) -> Result<UnifiedDayLocalSnapshot, String> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
             r#"
@@ -312,7 +392,7 @@ impl LocalUsageDatabase {
         )
         .map_err(|e| {
             format!(
-                "Failed to compute unified day local snapshot for {local_date}: {}",
+                "Failed to compute unified local snapshot for range [{start_epoch}, {end_epoch}): {}",
                 e
             )
         })
@@ -582,6 +662,9 @@ impl LocalUsageDatabase {
                         model, input_tokens, output_tokens, cache_create_tokens,
                         cache_read_tokens, total_tokens, request_count, estimated_cost,
                         estimated, coverage_origin,
+                        observation_sources, reconciliation_status, reconciliation_method,
+                        reconciliation_confidence, accounting_role, local_observation_key,
+                        proxy_observation_id,
                         status_code, duration_ms, output_tokens_per_second, ttft_ms, source_label
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5,
@@ -589,13 +672,15 @@ impl LocalUsageDatabase {
                         ?11, ?12, ?13, ?14,
                         ?15, ?16, ?17, ?18,
                         ?19, ?20,
-                        ?21, ?22, ?23, ?24, ?25
+                        ?21, ?22, ?23, ?24, ?25, ?26, ?27,
+                        ?28, ?29, ?30, ?31, ?32
                     )
                     "#,
                 )
                 .map_err(|e| format!("Failed to prepare unified fact insert: {}", e))?;
 
-            for (request_key, fact) in facts {
+            let storage_keys = unique_materialization_keys(facts);
+            for ((_, fact), request_key) in facts.iter().zip(storage_keys.iter()) {
                 stmt.execute(params![
                     local_date,
                     request_key,
@@ -617,6 +702,13 @@ impl LocalUsageDatabase {
                     fact.estimated_cost,
                     fact.estimated,
                     fact.coverage_origin.as_storage_str(),
+                    fact.reconciliation.observation_sources.as_storage_str(),
+                    fact.reconciliation.status.as_storage_str(),
+                    fact.reconciliation.method,
+                    fact.reconciliation.confidence.as_storage_str(),
+                    fact.reconciliation.accounting_role.as_storage_str(),
+                    fact.reconciliation.local_observation_key,
+                    fact.reconciliation.proxy_observation_id,
                     fact.status_code.map(i64::from),
                     fact.duration_ms.map(|v| v as i64),
                     fact.output_tokens_per_second,
@@ -907,7 +999,10 @@ impl LocalUsageDatabase {
                 request_key, session_id, project_name, project_path, api_key_prefix, request_base_url,
                 tool, timestamp_sec, timestamp_ms, model, input_tokens, output_tokens,
                 cache_create_tokens, cache_read_tokens, total_tokens, request_count, estimated_cost,
-                estimated, coverage_origin, status_code, duration_ms, output_tokens_per_second, ttft_ms,
+                estimated, coverage_origin, observation_sources, reconciliation_status,
+                reconciliation_method, reconciliation_confidence, accounting_role,
+                local_observation_key, proxy_observation_id, status_code, duration_ms,
+                output_tokens_per_second, ttft_ms,
                 source_label
             FROM unified_daily_materialized_facts
             WHERE local_date IN ({date_placeholders}) {tool_clause}
@@ -948,11 +1043,30 @@ impl LocalUsageDatabase {
                     coverage_origin: CoverageOrigin::from_storage_str(
                         row.get::<_, String>(18)?.as_str(),
                     ),
-                    status_code: row.get::<_, Option<i64>>(19)?.map(|v| v as u16),
-                    duration_ms: row.get::<_, Option<i64>>(20)?.map(|v| v.max(0) as u64),
-                    output_tokens_per_second: row.get(21)?,
-                    ttft_ms: row.get::<_, Option<i64>>(22)?.map(|v| v.max(0) as u64),
-                    source_label: row.get(23)?,
+                    reconciliation: ReconciliationMetadata {
+                        observation_sources:
+                            crate::unified_usage::ObservationSources::from_storage_str(
+                                row.get::<_, String>(19)?.as_str(),
+                            ),
+                        status: crate::unified_usage::ReconciliationStatus::from_storage_str(
+                            row.get::<_, String>(20)?.as_str(),
+                        ),
+                        method: row.get(21)?,
+                        confidence:
+                            crate::unified_usage::ReconciliationConfidence::from_storage_str(
+                                row.get::<_, String>(22)?.as_str(),
+                            ),
+                        accounting_role: crate::unified_usage::AccountingRole::from_storage_str(
+                            row.get::<_, String>(23)?.as_str(),
+                        ),
+                        local_observation_key: row.get(24)?,
+                        proxy_observation_id: row.get(25)?,
+                    },
+                    status_code: row.get::<_, Option<i64>>(26)?.map(|v| v as u16),
+                    duration_ms: row.get::<_, Option<i64>>(27)?.map(|v| v.max(0) as u64),
+                    output_tokens_per_second: row.get(28)?,
+                    ttft_ms: row.get::<_, Option<i64>>(29)?.map(|v| v.max(0) as u64),
+                    source_label: row.get(30)?,
                     attribution_source_id: None,
                     attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
                 })
@@ -1003,7 +1117,9 @@ impl LocalUsageDatabase {
                 request_key, session_id, project_name, project_path, api_key_prefix, request_base_url,
                 tool, timestamp_sec, timestamp_ms, model, input_tokens, output_tokens,
                 cache_create_tokens, cache_read_tokens, total_tokens, request_count, estimated_cost,
-                coverage_origin, status_code, duration_ms, output_tokens_per_second, ttft_ms,
+                estimated, coverage_origin, observation_sources, reconciliation_status, reconciliation_method,
+                reconciliation_confidence, accounting_role, local_observation_key,
+                proxy_observation_id, status_code, duration_ms, output_tokens_per_second, ttft_ms,
                 source_label
             FROM unified_daily_materialized_facts
             WHERE local_date IN ({date_placeholders})
@@ -1047,15 +1163,34 @@ impl LocalUsageDatabase {
                     coverage_origin: CoverageOrigin::from_storage_str(
                         row.get::<_, String>(18)?.as_str(),
                     ),
-                    status_code: row.get::<_, Option<i64>>(19)?.map(|value| value as u16),
+                    reconciliation: ReconciliationMetadata {
+                        observation_sources:
+                            crate::unified_usage::ObservationSources::from_storage_str(
+                                row.get::<_, String>(19)?.as_str(),
+                            ),
+                        status: crate::unified_usage::ReconciliationStatus::from_storage_str(
+                            row.get::<_, String>(20)?.as_str(),
+                        ),
+                        method: row.get(21)?,
+                        confidence:
+                            crate::unified_usage::ReconciliationConfidence::from_storage_str(
+                                row.get::<_, String>(22)?.as_str(),
+                            ),
+                        accounting_role: crate::unified_usage::AccountingRole::from_storage_str(
+                            row.get::<_, String>(23)?.as_str(),
+                        ),
+                        local_observation_key: row.get(24)?,
+                        proxy_observation_id: row.get(25)?,
+                    },
+                    status_code: row.get::<_, Option<i64>>(26)?.map(|value| value as u16),
                     duration_ms: row
-                        .get::<_, Option<i64>>(20)?
+                        .get::<_, Option<i64>>(27)?
                         .map(|value| value.max(0) as u64),
-                    output_tokens_per_second: row.get(21)?,
+                    output_tokens_per_second: row.get(28)?,
                     ttft_ms: row
-                        .get::<_, Option<i64>>(22)?
+                        .get::<_, Option<i64>>(29)?
                         .map(|value| value.max(0) as u64),
-                    source_label: row.get(23)?,
+                    source_label: row.get(30)?,
                     attribution_source_id: None,
                     attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
                 })
@@ -1088,7 +1223,10 @@ impl LocalUsageDatabase {
                 request_key, session_id, project_name, project_path, api_key_prefix, request_base_url,
                 tool, timestamp_sec, timestamp_ms, model, input_tokens, output_tokens,
                 cache_create_tokens, cache_read_tokens, total_tokens, request_count, estimated_cost,
-                estimated, coverage_origin, status_code, duration_ms, output_tokens_per_second, ttft_ms,
+                estimated, coverage_origin, observation_sources, reconciliation_status,
+                reconciliation_method, reconciliation_confidence, accounting_role,
+                local_observation_key, proxy_observation_id, status_code, duration_ms,
+                output_tokens_per_second, ttft_ms,
                 source_label
             FROM unified_daily_materialized_facts
             WHERE local_date IN ({date_placeholders})
@@ -1124,11 +1262,30 @@ impl LocalUsageDatabase {
                         coverage_origin: CoverageOrigin::from_storage_str(
                             row.get::<_, String>(19)?.as_str(),
                         ),
-                        status_code: row.get::<_, Option<i64>>(20)?.map(|v| v as u16),
-                        duration_ms: row.get::<_, Option<i64>>(21)?.map(|v| v.max(0) as u64),
-                        output_tokens_per_second: row.get(22)?,
-                        ttft_ms: row.get::<_, Option<i64>>(23)?.map(|v| v.max(0) as u64),
-                        source_label: row.get(24)?,
+                        reconciliation: ReconciliationMetadata {
+                            observation_sources:
+                                crate::unified_usage::ObservationSources::from_storage_str(
+                                    row.get::<_, String>(20)?.as_str(),
+                                ),
+                            status: crate::unified_usage::ReconciliationStatus::from_storage_str(
+                                row.get::<_, String>(21)?.as_str(),
+                            ),
+                            method: row.get(22)?,
+                            confidence:
+                                crate::unified_usage::ReconciliationConfidence::from_storage_str(
+                                    row.get::<_, String>(23)?.as_str(),
+                                ),
+                            accounting_role: crate::unified_usage::AccountingRole::from_storage_str(
+                                row.get::<_, String>(24)?.as_str(),
+                            ),
+                            local_observation_key: row.get(25)?,
+                            proxy_observation_id: row.get(26)?,
+                        },
+                        status_code: row.get::<_, Option<i64>>(27)?.map(|v| v as u16),
+                        duration_ms: row.get::<_, Option<i64>>(28)?.map(|v| v.max(0) as u64),
+                        output_tokens_per_second: row.get(29)?,
+                        ttft_ms: row.get::<_, Option<i64>>(30)?.map(|v| v.max(0) as u64),
+                        source_label: row.get(31)?,
                         attribution_source_id: None,
                         attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
                     },

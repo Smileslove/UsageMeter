@@ -2,11 +2,7 @@ use std::collections::HashMap;
 
 use crate::models::SourceFilter;
 use crate::proxy::UsageRecord;
-use crate::session::constants::{
-    TOOL_CLAUDE_CODE, TOOL_CODEX, TOOL_COPILOT, TOOL_GEMINI, TOOL_HERMES, TOOL_OPENCLAW,
-    TOOL_OPENCODE, TOOL_QODER_CLI, TOOL_QODER_IDE, TOOL_QODER_IDE_CN, TOOL_QODER_WORK,
-    TOOL_QODER_WORK_CN, TOOL_REASONIX,
-};
+use crate::session::constants::{TOOL_CLAUDE_CODE, TOOL_CODEX, TOOL_GEMINI, TOOL_OPENCODE};
 use crate::session::{LocalRequestRecord, SessionMeta};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +15,221 @@ pub enum CoverageOrigin {
     /// (same session/model/total_tokens, close timestamp) instead. Kept distinct from
     /// `MergedProxyPreferred` purely for observability — same field-merge semantics otherwise.
     MergedFuzzyMatched,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReconciliationStatus {
+    #[default]
+    Unmatched,
+    Exact,
+    Adapter,
+    Fuzzy,
+    Ambiguous,
+}
+
+impl ReconciliationStatus {
+    pub fn as_storage_str(self) -> &'static str {
+        match self {
+            Self::Unmatched => "unmatched",
+            Self::Exact => "exact",
+            Self::Adapter => "adapter",
+            Self::Fuzzy => "fuzzy",
+            Self::Ambiguous => "ambiguous",
+        }
+    }
+
+    pub fn from_storage_str(value: &str) -> Self {
+        match value {
+            "exact" => Self::Exact,
+            "adapter" => Self::Adapter,
+            "fuzzy" => Self::Fuzzy,
+            "ambiguous" => Self::Ambiguous,
+            _ => Self::Unmatched,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReconciliationConfidence {
+    #[default]
+    Low,
+    Medium,
+    High,
+}
+
+impl ReconciliationConfidence {
+    pub fn as_storage_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    pub fn from_storage_str(value: &str) -> Self {
+        match value {
+            "high" => Self::High,
+            "medium" => Self::Medium,
+            _ => Self::Low,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AccountingRole {
+    #[default]
+    Primary,
+    Supplement,
+    Shadow,
+}
+
+impl AccountingRole {
+    pub fn as_storage_str(self) -> &'static str {
+        match self {
+            Self::Primary => "primary",
+            Self::Supplement => "supplement",
+            Self::Shadow => "shadow",
+        }
+    }
+
+    pub fn from_storage_str(value: &str) -> Self {
+        match value {
+            "supplement" => Self::Supplement,
+            "shadow" => Self::Shadow,
+            _ => Self::Primary,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ObservationSources(u8);
+
+impl ObservationSources {
+    const LOCAL_FILE: u8 = 1;
+    const DIRECT_PROXY: u8 = 2;
+    const GATEWAY: u8 = 4;
+
+    pub fn local_file() -> Self {
+        Self(Self::LOCAL_FILE)
+    }
+
+    pub fn proxy(ingress_kind: &str) -> Self {
+        if ingress_kind == "gateway" {
+            Self(Self::GATEWAY)
+        } else {
+            Self(Self::DIRECT_PROXY)
+        }
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub fn as_storage_str(self) -> &'static str {
+        match self.0 {
+            Self::LOCAL_FILE => "local_file",
+            Self::DIRECT_PROXY => "direct_proxy",
+            Self::GATEWAY => "gateway",
+            value if value == Self::LOCAL_FILE | Self::DIRECT_PROXY => "local_file+direct_proxy",
+            value if value == Self::LOCAL_FILE | Self::GATEWAY => "local_file+gateway",
+            _ => "unknown",
+        }
+    }
+
+    pub fn from_storage_str(value: &str) -> Self {
+        value.split('+').fold(Self::default(), |sources, item| {
+            sources.union(match item {
+                "local_file" => Self::local_file(),
+                "direct_proxy" => Self(Self::DIRECT_PROXY),
+                "gateway" => Self(Self::GATEWAY),
+                _ => Self::default(),
+            })
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReconciliationMetadata {
+    pub observation_sources: ObservationSources,
+    pub status: ReconciliationStatus,
+    pub method: Option<String>,
+    pub confidence: ReconciliationConfidence,
+    pub accounting_role: AccountingRole,
+    pub local_observation_key: Option<String>,
+    pub proxy_observation_id: Option<String>,
+}
+
+impl ReconciliationMetadata {
+    pub fn local(local_key: String) -> Self {
+        Self {
+            observation_sources: ObservationSources::local_file(),
+            local_observation_key: Some(local_key),
+            ..Default::default()
+        }
+    }
+
+    pub fn proxy(record: &UsageRecord) -> Self {
+        Self {
+            observation_sources: ObservationSources::proxy(&record.ingress_kind),
+            proxy_observation_id: proxy_observation_id(record),
+            ..Default::default()
+        }
+    }
+
+    pub fn exact(proxy: &UsageRecord, local_key: String) -> Self {
+        Self {
+            observation_sources: ObservationSources::proxy(&proxy.ingress_kind)
+                .union(ObservationSources::local_file()),
+            status: ReconciliationStatus::Exact,
+            method: Some("canonical_request_key".to_string()),
+            confidence: ReconciliationConfidence::High,
+            local_observation_key: Some(local_key),
+            proxy_observation_id: proxy_observation_id(proxy),
+            ..Default::default()
+        }
+    }
+
+    pub fn fuzzy(proxy: &UsageRecord, local_key: String, method: &str) -> Self {
+        Self {
+            observation_sources: ObservationSources::proxy(&proxy.ingress_kind)
+                .union(ObservationSources::local_file()),
+            status: if method.starts_with("adapter_") {
+                ReconciliationStatus::Adapter
+            } else {
+                ReconciliationStatus::Fuzzy
+            },
+            method: Some(method.to_string()),
+            confidence: ReconciliationConfidence::Medium,
+            local_observation_key: Some(local_key),
+            proxy_observation_id: proxy_observation_id(proxy),
+            ..Default::default()
+        }
+    }
+
+    pub fn ambiguous_proxy(record: &UsageRecord) -> Self {
+        Self {
+            // The local observation is a candidate that was intentionally not
+            // attached to this proxy row. Keep source provenance truthful; the
+            // relationship is represented by the ambiguous status instead.
+            observation_sources: ObservationSources::proxy(&record.ingress_kind),
+            status: ReconciliationStatus::Ambiguous,
+            method: Some("adapter_token_fingerprint".to_string()),
+            confidence: ReconciliationConfidence::Low,
+            proxy_observation_id: proxy_observation_id(record),
+            ..Default::default()
+        }
+    }
+}
+
+fn proxy_observation_id(record: &UsageRecord) -> Option<String> {
+    record
+        .storage_dedupe_key
+        .clone()
+        .or_else(|| record.gateway_request_id.clone())
+        .or_else(|| {
+            let message_id = record.message_id.trim();
+            (!message_id.is_empty()).then(|| message_id.to_string())
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +298,16 @@ pub struct MergedRequestFact {
     /// local scanner facts stay immutable and can be safely recomputed.
     pub attribution_source_id: Option<String>,
     pub attribution_method: AttributionMethod,
+    pub reconciliation: ReconciliationMetadata,
+}
+
+impl MergedRequestFact {
+    /// Only primary facts contribute to usage totals. Supplement and shadow
+    /// observations remain available for audit/detail views without becoming a
+    /// second accounting input.
+    pub fn is_accounting_primary(&self) -> bool {
+        self.reconciliation.accounting_role == AccountingRole::Primary
+    }
 }
 
 pub(crate) fn has_partial_coverage(proxy_backed_requests: u64, local_only_requests: u64) -> bool {
@@ -94,9 +315,20 @@ pub(crate) fn has_partial_coverage(proxy_backed_requests: u64, local_only_reques
 }
 
 pub(crate) fn canonical_request_key_for_local(record: &LocalRequestRecord) -> String {
+    let tool = record.tool.trim();
+    let tool_prefix = format!("{tool}:");
     if let Some(key) = record.request_key.as_ref() {
         let trimmed = key.trim();
         if !trimmed.is_empty() {
+            // Codex's synthetic scanner ids already carry the `codex:` namespace. Older
+            // database backfills prefixed them a second time; collapse that historical form
+            // so direct and fuzzy reconciliation see one stable local observation key.
+            if tool == TOOL_CODEX {
+                let duplicated_prefix = format!("{tool_prefix}{tool_prefix}");
+                if let Some(normalized) = trimmed.strip_prefix(&duplicated_prefix) {
+                    return format!("{tool_prefix}{normalized}");
+                }
+            }
             return trimmed.to_string();
         }
     }
@@ -115,7 +347,11 @@ pub(crate) fn canonical_request_key_for_local(record: &LocalRequestRecord) -> St
         )
     } else {
         // 判定与拼接使用同一 trim 后值：真实 message_id 带首尾空白时，两侧键仍对齐。
-        format!("{}:{}", record.tool, record.message_id.trim())
+        let message_id = record.message_id.trim();
+        if tool == TOOL_CODEX && message_id.starts_with(&tool_prefix) {
+            return message_id.to_string();
+        }
+        format!("{tool}:{message_id}")
     }
 }
 
@@ -146,10 +382,11 @@ fn is_gateway_fallback_message_id(message_id: &str) -> bool {
 /// 将网关调用者 label（`X-UsageMeter-Client` 头、profile client_label 或 managed-key
 /// remark）归一化为本地扫描工具白名单（session/constants.rs）内的 tool_id。
 ///
-/// 归一化策略：label 转小写、去除非字母数字字符后，与白名单工具 id 的紧凑形式比对，
-/// 并兼容少量常见展示名变体（如 "Claude"、"Codex CLI"、"Gemini CLI"、"Qoder"、
-/// "GitHub Copilot"）。label 是用户自定义展示名，可能匹配不到任何白名单工具
-/// （例如 Cursor）——此时返回 None，调用方回退网关孤立键，避免误合并。
+/// 归一化策略：label 转小写、去除非字母数字字符后，与能力目录中允许对账的工具
+/// 紧凑形式比对，并兼容少量常见展示名变体（如 "Claude"、"Codex CLI"、
+/// "Gemini CLI"）。展示名不是物理请求身份；只有工具能力表允许的四个工具才会
+/// 返回结果，其他 label（包括 Qoder、Copilot、Hermes、OpenClaw 和任意未适配
+/// 客户端）都回退为 Gateway 孤立事实，避免误合并。
 fn normalize_gateway_caller_label(label: &str) -> Option<&'static str> {
     let compact: String = label
         .trim()
@@ -160,17 +397,8 @@ fn normalize_gateway_caller_label(label: &str) -> Option<&'static str> {
     match compact.as_str() {
         "claudecode" | "claude" => Some(TOOL_CLAUDE_CODE),
         "codex" | "codexcli" => Some(TOOL_CODEX),
-        "openclaw" => Some(TOOL_OPENCLAW),
         "opencode" | "opencodeai" => Some(TOOL_OPENCODE),
-        "reasonix" => Some(TOOL_REASONIX),
         "gemini" | "geminicli" => Some(TOOL_GEMINI),
-        "hermes" => Some(TOOL_HERMES),
-        "qoder" | "qoderide" => Some(TOOL_QODER_IDE),
-        "qoderidecn" => Some(TOOL_QODER_IDE_CN),
-        "qodercli" => Some(TOOL_QODER_CLI),
-        "qoderwork" => Some(TOOL_QODER_WORK),
-        "qoderworkcn" => Some(TOOL_QODER_WORK_CN),
-        "copilot" | "githubcopilot" => Some(TOOL_COPILOT),
         _ => None,
     }
 }
@@ -191,6 +419,67 @@ fn normalized_gateway_tool(record: &UsageRecord) -> Option<&'static str> {
         .gateway_caller_label
         .as_deref()
         .and_then(normalize_gateway_caller_label)
+        .and_then(reconciliation_tool_id)
+}
+
+fn reconciliation_tool_id(tool_id: &str) -> Option<&'static str> {
+    crate::tool_catalog::find(tool_id)
+        .filter(|descriptor| {
+            descriptor.has_local_sessions
+                && descriptor.supports_proxy
+                && descriptor.supports_reconciliation
+        })
+        .map(|descriptor| descriptor.id)
+}
+
+/// Return the tool identity that is trusted for cross-source reconciliation.
+///
+/// Direct takeover records carry their tool id in `client_tool`; Gateway records
+/// must first pass the restricted caller-label normalizer above. The capability
+/// table remains the source of truth for whether a tool may enter this path.
+pub(crate) fn proxy_reconciliation_tool(record: &UsageRecord) -> Option<&'static str> {
+    let tool_id = if record.ingress_kind == "gateway" {
+        normalized_gateway_tool(record)
+    } else {
+        Some(record.client_tool.trim())
+    }?;
+
+    reconciliation_tool_id(tool_id)
+}
+
+/// Exact reconciliation is reserved for identities that carry an explicit
+/// request/message id. Composite fallbacks are useful for local indexing, but
+/// they are not strong enough to prove that two observations are one request.
+fn is_composite_local_request_key(local: &LocalRequestRecord, key: &str) -> bool {
+    let generated_without_message = format!(
+        "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+        local.tool,
+        local.session_id,
+        local.timestamp,
+        local.model,
+        local.input_tokens,
+        local.output_tokens,
+        local.cache_create_tokens,
+        local.cache_read_tokens,
+        local.total_tokens,
+    );
+    key == generated_without_message
+        || (local.tool == TOOL_CODEX && key.starts_with("codex:"))
+        || (local.tool == TOOL_OPENCODE && key.starts_with("opencode:") && key.contains('|'))
+}
+
+pub(crate) fn can_exact_reconcile(local: &LocalRequestRecord, proxy: &UsageRecord) -> bool {
+    let local_has_stable_id = if let Some(key) = local.request_key.as_deref() {
+        let key = key.trim();
+        !key.is_empty() && !is_composite_local_request_key(local, key)
+    } else {
+        let message_id = local.message_id.trim();
+        !message_id.is_empty() && !message_id.to_ascii_lowercase().starts_with("codex:")
+    };
+    let proxy_message_id = proxy.message_id.trim();
+    local_has_stable_id
+        && !proxy_message_id.is_empty()
+        && !is_gateway_fallback_message_id(proxy_message_id)
 }
 
 /// 判断代理记录是否属于 Codex。本地代理（接管）记录的 client_tool 直接是 codex；
@@ -199,7 +488,7 @@ fn normalized_gateway_tool(record: &UsageRecord) -> Option<&'static str> {
 /// 与本地 Codex 扫描的合成 id（codex:{session}:{index}）结构不同，精确键永不相等，
 /// 必须进入 fuzzy 二次匹配池才能与本地记录对账，否则同一请求仍会双计。
 fn is_codex_proxy_record(record: &UsageRecord) -> bool {
-    record.client_tool == "codex" || normalized_gateway_tool(record) == Some(TOOL_CODEX)
+    proxy_reconciliation_tool(record) == Some(TOOL_CODEX)
 }
 
 pub(crate) fn canonical_request_key_for_proxy(record: &UsageRecord) -> String {
@@ -303,6 +592,196 @@ pub(crate) enum CodexFuzzyOutcome {
     SuppressedByFilteredProxy { local_key: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AdapterFuzzyOutcome {
+    MatchedVisible {
+        local_key: String,
+        proxy_key: String,
+    },
+    /// A matching proxy observation exists, but the relationship is not
+    /// one-to-one. Suppress the local observation from primary accounting so
+    /// it cannot double count the proxy fact.
+    SuppressedByAmbiguous {
+        local_key: String,
+        proxy_keys: Vec<String>,
+    },
+    /// A matching observation exists only in the unfiltered proxy pool (for
+    /// example an error response hidden by the current query).
+    SuppressedByFilteredProxy { local_key: String },
+}
+
+/// The non-Codex adapters share a deliberately strict candidate matcher. It is
+/// intentionally narrower than Codex's adapter because Claude/Gemini/OpenCode
+/// normally expose a stable message id and should only fall back when the
+/// remaining request fingerprint is strong enough to be one-to-one.
+pub(crate) const ADAPTER_FUZZY_MATCH_TOLERANCE_SECS: i64 = 5 * 60;
+
+/// The range context needed to reconcile observations that fall on opposite sides
+/// of a business-day boundary. Codex has the widest adapter window, so it defines
+/// the shared context for all reconciliation paths.
+pub(crate) const RECONCILIATION_CONTEXT_TOLERANCE_SECS: i64 = CODEX_FUZZY_MATCH_TOLERANCE_SECS;
+
+fn adapter_model_matches(local: &LocalRequestRecord, proxy: &UsageRecord) -> bool {
+    let local_model = local.model.trim();
+    let proxy_model = proxy.model.trim();
+    local_model.eq_ignore_ascii_case(proxy_model)
+        || local_model.is_empty()
+        || proxy_model.is_empty()
+        || local_model.eq_ignore_ascii_case("unknown")
+        || proxy_model.eq_ignore_ascii_case("unknown")
+}
+
+fn adapter_candidate_matches(local: &LocalRequestRecord, proxy: &UsageRecord) -> bool {
+    let Some(proxy_tool) = proxy_reconciliation_tool(proxy) else {
+        return false;
+    };
+
+    // Codex has a different local-id shape and must be handled by its own
+    // matcher. Keeping it out here prevents two independent fuzzy passes from
+    // consuming the same record.
+    if proxy_tool == TOOL_CODEX || local.tool != proxy_tool {
+        return false;
+    }
+
+    adapter_model_matches(local, proxy)
+        && local.input_tokens == proxy.input_tokens
+        && local.output_tokens == proxy.output_tokens
+        && local.cache_create_tokens == proxy.cache_create_tokens
+        && local.cache_read_tokens == proxy.cache_read_tokens
+        && (proxy.timestamp / 1000 - local.timestamp).abs() <= ADAPTER_FUZZY_MATCH_TOLERANCE_SECS
+}
+
+/// Build one-to-one fallback relationships for the non-Codex reconciliation
+/// adapters. A local observation is only merged when both sides have exactly
+/// one compatible candidate. Ambiguous relationships are suppressed locally;
+/// the proxy observations remain visible as the accounting primary.
+pub(crate) fn find_adapter_fuzzy_matches(
+    local_orphans: &[&LocalRequestRecord],
+    proxy_orphans_visible: &[&UsageRecord],
+    proxy_orphans_all_extra: &[&UsageRecord],
+) -> Vec<AdapterFuzzyOutcome> {
+    let mut locals = local_orphans.to_vec();
+    locals.sort_by(|a, b| {
+        a.timestamp
+            .cmp(&b.timestamp)
+            .then_with(|| a.message_id.cmp(&b.message_id))
+    });
+
+    let mut visible = proxy_orphans_visible.to_vec();
+    visible.sort_by(|a, b| {
+        a.timestamp
+            .cmp(&b.timestamp)
+            .then_with(|| a.message_id.cmp(&b.message_id))
+    });
+
+    let mut filtered = proxy_orphans_all_extra.to_vec();
+    filtered.sort_by(|a, b| {
+        a.timestamp
+            .cmp(&b.timestamp)
+            .then_with(|| a.message_id.cmp(&b.message_id))
+    });
+
+    let visible_candidates: Vec<Vec<usize>> = locals
+        .iter()
+        .map(|local| {
+            visible
+                .iter()
+                .enumerate()
+                .filter_map(|(index, proxy)| {
+                    adapter_candidate_matches(local, proxy).then_some(index)
+                })
+                .collect()
+        })
+        .collect();
+    let mut visible_reverse = vec![0usize; visible.len()];
+    for candidates in &visible_candidates {
+        for index in candidates {
+            visible_reverse[*index] += 1;
+        }
+    }
+
+    let mut outcomes = Vec::new();
+    let mut visible_consumed = vec![false; visible.len()];
+    let mut local_resolved = vec![false; locals.len()];
+    for (local_index, candidates) in visible_candidates.iter().enumerate() {
+        let local = locals[local_index];
+        match candidates.as_slice() {
+            [proxy_index] if visible_reverse[*proxy_index] == 1 => {
+                if !visible_consumed[*proxy_index] {
+                    visible_consumed[*proxy_index] = true;
+                    local_resolved[local_index] = true;
+                    outcomes.push(AdapterFuzzyOutcome::MatchedVisible {
+                        local_key: canonical_request_key_for_local(local),
+                        proxy_key: canonical_request_key_for_proxy(visible[*proxy_index]),
+                    });
+                }
+            }
+            [] => {}
+            _ => {
+                local_resolved[local_index] = true;
+                outcomes.push(AdapterFuzzyOutcome::SuppressedByAmbiguous {
+                    local_key: canonical_request_key_for_local(local),
+                    proxy_keys: candidates
+                        .iter()
+                        .map(|index| canonical_request_key_for_proxy(visible[*index]))
+                        .collect(),
+                });
+            }
+        }
+    }
+
+    // If a proxy is compatible with multiple locals, all of those locals are
+    // ambiguous even when the first one was visited before the reverse index
+    // was considered. This also closes the one-local/many-local collision
+    // without relying on HashMap iteration order.
+    for (local_index, candidates) in visible_candidates.iter().enumerate() {
+        if local_resolved[local_index] || candidates.is_empty() {
+            continue;
+        }
+        if candidates.iter().any(|index| visible_reverse[*index] > 1) {
+            local_resolved[local_index] = true;
+            outcomes.push(AdapterFuzzyOutcome::SuppressedByAmbiguous {
+                local_key: canonical_request_key_for_local(locals[local_index]),
+                proxy_keys: candidates
+                    .iter()
+                    .map(|index| canonical_request_key_for_proxy(visible[*index]))
+                    .collect(),
+            });
+        }
+    }
+
+    let filtered_candidates: Vec<Vec<usize>> = locals
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !local_resolved[*index])
+        .map(|(_, local)| {
+            filtered
+                .iter()
+                .enumerate()
+                .filter_map(|(index, proxy)| {
+                    adapter_candidate_matches(local, proxy).then_some(index)
+                })
+                .collect()
+        })
+        .collect();
+    let mut filtered_offset = 0usize;
+    for (local_index, candidates) in locals.iter().enumerate() {
+        if local_resolved[local_index] {
+            continue;
+        }
+        let candidate_indices = &filtered_candidates[filtered_offset];
+        filtered_offset += 1;
+        if !candidate_indices.is_empty() {
+            local_resolved[local_index] = true;
+            outcomes.push(AdapterFuzzyOutcome::SuppressedByFilteredProxy {
+                local_key: canonical_request_key_for_local(candidates),
+            });
+        }
+    }
+
+    outcomes
+}
+
 /// Pure pool-partitioning helper: given the exact-match indexes already built by
 /// `merge_realtime_range`, extract the Codex-only orphan subsets the fuzzy pass operates on.
 /// No I/O — safe to unit test with hand-built maps. Non-Codex tools (in particular Claude
@@ -323,13 +802,23 @@ pub(crate) fn codex_orphan_pools<'a>(
 ) {
     let mut local_orphans: Vec<&LocalRequestRecord> = local_index
         .iter()
-        .filter(|(key, rec)| rec.tool == "codex" && !proxy_index.contains_key(*key))
+        .filter(|(key, rec)| {
+            rec.tool == "codex"
+                && !proxy_index
+                    .get(*key)
+                    .is_some_and(|proxy| can_exact_reconcile(rec, proxy))
+        })
         .map(|(_, rec)| rec)
         .collect();
 
     let mut proxy_orphans_visible: Vec<&UsageRecord> = proxy_index
         .iter()
-        .filter(|(key, rec)| is_codex_proxy_record(rec) && !local_index.contains_key(*key))
+        .filter(|(key, rec)| {
+            is_codex_proxy_record(rec)
+                && !local_index
+                    .get(*key)
+                    .is_some_and(|local| can_exact_reconcile(local, rec))
+        })
         .map(|(_, rec)| rec)
         .collect();
 
@@ -340,7 +829,9 @@ pub(crate) fn codex_orphan_pools<'a>(
         .iter()
         .filter(|(key, rec)| {
             is_codex_proxy_record(rec)
-                && !local_index.contains_key(*key)
+                && !local_index
+                    .get(*key)
+                    .is_some_and(|local| can_exact_reconcile(local, rec))
                 && !proxy_index.contains_key(*key)
         })
         .map(|(_, rec)| rec)
@@ -363,6 +854,66 @@ pub(crate) fn codex_orphan_pools<'a>(
             .cmp(&b.timestamp)
             .then_with(|| a.message_id.cmp(&b.message_id))
     });
+
+    (
+        local_orphans,
+        proxy_orphans_visible,
+        proxy_orphans_all_extra,
+    )
+}
+
+/// Extract the orphan pools for non-Codex tools that have an explicit
+/// reconciliation adapter. Exact-key matches are already handled by the main
+/// merge loop, so only incompatible keys enter this fallback pass.
+pub(crate) fn adapter_orphan_pools<'a>(
+    local_index: &'a HashMap<String, LocalRequestRecord>,
+    proxy_index: &'a HashMap<String, UsageRecord>,
+    all_proxy_index: &'a HashMap<String, UsageRecord>,
+) -> (
+    Vec<&'a LocalRequestRecord>,
+    Vec<&'a UsageRecord>,
+    Vec<&'a UsageRecord>,
+) {
+    let local_orphans: Vec<&LocalRequestRecord> = local_index
+        .iter()
+        .filter(|(key, record)| {
+            record.tool != TOOL_CODEX
+                && crate::tool_catalog::find(&record.tool)
+                    .map(|descriptor| {
+                        descriptor.has_local_sessions
+                            && descriptor.supports_proxy
+                            && descriptor.supports_reconciliation
+                    })
+                    .unwrap_or(false)
+                && !proxy_index
+                    .get(*key)
+                    .is_some_and(|proxy| can_exact_reconcile(record, proxy))
+        })
+        .map(|(_, record)| record)
+        .collect();
+
+    let proxy_orphans_visible: Vec<&UsageRecord> = proxy_index
+        .iter()
+        .filter(|(key, record)| {
+            proxy_reconciliation_tool(record).is_some()
+                && !local_index
+                    .get(*key)
+                    .is_some_and(|local| can_exact_reconcile(local, record))
+        })
+        .map(|(_, record)| record)
+        .collect();
+
+    let proxy_orphans_all_extra: Vec<&UsageRecord> = all_proxy_index
+        .iter()
+        .filter(|(key, record)| {
+            proxy_reconciliation_tool(record).is_some()
+                && !local_index
+                    .get(*key)
+                    .is_some_and(|local| can_exact_reconcile(local, record))
+                && !proxy_index.contains_key(*key)
+        })
+        .map(|(_, record)| record)
+        .collect();
 
     (
         local_orphans,
@@ -723,6 +1274,7 @@ impl MergedRequestFact {
     pub fn from_local(record: &LocalRequestRecord, meta: Option<&SessionMeta>, cost: f64) -> Self {
         let project_name = meta.and_then(|m| m.project_name.clone());
         let project_path = meta.and_then(|m| m.cwd.clone());
+        let local_key = canonical_request_key_for_local(record);
 
         Self {
             canonical_request_key: canonical_request_key_for_local(record),
@@ -755,6 +1307,7 @@ impl MergedRequestFact {
             source_label: None,
             attribution_source_id: None,
             attribution_method: AttributionMethod::Unattributed,
+            reconciliation: ReconciliationMetadata::local(local_key),
         }
     }
 
@@ -772,7 +1325,13 @@ impl MergedRequestFact {
         // 非网关）保持 client_tool 原样。
         let tool = normalized_gateway_tool(record)
             .map(str::to_string)
-            .unwrap_or_else(|| record.client_tool.clone());
+            .unwrap_or_else(|| {
+                if record.ingress_kind == "gateway" {
+                    "api_gateway".to_string()
+                } else {
+                    record.client_tool.clone()
+                }
+            });
 
         Self {
             canonical_request_key: canonical_request_key_for_proxy(record),
@@ -801,6 +1360,7 @@ impl MergedRequestFact {
             source_label,
             attribution_source_id: None,
             attribution_method: AttributionMethod::Unattributed,
+            reconciliation: ReconciliationMetadata::proxy(record),
         }
     }
 
@@ -922,6 +1482,10 @@ impl MergedRequestFact {
             ),
             attribution_source_id: None,
             attribution_method: AttributionMethod::Unattributed,
+            reconciliation: ReconciliationMetadata::exact(
+                proxy,
+                canonical_request_key_for_local(local),
+            ),
         }
     }
 }
@@ -1545,6 +2109,49 @@ mod tests {
         let fact = MergedRequestFact::from_local(&local, None, 0.0);
         assert!(fact.api_key_prefix.is_none());
         assert!(fact.request_base_url.is_none());
+        assert_eq!(
+            fact.reconciliation.observation_sources.as_storage_str(),
+            "local_file"
+        );
+        assert_eq!(fact.reconciliation.status, ReconciliationStatus::Unmatched);
+        assert_eq!(
+            fact.reconciliation.local_observation_key.as_deref(),
+            Some("codex:sess-1:1")
+        );
+    }
+
+    #[test]
+    fn codex_local_canonical_key_collapses_historical_duplicate_prefix() {
+        let mut local = codex_local_with("sess-1", 1_700_000_000, "codex:sess-1:1", "gpt-5", 300);
+        local.request_key = Some("codex:codex:sess-1:1".to_string());
+        assert_eq!(canonical_request_key_for_local(&local), "codex:sess-1:1");
+    }
+
+    #[test]
+    fn reconciliation_metadata_tracks_exact_and_gateway_sources() {
+        let local = local_with(100, 50, 0, 0, "sess-1", 1_700_000_000);
+        let mut proxy = proxy_with(100, 50, 0, 0, 0.0, false);
+        proxy.ingress_kind = "gateway".to_string();
+        proxy.gateway_request_id = Some("gw-1".to_string());
+        proxy.gateway_caller_label = Some("Claude Code".to_string());
+        proxy.message_id = local.message_id.clone();
+
+        let fact = MergedRequestFact::merge_proxy_preferred(&proxy, &local, None, 0.0);
+
+        assert_eq!(
+            fact.reconciliation.observation_sources.as_storage_str(),
+            "local_file+gateway"
+        );
+        assert_eq!(fact.reconciliation.status, ReconciliationStatus::Exact);
+        assert_eq!(
+            fact.reconciliation.confidence,
+            ReconciliationConfidence::High
+        );
+        assert_eq!(
+            fact.reconciliation.proxy_observation_id.as_deref(),
+            Some("gw-1")
+        );
+        assert_eq!(fact.reconciliation.accounting_role, AccountingRole::Primary);
     }
 
     #[test]
@@ -1759,6 +2366,21 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_gateway_client_tool_is_still_attributed_to_api_gateway() {
+        let mut record = gateway_proxy_with(
+            "chatcmpl-abc123",
+            Some("Qoder CLI"),
+            Some("gateway:profile-1:gw-123-0"),
+        );
+        record.client_tool = "qoder_cli".to_string();
+
+        let fact = MergedRequestFact::from_proxy(&record, None);
+
+        assert_eq!(fact.tool, "api_gateway");
+        assert_eq!(fact.canonical_request_key, "gateway:profile-1:gw-123-0");
+    }
+
+    #[test]
     fn gateway_proxy_only_fact_keeps_api_gateway_for_fallback_message_id() {
         // fallback message_id → 不参与归一化，tool 保持 api_gateway。
         let record = gateway_proxy_with(
@@ -1778,21 +2400,10 @@ mod tests {
             ("claude", TOOL_CLAUDE_CODE),
             ("codex", TOOL_CODEX),
             ("Codex CLI", TOOL_CODEX),
-            ("openclaw", TOOL_OPENCLAW),
             ("opencode", TOOL_OPENCODE),
             ("OpenCode", TOOL_OPENCODE),
-            ("reasonix", TOOL_REASONIX),
             ("gemini", TOOL_GEMINI),
             ("Gemini CLI", TOOL_GEMINI),
-            ("hermes", TOOL_HERMES),
-            ("qoder_ide", TOOL_QODER_IDE),
-            ("Qoder", TOOL_QODER_IDE),
-            ("qoder_ide_cn", TOOL_QODER_IDE_CN),
-            ("qoder_cli", TOOL_QODER_CLI),
-            ("qoder_work", TOOL_QODER_WORK),
-            ("qoder_work_cn", TOOL_QODER_WORK_CN),
-            ("copilot", TOOL_COPILOT),
-            ("GitHub Copilot", TOOL_COPILOT),
         ];
         for (label, expected) in cases {
             assert_eq!(
@@ -1802,7 +2413,19 @@ mod tests {
             );
         }
         // 非白名单 label 一律回退，绝不误合并。
-        for label in ["Cursor", "", "Trae", "Windsurf", "unknown"] {
+        for label in [
+            "OpenClaw",
+            "Reasonix",
+            "Hermes",
+            "Qoder",
+            "Qoder CLI",
+            "GitHub Copilot",
+            "Cursor",
+            "",
+            "Trae",
+            "Windsurf",
+            "unknown",
+        ] {
             assert_eq!(
                 normalize_gateway_caller_label(label),
                 None,

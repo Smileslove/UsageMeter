@@ -112,6 +112,55 @@ export function useSessionDisplay(store: ReturnType<typeof useMonitorStore>) {
     return null
   }
 
+  const requestReconciliationStatusLabel = (request: RequestRecord) => {
+    const keyByStatus: Record<string, string> = {
+      exact: 'sessions.reconciliationStatusExact',
+      adapter: 'sessions.reconciliationStatusAdapter',
+      fuzzy: 'sessions.reconciliationStatusFuzzy',
+      ambiguous: 'sessions.reconciliationStatusAmbiguous',
+      unmatched: 'sessions.reconciliationStatusUnmatched'
+    }
+    return t(store.settings.locale, keyByStatus[request.reconciliationStatus || 'unmatched'] || keyByStatus.unmatched)
+  }
+
+  const requestAccountingRoleLabel = (request: RequestRecord) => {
+    const keyByRole: Record<string, string> = {
+      primary: 'sessions.accountingRolePrimary',
+      supplement: 'sessions.accountingRoleSupplement',
+      shadow: 'sessions.accountingRoleShadow'
+    }
+    return t(store.settings.locale, keyByRole[request.accountingRole || 'primary'] || keyByRole.primary)
+  }
+
+  const requestReconciliationConfidenceLabel = (request: RequestRecord) => {
+    const keyByConfidence: Record<string, string> = {
+      high: 'sessions.reconciliationConfidenceHigh',
+      medium: 'sessions.reconciliationConfidenceMedium',
+      low: 'sessions.reconciliationConfidenceLow'
+    }
+    return t(store.settings.locale, keyByConfidence[request.reconciliationConfidence || 'low'] || keyByConfidence.low)
+  }
+
+  const requestObservationSourcesLabel = (request: RequestRecord) => {
+    const keyBySource: Record<string, string> = {
+      local_file: 'sessions.observationSourceLocal',
+      direct_proxy: 'sessions.observationSourceProxy',
+      gateway: 'sessions.observationSourceGateway'
+    }
+    const labels = (request.observationSources || 'local_file')
+      .split('+')
+      .map(source => keyBySource[source] ? t(store.settings.locale, keyBySource[source]) : source)
+      .filter(Boolean)
+    return labels.join(' + ')
+  }
+
+  const requestObservationIdLabel = (value?: string | null) => {
+    const normalized = value?.trim()
+    if (!normalized) return '—'
+    if (normalized.length <= 32) return normalized
+    return `${normalized.slice(0, 16)}…${normalized.slice(-12)}`
+  }
+
   const requestToolLabel = (tool: string) => (
     formatToolDisplayName(tool, store.settings.locale, store.settings.clientTools.profiles)
   )
@@ -304,6 +353,11 @@ export function useSessionDisplay(store: ReturnType<typeof useMonitorStore>) {
     requestProjectLabel,
     requestSourceLabel,
     requestAttributionLabel,
+    requestReconciliationStatusLabel,
+    requestAccountingRoleLabel,
+    requestReconciliationConfidenceLabel,
+    requestObservationSourcesLabel,
+    requestObservationIdLabel,
     requestToolLabel,
     requestCacheTokens,
     requestHasProxyPerformance,

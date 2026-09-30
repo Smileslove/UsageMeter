@@ -53,6 +53,9 @@ impl FactAccumulator {
     }
 
     pub(super) fn add_fact(&mut self, fact: &MergedRequestFact) {
+        if !fact.is_accounting_primary() {
+            return;
+        }
         let request_count = fact.request_count.max(1);
         self.add_tokens(
             fact.input_tokens,
@@ -154,6 +157,7 @@ mod tests {
             source_label: None,
             attribution_source_id: None,
             attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
+            reconciliation: crate::unified_usage::ReconciliationMetadata::default(),
         }
     }
 
@@ -193,5 +197,18 @@ mod tests {
         assert_eq!(acc.max_ttft_ms, Some(700));
         assert_eq!(acc.status_code_counts.get(&200), Some(&1));
         assert_eq!(acc.status_code_counts.get(&500), Some(&1));
+    }
+
+    #[test]
+    fn non_primary_fact_is_excluded_from_accounting() {
+        let mut fact = test_fact(CoverageOrigin::ProxyOnly, Some(200), None, None, None);
+        fact.reconciliation.accounting_role = crate::unified_usage::AccountingRole::Shadow;
+
+        let mut acc = FactAccumulator::default();
+        acc.add_fact(&fact);
+
+        assert_eq!(acc.request_count, 0);
+        assert_eq!(acc.total_tokens, 0);
+        assert_eq!(acc.success_requests, 0);
     }
 }

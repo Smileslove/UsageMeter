@@ -35,6 +35,9 @@ const {
   requestStatusClasses,
   requestCoverageLabel,
   requestAttributionLabel,
+  requestReconciliationStatusLabel,
+  requestAccountingRoleLabel,
+  requestObservationSourcesLabel,
   requestSourceLabel,
   requestToolLabel,
   requestCacheTokens,
@@ -503,6 +506,9 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
                   <span>{{ t(locale, 'sessions.ttft') }}: <b class="font-mono">{{ selectedRequest.ttftMs != null ? formatDuration(selectedRequest.ttftMs) : '—' }}</b></span>
                   <span>{{ t(locale, 'sessions.requestCoverage') }}: <b>{{ requestCoverageLabel(selectedRequest.coverageOrigin) }}</b></span>
                   <span v-if="requestAttributionLabel(selectedRequest)">{{ t(locale, 'sessions.requestAttribution') }}: <b>{{ requestAttributionLabel(selectedRequest) }}</b></span>
+                  <span>{{ t(locale, 'sessions.reconciliationStatus') }}: <b>{{ requestReconciliationStatusLabel(selectedRequest) }}</b></span>
+                  <span>{{ t(locale, 'sessions.accountingRole') }}: <b>{{ requestAccountingRoleLabel(selectedRequest) }}</b></span>
+                  <span>{{ t(locale, 'sessions.observationSources') }}: <b>{{ requestObservationSourcesLabel(selectedRequest) }}</b></span>
                   <span>{{ t(locale, 'sessions.requestKey') }}: <b class="font-mono">{{ shortId(selectedRequest.requestKey) }}</b></span>
                 </div>
               </div>

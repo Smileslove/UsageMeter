@@ -24,6 +24,11 @@ const {
   requestModelLabel,
   requestProjectLabel,
   requestAttributionLabel,
+  requestReconciliationStatusLabel,
+  requestAccountingRoleLabel,
+  requestReconciliationConfidenceLabel,
+  requestObservationSourcesLabel,
+  requestObservationIdLabel,
   requestSourceLabel,
   requestStatusClasses,
   requestStatusLabel,
@@ -136,6 +141,37 @@ const {
             <div class="request-detail-row">
               <span>{{ t(store.settings.locale, 'sessions.requestKey') }}</span>
               <strong class="truncate text-right">{{ request.requestKey }}</strong>
+            </div>
+          </div>
+
+          <div class="request-detail-section">
+            <div class="request-detail-row">
+              <span>{{ t(store.settings.locale, 'sessions.reconciliationStatus') }}</span>
+              <strong>{{ requestReconciliationStatusLabel(request) }}</strong>
+            </div>
+            <div class="request-detail-row">
+              <span>{{ t(store.settings.locale, 'sessions.accountingRole') }}</span>
+              <strong>{{ requestAccountingRoleLabel(request) }}</strong>
+            </div>
+            <div class="request-detail-row">
+              <span>{{ t(store.settings.locale, 'sessions.reconciliationConfidence') }}</span>
+              <strong>{{ requestReconciliationConfidenceLabel(request) }}</strong>
+            </div>
+            <div class="request-detail-row">
+              <span>{{ t(store.settings.locale, 'sessions.observationSources') }}</span>
+              <strong>{{ requestObservationSourcesLabel(request) }}</strong>
+            </div>
+            <div v-if="request.reconciliationMethod" class="request-detail-row">
+              <span>{{ t(store.settings.locale, 'sessions.reconciliationMethod') }}</span>
+              <strong class="truncate text-right" :title="request.reconciliationMethod">{{ request.reconciliationMethod }}</strong>
+            </div>
+            <div v-if="request.localObservationKey" class="request-detail-row">
+              <span>{{ t(store.settings.locale, 'sessions.localObservationKey') }}</span>
+              <strong class="truncate text-right" :title="request.localObservationKey">{{ requestObservationIdLabel(request.localObservationKey) }}</strong>
+            </div>
+            <div v-if="request.proxyObservationId" class="request-detail-row">
+              <span>{{ t(store.settings.locale, 'sessions.proxyObservationId') }}</span>
+              <strong class="truncate text-right" :title="request.proxyObservationId">{{ requestObservationIdLabel(request.proxyObservationId) }}</strong>
             </div>
           </div>
         </div>

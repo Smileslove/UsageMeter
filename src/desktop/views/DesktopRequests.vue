@@ -42,6 +42,11 @@ const {
   requestCoverageLabel,
   requestProjectLabel,
   requestAttributionLabel,
+  requestReconciliationStatusLabel,
+  requestAccountingRoleLabel,
+  requestReconciliationConfidenceLabel,
+  requestObservationSourcesLabel,
+  requestObservationIdLabel,
   requestSourceLabel,
   requestToolLabel,
   requestCacheTokens,
@@ -574,6 +579,16 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
                 <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'metrics.tokensPerSecond') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ requestHasProxyPerformance(selectedRequest) && selectedRequest.outputTokensPerSecond ? `${selectedRequest.outputTokensPerSecond.toFixed(1)}t/s` : '—' }}</span></div>
                 <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'statistics.status') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ selectedRequest.statusCode || '—' }}</span></div>
                 <div class="flex items-center justify-between py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.requestCoverage') }}</span><span class="font-mono text-xs text-[var(--theme-text-primary)]">{{ requestCoverageLabel(selectedRequest.coverageOrigin) }}</span></div>
+              </section>
+
+              <section class="theme-surface-muted rounded-lg border px-3 py-2">
+                <div class="flex items-center justify-between gap-2 py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.reconciliationStatus') }}</span><span class="text-right text-xs font-medium text-[var(--theme-text-secondary)]">{{ requestReconciliationStatusLabel(selectedRequest) }}</span></div>
+                <div class="flex items-center justify-between gap-2 py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.accountingRole') }}</span><span class="text-right text-xs font-medium text-[var(--theme-text-secondary)]">{{ requestAccountingRoleLabel(selectedRequest) }}</span></div>
+                <div class="flex items-center justify-between gap-2 py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.reconciliationConfidence') }}</span><span class="text-right text-xs font-medium text-[var(--theme-text-secondary)]">{{ requestReconciliationConfidenceLabel(selectedRequest) }}</span></div>
+                <div class="flex items-center justify-between gap-2 py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.observationSources') }}</span><span class="text-right text-xs font-medium text-[var(--theme-text-secondary)]">{{ requestObservationSourcesLabel(selectedRequest) }}</span></div>
+                <div v-if="selectedRequest.reconciliationMethod" class="flex items-center justify-between gap-2 py-1"><span class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.reconciliationMethod') }}</span><span class="max-w-52 truncate text-right font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedRequest.reconciliationMethod">{{ selectedRequest.reconciliationMethod }}</span></div>
+                <div v-if="selectedRequest.localObservationKey" class="flex items-center justify-between gap-2 py-1"><span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.localObservationKey') }}</span><span class="max-w-52 truncate text-right font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedRequest.localObservationKey">{{ requestObservationIdLabel(selectedRequest.localObservationKey) }}</span></div>
+                <div v-if="selectedRequest.proxyObservationId" class="flex items-center justify-between gap-2 py-1"><span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.proxyObservationId') }}</span><span class="max-w-52 truncate text-right font-mono text-xs text-[var(--theme-text-secondary)]" :title="selectedRequest.proxyObservationId">{{ requestObservationIdLabel(selectedRequest.proxyObservationId) }}</span></div>
               </section>
 
               <section class="theme-surface-muted rounded-lg border px-3 py-2">

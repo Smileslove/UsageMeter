@@ -714,6 +714,13 @@ export interface RequestRecord {
   sourceLabel?: string | null
   attributionSourceId?: string | null
   attributionMethod: RequestAttributionMethod
+  observationSources?: string
+  reconciliationStatus?: 'exact' | 'adapter' | 'fuzzy' | 'unmatched' | 'ambiguous'
+  reconciliationMethod?: string | null
+  reconciliationConfidence?: 'high' | 'medium' | 'low'
+  accountingRole?: 'primary' | 'supplement' | 'shadow'
+  localObservationKey?: string | null
+  proxyObservationId?: string | null
   apiKeyPrefix?: string | null
   requestBaseUrl?: string | null
   tool: string

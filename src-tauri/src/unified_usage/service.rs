@@ -26,7 +26,10 @@ use super::query_support::{
     cache_key_for_source_filter, cache_key_for_tool_filter, fingerprint_pricings,
     normalize_open_ended_range_end, normalize_range_bounds, normalized_day_boundary_mode,
 };
-use super::types::{has_partial_coverage, CoverageOrigin, MergedCoverage, MergedRequestFact};
+use super::types::{
+    has_partial_coverage, CoverageOrigin, MergedCoverage, MergedRequestFact,
+    RECONCILIATION_CONTEXT_TOLERANCE_SECS,
+};
 use crate::models::{AppSettings, ToolFilter, UsageQueryFilter};
 use crate::proxy::ProxyMergeCacheSignature;
 use crate::proxy::{ProjectStats, ProjectToolStats, ProxyDatabase, SessionStats, UsageRecord};
@@ -584,6 +587,19 @@ fn enumerate_local_dates(start_epoch: i64, end_epoch: i64, settings: &AppSetting
     crate::utils::business_time::enumerate_business_dates(start_epoch, end_epoch, settings)
 }
 
+fn reconciliation_context_bounds(range_start: i64, range_end: i64) -> (i64, i64) {
+    (
+        range_start
+            .saturating_sub(RECONCILIATION_CONTEXT_TOLERANCE_SECS)
+            .max(0),
+        range_end.saturating_add(RECONCILIATION_CONTEXT_TOLERANCE_SECS),
+    )
+}
+
+fn fact_in_requested_range(fact: &MergedRequestFact, range_start: i64, range_end: i64) -> bool {
+    fact.timestamp_sec >= range_start && fact.timestamp_sec < range_end
+}
+
 async fn fetch_proxy_records(
     proxy_db: &ProxyDatabase,
     usage_filter: &UsageQueryFilter,
@@ -734,12 +750,22 @@ async fn merge_realtime_range(
     let tool_filter = settings.client_tools.build_filter();
     // Attribution is resolved only after local and proxy facts have been merged. Fetching a
     // pre-filtered proxy subset here would otherwise hide config-inferred and manual results.
+    let proxy_tool_filter = if matches!(tool_filter, ToolFilter::All) {
+        tool_filter.clone()
+    } else {
+        // Gateway rows are stored as `api_gateway` until their trusted profile label
+        // is reconciled. Querying by the selected client tool here would discard
+        // those rows before the unified merge can associate them.
+        ToolFilter::All
+    };
     let usage_filter = UsageQueryFilter {
         source: crate::models::SourceFilter::All,
-        tool: settings.client_tools.build_filter(),
+        tool: proxy_tool_filter,
     };
+    let output_tool_filter = tool_filter.clone();
 
     let (range_start, range_end) = normalize_range_bounds(start_epoch, end_epoch);
+    let (query_start, query_end) = reconciliation_context_bounds(range_start, range_end);
 
     // 前置同步段：本地/远端会话与请求记录的 SQLite 全行读取、去重与索引构建
     // 是合并路径上的同步重活，移入阻塞线程池，避免占住 tauri async runtime 的
@@ -754,15 +780,15 @@ async fn merge_realtime_range(
                 .filter(|meta| session_meta_matches(meta, &tool_filter))
                 .collect();
             let mut local_records = records_database.get_request_records_in_range(
-                range_start,
-                range_end,
+                query_start,
+                query_end,
                 &tool_filter,
             )?;
             let local_request_keys: HashSet<String> =
                 local_records.iter().map(request_key_for_local).collect();
             let mut remote_records = records_database.get_remote_request_records_in_range(
-                range_start,
-                range_end,
+                query_start,
+                query_end,
                 &tool_filter,
             )?;
             remote_records
@@ -781,16 +807,21 @@ async fn merge_realtime_range(
     // 异步取数段：proxy 记录的两次取数是真正的 await 点，保持在 async 上下文；
     // 取回后的纯内存加工（session 归属回填、可见性过滤）挪入后置同步段一并
     // 下沉阻塞线程池。
-    let (raw_proxy_records, raw_unfiltered_proxy_records) = if let Some(proxy_db) =
-        ProxyDatabase::get_global()
-    {
-        (
-            fetch_proxy_records(proxy_db.as_ref(), &usage_filter, start_epoch, end_epoch).await?,
-            None,
-        )
-    } else {
-        (Vec::new(), None)
-    };
+    let (raw_proxy_records, raw_unfiltered_proxy_records) =
+        if let Some(proxy_db) = ProxyDatabase::get_global() {
+            (
+                fetch_proxy_records(
+                    proxy_db.as_ref(),
+                    &usage_filter,
+                    Some(query_start),
+                    Some(query_end),
+                )
+                .await?,
+                None,
+            )
+        } else {
+            (Vec::new(), None)
+        };
 
     // 后置同步合并段只操作内存快照，在阻塞线程池完成索引、去重与排序。
     let input = RealtimeMergeInput {
@@ -810,6 +841,11 @@ async fn merge_realtime_range(
     let attribution_settings = settings.clone();
     facts = tauri::async_runtime::spawn_blocking(move || {
         apply_passive_attribution(&attribution_database, &mut facts, &attribution_settings)?;
+        // Context records are loaded only to establish a one-to-one match across
+        // the boundary. Their canonical ownership remains the requested range,
+        // using the merged fact's local timestamp when a local observation exists.
+        facts.retain(|fact| fact_in_requested_range(fact, range_start, range_end));
+        facts.retain(|fact| fact_tool_matches(fact, &output_tool_filter));
         Ok::<Vec<MergedRequestFact>, String>(facts)
     })
     .await
@@ -858,13 +894,14 @@ async fn ensure_materialized_history_for_range(
                 &local_date,
                 settings,
             )?;
+        let (context_start, context_end) = reconciliation_context_bounds(day_start, day_end);
         let local_snapshot =
-            local_db.get_unified_day_local_snapshot_with_settings(&local_date, settings)?;
+            local_db.get_unified_local_snapshot_for_range(context_start, context_end)?;
         let proxy_snapshot = ProxyDatabase::get_global()
             .map(|db| {
                 db.get_day_dependency_snapshot(
-                    day_start.saturating_mul(1000),
-                    day_end.saturating_mul(1000),
+                    context_start.saturating_mul(1000),
+                    context_end.saturating_mul(1000),
                 )
             })
             .transpose()?
@@ -889,12 +926,12 @@ async fn ensure_materialized_history_for_range(
             let _inflight_guard = acquire_inflight_key(&inflight_key).await;
             let latest_state = local_db.get_unified_day_materialization_state(&local_date)?;
             let latest_local_snapshot =
-                local_db.get_unified_day_local_snapshot_with_settings(&local_date, settings)?;
+                local_db.get_unified_local_snapshot_for_range(context_start, context_end)?;
             let latest_proxy_snapshot = ProxyDatabase::get_global()
                 .map(|db| {
                     db.get_day_dependency_snapshot(
-                        day_start.saturating_mul(1000),
-                        day_end.saturating_mul(1000),
+                        context_start.saturating_mul(1000),
+                        context_end.saturating_mul(1000),
                     )
                 })
                 .transpose()?
@@ -1104,13 +1141,14 @@ pub(crate) fn count_stale_materialization_days(
                 &local_date,
                 settings,
             )?;
+        let (context_start, context_end) = reconciliation_context_bounds(day_start, day_end);
         let local_snapshot =
-            local_db.get_unified_day_local_snapshot_with_settings(&local_date, settings)?;
+            local_db.get_unified_local_snapshot_for_range(context_start, context_end)?;
         let proxy_snapshot = ProxyDatabase::get_global()
             .map(|db| {
                 db.get_day_dependency_snapshot(
-                    day_start.saturating_mul(1000),
-                    day_end.saturating_mul(1000),
+                    context_start.saturating_mul(1000),
+                    context_end.saturating_mul(1000),
                 )
             })
             .transpose()?
@@ -1440,6 +1478,9 @@ fn build_fact_backed_session_stats(
     let mut total_requests = 0_u64;
 
     for fact in session_facts {
+        if !fact.is_accounting_primary() {
+            continue;
+        }
         let request_count = fact.request_count.max(1);
         total_requests = total_requests.saturating_add(request_count);
         if !fact.model.trim().is_empty() {
@@ -1622,7 +1663,7 @@ async fn get_merged_sessions_with_db(
     // 事实向量来自共享 Arc（只读），会话分桶只借用引用，避免整表深拷贝。
     let mut by_session: HashMap<String, Vec<&MergedRequestFact>> = HashMap::new();
     for fact in facts.iter() {
-        if fact.session_id.trim().is_empty() {
+        if !fact.is_accounting_primary() || fact.session_id.trim().is_empty() {
             continue;
         }
         by_session
@@ -1809,6 +1850,9 @@ pub(crate) async fn get_manual_attribution_request_keys_for_session(
     .await?;
     let mut request_keys = std::collections::BTreeSet::new();
     for fact in facts {
+        if !fact.is_accounting_primary() {
+            continue;
+        }
         let request_key = fact.canonical_request_key.trim();
         if !request_key.is_empty() {
             request_keys.insert(request_key.to_string());
@@ -1837,6 +1881,9 @@ pub(crate) async fn get_manual_attribution_request_keys_for_time_range(
             .await?;
     let mut request_keys = std::collections::BTreeSet::new();
     for fact in facts.iter() {
+        if !fact.is_accounting_primary() {
+            continue;
+        }
         let request_key = fact.canonical_request_key.trim();
         if !request_key.is_empty() {
             request_keys.insert(request_key.to_string());
@@ -1926,7 +1973,7 @@ pub async fn get_merged_session_detail(
     .await?;
     let session_facts: Vec<&MergedRequestFact> = facts
         .iter()
-        .filter(|fact| fact.session_id == session_id)
+        .filter(|fact| fact.is_accounting_primary() && fact.session_id == session_id)
         .collect();
 
     if session_facts.is_empty() {
@@ -2005,6 +2052,9 @@ async fn get_merged_project_stats_with_db(
     // 事实向量来自共享 Arc（只读），聚合循环仅读取字段并按需 clone 字符串，
     // 借用遍历即可，无需事实所有权。
     for fact in facts.iter() {
+        if !fact.is_accounting_primary() {
+            continue;
+        }
         let descriptor = project_descriptor_for_fact(fact);
         let entry = map
             .entry(descriptor.key.clone())
@@ -2178,6 +2228,39 @@ mod tests {
     }
 
     #[test]
+    fn reconciliation_context_bounds_cover_both_sides_without_overflow() {
+        let (start, end) = reconciliation_context_bounds(1_000, 2_000);
+        assert_eq!(start, 1_000 - RECONCILIATION_CONTEXT_TOLERANCE_SECS);
+        assert_eq!(end, 2_000 + RECONCILIATION_CONTEXT_TOLERANCE_SECS);
+
+        let (start, end) = reconciliation_context_bounds(0, i64::MAX);
+        assert_eq!(start, 0);
+        assert_eq!(end, i64::MAX);
+    }
+
+    #[test]
+    fn merged_fact_keeps_local_day_ownership_when_proxy_timestamp_crosses_boundary() {
+        let local = crate::session::LocalRequestRecord {
+            session_id: "claude_code::session".to_string(),
+            tool: "claude_code".to_string(),
+            timestamp: 86_399,
+            message_id: "local-message".to_string(),
+            model: "claude-sonnet".to_string(),
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            ..Default::default()
+        };
+        let mut fact = MergedRequestFact::from_local(&local, None, 0.0);
+        // The proxy response completed two seconds into the next day, while the
+        // canonical local observation still belongs to the previous day.
+        fact.timestamp_ms = 86_401_000;
+
+        assert!(fact_in_requested_range(&fact, 0, 86_400));
+        assert!(!fact_in_requested_range(&fact, 86_400, 172_800));
+    }
+
+    #[test]
     fn merge_cache_key_includes_day_boundary_mode() {
         let standard = sample_settings("standard");
         let night_owl = sample_settings("night_owl");
@@ -2346,6 +2429,7 @@ mod tests {
             source_label: None,
             attribution_source_id: None,
             attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
+            reconciliation: crate::unified_usage::ReconciliationMetadata::default(),
         };
 
         assert!(fact_tool_matches(&fact, &ToolFilter::All));

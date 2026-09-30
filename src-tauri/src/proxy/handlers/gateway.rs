@@ -438,6 +438,16 @@ fn sanitize_client_label(value: Option<&HeaderValue>) -> Result<Option<String>, 
     Ok(Some(value.to_string()))
 }
 
+fn trusted_gateway_caller_label(
+    profile: &GatewayProfile,
+    header: Option<&HeaderValue>,
+) -> Result<Option<String>, GatewayRouteError> {
+    // The header remains validated so malformed input is rejected consistently,
+    // but its value is deliberately ignored for identity attribution.
+    sanitize_client_label(header)?;
+    Ok((!profile.client_label.trim().is_empty()).then(|| profile.client_label.trim().to_string()))
+}
+
 fn remove_client_label_header(headers: &mut hyper::HeaderMap) {
     headers.remove(HeaderName::from_static(CLIENT_LABEL_HEADER));
 }
@@ -998,17 +1008,20 @@ pub(crate) async fn handle_gateway_request(
     if is_upgrade_request(req.headers()) {
         return Ok(GatewayRouteError::MethodNotAllowed.response());
     }
-    let caller_label = match sanitize_client_label(req.headers().get(CLIENT_LABEL_HEADER)) {
-        Ok(label) => label.or_else(|| {
-            (!route.profile.client_label.trim().is_empty())
-                .then(|| route.profile.client_label.trim().to_string())
-        }),
+    // Validate and consume the optional hint for compatibility, but never trust
+    // it as an identity. A caller can freely forge this header on the loopback
+    // gateway; reconciliation must use the configured profile label instead.
+    let caller_label = match trusted_gateway_caller_label(
+        &route.profile,
+        req.headers().get(CLIENT_LABEL_HEADER),
+    ) {
+        Ok(label) => label,
         Err(error) => return Ok(error.response()),
     };
     let request_headers = req.headers().clone();
     let mut headers = request_headers.clone();
     let mut selected_upstream_key_id = None;
-    let managed_key_remark = if route.profile.auth_mode == GatewayAuthMode::ManagedKeys {
+    if route.profile.auth_mode == GatewayAuthMode::ManagedKeys {
         let local_key = incoming_local_key(&route.profile, &headers, raw_query)
             .and_then(|value| {
                 route.profile.local_keys.iter().find(|key| {
@@ -1071,10 +1084,7 @@ pub(crate) async fn handle_gateway_request(
             return Ok(error.response());
         }
         selected_upstream_key_id = Some(upstream_key.id.clone());
-        (!local_key.remark.is_empty()).then(|| local_key.remark.clone())
-    } else {
-        None
-    };
+    }
     remove_client_label_header(&mut headers);
 
     let request_start_time_ms = chrono::Utc::now().timestamp_millis();
@@ -1098,7 +1108,7 @@ pub(crate) async fn handle_gateway_request(
         )),
         ingress_kind: "gateway".to_string(),
         gateway_profile_id: Some(route.profile.id.clone()),
-        gateway_caller_label: managed_key_remark.or(caller_label),
+        gateway_caller_label: caller_label,
         usage_source: "provider".to_string(),
         gateway_request_id: Some(format!(
             "gw-{:x}-{:x}",
@@ -1411,6 +1421,20 @@ mod tests {
         headers.insert(CLIENT_LABEL_HEADER, value);
         remove_client_label_header(&mut headers);
         assert!(headers.get(CLIENT_LABEL_HEADER).is_none());
+    }
+
+    #[test]
+    fn gateway_identity_ignores_forged_client_label_header() {
+        let mut configured = profile("claude", GatewayProtocol::AnthropicMessages);
+        configured.client_label = "Claude Code".to_string();
+        let forged = HeaderValue::from_static("Codex");
+
+        assert_eq!(
+            trusted_gateway_caller_label(&configured, Some(&forged))
+                .unwrap()
+                .as_deref(),
+            Some("Claude Code")
+        );
     }
 
     #[test]

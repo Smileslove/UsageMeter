@@ -82,9 +82,14 @@ pub struct LimitSurvivalSnapshot {
 
 /// 装配本地生存快照。`facts` 需按 `timestamp_sec` 升序，`now_epoch` 为秒。
 pub fn build_limit_survival(facts: &[MergedRequestFact], now_epoch: i64) -> LimitSurvivalSnapshot {
-    let burn = compute_burn_rate(facts, now_epoch);
-    let baseline = compute_baseline(facts, now_epoch, burn.tokens_per_hour);
-    let block = compute_current_block(facts, now_epoch, burn.tokens_per_hour);
+    let primary_facts: Vec<MergedRequestFact> = facts
+        .iter()
+        .filter(|fact| fact.is_accounting_primary())
+        .cloned()
+        .collect();
+    let burn = compute_burn_rate(&primary_facts, now_epoch);
+    let baseline = compute_baseline(&primary_facts, now_epoch, burn.tokens_per_hour);
+    let block = compute_current_block(&primary_facts, now_epoch, burn.tokens_per_hour);
 
     let source_kind = if baseline.is_some() {
         SurvivalSourceKind::Baseline
@@ -272,6 +277,7 @@ mod tests {
             source_label: None,
             attribution_source_id: None,
             attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
+            reconciliation: crate::unified_usage::ReconciliationMetadata::default(),
         }
     }
 

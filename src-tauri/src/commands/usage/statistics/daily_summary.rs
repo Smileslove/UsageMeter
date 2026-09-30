@@ -250,6 +250,9 @@ fn build_daily_summary_from_facts(
     let mut models = std::collections::HashSet::new();
     let mut success_models = std::collections::HashSet::new();
     for fact in facts {
+        if !fact.is_accounting_primary() {
+            continue;
+        }
         let request_count = fact.request_count.max(1);
         summary.request_count += request_count;
         let visible = fact.status_code.map(|code| code < 300).unwrap_or(true);
@@ -315,6 +318,9 @@ fn build_daily_model_summaries_from_facts(
     let mut by_model: HashMap<String, crate::local_usage::UnifiedDailyModelSummaryRow> =
         HashMap::new();
     for fact in facts {
+        if !fact.is_accounting_primary() {
+            continue;
+        }
         let model_name = normalize_model_bucket(&fact.tool, &fact.model);
         let entry = by_model.entry(model_name.clone()).or_insert_with(|| {
             crate::local_usage::UnifiedDailyModelSummaryRow {
@@ -870,6 +876,7 @@ mod tests {
             source_label: None,
             attribution_source_id: None,
             attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
+            reconciliation: crate::unified_usage::ReconciliationMetadata::default(),
         }
     }
 

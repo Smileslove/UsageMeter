@@ -20,7 +20,7 @@ impl LocalUsageDatabase {
 
     pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 34 {
+        if schema_version >= 35 {
             return Ok(());
         }
         let mut cleared_runtime_caches = false;
@@ -1132,6 +1132,44 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to update v34 schema version: {e}"))?;
             tx.commit()
                 .map_err(|e| format!("Failed to commit v34 schema migration: {e}"))?;
+            cleared_runtime_caches = true;
+        }
+
+        if schema_version < 35 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v35 schema migration: {e}"))?;
+            for (column, definition) in [
+                ("observation_sources", "TEXT NOT NULL DEFAULT 'unknown'"),
+                ("reconciliation_status", "TEXT NOT NULL DEFAULT 'unmatched'"),
+                ("reconciliation_method", "TEXT"),
+                ("reconciliation_confidence", "TEXT NOT NULL DEFAULT 'low'"),
+                ("accounting_role", "TEXT NOT NULL DEFAULT 'primary'"),
+                ("local_observation_key", "TEXT"),
+                ("proxy_observation_id", "TEXT"),
+            ] {
+                Self::add_column_if_missing(
+                    &tx,
+                    "unified_daily_materialized_facts",
+                    column,
+                    definition,
+                )?;
+            }
+            // These columns describe derived reconciliation output. Rebuild the
+            // materialized rows so legacy facts receive metadata from current
+            // local/proxy observations instead of an invented historical guess.
+            Self::clear_unified_materialization_tx(&tx, chrono::Utc::now().timestamp())?;
+            tx.execute(
+                "INSERT INTO local_sync_state (state_key, state_value, updated_at)
+                 VALUES ('schema_version', '35', ?1)
+                 ON CONFLICT(state_key) DO UPDATE
+                 SET state_value = excluded.state_value,
+                     updated_at = excluded.updated_at",
+                params![chrono::Utc::now().timestamp()],
+            )
+            .map_err(|e| format!("Failed to update v35 schema version: {e}"))?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v35 schema migration: {e}"))?;
             cleared_runtime_caches = true;
         }
 

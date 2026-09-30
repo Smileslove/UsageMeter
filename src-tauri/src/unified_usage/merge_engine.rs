@@ -3,9 +3,9 @@ use super::match_support::{
     request_key_for_proxy,
 };
 use super::types::{
-    codex_orphan_pools, find_codex_fuzzy_matches, has_partial_coverage,
-    session_meta_lookup_key_for_proxy, CodexFuzzyOutcome, CoverageOrigin, MergedCoverage,
-    MergedRequestFact,
+    adapter_orphan_pools, codex_orphan_pools, find_adapter_fuzzy_matches, find_codex_fuzzy_matches,
+    has_partial_coverage, session_meta_lookup_key_for_proxy, AdapterFuzzyOutcome,
+    CodexFuzzyOutcome, CoverageOrigin, MergedCoverage, MergedRequestFact,
 };
 use crate::models::ModelPricingConfig;
 use crate::proxy::UsageRecord;
@@ -28,6 +28,9 @@ pub(crate) fn build_coverage(facts: &[MergedRequestFact]) -> MergedCoverage {
     let mut coverage = MergedCoverage::default();
 
     for fact in facts {
+        if !fact.is_accounting_primary() {
+            continue;
+        }
         match fact.coverage_origin {
             CoverageOrigin::ProxyOnly => coverage.proxy_backed_requests += 1,
             CoverageOrigin::LocalOnly => coverage.local_only_requests += 1,
@@ -57,11 +60,38 @@ fn build_local_request_index(
 }
 
 fn build_proxy_request_index(proxy_records: &[UsageRecord]) -> HashMap<String, UsageRecord> {
-    proxy_records
-        .iter()
-        .cloned()
-        .map(|record| (request_key_for_proxy(&record), record))
-        .collect()
+    let mut grouped: HashMap<String, Vec<UsageRecord>> = HashMap::new();
+    for record in proxy_records {
+        grouped
+            .entry(request_key_for_proxy(record))
+            .or_default()
+            .push(record.clone());
+    }
+
+    let mut index = HashMap::new();
+    for (base_key, records) in grouped {
+        if records.len() == 1 {
+            let record = records.into_iter().next().expect("one grouped record");
+            index.insert(base_key, record);
+            continue;
+        }
+
+        // A provider message id is only unique within one observation stream. Keep
+        // colliding Gateway/direct observations visible instead of letting HashMap
+        // insertion silently drop all but the last record.
+        for (ordinal, mut record) in records.into_iter().enumerate() {
+            let observation_id = record
+                .storage_dedupe_key
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .or(record.gateway_request_id.as_deref())
+                .unwrap_or(record.message_id.as_str());
+            let key = format!("{base_key}#proxy:{observation_id}:{ordinal}");
+            record.canonical_request_key = Some(key.clone());
+            index.insert(key, record);
+        }
+    }
+    index
 }
 
 /// 合并本地事实与代理事实。该函数只操作调用方传入的内存快照，不访问数据库、
@@ -102,10 +132,18 @@ pub(super) fn merge_realtime_facts(input: RealtimeMergeInput) -> Vec<MergedReque
         &codex_proxy_orphans_visible,
         &codex_proxy_orphans_all_extra,
     );
+    let (adapter_local_orphans, adapter_proxy_orphans_visible, adapter_proxy_orphans_all_extra) =
+        adapter_orphan_pools(&local_index, &proxy_index, &all_proxy_index);
+    let adapter_fuzzy_outcomes = find_adapter_fuzzy_matches(
+        &adapter_local_orphans,
+        &adapter_proxy_orphans_visible,
+        &adapter_proxy_orphans_all_extra,
+    );
 
     let mut fuzzy_consumed_local_keys = HashSet::new();
     let mut fuzzy_consumed_proxy_keys = HashSet::new();
     let mut fuzzy_suppressed_local_keys = HashSet::new();
+    let mut ambiguous_proxy_keys = HashSet::new();
     let mut pricing_cache = HashMap::new();
     let mut merged = Vec::new();
 
@@ -128,12 +166,59 @@ pub(super) fn merge_realtime_facts(input: RealtimeMergeInput) -> Vec<MergedReque
                     let mut fact =
                         MergedRequestFact::merge_proxy_preferred(proxy, local, meta, fallback_cost);
                     fact.coverage_origin = CoverageOrigin::MergedFuzzyMatched;
+                    fact.reconciliation = super::types::ReconciliationMetadata::fuzzy(
+                        proxy,
+                        local_key.clone(),
+                        "codex_token_fingerprint",
+                    );
                     merged.push(fact);
                     fuzzy_consumed_local_keys.insert(local_key);
                     fuzzy_consumed_proxy_keys.insert(proxy_key);
                 }
             }
             CodexFuzzyOutcome::SuppressedByFilteredProxy { local_key } => {
+                fuzzy_suppressed_local_keys.insert(local_key);
+            }
+        }
+    }
+
+    for outcome in adapter_fuzzy_outcomes {
+        match outcome {
+            AdapterFuzzyOutcome::MatchedVisible {
+                local_key,
+                proxy_key,
+            } => {
+                if let (Some(local), Some(proxy)) =
+                    (local_index.get(&local_key), proxy_index.get(&proxy_key))
+                {
+                    let meta = session_meta_by_id.get(&local.session_id);
+                    let fallback_cost = compute_local_request_cost_cached(
+                        local,
+                        &pricings,
+                        &pricing_match_mode,
+                        &mut pricing_cache,
+                    );
+                    let mut fact =
+                        MergedRequestFact::merge_proxy_preferred(proxy, local, meta, fallback_cost);
+                    fact.coverage_origin = CoverageOrigin::MergedFuzzyMatched;
+                    fact.reconciliation = super::types::ReconciliationMetadata::fuzzy(
+                        proxy,
+                        local_key.clone(),
+                        "adapter_token_fingerprint",
+                    );
+                    merged.push(fact);
+                    fuzzy_consumed_local_keys.insert(local_key);
+                    fuzzy_consumed_proxy_keys.insert(proxy_key);
+                }
+            }
+            AdapterFuzzyOutcome::SuppressedByAmbiguous {
+                local_key,
+                proxy_keys,
+            } => {
+                ambiguous_proxy_keys.extend(proxy_keys);
+                fuzzy_suppressed_local_keys.insert(local_key);
+            }
+            AdapterFuzzyOutcome::SuppressedByFilteredProxy { local_key } => {
                 fuzzy_suppressed_local_keys.insert(local_key);
             }
         }
@@ -146,6 +231,31 @@ pub(super) fn merge_realtime_facts(input: RealtimeMergeInput) -> Vec<MergedReque
     for key in keys {
         match (proxy_index.get(&key), local_index.get(&key)) {
             (Some(proxy), Some(local)) => {
+                if fuzzy_consumed_local_keys.contains(&key)
+                    || fuzzy_consumed_proxy_keys.contains(&key)
+                {
+                    continue;
+                }
+                if super::types::proxy_reconciliation_tool(proxy) != Some(local.tool.as_str())
+                    || !super::types::can_exact_reconcile(local, proxy)
+                {
+                    let proxy_meta = proxy.session_id.as_deref().and_then(|session_id| {
+                        session_meta_by_id.get(&session_meta_lookup_key_for_proxy(
+                            &proxy.client_tool,
+                            session_id,
+                        ))
+                    });
+                    merged.push(MergedRequestFact::from_proxy(proxy, proxy_meta));
+                    let local_cost = compute_local_request_cost_cached(
+                        local,
+                        &pricings,
+                        &pricing_match_mode,
+                        &mut pricing_cache,
+                    );
+                    let local_meta = session_meta_by_id.get(&local.session_id);
+                    merged.push(MergedRequestFact::from_local(local, local_meta, local_cost));
+                    continue;
+                }
                 let meta = session_meta_by_id.get(&local.session_id);
                 let fallback_cost = compute_local_request_cost_cached(
                     local,
@@ -170,10 +280,18 @@ pub(super) fn merge_realtime_facts(input: RealtimeMergeInput) -> Vec<MergedReque
                         session_id,
                     ))
                 });
-                merged.push(MergedRequestFact::from_proxy(proxy, meta));
+                let mut fact = MergedRequestFact::from_proxy(proxy, meta);
+                if ambiguous_proxy_keys.contains(&key) {
+                    fact.reconciliation =
+                        super::types::ReconciliationMetadata::ambiguous_proxy(proxy);
+                }
+                merged.push(fact);
             }
             (None, Some(local)) => {
-                if all_proxy_index.contains_key(&key)
+                let has_supported_filtered_proxy = all_proxy_index.get(&key).is_some_and(|proxy| {
+                    super::types::proxy_reconciliation_tool(proxy) == Some(local.tool.as_str())
+                });
+                if has_supported_filtered_proxy
                     || fuzzy_consumed_local_keys.contains(&key)
                     || fuzzy_suppressed_local_keys.contains(&key)
                 {
@@ -312,6 +430,105 @@ mod tests {
     }
 
     #[test]
+    fn adapter_fuzzy_match_merges_claude_records_when_ids_differ() {
+        let local = local("claude_code", "local-message-id", 1_700_000_000);
+        let mut input = input(vec![local]);
+        input.raw_proxy_records = vec![proxy(
+            "claude_code",
+            "provider-message-id",
+            1_700_000_000_250,
+        )];
+
+        let facts = merge_realtime_facts(input);
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].coverage_origin, CoverageOrigin::MergedFuzzyMatched);
+        assert_eq!(facts[0].tool, "claude_code");
+        assert_eq!(
+            facts[0].reconciliation.status,
+            super::super::types::ReconciliationStatus::Adapter
+        );
+    }
+
+    #[test]
+    fn adapter_fuzzy_match_merges_gemini_records_when_ids_differ() {
+        let local = local("gemini", "local-message-id", 1_700_000_000);
+        let mut input = input(vec![local]);
+        input.raw_proxy_records = vec![proxy("gemini", "provider-response-id", 1_700_000_000_250)];
+
+        let facts = merge_realtime_facts(input);
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].coverage_origin, CoverageOrigin::MergedFuzzyMatched);
+        assert_eq!(facts[0].tool, "gemini");
+    }
+
+    #[test]
+    fn adapter_fuzzy_match_merges_opencode_records_when_ids_differ() {
+        let local = local("opencode", "local-message-id", 1_700_000_000);
+        let mut input = input(vec![local]);
+        input.raw_proxy_records = vec![proxy("opencode", "provider-message-id", 1_700_000_000_250)];
+
+        let facts = merge_realtime_facts(input);
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].coverage_origin, CoverageOrigin::MergedFuzzyMatched);
+        assert_eq!(facts[0].tool, "opencode");
+    }
+
+    #[test]
+    fn gateway_adapter_fuzzy_match_merges_gemini_records() {
+        let local = local("gemini", "local-message-id", 1_700_000_000);
+        let mut gateway = proxy("api_gateway", "provider-response-id", 1_700_000_000_250);
+        gateway.ingress_kind = "gateway".to_string();
+        gateway.gateway_profile_id = Some("profile-1".to_string());
+        gateway.gateway_caller_label = Some("Gemini CLI".to_string());
+        gateway.canonical_request_key = Some("gateway:profile-1:gw-123-0".to_string());
+
+        let mut input = input(vec![local]);
+        input.raw_proxy_records = vec![gateway];
+        let facts = merge_realtime_facts(input);
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].coverage_origin, CoverageOrigin::MergedFuzzyMatched);
+        assert_eq!(facts[0].tool, "gemini");
+    }
+
+    #[test]
+    fn adapter_fuzzy_match_suppresses_ambiguous_local_duplicate() {
+        let local = local("claude_code", "local-message-id", 1_700_000_000);
+        let mut first = proxy("claude_code", "provider-message-1", 1_700_000_000_250);
+        let mut second = proxy("claude_code", "provider-message-2", 1_700_000_001_250);
+        first.model = "test-model".to_string();
+        second.model = "test-model".to_string();
+
+        let mut input = input(vec![local]);
+        input.raw_proxy_records = vec![first, second];
+        let facts = merge_realtime_facts(input);
+
+        assert_eq!(facts.len(), 2);
+        assert!(facts
+            .iter()
+            .all(|fact| fact.coverage_origin == CoverageOrigin::ProxyOnly));
+        assert!(facts.iter().all(|fact| {
+            fact.reconciliation.status == super::super::types::ReconciliationStatus::Ambiguous
+        }));
+    }
+
+    #[test]
+    fn filtered_adapter_proxy_suppresses_matching_local_duplicate() {
+        let local = local("gemini", "local-message-id", 1_700_000_000);
+        let mut input = input(vec![local]);
+        input.raw_unfiltered_proxy_records = Some(vec![proxy(
+            "gemini",
+            "provider-response-id",
+            1_700_000_000_250,
+        )]);
+
+        assert!(merge_realtime_facts(input).is_empty());
+    }
+
+    #[test]
     fn filtered_codex_proxy_suppresses_matching_local_duplicate() {
         let local = local("codex", "local-generated-id", 1_700_000_000);
         let mut input = input(vec![local]);
@@ -411,6 +628,41 @@ mod tests {
     }
 
     #[test]
+    fn gateway_unsupported_local_tool_label_stays_isolated() {
+        let local = local("qoder_cli", "chatcmpl-abc123", 1_700_000_000);
+        let mut input = input(vec![local]);
+        let mut gateway = proxy("api_gateway", "chatcmpl-abc123", 1_700_000_000_250);
+        gateway.ingress_kind = "gateway".to_string();
+        gateway.gateway_profile_id = Some("profile-1".to_string());
+        gateway.gateway_caller_label = Some("Qoder CLI".to_string());
+        gateway.canonical_request_key = Some("gateway:profile-1:gw-123-0".to_string());
+        input.raw_proxy_records = vec![gateway];
+
+        let facts = merge_realtime_facts(input);
+
+        assert_eq!(facts.len(), 2);
+        assert!(facts.iter().any(|fact| fact.tool == "qoder_cli"));
+        assert!(facts.iter().any(|fact| fact.tool == "api_gateway"));
+    }
+
+    #[test]
+    fn unsupported_direct_proxy_key_collision_stays_isolated() {
+        let local = local("qoder_cli", "same-id", 1_700_000_000);
+        let mut input = input(vec![local]);
+        input.raw_proxy_records = vec![proxy("qoder_cli", "same-id", 1_700_000_000_250)];
+
+        let facts = merge_realtime_facts(input);
+
+        assert_eq!(facts.len(), 2);
+        assert!(facts.iter().any(|fact| {
+            fact.tool == "qoder_cli" && fact.coverage_origin == CoverageOrigin::LocalOnly
+        }));
+        assert!(facts.iter().any(|fact| {
+            fact.tool == "qoder_cli" && fact.coverage_origin == CoverageOrigin::ProxyOnly
+        }));
+    }
+
+    #[test]
     fn gateway_record_with_fallback_message_id_stays_isolated() {
         // fallback 合成 message_id → 不参与归一化合并，保持 api_gateway 孤立显示。
         let local = local("claude_code", "chatcmpl-abc123", 1_700_000_000);
@@ -443,5 +695,68 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn fallback_ids_do_not_enter_exact_merge_when_fingerprint_does_not_match() {
+        let mut local = local("claude_code", "", 1_700_000_000);
+        local.request_key = None;
+        let mut proxy = proxy("claude_code", "provider-fallback", 1_700_000_000_250);
+        proxy.input_tokens = 999;
+        // Force both observations onto the same composite key. The key collision
+        // must still not be treated as proof of identity when the local side has
+        // no stable observation id.
+        proxy.canonical_request_key = Some(request_key_for_local(&local));
+
+        let mut input = input(vec![local]);
+        input.raw_proxy_records = vec![proxy];
+        let facts = merge_realtime_facts(input);
+
+        assert_eq!(facts.len(), 2);
+        assert!(facts
+            .iter()
+            .any(|fact| fact.coverage_origin == CoverageOrigin::LocalOnly));
+        assert!(facts
+            .iter()
+            .any(|fact| fact.coverage_origin == CoverageOrigin::ProxyOnly));
+    }
+
+    #[test]
+    fn duplicate_proxy_observations_with_same_message_id_are_not_dropped() {
+        let mut first = proxy("claude_code", "same-provider-id", 1_700_000_000_250);
+        first.storage_dedupe_key = Some("direct:first".to_string());
+        let mut second = first.clone();
+        second.storage_dedupe_key = Some("direct:second".to_string());
+        second.timestamp += 1_000;
+
+        let mut input = input(Vec::new());
+        input.raw_proxy_records = vec![first, second];
+        let facts = merge_realtime_facts(input);
+
+        assert_eq!(facts.len(), 2);
+        assert!(facts
+            .iter()
+            .all(|fact| fact.coverage_origin == CoverageOrigin::ProxyOnly));
+    }
+
+    #[test]
+    fn composite_local_request_keys_do_not_prove_exact_identity() {
+        let mut local = local("opencode", "same-id", 1_700_000_000);
+        local.request_key = Some("opencode:session-1|same-id".to_string());
+        let mut proxy = proxy("opencode", "provider-id", 1_700_000_000_250);
+        proxy.input_tokens = 999;
+        proxy.canonical_request_key = local.request_key.clone();
+
+        let mut input = input(vec![local]);
+        input.raw_proxy_records = vec![proxy];
+        let facts = merge_realtime_facts(input);
+
+        assert_eq!(facts.len(), 2);
+        assert!(facts
+            .iter()
+            .any(|fact| fact.coverage_origin == CoverageOrigin::LocalOnly));
+        assert!(facts
+            .iter()
+            .any(|fact| fact.coverage_origin == CoverageOrigin::ProxyOnly));
     }
 }

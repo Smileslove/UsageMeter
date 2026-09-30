@@ -133,6 +133,9 @@ struct CoverageAccumulator {
 
 impl CoverageAccumulator {
     fn add_fact(&mut self, fact: &MergedRequestFact) {
+        if !fact.is_accounting_primary() {
+            return;
+        }
         let request_count = fact.request_count.max(1);
         match fact.coverage_origin {
             crate::unified_usage::CoverageOrigin::ProxyOnly => {
@@ -357,6 +360,9 @@ pub(super) fn build_window_usage_from_facts(
     let mut model_stats: HashMap<String, ModelTokenTotals> = HashMap::new();
 
     for fact in facts {
+        if !fact.is_accounting_primary() {
+            continue;
+        }
         overall.add_fact(fact);
 
         let model_name = normalize_model_bucket(&fact.tool, &fact.model);
@@ -443,6 +449,9 @@ pub(super) fn build_model_token_totals_from_facts(
     let mut model_stats: HashMap<String, ModelTokenTotals> = HashMap::new();
 
     for fact in facts {
+        if !fact.is_accounting_primary() {
+            continue;
+        }
         let model_name = normalize_model_bucket(&fact.tool, &fact.model);
         if model_name == "unknown" {
             continue;
@@ -485,6 +494,9 @@ pub(super) fn summarize_status_counts(facts: &[MergedRequestFact]) -> (u64, u64,
     let mut server_error_requests = 0_u64;
 
     for fact in facts {
+        if !fact.is_accounting_primary() {
+            continue;
+        }
         let request_count = fact.request_count.max(1);
         if let Some(status_code) = fact.status_code {
             if (200..300).contains(&status_code) {

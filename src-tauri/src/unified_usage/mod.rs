@@ -25,7 +25,9 @@ pub(crate) use service::{
     load_cold_facts_via_shards, runtime_merge_cache_len_for_test,
     seed_runtime_merge_cache_for_test, ColdFactsShardCache,
 };
+#[allow(unused_imports)]
 pub(crate) use types::{
     canonical_request_key_for_local, has_partial_coverage, matches_source_filter,
-    normalize_model_bucket, AttributionMethod, CoverageOrigin, MergedRequestFact,
+    normalize_model_bucket, AccountingRole, AttributionMethod, CoverageOrigin, MergedRequestFact,
+    ObservationSources, ReconciliationConfidence, ReconciliationMetadata, ReconciliationStatus,
 };

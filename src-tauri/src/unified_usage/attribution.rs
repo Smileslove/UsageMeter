@@ -216,6 +216,7 @@ mod tests {
             source_label: None,
             attribution_source_id: None,
             attribution_method: AttributionMethod::Unattributed,
+            reconciliation: crate::unified_usage::ReconciliationMetadata::default(),
         }
     }
 

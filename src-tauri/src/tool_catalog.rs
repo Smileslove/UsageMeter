@@ -16,6 +16,9 @@ pub struct ToolDescriptor {
     pub path_prefix: &'static str,
     pub has_local_sessions: bool,
     pub supports_proxy: bool,
+    /// Whether local observations and proxy observations can be reconciled
+    /// without treating a free-form Gateway client label as proof of identity.
+    pub supports_reconciliation: bool,
 }
 
 const TOOLS: &[ToolDescriptor] = &[
@@ -24,30 +27,35 @@ const TOOLS: &[ToolDescriptor] = &[
         path_prefix: "claude-code",
         has_local_sessions: true,
         supports_proxy: true,
+        supports_reconciliation: true,
     },
     ToolDescriptor {
         id: TOOL_CODEX,
         path_prefix: "codex",
         has_local_sessions: true,
         supports_proxy: true,
+        supports_reconciliation: true,
     },
     ToolDescriptor {
         id: TOOL_DEEPSEEK_HARNESS,
         path_prefix: "deepseek-harness",
         has_local_sessions: true,
         supports_proxy: false,
+        supports_reconciliation: false,
     },
     ToolDescriptor {
         id: TOOL_OPENCLAW,
         path_prefix: "openclaw",
         has_local_sessions: true,
         supports_proxy: false,
+        supports_reconciliation: false,
     },
     ToolDescriptor {
         id: TOOL_OPENCODE,
         path_prefix: "opencode",
         has_local_sessions: true,
         supports_proxy: true,
+        supports_reconciliation: true,
     },
     ToolDescriptor {
         id: TOOL_REASONIX,
@@ -57,54 +65,63 @@ const TOOLS: &[ToolDescriptor] = &[
         // （supports_proxy），ReasonX 数据统一由代理/网关提供。
         has_local_sessions: false,
         supports_proxy: true,
+        supports_reconciliation: false,
     },
     ToolDescriptor {
         id: TOOL_GEMINI,
         path_prefix: "gemini",
         has_local_sessions: true,
         supports_proxy: true,
+        supports_reconciliation: true,
     },
     ToolDescriptor {
         id: TOOL_HERMES,
         path_prefix: "hermes",
         has_local_sessions: true,
         supports_proxy: false,
+        supports_reconciliation: false,
     },
     ToolDescriptor {
         id: TOOL_COPILOT,
         path_prefix: "copilot",
         has_local_sessions: true,
         supports_proxy: false,
+        supports_reconciliation: false,
     },
     ToolDescriptor {
         id: TOOL_QODER_IDE,
         path_prefix: "qoder_ide",
         has_local_sessions: true,
         supports_proxy: false,
+        supports_reconciliation: false,
     },
     ToolDescriptor {
         id: TOOL_QODER_IDE_CN,
         path_prefix: "qoder_ide_cn",
         has_local_sessions: true,
         supports_proxy: false,
+        supports_reconciliation: false,
     },
     ToolDescriptor {
         id: TOOL_QODER_CLI,
         path_prefix: "qoder_cli",
         has_local_sessions: true,
         supports_proxy: false,
+        supports_reconciliation: false,
     },
     ToolDescriptor {
         id: TOOL_QODER_WORK,
         path_prefix: "qoder_work",
         has_local_sessions: true,
         supports_proxy: false,
+        supports_reconciliation: false,
     },
     ToolDescriptor {
         id: TOOL_QODER_WORK_CN,
         path_prefix: "qoder_work_cn",
         has_local_sessions: true,
         supports_proxy: false,
+        supports_reconciliation: false,
     },
 ];
 
@@ -140,5 +157,14 @@ mod tests {
         assert_eq!(find("claude_code").unwrap().path_prefix, "claude-code");
         assert!(find("codex").unwrap().supports_proxy);
         assert!(!find("qoder_cli").unwrap().supports_proxy);
+        assert!(find("claude_code").unwrap().supports_reconciliation);
+        assert!(find("codex").unwrap().supports_reconciliation);
+        assert!(find("opencode").unwrap().supports_reconciliation);
+        assert!(find("gemini").unwrap().supports_reconciliation);
+        assert!(!find("reasonix").unwrap().supports_reconciliation);
+        assert!(!find("qoder_cli").unwrap().supports_reconciliation);
+        assert!(!find("copilot").unwrap().supports_reconciliation);
+        assert!(!find("hermes").unwrap().supports_reconciliation);
+        assert!(!find("openclaw").unwrap().supports_reconciliation);
     }
 }

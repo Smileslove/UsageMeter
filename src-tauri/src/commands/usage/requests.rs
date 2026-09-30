@@ -25,6 +25,13 @@ pub struct RequestRecordItem {
     pub source_label: Option<String>,
     pub attribution_source_id: Option<String>,
     pub attribution_method: String,
+    pub observation_sources: String,
+    pub reconciliation_status: String,
+    pub reconciliation_method: Option<String>,
+    pub reconciliation_confidence: String,
+    pub accounting_role: String,
+    pub local_observation_key: Option<String>,
+    pub proxy_observation_id: Option<String>,
     pub api_key_prefix: Option<String>,
     pub request_base_url: Option<String>,
     pub tool: String,
@@ -71,7 +78,10 @@ pub async fn get_recent_request_records(
     // 事实向量来自共享 Arc，不能原地排序；先按引用做稳定排序（与原先对整表
     // sort_by_key 的顺序语义一致），再只克隆分页命中的至多 limit 条记录，
     // 避免为全量历史事实付一次深拷贝。
-    let mut ordered: Vec<&MergedRequestFact> = facts.iter().collect();
+    let mut ordered: Vec<&MergedRequestFact> = facts
+        .iter()
+        .filter(|fact| fact.is_accounting_primary())
+        .collect();
     ordered.sort_by_key(|fact| std::cmp::Reverse(fact.timestamp_ms));
 
     Ok(ordered
@@ -112,6 +122,21 @@ fn map_fact_to_item(fact: &MergedRequestFact) -> RequestRecordItem {
         source_label: fact.source_label.clone(),
         attribution_source_id: fact.attribution_source_id.clone(),
         attribution_method: fact.attribution_method.as_str().to_string(),
+        observation_sources: fact
+            .reconciliation
+            .observation_sources
+            .as_storage_str()
+            .to_string(),
+        reconciliation_status: fact.reconciliation.status.as_storage_str().to_string(),
+        reconciliation_method: fact.reconciliation.method.clone(),
+        reconciliation_confidence: fact.reconciliation.confidence.as_storage_str().to_string(),
+        accounting_role: fact
+            .reconciliation
+            .accounting_role
+            .as_storage_str()
+            .to_string(),
+        local_observation_key: fact.reconciliation.local_observation_key.clone(),
+        proxy_observation_id: fact.reconciliation.proxy_observation_id.clone(),
         api_key_prefix: fact.api_key_prefix.clone(),
         request_base_url: fact.request_base_url.clone(),
         tool: fact.tool.clone(),
@@ -295,7 +320,8 @@ pub async fn get_request_records_page(
         .iter()
         .enumerate()
         .filter(|(_, fact)| {
-            fact_matches_status(fact, status)
+            fact.is_accounting_primary()
+                && fact_matches_status(fact, status)
                 && fact_matches_coverage(fact, coverage)
                 && fact_matches_performance(fact, performance)
                 && fact_matches_search(fact, &search)
@@ -359,6 +385,7 @@ mod tests {
             source_label: None,
             attribution_source_id: None,
             attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
+            reconciliation: crate::unified_usage::ReconciliationMetadata::default(),
         }
     }
 

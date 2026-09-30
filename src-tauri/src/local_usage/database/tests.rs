@@ -897,7 +897,7 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
             |row| row.get(0),
         )
         .expect("read schema version");
-    assert_eq!(schema_version, "34");
+    assert_eq!(schema_version, "35");
     for table in ["local_sessions", "remote_sessions"] {
         let columns: Vec<String> = conn
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -1094,7 +1094,7 @@ fn local_session_scope_round_trips_from_database() {
 }
 
 #[test]
-fn v34_migration_clears_stale_unified_materialization() {
+fn v35_migration_clears_stale_unified_materialization() {
     let (tmpdir, db) = temp_db();
     let path = tmpdir.path().join("local_usage.db");
     {
@@ -1116,7 +1116,7 @@ fn v34_migration_clears_stale_unified_materialization() {
     }
     drop(db);
 
-    let migrated = LocalUsageDatabase::new_with_path(&path).expect("migrate to v34");
+    let migrated = LocalUsageDatabase::new_with_path(&path).expect("migrate to v35");
     let conn = migrated.conn.lock().unwrap();
     let schema_version: String = conn
         .query_row(
@@ -1133,7 +1133,7 @@ fn v34_migration_clears_stale_unified_materialization() {
         )
         .expect("count materialized facts");
 
-    assert_eq!(schema_version, "34");
+    assert_eq!(schema_version, "35");
     assert_eq!(materialized_count, 0);
 }
 
@@ -1870,6 +1870,17 @@ fn unified_materialized_facts_round_trip() {
         source_label: Some("sk-ant-1234".to_string()),
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        reconciliation: unified_usage::ReconciliationMetadata {
+            observation_sources: unified_usage::ObservationSources::from_storage_str(
+                "local_file+gateway",
+            ),
+            status: unified_usage::ReconciliationStatus::Exact,
+            method: Some("canonical_request_key".to_string()),
+            confidence: unified_usage::ReconciliationConfidence::High,
+            accounting_role: unified_usage::AccountingRole::Primary,
+            local_observation_key: Some("claude_code:msg-1".to_string()),
+            proxy_observation_id: Some("gw-1".to_string()),
+        },
     };
     let state = UnifiedDayMaterializationState {
         local_date: local_date.clone(),
@@ -1914,10 +1925,31 @@ fn unified_materialized_facts_round_trip() {
     assert_eq!(loaded[0].project_name, fact.project_name);
     assert_eq!(loaded[0].request_base_url, fact.request_base_url);
     assert_eq!(loaded[0].coverage_origin, fact.coverage_origin);
+    assert_eq!(loaded[0].reconciliation, fact.reconciliation);
     assert_eq!(loaded[0].status_code, fact.status_code);
     assert_eq!(
         loaded[0].output_tokens_per_second,
         fact.output_tokens_per_second
+    );
+
+    let session_loaded = db
+        .get_unified_facts_for_session_dates(
+            std::slice::from_ref(&local_date),
+            &fact.session_id,
+            &ToolFilter::All,
+        )
+        .expect("load session facts");
+    assert_eq!(session_loaded.len(), 1);
+    assert_eq!(session_loaded[0].estimated, fact.estimated);
+    assert_eq!(session_loaded[0].reconciliation, fact.reconciliation);
+
+    let by_date = db
+        .get_unified_facts_by_date(std::slice::from_ref(&local_date))
+        .expect("load facts by date");
+    assert_eq!(by_date.get(&local_date).map(Vec::len), Some(1));
+    assert_eq!(
+        by_date[&local_date][0].reconciliation.proxy_observation_id,
+        fact.reconciliation.proxy_observation_id
     );
 
     let summaries = db
@@ -1930,6 +1962,143 @@ fn unified_materialized_facts_round_trip() {
     assert_eq!(summaries[0].success_request_count, 1);
     assert_eq!(summaries[0].model_count, 1);
     assert_eq!(summaries[0].success_model_count, 1);
+}
+
+#[test]
+fn unified_materialized_summaries_exclude_non_primary_facts() {
+    let (_tmp, db) = temp_db();
+    let local_date = "2026-05-26".to_string();
+    let primary = MergedRequestFact {
+        canonical_request_key: "claude_code:primary".to_string(),
+        session_id: "sess-primary".to_string(),
+        tool: "claude_code".to_string(),
+        timestamp_sec: 1_779_811_200,
+        timestamp_ms: 1_779_811_200_123,
+        model: "claude-sonnet-4".to_string(),
+        input_tokens: 10,
+        output_tokens: 20,
+        total_tokens: 30,
+        request_count: 1,
+        estimated_cost: 1.0,
+        coverage_origin: CoverageOrigin::ProxyOnly,
+        status_code: Some(200),
+        reconciliation: unified_usage::ReconciliationMetadata::default(),
+        ..MergedRequestFact::from_local(
+            &crate::session::LocalRequestRecord {
+                session_id: "sess-primary".to_string(),
+                tool: "claude_code".to_string(),
+                timestamp: 1_779_811_200,
+                message_id: "primary".to_string(),
+                input_tokens: 10,
+                output_tokens: 20,
+                total_tokens: 30,
+                model: "claude-sonnet-4".to_string(),
+                ..Default::default()
+            },
+            None,
+            1.0,
+        )
+    };
+    let mut shadow = primary.clone();
+    shadow.canonical_request_key = "claude_code:shadow".to_string();
+    shadow.session_id = "sess-shadow".to_string();
+    shadow.reconciliation.accounting_role = unified_usage::AccountingRole::Shadow;
+
+    db.replace_unified_day_materialization(
+        &local_date,
+        &[
+            (primary.canonical_request_key.clone(), primary),
+            (shadow.canonical_request_key.clone(), shadow),
+        ],
+        &UnifiedDayMaterializationState {
+            local_date: local_date.clone(),
+            day_boundary_mode: "standard".to_string(),
+            fact_count: 2,
+            local_request_count: 0,
+            local_max_sync_version: 0,
+            local_max_timestamp: 0,
+            remote_request_count: 2,
+            remote_max_export_seq: 0,
+            remote_max_timestamp: 0,
+            proxy_record_count: 2,
+            proxy_all_record_count: 2,
+            proxy_max_timestamp_ms: 1_779_811_200_123,
+            proxy_max_updated_at: 100,
+            max_fact_timestamp_ms: 1_779_811_200_123,
+            pricing_fingerprint: 1,
+            is_finalized: true,
+            finalized_at: Some(100),
+            materialized_at: 100,
+        },
+    )
+    .unwrap();
+
+    let summaries = db
+        .get_unified_daily_summaries_between("2026-05-26", "2026-05-27")
+        .unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].request_count, 1);
+    assert_eq!(summaries[0].total_tokens, 30);
+}
+
+#[test]
+fn unified_materialization_disambiguates_duplicate_request_keys() {
+    let (_tmp, db) = temp_db();
+    let local_date = "2026-05-26".to_string();
+    let first = MergedRequestFact::from_local(
+        &crate::session::LocalRequestRecord {
+            session_id: "sess-one".to_string(),
+            tool: "claude_code".to_string(),
+            timestamp: 1_779_811_200,
+            message_id: "same-message".to_string(),
+            input_tokens: 10,
+            output_tokens: 20,
+            total_tokens: 30,
+            model: "claude-sonnet-4".to_string(),
+            ..Default::default()
+        },
+        None,
+        1.0,
+    );
+    let mut second = first.clone();
+    second.session_id = "sess-two".to_string();
+    second.timestamp_ms += 1;
+    second.reconciliation.local_observation_key = Some("local-two".to_string());
+
+    db.replace_unified_day_materialization(
+        &local_date,
+        &[
+            ("same-key".to_string(), first),
+            ("same-key".to_string(), second),
+        ],
+        &UnifiedDayMaterializationState {
+            local_date: local_date.clone(),
+            day_boundary_mode: "standard".to_string(),
+            fact_count: 2,
+            local_request_count: 2,
+            local_max_sync_version: 0,
+            local_max_timestamp: 1_779_811_200,
+            remote_request_count: 0,
+            remote_max_export_seq: 0,
+            remote_max_timestamp: 0,
+            proxy_record_count: 0,
+            proxy_all_record_count: 0,
+            proxy_max_timestamp_ms: 0,
+            proxy_max_updated_at: 0,
+            max_fact_timestamp_ms: 1_779_811_200_124,
+            pricing_fingerprint: 1,
+            is_finalized: true,
+            finalized_at: Some(100),
+            materialized_at: 100,
+        },
+    )
+    .expect("duplicate keys should be disambiguated");
+
+    let loaded = db
+        .get_unified_facts_for_dates(std::slice::from_ref(&local_date), &ToolFilter::All)
+        .expect("load duplicate facts");
+    assert_eq!(loaded.len(), 2);
+    assert_ne!(loaded[0].session_id, loaded[1].session_id);
 }
 
 #[test]
@@ -2009,6 +2178,7 @@ fn unified_materialization_state_persists_day_boundary_mode() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
 
     db.replace_unified_day_materialization(
@@ -2133,6 +2303,7 @@ fn cold_facts_shard_cache_only_refetches_rematerialized_day() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     let build_state =
         |local_date: &str, fact_count: u64, materialized_at: i64| UnifiedDayMaterializationState {
@@ -2296,6 +2467,50 @@ fn unified_day_local_snapshot_with_settings_uses_passed_day_boundary_mode() {
 }
 
 #[test]
+fn unified_local_snapshot_for_range_includes_reconciliation_context() {
+    let (_tmp, db) = temp_db();
+    insert_request_fact(
+        &db,
+        "sess-before",
+        "msg-before",
+        "/tmp/before.jsonl",
+        true,
+        99,
+    );
+    insert_request_fact(
+        &db,
+        "sess-inside",
+        "msg-inside",
+        "/tmp/inside.jsonl",
+        true,
+        100,
+    );
+    insert_request_fact(
+        &db,
+        "sess-after",
+        "msg-after",
+        "/tmp/after.jsonl",
+        true,
+        199,
+    );
+    insert_request_fact(
+        &db,
+        "sess-outside",
+        "msg-outside",
+        "/tmp/outside.jsonl",
+        true,
+        301,
+    );
+
+    let snapshot = db
+        .get_unified_local_snapshot_for_range(99, 200)
+        .expect("load ranged local snapshot");
+
+    assert_eq!(snapshot.local_request_count, 3);
+    assert_eq!(snapshot.local_max_timestamp, 199);
+}
+
+#[test]
 fn v13_migration_clears_runtime_merge_cache() {
     let (_tmp, db) = temp_db();
     unified_usage::clear_runtime_caches();
@@ -2351,6 +2566,7 @@ fn v16_migration_clears_stale_unified_materialization_from_codex_fuzzy_match_fix
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     db.replace_unified_day_materialization(
         &local_date,
@@ -2439,6 +2655,7 @@ fn v17_migration_clears_stale_unified_materialization_from_codex_session_id_pref
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     db.replace_unified_day_materialization(
         &local_date,
@@ -2527,6 +2744,7 @@ fn v18_migration_clears_stale_unified_materialization_from_codex_session_id_remo
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     db.replace_unified_day_materialization(
         &local_date,
@@ -2615,6 +2833,7 @@ fn v19_migration_clears_stale_unified_materialization_from_per_field_match_fix()
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     db.replace_unified_day_materialization(
         &local_date,
@@ -2699,6 +2918,7 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     db.replace_unified_day_materialization(
         &local_date,
@@ -2766,7 +2986,7 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
             .get_local_sync_state("schema_version")
             .unwrap()
             .as_deref(),
-        Some("34")
+        Some("35")
     );
     assert!(
         reopened
@@ -2918,6 +3138,7 @@ fn purge_orphan_uses_business_day_bucketing_for_invalidated_dates() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     db.replace_unified_day_materialization(
         &local_date,
@@ -3013,6 +3234,7 @@ fn invalidate_unified_materialization_clears_rows_and_bumps_version() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     db.replace_unified_day_materialization(
         &local_date,
@@ -3093,6 +3315,7 @@ fn unified_visible_counts_exclude_3xx_statuses() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     let redirect_fact = MergedRequestFact {
         status_code: Some(302),
@@ -3178,6 +3401,7 @@ fn unified_local_only_day_is_not_marked_partial() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
 
     db.replace_unified_day_materialization(
@@ -3245,6 +3469,7 @@ fn unified_mixed_day_is_marked_partial() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     let proxy_fact = MergedRequestFact {
         canonical_request_key: "claude_code:msg-proxy".to_string(),
@@ -3273,6 +3498,7 @@ fn unified_mixed_day_is_marked_partial() {
         source_label: Some("sk-ant-1234".to_string()),
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
 
     db.replace_unified_day_materialization(
@@ -3343,6 +3569,7 @@ fn unified_summary_respects_request_count_weight() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
 
     db.replace_unified_day_materialization(

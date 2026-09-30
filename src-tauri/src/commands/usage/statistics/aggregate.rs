@@ -12,13 +12,19 @@ use crate::unified_usage::{normalize_model_bucket, MergedRequestFact};
 use std::collections::{HashMap, HashSet};
 
 fn merged_stat_capability_from_facts(facts: &[MergedRequestFact]) -> StatisticsCapability {
-    let has_status_codes = facts.iter().any(|fact| fact.status_code.is_some());
-    let has_performance = facts.iter().any(|fact| {
-        fact.ttft_ms.is_some_and(|value| value > 0)
-            || fact
-                .output_tokens_per_second
-                .is_some_and(|rate| fact.output_tokens > 0 && rate.is_finite() && rate > 0.0)
-    });
+    let has_status_codes = facts
+        .iter()
+        .filter(|fact| fact.is_accounting_primary())
+        .any(|fact| fact.status_code.is_some());
+    let has_performance = facts
+        .iter()
+        .filter(|fact| fact.is_accounting_primary())
+        .any(|fact| {
+            fact.ttft_ms.is_some_and(|value| value > 0)
+                || fact
+                    .output_tokens_per_second
+                    .is_some_and(|rate| fact.output_tokens > 0 && rate.is_finite() && rate > 0.0)
+        });
 
     StatisticsCapability {
         has_basic_usage: true,
@@ -57,6 +63,9 @@ pub(super) fn build_merged_statistics(
     let mut model_map: HashMap<String, StatAccumulator> = HashMap::new();
 
     for fact in facts {
+        if !fact.is_accounting_primary() {
+            continue;
+        }
         let model_name = normalize_model_bucket(&fact.tool, &fact.model);
         let bucket = bucket_start(fact.timestamp_sec, &query.bucket);
         add_fact_to_stat_acc(&mut total, fact);
@@ -125,6 +134,9 @@ pub(super) fn build_merged_statistics(
     let mut model_trend_map: HashMap<String, HashMap<i64, StatAccumulator>> = HashMap::new();
 
     for fact in facts {
+        if !fact.is_accounting_primary() {
+            continue;
+        }
         let model_name = normalize_model_bucket(&fact.tool, &fact.model);
         if !top_model_names.contains(&model_name) {
             continue;
@@ -289,6 +301,7 @@ mod tests {
             source_label: None,
             attribution_source_id: None,
             attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
+            reconciliation: crate::unified_usage::ReconciliationMetadata::default(),
         }
     }
 
@@ -385,6 +398,34 @@ mod tests {
                 .and_then(|p| p.slowest_model.as_deref()),
             Some("model-b")
         );
+    }
+
+    #[test]
+    fn build_merged_statistics_ignores_non_primary_capability_and_model_rows() {
+        let mut shadow = test_fact(
+            "shadow-session",
+            1200,
+            "shadow-model",
+            100,
+            50,
+            0,
+            0,
+            2.0,
+            CoverageOrigin::ProxyOnly,
+            Some(500),
+            Some(20.0),
+            Some(300),
+        );
+        shadow.reconciliation.accounting_role = crate::unified_usage::AccountingRole::Shadow;
+
+        let summary = build_merged_statistics(&[shadow], &test_query());
+
+        assert_eq!(summary.totals.request_count, 0);
+        assert!(summary.models.is_empty());
+        assert!(!summary.capability.has_status_codes);
+        assert!(!summary.capability.has_performance);
+        assert!(summary.performance.is_none());
+        assert!(summary.status.is_none());
     }
 
     #[test]
