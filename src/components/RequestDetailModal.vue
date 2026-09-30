@@ -1,19 +1,34 @@
 <script setup lang="ts">
+import { computed, onMounted, onUnmounted } from 'vue'
+import {
+  Activity,
+  AlertCircle,
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  BarChart3,
+  CheckCircle2,
+  CircleHelp,
+  Clock3,
+  Code2,
+  Copy,
+  Database,
+  DollarSign,
+  FileCheck2,
+  FileText,
+  Info,
+  Link2,
+  Timer,
+  X,
+  Zap,
+} from 'lucide-vue-next'
 import type { RequestRecord } from '../types'
-import { X } from 'lucide-vue-next'
 import { t } from '../i18n'
 import { useMonitorStore } from '../stores/monitor'
 import { useSessionDisplay } from '../composables/useSessionDisplay'
+import { useClipboard } from '../desktop/composables/useClipboard'
 
-defineProps<{
-  visible: boolean
-  request: RequestRecord | null
-}>()
-
-const emit = defineEmits<{
-  close: []
-}>()
-
+const props = defineProps<{ visible: boolean; request: RequestRecord | null }>()
+const emit = defineEmits<{ close: [] }>()
 const store = useMonitorStore()
 const {
   formatTime,
@@ -23,7 +38,6 @@ const {
   requestCoverageLabel,
   requestModelLabel,
   requestProjectLabel,
-  requestAttributionLabel,
   requestReconciliationStatusLabel,
   requestAccountingRoleLabel,
   requestReconciliationConfidenceLabel,
@@ -34,146 +48,112 @@ const {
   requestStatusLabel,
   requestToolLabel,
 } = useSessionDisplay(store)
+const { copiedValue, copyText } = useClipboard()
+
+const cacheHitRate = computed(() => {
+  const request = props.request
+  if (!request) return '—'
+  const denominator = (request.inputTokens || 0)
+    + (request.outputTokens || 0)
+    + (request.cacheCreateTokens || 0)
+    + (request.cacheReadTokens || 0)
+  if (denominator <= 0 || (request.cacheReadTokens || 0) <= 0) return denominator > 0 ? '0.0%' : '—'
+  return `${((request.cacheReadTokens / denominator) * 100).toFixed(1)}%`
+})
+
+const requestStatusIcon = computed(() => {
+  const request = props.request
+  if (!request || request.coverageOrigin === 'local_only' || !request.statusCode) return CircleHelp
+  return request.statusCode < 400 ? CheckCircle2 : AlertCircle
+})
+
+const projectValue = computed(() => {
+  const request = props.request
+  if (!request) return '—'
+  return `${requestProjectLabel(request)} / ${requestToolLabel(request.tool)}`
+})
+
+function copyRequestValue(value: string | null | undefined, label: string) {
+  if (value?.trim()) void copyText(value, label)
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && props.visible) emit('close')
+}
+
+onMounted(() => window.addEventListener('keydown', handleKeydown))
+onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 </script>
 
 <template>
   <Teleport to="#app">
     <div
       v-if="visible && request"
-      class="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+      class="request-detail-modal fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/45 p-3 backdrop-blur-md sm:p-6"
       style="-webkit-app-region: no-drag; app-region: no-drag"
       @click.self="emit('close')"
     >
-      <div class="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-[#1C1C1E]">
-        <div class="flex items-start justify-between border-b border-gray-100 p-4 dark:border-neutral-800">
-          <div class="min-w-0 pr-3">
-            <div class="mb-1 flex items-center gap-1.5">
-              <span class="request-card__status" :class="requestStatusClasses(request)">
+      <div class="request-detail-modal__surface flex max-h-[calc(100vh-24px)] w-full max-w-3xl flex-col overflow-hidden rounded-[28px] shadow-[0_24px_80px_rgba(15,23,42,0.22)] sm:max-h-[calc(100vh-48px)]" style="-webkit-app-region: no-drag; app-region: no-drag">
+        <header class="request-detail-modal__header flex shrink-0 items-start justify-between gap-4 px-5 pb-5 pt-5 sm:px-8 sm:pb-6 sm:pt-7">
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-2.5 text-sm">
+              <span class="request-detail-status" :class="requestStatusClasses(request)">
+                <component :is="requestStatusIcon" class="h-4 w-4" :stroke-width="2.4" aria-hidden="true" />
                 {{ requestStatusLabel(request) }}
               </span>
-              <span class="text-[10px] text-gray-400">{{ formatTime(request.timestampSec) }}</span>
+              <span class="text-slate-300 dark:text-slate-600" aria-hidden="true">•</span>
+              <span class="text-slate-500 dark:text-slate-400">{{ formatTime(request.timestampSec) }}</span>
             </div>
-            <h3 class="truncate text-base font-semibold text-gray-800 dark:text-gray-100">
-              {{ requestModelLabel(request) }}
-            </h3>
-            <p class="mt-0.5 truncate text-[10px] text-gray-400">
-              {{ requestProjectLabel(request) }} / {{ requestToolLabel(request.tool) }} / {{ requestSourceLabel(request) }}
+            <h2 class="mt-4 truncate text-[clamp(1.5rem,4vw,2.45rem)] font-bold leading-none tracking-[-0.03em] text-slate-950 dark:text-slate-50">{{ requestModelLabel(request) }}</h2>
+            <p class="mt-2 truncate text-sm font-medium text-slate-500 dark:text-slate-400 sm:text-base">
+              {{ requestProjectLabel(request) }} <span class="mx-1 text-slate-300 dark:text-slate-600">/</span> {{ requestToolLabel(request.tool) }} <span class="mx-1 text-slate-300 dark:text-slate-600">/</span> {{ requestSourceLabel(request) }}
             </p>
           </div>
-          <button
-            type="button"
-            class="shrink-0 rounded-lg p-1.5 transition-colors hover:bg-gray-100 dark:hover:bg-neutral-800"
-            :aria-label="t(store.settings.locale, 'common.close')"
-            :title="t(store.settings.locale, 'common.close')"
-            @click="emit('close')"
-          >
-            <X class="h-4 w-4 text-gray-400" :stroke-width="2" aria-hidden="true" />
+          <button type="button" class="request-detail-close shrink-0 rounded-full p-3 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-500/20 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white" :aria-label="t(store.settings.locale, 'common.close')" :title="t(store.settings.locale, 'common.close')" @click="emit('close')">
+            <X class="h-5 w-5" :stroke-width="2" aria-hidden="true" />
           </button>
-        </div>
+        </header>
 
-        <div class="max-h-[calc(80vh-64px)] space-y-3 overflow-y-auto p-4">
-          <div class="grid grid-cols-3 gap-2">
-            <div class="request-detail-stat">
-              <span>{{ t(store.settings.locale, 'common.totalTokens') }}</span>
-              <strong>{{ formatTokens(request.totalTokens) }}</strong>
-            </div>
-            <div class="request-detail-stat">
-              <span>{{ t(store.settings.locale, 'sessions.cost') }}</span>
-              <strong class="text-[var(--theme-chart-cost)]">{{ formatCost(request.estimatedCost) }}</strong>
-            </div>
-            <div class="request-detail-stat">
-              <span>{{ t(store.settings.locale, 'sessions.duration') }}</span>
-              <strong>{{ formatDuration(request.durationMs) }}</strong>
-            </div>
+        <div class="request-detail-modal__body min-h-0 flex-1 overflow-y-auto px-5 pb-5 sm:px-8 sm:pb-8">
+          <div class="grid grid-cols-4 gap-2 sm:gap-3">
+            <div class="request-detail-metric"><div class="request-detail-metric__icon request-detail-metric__icon--blue"><FileText class="h-5 w-5" aria-hidden="true" /></div><span>{{ t(store.settings.locale, 'sessions.requestTotalTokens') }}</span><strong>{{ formatTokens(request.totalTokens) }}</strong></div>
+            <div class="request-detail-metric"><div class="request-detail-metric__icon request-detail-metric__icon--green"><DollarSign class="h-5 w-5" aria-hidden="true" /></div><span>{{ t(store.settings.locale, 'sessions.cost') }}</span><strong>{{ formatCost(request.estimatedCost) }}</strong></div>
+            <div class="request-detail-metric"><div class="request-detail-metric__icon request-detail-metric__icon--blue"><Clock3 class="h-5 w-5" aria-hidden="true" /></div><span>{{ t(store.settings.locale, 'sessions.duration') }}</span><strong>{{ formatDuration(request.durationMs) }}</strong></div>
+            <div class="request-detail-metric"><div class="request-detail-metric__icon request-detail-metric__icon--green"><Database class="h-5 w-5" aria-hidden="true" /></div><span>{{ t(store.settings.locale, 'statistics.cacheHitRate') }}</span><strong>{{ cacheHitRate }}</strong></div>
           </div>
 
-          <div class="request-detail-section">
-            <div class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'sessions.input') }}</span>
-              <strong>{{ formatTokens(request.inputTokens) }}</strong>
+          <section class="request-detail-section mt-4">
+            <div class="request-detail-section__title"><div class="request-detail-section__title-icon request-detail-section__title-icon--blue"><FileText class="h-5 w-5" aria-hidden="true" /></div><h3>{{ t(store.settings.locale, 'sessions.requestTokenBreakdown') }}</h3></div>
+            <div class="request-detail-table mt-4">
+              <div class="request-detail-table__head"><span>{{ t(store.settings.locale, 'common.type') }}</span><span>{{ t(store.settings.locale, 'common.quantity') }}</span></div>
+              <div class="request-detail-table__row"><div class="request-detail-table__label"><span class="request-detail-token-icon request-detail-token-icon--blue"><ArrowDownToLine class="h-4 w-4" aria-hidden="true" /></span><strong>{{ t(store.settings.locale, 'sessions.input') }}</strong></div><span class="request-detail-table__value">{{ formatTokens(request.inputTokens) }} <small>{{ t(store.settings.locale, 'common.token') }}</small></span></div>
+              <div class="request-detail-table__row"><div class="request-detail-table__label"><span class="request-detail-token-icon request-detail-token-icon--green"><ArrowUpFromLine class="h-4 w-4" aria-hidden="true" /></span><strong>{{ t(store.settings.locale, 'sessions.output') }}</strong></div><span class="request-detail-table__value">{{ formatTokens(request.outputTokens) }} <small>{{ t(store.settings.locale, 'common.token') }}</small></span></div>
+              <div class="request-detail-table__row"><div class="request-detail-table__label"><span class="request-detail-token-icon request-detail-token-icon--slate"><Database class="h-4 w-4" aria-hidden="true" /></span><strong>{{ t(store.settings.locale, 'statistics.cacheCreate') }}</strong></div><span class="request-detail-table__value">{{ formatTokens(request.cacheCreateTokens) }} <small>{{ t(store.settings.locale, 'common.token') }}</small></span></div>
+              <div class="request-detail-table__row"><div class="request-detail-table__label"><span class="request-detail-token-icon request-detail-token-icon--violet"><Database class="h-4 w-4" aria-hidden="true" /></span><strong>{{ t(store.settings.locale, 'statistics.cacheRead') }}</strong></div><span class="request-detail-table__value">{{ formatTokens(request.cacheReadTokens) }} <small>{{ t(store.settings.locale, 'common.token') }}</small></span></div>
             </div>
-            <div class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'sessions.output') }}</span>
-              <strong>{{ formatTokens(request.outputTokens) }}</strong>
-            </div>
-            <div class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'statistics.cacheCreate') }}</span>
-              <strong>{{ formatTokens(request.cacheCreateTokens) }}</strong>
-            </div>
-            <div class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'statistics.cacheRead') }}</span>
-              <strong>{{ formatTokens(request.cacheReadTokens) }}</strong>
-            </div>
-          </div>
+            <p class="request-detail-note"><Info class="h-4 w-4 shrink-0" aria-hidden="true" />{{ t(store.settings.locale, 'sessions.requestCacheHitHint') }}</p>
+          </section>
 
-          <div class="request-detail-section">
-            <div class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'sessions.ttft') }}</span>
-              <strong>{{ formatDuration(request.ttftMs) }}</strong>
+          <section class="request-detail-section mt-4">
+            <div class="request-detail-section__title"><div class="request-detail-section__title-icon request-detail-section__title-icon--blue"><BarChart3 class="h-5 w-5" aria-hidden="true" /></div><h3>{{ t(store.settings.locale, 'sessions.requestDetailsTitle') }}</h3></div>
+            <div class="request-detail-detail-grid mt-4">
+              <div class="request-detail-detail-column"><div class="request-detail-detail-row"><span><Timer class="h-4 w-4" aria-hidden="true" />{{ t(store.settings.locale, 'sessions.ttft') }}</span><strong>{{ formatDuration(request.ttftMs) }}</strong></div><div class="request-detail-detail-row"><span><Zap class="h-4 w-4" aria-hidden="true" />{{ t(store.settings.locale, 'metrics.tokensPerSecond') }}</span><strong>{{ request.outputTokensPerSecond ? request.outputTokensPerSecond.toFixed(1) : '—' }}</strong></div></div>
+              <div class="request-detail-detail-column"><div class="request-detail-detail-row"><span><Code2 class="h-4 w-4" aria-hidden="true" />{{ t(store.settings.locale, 'statistics.status') }}</span><strong>{{ request.statusCode || '—' }}</strong></div><div class="request-detail-detail-row"><span><FileCheck2 class="h-4 w-4" aria-hidden="true" />{{ t(store.settings.locale, 'sessions.requestCoverage') }}</span><strong>{{ requestCoverageLabel(request.coverageOrigin) }}</strong></div></div>
             </div>
-            <div class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'metrics.tokensPerSecond') }}</span>
-              <strong>{{ request.outputTokensPerSecond ? request.outputTokensPerSecond.toFixed(1) : '—' }}</strong>
-            </div>
-            <div class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'statistics.status') }}</span>
-              <strong>{{ request.statusCode || '—' }}</strong>
-            </div>
-            <div class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'sessions.requestCoverage') }}</span>
-              <strong>{{ requestCoverageLabel(request.coverageOrigin) }}</strong>
-            </div>
-          </div>
+          </section>
 
-          <div class="request-detail-section">
-            <div class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'common.source') }}</span>
-              <strong class="truncate text-right">{{ requestSourceLabel(request) }}</strong>
+          <section class="request-detail-section mt-4">
+            <div class="request-detail-section__title"><div class="request-detail-section__title-icon request-detail-section__title-icon--blue"><Link2 class="h-5 w-5" aria-hidden="true" /></div><h3>{{ t(store.settings.locale, 'sessions.requestSourceTitle') }}</h3></div>
+            <div class="request-detail-source-list mt-4">
+              <div class="request-detail-source-row"><span>{{ t(store.settings.locale, 'sessions.requestApiKey') }}</span><div class="request-detail-source-value"><strong class="truncate">{{ request.apiKeyPrefix || '—' }}</strong><button v-if="request.apiKeyPrefix" type="button" class="request-detail-copy" :aria-label="t(store.settings.locale, 'sessions.requestCopyValue')" :title="copiedValue === request.apiKeyPrefix ? t(store.settings.locale, 'sessions.copied') : t(store.settings.locale, 'sessions.requestCopyValue')" @click="copyRequestValue(request.apiKeyPrefix, request.apiKeyPrefix)"><CheckCircle2 v-if="copiedValue === request.apiKeyPrefix" class="h-4 w-4 text-emerald-500" aria-hidden="true" /><Copy v-else class="h-4 w-4" aria-hidden="true" /></button></div></div>
+              <div class="request-detail-source-row"><span>{{ t(store.settings.locale, 'sessions.requestProject') }}</span><div class="request-detail-source-value"><strong class="truncate">{{ projectValue }}</strong><button type="button" class="request-detail-copy" :aria-label="t(store.settings.locale, 'sessions.requestCopyValue')" :title="copiedValue === projectValue ? t(store.settings.locale, 'sessions.copied') : t(store.settings.locale, 'sessions.requestCopyValue')" @click="copyRequestValue(projectValue, projectValue)"><CheckCircle2 v-if="copiedValue === projectValue" class="h-4 w-4 text-emerald-500" aria-hidden="true" /><Copy v-else class="h-4 w-4" aria-hidden="true" /></button></div></div>
             </div>
-            <div v-if="requestAttributionLabel(request)" class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'sessions.requestAttribution') }}</span>
-              <strong>{{ requestAttributionLabel(request) }}</strong>
-            </div>
-            <div class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'sessions.sessionId') }}</span>
-              <strong class="truncate text-right">{{ request.sessionId || '—' }}</strong>
-            </div>
-            <div class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'sessions.requestKey') }}</span>
-              <strong class="truncate text-right">{{ request.requestKey }}</strong>
-            </div>
-          </div>
+          </section>
 
-          <div class="request-detail-section">
-            <div class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'sessions.reconciliationStatus') }}</span>
-              <strong>{{ requestReconciliationStatusLabel(request) }}</strong>
-            </div>
-            <div class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'sessions.accountingRole') }}</span>
-              <strong>{{ requestAccountingRoleLabel(request) }}</strong>
-            </div>
-            <div class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'sessions.reconciliationConfidence') }}</span>
-              <strong>{{ requestReconciliationConfidenceLabel(request) }}</strong>
-            </div>
-            <div class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'sessions.observationSources') }}</span>
-              <strong>{{ requestObservationSourcesLabel(request) }}</strong>
-            </div>
-            <div v-if="request.reconciliationMethod" class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'sessions.reconciliationMethod') }}</span>
-              <strong class="truncate text-right" :title="request.reconciliationMethod">{{ request.reconciliationMethod }}</strong>
-            </div>
-            <div v-if="request.localObservationKey" class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'sessions.localObservationKey') }}</span>
-              <strong class="truncate text-right" :title="request.localObservationKey">{{ requestObservationIdLabel(request.localObservationKey) }}</strong>
-            </div>
-            <div v-if="request.proxyObservationId" class="request-detail-row">
-              <span>{{ t(store.settings.locale, 'sessions.proxyObservationId') }}</span>
-              <strong class="truncate text-right" :title="request.proxyObservationId">{{ requestObservationIdLabel(request.proxyObservationId) }}</strong>
-            </div>
-          </div>
+          <details class="request-detail-advanced mt-4">
+            <summary class="request-detail-advanced__title"><Activity class="h-4 w-4" aria-hidden="true" />{{ t(store.settings.locale, 'sessions.reconciliation') }}</summary>
+            <div class="request-detail-advanced__grid"><div><span>{{ t(store.settings.locale, 'sessions.reconciliationStatus') }}</span><strong>{{ requestReconciliationStatusLabel(request) }}</strong></div><div><span>{{ t(store.settings.locale, 'sessions.accountingRole') }}</span><strong>{{ requestAccountingRoleLabel(request) }}</strong></div><div><span>{{ t(store.settings.locale, 'sessions.reconciliationConfidence') }}</span><strong>{{ requestReconciliationConfidenceLabel(request) }}</strong></div><div><span>{{ t(store.settings.locale, 'sessions.observationSources') }}</span><strong>{{ requestObservationSourcesLabel(request) }}</strong></div><div><span>{{ t(store.settings.locale, 'sessions.sessionId') }}</span><strong :title="request.sessionId">{{ requestObservationIdLabel(request.sessionId) }}</strong></div><div><span>{{ t(store.settings.locale, 'sessions.requestKey') }}</span><strong :title="request.requestKey">{{ requestObservationIdLabel(request.requestKey) }}</strong></div><div v-if="request.reconciliationMethod"><span>{{ t(store.settings.locale, 'sessions.reconciliationMethod') }}</span><strong :title="request.reconciliationMethod">{{ request.reconciliationMethod }}</strong></div><div v-if="request.localObservationKey"><span>{{ t(store.settings.locale, 'sessions.localObservationKey') }}</span><strong :title="request.localObservationKey">{{ requestObservationIdLabel(request.localObservationKey) }}</strong></div><div v-if="request.proxyObservationId"><span>{{ t(store.settings.locale, 'sessions.proxyObservationId') }}</span><strong :title="request.proxyObservationId">{{ requestObservationIdLabel(request.proxyObservationId) }}</strong></div></div>
+          </details>
         </div>
       </div>
     </div>
@@ -181,60 +161,112 @@ const {
 </template>
 
 <style scoped>
-.request-card__status {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  border-width: 1px;
-  border-radius: 9999px;
-  padding: 2px 6px;
-  font-size: 9px;
-  font-weight: 800;
-  line-height: 1;
+.request-detail-modal__surface { background: var(--theme-bg-overlay); border: 1px solid var(--theme-border-default); color: var(--theme-text-primary); }
+.request-detail-modal__header { background: var(--theme-surface-gradient); border-bottom: 1px solid var(--theme-border-subtle); }
+.request-detail-status { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; border-width: 1px; padding: 7px 12px; font-size: 13px; font-weight: 700; }
+.request-detail-metric { min-width: 0; border: 1px solid var(--theme-border-subtle); border-radius: 18px; background: var(--theme-bg-surface); padding: 16px 14px 15px; box-shadow: var(--theme-shadow-inline); }
+.request-detail-metric__icon, .request-detail-section__title-icon { display: inline-flex; align-items: center; justify-content: center; border-radius: 12px; }
+.request-detail-metric__icon { width: 38px; height: 38px; margin-bottom: 12px; }
+.request-detail-metric__icon--blue, .request-detail-section__title-icon--blue { color: #1769e0; background: rgba(59,130,246,.11); }
+.request-detail-metric__icon--green { color: #079669; background: rgba(16,185,129,.11); }
+.request-detail-metric > span { display: block; color: var(--theme-text-secondary); font-size: 12px; font-weight: 600; }
+.request-detail-metric strong { display: block; margin-top: 6px; overflow: hidden; color: var(--theme-text-primary); font-family: var(--font-mono); font-size: clamp(1.15rem,3vw,1.7rem); font-variant-numeric: tabular-nums; font-weight: 750; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
+.request-detail-metric small, .request-detail-table__value small { color: var(--theme-text-tertiary); font-size: 11px; }
+.request-detail-metric small { display: block; margin-top: 4px; }
+.request-detail-section { border: 1px solid var(--theme-border-subtle); border-radius: 20px; background: var(--theme-bg-surface); padding: 18px; box-shadow: var(--theme-shadow-inline); }
+.request-detail-section__title { display: flex; align-items: center; gap: 10px; }
+.request-detail-section__title-icon { width: 34px; height: 34px; }
+.request-detail-section__title h3 { color: var(--theme-text-primary); font-size: 18px; font-weight: 750; letter-spacing: -0.02em; }
+.request-detail-table { overflow: hidden; border-radius: 14px; background: var(--theme-bg-surface-muted); }
+.request-detail-table__head, .request-detail-table__row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 14px; }
+.request-detail-table__head { color: var(--theme-text-secondary); background: var(--theme-bg-app); font-size: 12px; font-weight: 600; }
+.request-detail-table__row + .request-detail-table__row { border-top: 1px solid var(--theme-border-default); }
+.request-detail-table__label, .request-detail-detail-row > span { display: flex; min-width: 0; align-items: center; gap: 10px; }
+.request-detail-table__label strong { color: var(--theme-text-primary); font-size: 14px; }
+.request-detail-token-icon { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 999px; }
+.request-detail-token-icon--blue { color: #1769e0; background: rgba(59,130,246,.1); }
+.request-detail-token-icon--green { color: #07885f; background: rgba(16,185,129,.1); }
+.request-detail-token-icon--slate { color: #64748b; background: rgba(100,116,139,.1); }
+.request-detail-token-icon--violet { color: #7c3aed; background: rgba(124,58,237,.1); }
+.request-detail-table__value { flex-shrink: 0; color: var(--theme-text-primary); font-family: var(--font-mono); font-size: 14px; font-variant-numeric: tabular-nums; font-weight: 650; }
+.request-detail-note { display: flex; align-items: flex-start; gap: 9px; margin: 14px 2px 0; color: var(--theme-text-secondary); font-size: 12px; line-height: 1.55; }
+.request-detail-detail-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); }
+.request-detail-detail-column + .request-detail-detail-column { border-left: 1px solid var(--theme-border-default); padding-left: 24px; }
+.request-detail-detail-column:first-child { padding-right: 24px; }
+.request-detail-detail-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; }
+.request-detail-detail-row + .request-detail-detail-row { border-top: 1px solid var(--theme-border-default); }
+.request-detail-detail-row > span { color: var(--theme-text-secondary); font-size: 14px; }
+.request-detail-detail-row > span svg { color: var(--theme-accent-primary); }
+.request-detail-detail-row strong { color: var(--theme-text-primary); font-family: var(--font-mono); font-size: 14px; font-variant-numeric: tabular-nums; font-weight: 650; text-align: right; }
+.request-detail-source-list { overflow: hidden; border-top: 1px solid var(--theme-border-default); }
+.request-detail-source-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; min-height: 45px; border-bottom: 1px solid var(--theme-border-default); color: var(--theme-text-secondary); font-size: 14px; }
+.request-detail-source-value { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.request-detail-source-row strong { min-width: 0; color: var(--theme-text-primary); font-family: var(--font-mono); font-size: 14px; font-weight: 650; text-align: right; }
+.request-detail-copy { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 10px; color: var(--theme-text-secondary); background: var(--theme-bg-app); transition: background-color 180ms ease,color 180ms ease; }
+.request-detail-copy:hover { color: var(--theme-accent-primary); background: var(--theme-accent-soft); }
+.request-detail-copy:focus-visible { outline: none; box-shadow: 0 0 0 4px var(--theme-ring-focus); }
+.request-detail-advanced { border: 1px solid var(--theme-border-default); border-radius: 16px; background: var(--theme-bg-surface-muted); padding: 14px 16px; }
+.request-detail-advanced__title { display: flex; align-items: center; gap: 8px; color: var(--theme-text-secondary); font-size: 12px; font-weight: 700; }
+.request-detail-advanced__grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px 20px; margin-top: 12px; }
+.request-detail-advanced__grid > div { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; }
+.request-detail-advanced__grid span { flex-shrink: 0; color: var(--theme-text-tertiary); font-size: 11px; }
+.request-detail-advanced__grid strong { min-width: 0; overflow: hidden; color: var(--theme-text-secondary); font-family: var(--font-mono); font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.request-detail-advanced summary { list-style: none; cursor: pointer; }
+.request-detail-advanced summary::-webkit-details-marker { display: none; }
+.request-detail-modal__body { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--theme-text-tertiary) 45%, transparent) transparent; }
+.request-detail-modal__body::-webkit-scrollbar { width: 6px; }
+.request-detail-modal__body::-webkit-scrollbar-track { background: transparent; }
+.request-detail-modal__body::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--theme-text-tertiary) 45%, transparent); }
+@media (max-width: 639px) {
+  .request-detail-modal { padding: 8px; }
+  .request-detail-modal__surface { max-height: calc(100vh - 16px); border-radius: 20px; }
+  .request-detail-modal__header { gap: 6px; padding: 11px 14px 10px; }
+  .request-detail-modal__header h2 { margin-top: 7px; font-size: 22px; }
+  .request-detail-modal__header p { margin-top: 4px; font-size: 11px; }
+  .request-detail-status { gap: 4px; padding: 4px 8px; font-size: 10px; }
+  .request-detail-status svg { width: 13px; height: 13px; }
+  .request-detail-close { padding: 6px; }
+  .request-detail-close svg { width: 16px; height: 16px; }
+  .request-detail-modal__body { padding: 8px 14px 12px; }
+  .request-detail-metric { border-radius: 12px; padding: 7px 5px 8px; box-shadow: none; }
+  .request-detail-metric__icon { width: 24px; height: 24px; margin-bottom: 5px; border-radius: 8px; }
+  .request-detail-metric__icon svg { width: 15px; height: 15px; }
+  .request-detail-metric > span { font-size: 9px; line-height: 1.15; white-space: nowrap; }
+  .request-detail-metric strong { margin-top: 3px; font-size: 14px; }
+  .request-detail-metric small { margin-top: 1px; font-size: 8px; }
+  .request-detail-modal__body .request-detail-section { margin-top: 8px; padding: 9px; border-radius: 14px; box-shadow: none; }
+  .request-detail-section__title { gap: 6px; }
+  .request-detail-section__title-icon { width: 24px; height: 24px; border-radius: 8px; }
+  .request-detail-section__title-icon svg { width: 14px; height: 14px; }
+  .request-detail-section__title h3 { font-size: 14px; }
+  .request-detail-table { margin-top: 7px; border-radius: 10px; }
+  .request-detail-table__head, .request-detail-table__row { gap: 6px; padding: 5px 7px; }
+  .request-detail-table__head { font-size: 9px; }
+  .request-detail-table__label { gap: 6px; }
+  .request-detail-table__label strong { font-size: 11px; }
+  .request-detail-token-icon { width: 22px; height: 22px; }
+  .request-detail-token-icon svg { width: 12px; height: 12px; }
+  .request-detail-table__value { font-size: 10px; }
+  .request-detail-table__value small { font-size: 8px; }
+  .request-detail-note { gap: 5px; margin-top: 7px; font-size: 9px; line-height: 1.3; }
+  .request-detail-note svg { width: 12px; height: 12px; }
+  .request-detail-detail-grid { margin-top: 6px; }
+  .request-detail-detail-column:first-child { padding-right: 8px; }
+  .request-detail-detail-column + .request-detail-detail-column { padding-left: 8px; }
+  .request-detail-detail-row { gap: 5px; padding: 5px 0; }
+  .request-detail-detail-row > span { gap: 5px; font-size: 10px; }
+  .request-detail-detail-row > span svg { width: 13px; height: 13px; }
+  .request-detail-detail-row strong { font-size: 10px; }
+  .request-detail-source-list { margin-top: 6px; }
+  .request-detail-source-row { min-height: 30px; gap: 6px; font-size: 10px; }
+  .request-detail-source-row strong { font-size: 10px; }
+  .request-detail-copy { width: 24px; height: 24px; border-radius: 7px; }
+  .request-detail-copy svg { width: 12px; height: 12px; }
+  .request-detail-advanced { margin-top: 8px; padding: 8px 10px; border-radius: 12px; }
+  .request-detail-advanced__title { font-size: 9px; }
+  .request-detail-advanced__title svg { width: 12px; height: 12px; }
+  .request-detail-advanced__grid { gap: 6px; margin-top: 7px; }
+  .request-detail-advanced__grid span, .request-detail-advanced__grid strong { font-size: 9px; }
 }
-
-.request-detail-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  border-radius: 14px;
-  background: var(--theme-bg-surface);
-  padding: 9px 8px;
-  text-align: center;
-}
-
-.request-detail-stat span,
-.request-detail-row span {
-  font-size: 10px;
-  color: var(--theme-text-tertiary);
-}
-
-.request-detail-stat strong {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 13px;
-  color: var(--theme-text-primary);
-}
-
-.request-detail-section {
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: 14px;
-  background: var(--theme-bg-elevated);
-  padding: 8px 10px;
-}
-
-.request-detail-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 4px 0;
-}
-
-.request-detail-row strong {
-  min-width: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 11px;
-  color: var(--theme-text-primary);
-}
+@media (prefers-reduced-motion: reduce) { .request-detail-copy { transition: none; } }
 </style>

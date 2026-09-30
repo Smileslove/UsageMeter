@@ -1,68 +1,63 @@
 <script setup lang="ts">
+import { computed, onMounted, onUnmounted } from 'vue'
+import {
+  Activity,
+  AlertCircle,
+  BarChart3,
+  CheckCircle2,
+  Clock3,
+  DollarSign,
+  FileText,
+  Folder,
+  Info,
+  Timer,
+  X,
+  Zap,
+} from 'lucide-vue-next'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
-import { computed, onMounted, onUnmounted } from 'vue'
 import type { SessionStats } from '../types'
 import { formatCost as formatCostUtil, formatTokenValue } from '../utils/format'
 
-const props = defineProps<{
-  visible: boolean
-  session: SessionStats | null
-}>()
-
-const emit = defineEmits<{
-  close: []
-}>()
-
+const props = defineProps<{ visible: boolean; session: SessionStats | null }>()
+const emit = defineEmits<{ close: [] }>()
 const store = useMonitorStore()
 const uuidLikePattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-// 格式化时间
 const formatTime = (epoch: number) => {
   if (!epoch) return '-'
   return new Date(epoch * 1000).toLocaleString(store.settings.locale.replace('_', '-'), {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
   })
 }
 
-// 格式化耗时
 const formatDuration = (ms: number) => {
   if (!ms) return '-'
   if (ms < 1000) return `${ms}ms`
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
-  const minutes = Math.floor(ms / 60000)
-  const seconds = Math.round((ms % 60000) / 1000)
-  return `${minutes}m ${seconds}s`
+  return `${Math.floor(ms / 60000)}m ${Math.round((ms % 60000) / 1000)}s`
 }
 
-// 格式化 Token 数量（保留2位小数，超过K/M/B自动换算单位）
-const formatTokens = (tokens: number) => {
-  if (!tokens) return '0'
-  return formatTokenValue(tokens)
-}
-
-// 格式化费用（统一4位小数，支持多货币）
-const formatCost = (cost: number | undefined) => {
-  if (cost === undefined || cost === null) return '-'
-  return formatCostUtil(cost, store.settings.currency, 4)
-}
+const formatTokens = (tokens: number) => (!tokens ? '0' : formatTokenValue(tokens))
+const formatCost = (cost: number | undefined) => (
+  cost === undefined || cost === null ? '-' : formatCostUtil(cost, store.settings.currency, 4)
+)
 
 const coveredRequests = computed(() => props.session?.coveredRequests || 0)
 const uncoveredRequests = computed(() => props.session?.uncoveredRequests || 0)
 const localRecordCount = computed(() => coveredRequests.value + uncoveredRequests.value)
 const hasCoverageData = computed(() => (
-  coveredRequests.value > 0
-  || uncoveredRequests.value > 0
-  || props.session?.usageFullyCovered === false
+  coveredRequests.value > 0 || uncoveredRequests.value > 0 || props.session?.usageFullyCovered === false
 ))
 const sessionUsageVisible = computed(() => (
   props.session?.tool !== 'reasonix' || hasCoverageData.value
 ))
 const sessionHasPartialCoverage = computed(() => props.session?.tool === 'reasonix' && uncoveredRequests.value > 0)
+const totalTokens = computed(() => {
+  const session = props.session
+  if (!session) return 0
+  return session.totalInputTokens + session.totalOutputTokens + session.totalCacheCreateTokens + session.totalCacheReadTokens
+})
 const displayTokens = (tokens: number) => (sessionUsageVisible.value ? formatTokens(tokens) : '—')
 const displayCost = (cost: number | undefined) => (sessionUsageVisible.value ? formatCost(cost) : '—')
 const displayRate = computed(() => {
@@ -76,23 +71,16 @@ const displayDuration = computed(() => (
 const displayProxyTokenValue = computed(() => {
   const session = props.session
   if (!session || coveredRequests.value <= 0) return '—'
-  return formatTokens(
-    session.totalInputTokens
-    + session.totalOutputTokens
-    + session.totalCacheCreateTokens
-    + session.totalCacheReadTokens
-  )
+  return formatTokens(session.totalInputTokens + session.totalOutputTokens + session.totalCacheCreateTokens + session.totalCacheReadTokens)
 })
 const displayProxyRate = computed(() => {
   const session = props.session
   if (!session || coveredRequests.value <= 0 || session.avgOutputTokensPerSecond <= 0) return '—'
   return `${session.avgOutputTokensPerSecond.toFixed(1)}t/s`
 })
-
 const displaySessionTitle = computed(() => {
   const session = props.session
   if (!session) return t(store.settings.locale, 'sessions.untitled')
-
   const sessionName = session.sessionName?.trim()
   if (session.topic?.trim()) return session.topic
   if (sessionName && !uuidLikePattern.test(sessionName)) return sessionName
@@ -100,7 +88,6 @@ const displaySessionTitle = computed(() => {
   if (session.projectName?.trim()) return session.projectName
   return t(store.settings.locale, 'sessions.untitled')
 })
-
 const displayProjectBadge = computed(() => {
   const session = props.session
   if (!session) return ''
@@ -109,209 +96,198 @@ const displayProjectBadge = computed(() => {
   if (session.projectIdentity === 'unknown') return t(store.settings.locale, 'common.unknownProject')
   return ''
 })
-
 const projectBadgeClasses = computed(() => {
-  if (props.session?.projectIdentity === 'global') {
-    return 'text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-500/15'
-  }
-  if (props.session?.projectIdentity === 'unknown') {
-    return 'text-amber-600 dark:text-amber-300 bg-amber-50 dark:bg-amber-500/15'
-  }
-  return 'text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20'
+  if (props.session?.projectIdentity === 'global') return 'session-detail-project--global'
+  if (props.session?.projectIdentity === 'unknown') return 'session-detail-project--unknown'
+  return 'session-detail-project--named'
 })
-
 const projectHint = computed(() => {
   if (props.session?.projectIdentity === 'global') return t(store.settings.locale, 'sessions.globalSessionHint')
   if (props.session?.projectIdentity === 'unknown') return t(store.settings.locale, 'sessions.unknownProjectHint')
   return ''
 })
-
-// 计算输入输出比例
 const inputOutputRatio = computed(() => {
-  if (!props.session) return { input: 50, output: 50 }
-  const total = props.session.totalInputTokens + props.session.totalOutputTokens
+  const session = props.session
+  if (!session) return { input: 50, output: 50 }
+  const total = session.totalInputTokens + session.totalOutputTokens
   if (total === 0) return { input: 50, output: 50 }
-  return {
-    input: (props.session.totalInputTokens / total) * 100,
-    output: (props.session.totalOutputTokens / total) * 100
-  }
+  return { input: (session.totalInputTokens / total) * 100, output: (session.totalOutputTokens / total) * 100 }
 })
 
 function handleKeydown(event: KeyboardEvent) {
-  if (event.key === 'Escape' && props.visible) {
-    emit('close')
-  }
+  if (event.key === 'Escape' && props.visible) emit('close')
 }
 
-onMounted(() => {
-  window.addEventListener('keydown', handleKeydown)
-})
-
-onUnmounted(() => {
-  window.removeEventListener('keydown', handleKeydown)
-})
+onMounted(() => window.addEventListener('keydown', handleKeydown))
+onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
 </script>
 
 <template>
   <Teleport to="#app">
     <div
       v-if="visible && session"
-      class="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+      class="session-detail-modal fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/45 p-3 backdrop-blur-md sm:p-6"
       style="-webkit-app-region: no-drag; app-region: no-drag"
       @click.self="emit('close')"
     >
-      <div class="bg-white dark:bg-[#1C1C1E] rounded-2xl w-full max-w-md max-h-[80vh] overflow-hidden shadow-2xl" style="-webkit-app-region: no-drag; app-region: no-drag">
-        <!-- 头部 -->
-        <div class="p-4 border-b border-gray-100 dark:border-neutral-800 flex justify-between items-start">
-          <div class="flex flex-col gap-1 overflow-hidden pr-2 flex-1">
-            <!-- 项目名标签 -->
-            <div v-if="displayProjectBadge" class="flex items-center gap-1">
-              <span class="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded" :class="projectBadgeClasses">
-                <svg class="w-2.5 h-2.5 mr-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                </svg>
-                {{ displayProjectBadge }}
-              </span>
+      <div class="session-detail-modal__surface flex max-h-[calc(100vh-24px)] w-full max-w-3xl flex-col overflow-hidden rounded-[28px] shadow-[0_24px_80px_rgba(15,23,42,0.22)] sm:max-h-[calc(100vh-48px)]" style="-webkit-app-region: no-drag; app-region: no-drag">
+        <header class="session-detail-modal__header flex shrink-0 items-start justify-between gap-3 px-5 pb-4 pt-5 sm:px-8 sm:pb-5 sm:pt-6">
+          <div class="min-w-0 flex-1">
+            <div v-if="displayProjectBadge" class="session-detail-project" :class="projectBadgeClasses">
+              <Folder class="h-3.5 w-3.5" aria-hidden="true" />
+              <span class="truncate">{{ displayProjectBadge }}</span>
             </div>
-            <!-- 话题标题 -->
-            <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100 truncate">
-              {{ displaySessionTitle }}
-            </h3>
-            <p class="text-[10px] text-gray-400 truncate">
-              {{ session.models.join(', ') }}
-            </p>
+            <h2 class="mt-2 line-clamp-2 text-[clamp(1.2rem,3vw,1.8rem)] font-bold leading-tight tracking-[-0.025em] text-slate-950 dark:text-slate-50">{{ displaySessionTitle }}</h2>
+            <p class="mt-1 truncate text-xs font-medium text-slate-500 dark:text-slate-400">{{ session.models.join(', ') }}</p>
           </div>
-          <button
-            @click="emit('close')"
-            class="p-1.5 hover:bg-gray-100 dark:hover:bg-neutral-800 rounded-lg transition-colors shrink-0"
-          >
-            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
+          <button type="button" class="session-detail-close shrink-0 rounded-full text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-500/20 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white" :aria-label="t(store.settings.locale, 'common.close')" :title="t(store.settings.locale, 'common.close')" @click="emit('close')">
+            <X class="h-5 w-5" aria-hidden="true" />
           </button>
-        </div>
+        </header>
 
-        <!-- 内容 -->
-        <div class="p-4 overflow-y-auto max-h-[calc(80vh-60px)] space-y-4">
-          <div
-            v-if="sessionHasPartialCoverage"
-            class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] leading-relaxed text-slate-600 dark:border-white/8 dark:bg-white/[0.04] dark:text-slate-300"
-          >
-            <div>{{ t(store.settings.locale, 'sessions.coverageOnlyHint') }}</div>
-            <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500 dark:text-slate-400">
-              <span>{{ t(store.settings.locale, 'sessions.coveredRequests', { count: coveredRequests }) }}</span>
-              <span v-if="uncoveredRequests > 0">{{ t(store.settings.locale, 'sessions.uncoveredRequests', { count: uncoveredRequests }) }}</span>
-            </div>
-          </div>
-          <div
-            v-if="projectHint"
-            class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] leading-relaxed text-slate-600 dark:border-white/8 dark:bg-white/[0.04] dark:text-slate-300"
-          >
-            {{ projectHint }}
-          </div>
-
-          <!-- 元信息 -->
-          <div v-if="session.cwd || session.lastPrompt" class="bg-gray-50 dark:bg-neutral-800/50 rounded-xl p-3">
-            <div v-if="session.cwd" class="mb-2">
-              <div class="text-[10px] text-gray-400 mb-0.5">{{ t(store.settings.locale, 'settings.cwd') }}</div>
-              <div class="text-xs text-gray-600 dark:text-gray-300 truncate">{{ session.cwd }}</div>
-            </div>
-            <div v-if="session.lastPrompt">
-              <div class="text-[10px] text-gray-400 mb-0.5">{{ t(store.settings.locale, 'sessions.lastPrompt') }}</div>
-              <div class="text-xs text-gray-600 dark:text-gray-300 line-clamp-2">{{ session.lastPrompt }}</div>
-            </div>
-          </div>
-
-          <!-- 概览统计 -->
-          <div class="grid grid-cols-4 gap-3">
-            <div class="bg-gray-50 dark:bg-neutral-800/50 rounded-xl p-2.5 text-center">
-              <div class="text-[10px] text-gray-400">
-                {{ sessionHasPartialCoverage ? t(store.settings.locale, 'sessions.localRecords') : t(store.settings.locale, 'sessions.totalTokens') }}
-              </div>
-              <div class="text-sm font-mono font-semibold text-gray-800 dark:text-gray-100">
-                {{ sessionHasPartialCoverage
-                  ? localRecordCount
-                  : displayTokens(session.totalInputTokens + session.totalOutputTokens + session.totalCacheCreateTokens + session.totalCacheReadTokens) }}
-              </div>
-            </div>
-            <div class="bg-gray-50 dark:bg-neutral-800/50 rounded-xl p-2.5 text-center">
-              <div class="text-[10px] text-gray-400">
-                {{ sessionHasPartialCoverage ? t(store.settings.locale, 'sessions.proxyRecords') : t(store.settings.locale, 'sessions.estimatedCost') }}
-              </div>
-              <div class="text-sm font-mono font-semibold" :class="sessionHasPartialCoverage ? 'text-gray-800 dark:text-gray-100' : 'text-green-600'">
-                {{ sessionHasPartialCoverage ? coveredRequests : displayCost(session.estimatedCost) }}
-              </div>
-            </div>
-            <div class="bg-gray-50 dark:bg-neutral-800/50 rounded-xl p-2.5 text-center">
-              <div class="text-[10px] text-gray-400">
-                {{ sessionHasPartialCoverage ? t(store.settings.locale, 'sessions.proxyTokens') : t(store.settings.locale, 'sessions.avgRate') }}
-              </div>
-              <div class="text-sm font-mono font-semibold text-blue-600">
-                {{ sessionHasPartialCoverage ? displayProxyTokenValue : displayRate }}
-              </div>
-            </div>
-            <div class="bg-gray-50 dark:bg-neutral-800/50 rounded-xl p-2.5 text-center">
-              <div class="text-[10px] text-gray-400">
-                {{ sessionHasPartialCoverage ? t(store.settings.locale, 'sessions.proxyRate') : t(store.settings.locale, 'sessions.duration') }}
-              </div>
-              <div class="text-sm font-mono font-semibold text-gray-800 dark:text-gray-100">
-                {{ sessionHasPartialCoverage ? displayProxyRate : displayDuration }}
+        <div class="session-detail-modal__body min-h-0 flex-1 overflow-y-auto px-5 pb-5 sm:px-8 sm:pb-7">
+          <div v-if="sessionHasPartialCoverage || projectHint" class="session-detail-notice">
+            <Info class="h-4 w-4 shrink-0" aria-hidden="true" />
+            <div class="min-w-0">
+              <p v-if="sessionHasPartialCoverage">{{ t(store.settings.locale, 'sessions.coverageOnlyHint') }}</p>
+              <p v-else>{{ projectHint }}</p>
+              <div v-if="sessionHasPartialCoverage" class="session-detail-notice__meta">
+                <span>{{ t(store.settings.locale, 'sessions.coveredRequests', { count: coveredRequests }) }}</span>
+                <span v-if="uncoveredRequests > 0">{{ t(store.settings.locale, 'sessions.uncoveredRequests', { count: uncoveredRequests }) }}</span>
               </div>
             </div>
           </div>
 
-          <!-- 详细统计 -->
-          <div class="grid grid-cols-2 gap-3">
-            <div class="flex justify-between items-center py-1.5">
-              <span class="text-xs text-gray-500">{{ t(store.settings.locale, 'sessions.requests') }}</span>
-              <span class="text-xs font-mono text-gray-700 dark:text-gray-300">{{ sessionHasPartialCoverage ? localRecordCount : session.totalRequests }}</span>
-            </div>
-            <div class="flex justify-between items-center py-1.5">
-              <span class="text-xs text-gray-500">{{ t(store.settings.locale, 'sessions.ttft') }}</span>
-              <span class="text-xs font-mono text-gray-700 dark:text-gray-300">{{ sessionUsageVisible && session.avgTtftMs ? `${session.avgTtftMs.toFixed(0)}ms` : '—' }}</span>
-            </div>
-            <div class="flex justify-between items-center py-1.5">
-              <span class="text-xs text-gray-500">{{ t(store.settings.locale, 'common.success') }}</span>
-              <span class="text-xs font-mono text-green-600">{{ sessionUsageVisible ? (session.successRequests || 0) : '—' }}</span>
-            </div>
-            <div class="flex justify-between items-center py-1.5">
-              <span class="text-xs text-gray-500">{{ t(store.settings.locale, 'common.error') }}</span>
-              <span class="text-xs font-mono text-red-500">{{ sessionUsageVisible ? (session.errorRequests || 0) : '—' }}</span>
-            </div>
+          <div class="session-detail-metrics" :class="{ 'session-detail-metrics--partial': sessionHasPartialCoverage }">
+            <div class="session-detail-metric"><div class="session-detail-metric__icon session-detail-metric__icon--blue"><FileText class="h-4 w-4" aria-hidden="true" /></div><span>{{ sessionHasPartialCoverage ? t(store.settings.locale, 'sessions.localRecords') : t(store.settings.locale, 'sessions.totalTokens') }}</span><strong>{{ sessionHasPartialCoverage ? localRecordCount : displayTokens(totalTokens) }}</strong></div>
+            <div class="session-detail-metric"><div class="session-detail-metric__icon session-detail-metric__icon--green"><DollarSign class="h-4 w-4" aria-hidden="true" /></div><span>{{ sessionHasPartialCoverage ? t(store.settings.locale, 'sessions.proxyRecords') : t(store.settings.locale, 'sessions.estimatedCost') }}</span><strong>{{ sessionHasPartialCoverage ? coveredRequests : displayCost(session.estimatedCost) }}</strong></div>
+            <div class="session-detail-metric"><div class="session-detail-metric__icon session-detail-metric__icon--violet"><Zap class="h-4 w-4" aria-hidden="true" /></div><span>{{ sessionHasPartialCoverage ? t(store.settings.locale, 'sessions.proxyTokens') : t(store.settings.locale, 'sessions.avgRate') }}</span><strong>{{ sessionHasPartialCoverage ? displayProxyTokenValue : displayRate }}</strong><small v-if="!sessionHasPartialCoverage">t/s</small></div>
+            <div class="session-detail-metric"><div class="session-detail-metric__icon session-detail-metric__icon--blue"><Clock3 class="h-4 w-4" aria-hidden="true" /></div><span>{{ sessionHasPartialCoverage ? t(store.settings.locale, 'sessions.proxyRate') : t(store.settings.locale, 'sessions.duration') }}</span><strong>{{ sessionHasPartialCoverage ? displayProxyRate : displayDuration }}</strong></div>
           </div>
 
-          <!-- Token 分布 -->
-          <div>
-            <div class="text-[10px] text-gray-400 mb-1.5">{{ t(store.settings.locale, 'sessions.inputOutput') }}</div>
-            <div class="w-full flex h-2.5 bg-gray-200 rounded-full overflow-hidden dark:bg-neutral-800" :class="{ 'opacity-40': !sessionUsageVisible }">
-              <div
-                class="bg-cyan-400 h-full transition-all"
-                :style="{ width: `${sessionUsageVisible ? inputOutputRatio.input : 50}%` }"
-              ></div>
-              <div
-                class="bg-fuchsia-400 h-full transition-all"
-                :style="{ width: `${sessionUsageVisible ? inputOutputRatio.output : 50}%` }"
-              ></div>
+          <section class="session-detail-section">
+            <div class="session-detail-section__title"><div class="session-detail-section__icon session-detail-section__icon--blue"><BarChart3 class="h-4 w-4" aria-hidden="true" /></div><h3>{{ t(store.settings.locale, 'sessions.inputOutput') }}</h3></div>
+            <div class="session-detail-ratio" :class="{ 'session-detail-ratio--muted': !sessionUsageVisible }">
+              <div class="session-detail-ratio__bar"><span :style="{ width: `${sessionUsageVisible ? inputOutputRatio.input : 50}%` }"></span><span :style="{ width: `${sessionUsageVisible ? inputOutputRatio.output : 50}%` }"></span></div>
+              <div class="session-detail-ratio__legend"><span><b class="session-detail-dot session-detail-dot--input"></b>{{ t(store.settings.locale, 'common.inputTokens') }} <strong>{{ displayTokens(session.totalInputTokens) }}</strong></span><span><b class="session-detail-dot session-detail-dot--output"></b>{{ t(store.settings.locale, 'common.outputTokens') }} <strong>{{ displayTokens(session.totalOutputTokens) }}</strong></span></div>
             </div>
-            <div class="flex justify-between mt-1 text-[10px] text-gray-400">
-              <span>{{ t(store.settings.locale, 'common.inputTokens') }}: {{ displayTokens(session.totalInputTokens) }}</span>
-              <span>{{ t(store.settings.locale, 'common.outputTokens') }}: {{ displayTokens(session.totalOutputTokens) }}</span>
-            </div>
-          </div>
+          </section>
 
-          <!-- 时间信息 -->
-          <div class="text-[10px] text-gray-400 space-y-1">
-            <div class="flex justify-between">
-              <span>{{ t(store.settings.locale, 'sessions.startTime') }}</span>
-              <span>{{ formatTime(session.firstRequestTime) }}</span>
+          <section class="session-detail-section">
+            <div class="session-detail-section__title"><div class="session-detail-section__icon session-detail-section__icon--green"><Activity class="h-4 w-4" aria-hidden="true" /></div><h3>{{ t(store.settings.locale, 'sessions.sessionPerformance') }}</h3></div>
+            <div class="session-detail-stat-grid">
+              <div><span>{{ t(store.settings.locale, 'sessions.requests') }}</span><strong>{{ sessionHasPartialCoverage ? localRecordCount : session.totalRequests }}</strong></div>
+              <div><span><Timer class="h-3.5 w-3.5" aria-hidden="true" />{{ t(store.settings.locale, 'sessions.ttft') }}</span><strong>{{ sessionUsageVisible && session.avgTtftMs ? `${session.avgTtftMs.toFixed(0)}ms` : '—' }}</strong></div>
+              <div><span><CheckCircle2 class="h-3.5 w-3.5" aria-hidden="true" />{{ t(store.settings.locale, 'common.success') }}</span><strong class="session-detail-stat--success">{{ sessionUsageVisible ? (session.successRequests || 0) : '—' }}</strong></div>
+              <div><span><AlertCircle class="h-3.5 w-3.5" aria-hidden="true" />{{ t(store.settings.locale, 'common.error') }}</span><strong class="session-detail-stat--error">{{ sessionUsageVisible ? (session.errorRequests || 0) : '—' }}</strong></div>
             </div>
-            <div class="flex justify-between">
-              <span>{{ t(store.settings.locale, 'sessions.endTime') }}</span>
-              <span>{{ formatTime(session.lastRequestTime) }}</span>
+          </section>
+
+          <details v-if="session.cwd || session.lastPrompt || session.firstRequestTime || session.lastRequestTime" class="session-detail-context">
+            <summary><Folder class="h-4 w-4" aria-hidden="true" /><span>{{ t(store.settings.locale, 'sessions.sessionContext') }}</span></summary>
+            <div class="session-detail-context__grid">
+              <div v-if="session.cwd"><span>{{ t(store.settings.locale, 'settings.cwd') }}</span><strong :title="session.cwd">{{ session.cwd }}</strong></div>
+              <div v-if="session.firstRequestTime"><span>{{ t(store.settings.locale, 'sessions.startTime') }}</span><strong>{{ formatTime(session.firstRequestTime) }}</strong></div>
+              <div v-if="session.lastRequestTime"><span>{{ t(store.settings.locale, 'sessions.endTime') }}</span><strong>{{ formatTime(session.lastRequestTime) }}</strong></div>
+              <div v-if="session.lastPrompt" class="session-detail-context__prompt"><span>{{ t(store.settings.locale, 'sessions.lastPrompt') }}</span><strong>{{ session.lastPrompt }}</strong></div>
             </div>
-          </div>
+          </details>
         </div>
       </div>
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+.session-detail-modal__surface { background: var(--theme-bg-overlay); border: 1px solid var(--theme-border-default); color: var(--theme-text-primary); }
+.session-detail-modal__header { background: var(--theme-surface-gradient); border-bottom: 1px solid var(--theme-border-subtle); }
+.session-detail-modal__body { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--theme-text-tertiary) 45%, transparent) transparent; }
+.session-detail-modal__body::-webkit-scrollbar { width: 6px; }
+.session-detail-modal__body::-webkit-scrollbar-track { background: transparent; }
+.session-detail-modal__body::-webkit-scrollbar-thumb { border-radius: 999px; background: color-mix(in srgb, var(--theme-text-tertiary) 45%, transparent); }
+.session-detail-project { display: inline-flex; max-width: 100%; align-items: center; gap: 5px; border-radius: 999px; padding: 4px 8px; font-size: 10px; font-weight: 700; }
+.session-detail-project--named { color: #6450b8; background: rgba(124,58,237,.1); }
+.session-detail-project--global { color: var(--theme-text-secondary); background: var(--theme-bg-surface-muted); }
+.session-detail-project--unknown { color: var(--theme-status-warning-fg); background: var(--theme-status-warning-bg); }
+.session-detail-close { display: inline-flex; min-width: 44px; min-height: 44px; align-items: center; justify-content: center; }
+.session-detail-notice { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; border: 1px solid var(--theme-border-default); border-radius: 12px; background: var(--theme-bg-surface-muted); padding: 8px 10px; color: var(--theme-text-secondary); font-size: 11px; line-height: 1.4; }
+.session-detail-notice > svg { color: var(--theme-accent-primary); }
+.session-detail-notice__meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 3px; color: var(--theme-text-tertiary); font-size: 10px; }
+.session-detail-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.session-detail-metric { min-width: 0; border: 1px solid var(--theme-border-subtle); border-radius: 16px; background: var(--theme-bg-surface); padding: 11px 9px 10px; box-shadow: var(--theme-shadow-inline); }
+.session-detail-metric__icon, .session-detail-section__icon { display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; }
+.session-detail-metric__icon { width: 30px; height: 30px; margin-bottom: 7px; }
+.session-detail-metric__icon--blue, .session-detail-section__icon--blue { color: #1769e0; background: rgba(59,130,246,.11); }
+.session-detail-metric__icon--green, .session-detail-section__icon--green { color: #07885f; background: rgba(16,185,129,.11); }
+.session-detail-metric__icon--violet { color: #7c3aed; background: rgba(124,58,237,.1); }
+.session-detail-metric > span { display: block; overflow: hidden; color: var(--theme-text-secondary); font-size: 10px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.session-detail-metric strong { display: block; margin-top: 4px; overflow: hidden; color: var(--theme-text-primary); font-family: var(--font-mono); font-size: 16px; font-variant-numeric: tabular-nums; font-weight: 750; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
+.session-detail-metric small { color: var(--theme-text-tertiary); font-size: 9px; }
+.session-detail-section { margin-top: 8px; border: 1px solid var(--theme-border-subtle); border-radius: 16px; background: var(--theme-bg-surface); padding: 11px 12px; box-shadow: var(--theme-shadow-inline); }
+.session-detail-section__title { display: flex; align-items: center; gap: 7px; }
+.session-detail-section__icon { width: 26px; height: 26px; }
+.session-detail-section__title h3 { color: var(--theme-text-primary); font-size: 14px; font-weight: 750; letter-spacing: -0.015em; }
+.session-detail-ratio { margin-top: 9px; }
+.session-detail-ratio__bar { display: flex; height: 7px; overflow: hidden; border-radius: 999px; background: var(--theme-bg-surface-muted); }
+.session-detail-ratio__bar span:first-child { background: #22c7d6; }
+.session-detail-ratio__bar span:last-child { background: #c084fc; }
+.session-detail-ratio--muted { opacity: .45; }
+.session-detail-ratio__legend { display: flex; justify-content: space-between; gap: 10px; margin-top: 7px; color: var(--theme-text-secondary); font-size: 10px; }
+.session-detail-ratio__legend > span { display: flex; min-width: 0; align-items: center; gap: 4px; }
+.session-detail-ratio__legend strong { color: var(--theme-text-primary); font-family: var(--font-mono); font-weight: 650; }
+.session-detail-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
+.session-detail-dot--input { background: #22c7d6; }
+.session-detail-dot--output { background: #c084fc; }
+.session-detail-stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; margin-top: 5px; }
+.session-detail-stat-grid > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--theme-border-default); }
+.session-detail-stat-grid span { display: inline-flex; align-items: center; gap: 5px; color: var(--theme-text-secondary); font-size: 11px; }
+.session-detail-stat-grid strong { color: var(--theme-text-primary); font-family: var(--font-mono); font-size: 11px; font-variant-numeric: tabular-nums; font-weight: 650; }
+.session-detail-stat-grid svg { color: var(--theme-accent-primary); }
+.session-detail-stat--success { color: var(--theme-status-success-fg) !important; }
+.session-detail-stat--error { color: var(--theme-status-danger-fg) !important; }
+.session-detail-context { margin-top: 8px; border: 1px solid var(--theme-border-default); border-radius: 13px; background: var(--theme-bg-surface-muted); padding: 9px 10px; }
+.session-detail-context summary { display: flex; align-items: center; gap: 6px; cursor: pointer; list-style: none; color: var(--theme-text-secondary); font-size: 11px; font-weight: 700; }
+.session-detail-context summary::-webkit-details-marker { display: none; }
+.session-detail-context summary svg { color: var(--theme-accent-primary); }
+.session-detail-context__grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px 16px; margin-top: 8px; }
+.session-detail-context__grid > div { min-width: 0; }
+.session-detail-context__grid span { display: block; color: var(--theme-text-tertiary); font-size: 9px; }
+.session-detail-context__grid strong { display: block; overflow: hidden; margin-top: 2px; color: var(--theme-text-secondary); font-family: var(--font-mono); font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.session-detail-context__prompt { grid-column: 1 / -1; }
+.session-detail-context__prompt strong { font-family: var(--font-sans); line-height: 1.35; white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+@media (max-width: 639px) {
+  .session-detail-modal { padding: 8px; }
+  .session-detail-modal__surface { max-height: calc(100vh - 16px); border-radius: 20px; }
+  .session-detail-modal__header { gap: 6px; padding: 10px 14px 9px; }
+  .session-detail-modal__header h2 { margin-top: 6px; font-size: 21px; }
+  .session-detail-modal__header p { margin-top: 3px; font-size: 10px; }
+  .session-detail-project { padding: 3px 7px; font-size: 9px; }
+  .session-detail-project svg { width: 12px; height: 12px; }
+  .session-detail-close { min-width: 40px; min-height: 40px; }
+  .session-detail-close svg { width: 18px; height: 18px; }
+  .session-detail-modal__body { padding: 7px 14px 11px; }
+  .session-detail-notice { margin-bottom: 7px; padding: 7px 8px; font-size: 10px; }
+  .session-detail-notice__meta { font-size: 9px; }
+  .session-detail-metrics { gap: 5px; }
+  .session-detail-metric { border-radius: 12px; padding: 7px 5px 8px; box-shadow: none; }
+  .session-detail-metric__icon { width: 24px; height: 24px; margin-bottom: 5px; border-radius: 8px; }
+  .session-detail-metric__icon svg { width: 14px; height: 14px; }
+  .session-detail-metric > span { font-size: 9px; }
+  .session-detail-metric strong { margin-top: 3px; font-size: 14px; }
+  .session-detail-metric small { font-size: 8px; }
+  .session-detail-section { margin-top: 7px; padding: 9px; border-radius: 14px; box-shadow: none; }
+  .session-detail-section__icon { width: 23px; height: 23px; }
+  .session-detail-section__icon svg { width: 13px; height: 13px; }
+  .session-detail-section__title h3 { font-size: 13px; }
+  .session-detail-ratio { margin-top: 7px; }
+  .session-detail-ratio__bar { height: 6px; }
+  .session-detail-ratio__legend { margin-top: 5px; font-size: 9px; }
+  .session-detail-ratio__legend strong { font-size: 9px; }
+  .session-detail-stat-grid { gap: 0 12px; margin-top: 3px; }
+  .session-detail-stat-grid > div { padding: 5px 0; }
+  .session-detail-stat-grid span, .session-detail-stat-grid strong { font-size: 10px; }
+  .session-detail-context { margin-top: 7px; padding: 8px 9px; }
+  .session-detail-context__grid { gap: 6px 12px; margin-top: 7px; }
+}
+@media (prefers-reduced-motion: reduce) { .session-detail-close, .session-detail-modal__body * { transition: none !important; } }
+</style>
