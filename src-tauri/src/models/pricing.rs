@@ -24,6 +24,22 @@ pub struct ModelPricing {
     pub cache_read: f64,
 }
 
+pub fn validate_model_pricing(pricing: &ModelPricingConfig) -> Result<(), String> {
+    if pricing.model_id.trim().is_empty() {
+        return Err("ERR_MODEL_PRICING_MODEL_ID_REQUIRED".to_string());
+    }
+    let valid = |value: f64| value.is_finite() && value >= 0.0;
+    if !valid(pricing.input_price) || !valid(pricing.output_price) {
+        return Err("ERR_MODEL_PRICING_PRICE_INVALID".to_string());
+    }
+    if pricing.cache_read_price.is_some_and(|value| !valid(value))
+        || pricing.cache_write_price.is_some_and(|value| !valid(value))
+    {
+        return Err("ERR_MODEL_PRICING_PRICE_INVALID".to_string());
+    }
+    Ok(())
+}
+
 impl Default for ModelPricing {
     fn default() -> Self {
         // 无可用价格 - 将导致 $0 费用估算
@@ -41,23 +57,7 @@ impl Default for ModelPricing {
 ///
 /// 优先级：custom > api > default (0.0)
 pub fn get_pricing(model: &str, pricings: &[ModelPricingConfig], match_mode: &str) -> ModelPricing {
-    let normalized_model = normalize_model_id(model);
-
-    // 尝试查找匹配的价格配置
-    let matched = if match_mode == "exact" {
-        // 精确匹配表示模型 ID 字节级完全相等
-        pricings
-            .iter()
-            .filter(|p| p.model_id == model)
-            .min_by_key(|p| source_priority(&p.source))
-    } else {
-        // 模糊匹配允许供应商前缀、大小写差异和分隔符变体
-        pricings
-            .iter()
-            .filter_map(|p| fuzzy_match_score(model, &normalized_model, p).map(|score| (score, p)))
-            .min_by_key(|(score, pricing)| (*score, source_priority(&pricing.source)))
-            .map(|(_, pricing)| pricing)
-    };
+    let matched = find_pricing(model, pricings, match_mode);
 
     if let Some(pricing) = matched {
         return ModelPricing {
@@ -75,6 +75,27 @@ pub fn get_pricing(model: &str, pricings: &[ModelPricingConfig], match_mode: &st
 
     // 未找到价格 - 返回默认值 (0.0)
     ModelPricing::default()
+}
+
+/// 查找模型对应的价格配置；`None` 表示未知模型，而不是免费模型。
+pub fn find_pricing<'a>(
+    model: &str,
+    pricings: &'a [ModelPricingConfig],
+    match_mode: &str,
+) -> Option<&'a ModelPricingConfig> {
+    let normalized_model = normalize_model_id(model);
+    if match_mode == "exact" {
+        pricings
+            .iter()
+            .filter(|p| p.model_id == model)
+            .min_by_key(|p| source_priority(&p.source))
+    } else {
+        pricings
+            .iter()
+            .filter_map(|p| fuzzy_match_score(model, &normalized_model, p).map(|score| (score, p)))
+            .min_by_key(|(score, pricing)| (*score, source_priority(&pricing.source)))
+            .map(|(_, pricing)| pricing)
+    }
 }
 
 /// 标准化模型 ID（移除所有非字母数字字符并转小写）
@@ -96,15 +117,15 @@ pub fn normalize_model_id(model: &str) -> String {
 /// 返回 `Some(score)` 表示匹配成功，分数越小匹配度越高：
 /// - `0`: 完全相等
 /// - `1`: 忽略大小写相等
-/// - `2`: 互相包含（大小写）
-/// - `3`: 标准化后互相包含
+/// - `2`: 标准化后相等（大小写/分隔符变体）
+/// - `3`: 供应商路径后缀或明确日期版本后缀
 ///
 /// 返回 `None` 表示不匹配。
 ///
 /// 此函数公开以支持 `proxy::database` 中的批量价格应用逻辑。
 pub fn fuzzy_match_score(
     model: &str,
-    normalized_model: &str,
+    _normalized_model: &str,
     pricing: &ModelPricingConfig,
 ) -> Option<u8> {
     let pricing_id = pricing.model_id.as_str();
@@ -115,20 +136,28 @@ pub fn fuzzy_match_score(
         return Some(1);
     }
 
-    let model_lower = model.to_ascii_lowercase();
-    let pricing_lower = pricing_id.to_ascii_lowercase();
-    if model_lower.contains(&pricing_lower) || pricing_lower.contains(&model_lower) {
+    let model_id = model.rsplit('/').next().unwrap_or(model);
+    let pricing_model_id = pricing_id.rsplit('/').next().unwrap_or(pricing_id);
+    let normalized_model_id = normalize_model_id(model_id);
+    let normalized_pricing_id = normalize_model_id(pricing_model_id);
+    if normalized_model_id == normalized_pricing_id {
         return Some(2);
     }
 
-    let normalized_pricing = normalize_model_id(pricing_id);
-    if normalized_model.contains(&normalized_pricing)
-        || normalized_pricing.contains(normalized_model)
+    if has_date_version_suffix(&normalized_model_id, &normalized_pricing_id)
+        || has_date_version_suffix(&normalized_pricing_id, &normalized_model_id)
     {
         return Some(3);
     }
 
     None
+}
+
+fn has_date_version_suffix(candidate: &str, base: &str) -> bool {
+    let Some(suffix) = candidate.strip_prefix(base) else {
+        return false;
+    };
+    suffix.len() == 8 && suffix.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn source_priority(source: &str) -> u8 {
@@ -288,6 +317,54 @@ mod tests {
         let pricing = get_pricing("minimax-m2-5", &pricings, "fuzzy");
         assert!((pricing.input - 0.3).abs() < 1e-9);
         assert!((pricing.output - 1.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fuzzy_match_does_not_confuse_model_family_names() {
+        let pricings = vec![
+            ModelPricingConfig {
+                model_id: "gpt-4o".to_string(),
+                input_price: 5.0,
+                output_price: 15.0,
+                cache_write_price: None,
+                cache_read_price: None,
+                display_name: None,
+                source: "api".to_string(),
+                last_updated: 0,
+            },
+            ModelPricingConfig {
+                model_id: "gpt-4o-mini".to_string(),
+                input_price: 1.0,
+                output_price: 2.0,
+                cache_write_price: None,
+                cache_read_price: None,
+                display_name: None,
+                source: "api".to_string(),
+                last_updated: 0,
+            },
+        ];
+        assert_eq!(get_pricing("gpt-4o-mini", &pricings, "fuzzy").input, 1.0);
+        assert_eq!(
+            get_pricing("gpt-4o-2024-05-13", &pricings, "fuzzy").input,
+            5.0
+        );
+    }
+
+    #[test]
+    fn invalid_model_pricing_is_rejected() {
+        let mut pricing = ModelPricingConfig {
+            model_id: "model".to_string(),
+            input_price: 1.0,
+            output_price: 2.0,
+            cache_write_price: Some(-1.0),
+            cache_read_price: None,
+            display_name: None,
+            source: "custom".to_string(),
+            last_updated: 0,
+        };
+        assert!(validate_model_pricing(&pricing).is_err());
+        pricing.cache_write_price = Some(f64::NAN);
+        assert!(validate_model_pricing(&pricing).is_err());
     }
 
     #[test]

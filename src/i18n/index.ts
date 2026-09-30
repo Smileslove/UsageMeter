@@ -788,6 +788,8 @@ const messages = {
       localJsonlNotFound: '未找到 Claude 本地 JSONL 会话文件',
       statisticsTimeout: '统计数据加载超时',
       configuredSourceQuotaFailed: '来源额度查询失败',
+      modelPricingModelIdRequired: '模型 ID 不能为空',
+      modelPricingPriceInvalid: '模型价格必须是有限的非负数',
       unknown: '未知错误'
     },
     settings: {
@@ -2382,6 +2384,8 @@ const messages = {
       localJsonlNotFound: '未找到 Claude 本地 JSONL 會話檔案',
       statisticsTimeout: '統計資料載入逾時',
       configuredSourceQuotaFailed: '來源額度查詢失敗',
+      modelPricingModelIdRequired: '模型 ID 不可為空',
+      modelPricingPriceInvalid: '模型價格必須是有限的非負數',
       unknown: '未知錯誤'
     },
     settings: {
@@ -3975,6 +3979,8 @@ const messages = {
       localJsonlNotFound: 'Claude local JSONL session files not found',
       statisticsTimeout: 'Statistics data load timed out',
       configuredSourceQuotaFailed: 'Configured source quota query failed',
+      modelPricingModelIdRequired: 'Model ID is required',
+      modelPricingPriceInvalid: 'Model prices must be finite and non-negative',
       unknown: 'Unknown error'
     },
     settings: {
@@ -5005,7 +5011,9 @@ const ERROR_KEY_MAP: Record<string, string> = {
   ERR_SNAPSHOT_TASK_FAILED: 'backendError.snapshotTaskFailed',
   ERR_LOCAL_JSONL_NOT_FOUND: 'backendError.localJsonlNotFound',
   ERR_STATISTICS_TIMEOUT: 'backendError.statisticsTimeout',
-  ERR_CONFIGURED_SOURCE_QUOTA_FAILED: 'backendError.configuredSourceQuotaFailed'
+  ERR_CONFIGURED_SOURCE_QUOTA_FAILED: 'backendError.configuredSourceQuotaFailed',
+  ERR_MODEL_PRICING_MODEL_ID_REQUIRED: 'backendError.modelPricingModelIdRequired',
+  ERR_MODEL_PRICING_PRICE_INVALID: 'backendError.modelPricingPriceInvalid'
 }
 
 function parseCodeAndDetail(raw: string): { code: string; detail: string } {

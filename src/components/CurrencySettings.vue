@@ -41,7 +41,7 @@ const localCurrency = ref(JSON.parse(JSON.stringify(store.settings.currency)) as
 // 可用的显示货币选项
 const displayOptions = computed(() =>
   localCurrency.value.trackedCurrencies.filter(c =>
-    localCurrency.value.exchangeRates[c] !== undefined
+    Number.isFinite(localCurrency.value.exchangeRates[c]) && localCurrency.value.exchangeRates[c] > 0
   )
 )
 
@@ -65,7 +65,9 @@ const displayCurrencyName = computed(() =>
 )
 
 const displayCurrencyRate = computed(() =>
-  localCurrency.value.exchangeRates[localCurrency.value.displayCurrency] ?? 1
+  Number.isFinite(localCurrency.value.exchangeRates[localCurrency.value.displayCurrency]) && localCurrency.value.exchangeRates[localCurrency.value.displayCurrency] > 0
+    ? localCurrency.value.exchangeRates[localCurrency.value.displayCurrency]
+    : 1
 )
 
 const rateInputClass = 'min-w-0 bg-transparent text-right font-mono font-semibold text-[var(--theme-text-primary)] outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none'
@@ -74,7 +76,7 @@ const rateInputClass = 'min-w-0 bg-transparent text-right font-mono font-semibol
 async function addCurrency(code: string) {
   if (localCurrency.value.trackedCurrencies.includes(code)) return
   localCurrency.value.trackedCurrencies.push(code)
-  localCurrency.value.exchangeRates[code] = 0
+  delete localCurrency.value.exchangeRates[code]
   await save()
 }
 

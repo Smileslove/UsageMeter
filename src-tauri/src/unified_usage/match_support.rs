@@ -1,4 +1,6 @@
-use super::types::{canonical_request_key_for_local, canonical_request_key_for_proxy};
+use super::types::{
+    canonical_request_key_for_local, canonical_request_key_for_proxy, merged_token_usage,
+};
 use crate::models::ToolFilter;
 use crate::proxy::UsageRecord;
 use crate::session::{LocalRequestRecord, SessionMeta};
@@ -85,6 +87,29 @@ pub(super) fn compute_local_request_cost_cached(
         (record.cache_create_tokens as f64 / 1_000_000.0) * pricing.cache_write_1h;
 
     input_cost + output_cost + cache_read_cost + cache_create_cost
+}
+
+pub(super) fn compute_merged_request_cost_cached(
+    proxy: &UsageRecord,
+    local: &LocalRequestRecord,
+    pricings: &[crate::models::ModelPricingConfig],
+    match_mode: &str,
+    pricing_cache: &mut HashMap<String, crate::models::ModelPricing>,
+) -> f64 {
+    let model = if !proxy.model.trim().is_empty() {
+        proxy.model.trim()
+    } else {
+        local.model.trim()
+    };
+    let (input, output, cache_create, cache_read) = merged_token_usage(proxy, local);
+    let pricing = pricing_cache
+        .entry(model.to_string())
+        .or_insert_with(|| crate::models::get_pricing(model, pricings, match_mode));
+
+    (input as f64 / 1_000_000.0) * pricing.input
+        + (output as f64 / 1_000_000.0) * pricing.output
+        + (cache_create as f64 / 1_000_000.0) * pricing.cache_write_1h
+        + (cache_read as f64 / 1_000_000.0) * pricing.cache_read
 }
 
 #[cfg(test)]

@@ -447,14 +447,17 @@ export function getAllCurrencyCodes(): string[] {
 }
 
 export function convertCost(value: number, currency: CurrencySettings): number {
-  const rate = currency.exchangeRates[currency.displayCurrency] || 1.0
+  const configuredRate = currency.exchangeRates[currency.displayCurrency]
+  const rate = Number.isFinite(configuredRate) && configuredRate > 0 ? configuredRate : 1.0
   return value * rate
 }
 
 export function formatCost(value: number, currency?: CurrencySettings, precision = 4): string {
-  const rate = currency?.exchangeRates?.[currency.displayCurrency] ?? 1.0
+  const configuredRate = currency?.exchangeRates?.[currency.displayCurrency]
+  const validCurrency = configuredRate != null && Number.isFinite(configuredRate) && configuredRate > 0
+  const rate = validCurrency ? configuredRate : 1.0
   const converted = value * rate
-  const symbol = currency ? getCurrencySymbol(currency.displayCurrency) : '$'
+  const symbol = currency && validCurrency ? getCurrencySymbol(currency.displayCurrency) : '$'
   return `${symbol}${Number.isFinite(converted) ? converted.toFixed(precision) : '0.0000'}`
 }
 

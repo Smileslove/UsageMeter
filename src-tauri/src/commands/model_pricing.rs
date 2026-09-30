@@ -246,6 +246,7 @@ pub async fn count_synced_model_pricings(query: Option<String>) -> Result<i64, S
 /// 添加自定义模型价格
 #[tauri::command]
 pub async fn add_custom_model_pricing(pricing: ModelPricingConfig) -> Result<(), String> {
+    crate::models::validate_model_pricing(&pricing)?;
     let db_arc = get_pricing_db()?;
 
     tauri::async_runtime::spawn_blocking(move || {
@@ -271,6 +272,7 @@ pub async fn add_custom_model_pricing(pricing: ModelPricingConfig) -> Result<(),
 /// 更新自定义模型价格
 #[tauri::command]
 pub async fn update_custom_model_pricing(pricing: ModelPricingConfig) -> Result<(), String> {
+    crate::models::validate_model_pricing(&pricing)?;
     let db_arc = get_pricing_db()?;
 
     tauri::async_runtime::spawn_blocking(move || {

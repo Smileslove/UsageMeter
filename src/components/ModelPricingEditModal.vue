@@ -1,11 +1,21 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { t } from '../i18n'
 import type { ModelPricingConfig } from '../types'
 import { useMonitorStore } from '../stores/monitor'
 import { getCurrencySymbol } from '../utils/format'
 
 const store = useMonitorStore()
+const exchangeRateFor = (code: string) => {
+  const rate = store.settings.currency.exchangeRates[code]
+  return Number.isFinite(rate) && rate > 0 ? rate : 1.0
+}
+const availableInputCurrencies = computed(() =>
+  store.settings.currency.trackedCurrencies.filter(code => {
+    const rate = store.settings.currency.exchangeRates[code]
+    return Number.isFinite(rate) && rate > 0
+  })
+)
 
 const props = defineProps<{
   pricing: ModelPricingConfig | null
@@ -39,7 +49,7 @@ watch(() => [props.pricing, props.copySource], ([pricing, copySource]) => {
     isEdit.value = true
     modelId.value = pricing.modelId
     displayName.value = pricing.displayName || ''
-    const r = store.settings.currency.exchangeRates[inputCurrency.value] ?? 1.0
+    const r = exchangeRateFor(inputCurrency.value)
     inputPrice.value = parseFloat((pricing.inputPrice * r).toFixed(4))
     outputPrice.value = parseFloat((pricing.outputPrice * r).toFixed(4))
     cacheReadPrice.value = pricing.cacheReadPrice != null ? parseFloat((pricing.cacheReadPrice * r).toFixed(4)) : undefined
@@ -48,7 +58,7 @@ watch(() => [props.pricing, props.copySource], ([pricing, copySource]) => {
     isEdit.value = false
     modelId.value = copySource.modelId
     displayName.value = copySource.displayName || ''
-    const r = store.settings.currency.exchangeRates[inputCurrency.value] ?? 1.0
+    const r = exchangeRateFor(inputCurrency.value)
     inputPrice.value = parseFloat((copySource.inputPrice * r).toFixed(4))
     outputPrice.value = parseFloat((copySource.outputPrice * r).toFixed(4))
     cacheReadPrice.value = copySource.cacheReadPrice != null ? parseFloat((copySource.cacheReadPrice * r).toFixed(4)) : undefined
@@ -68,7 +78,7 @@ watch(() => [props.pricing, props.copySource], ([pricing, copySource]) => {
 watch(inputCurrency, (newCurrency) => {
   const source = props.pricing || props.copySource
   if (!source) return
-  const r = store.settings.currency.exchangeRates[newCurrency] ?? 1.0
+  const r = exchangeRateFor(newCurrency)
   inputPrice.value = parseFloat((source.inputPrice * r).toFixed(4))
   outputPrice.value = parseFloat((source.outputPrice * r).toFixed(4))
   cacheReadPrice.value = source.cacheReadPrice != null ? parseFloat((source.cacheReadPrice * r).toFixed(4)) : undefined
@@ -78,9 +88,10 @@ watch(inputCurrency, (newCurrency) => {
 // 保存（将输入币种价格转换为 USD 存储）
 const handleSave = () => {
   if (!modelId.value.trim()) return
-  if (isNaN(inputPrice.value) || isNaN(outputPrice.value) || inputPrice.value < 0 || outputPrice.value < 0) return
+  if (!isValid()) return
 
-  const r = store.settings.currency.exchangeRates[inputCurrency.value] ?? 1.0
+  const configuredRate = store.settings.currency.exchangeRates[inputCurrency.value]
+  const r = configuredRate != null && Number.isFinite(configuredRate) && configuredRate > 0 ? configuredRate : 1.0
 
   const pricing: ModelPricingConfig = {
     modelId: modelId.value.trim(),
@@ -98,7 +109,15 @@ const handleSave = () => {
 
 // 验证
 const isValid = () => {
-  return modelId.value.trim() && !isNaN(inputPrice.value) && !isNaN(outputPrice.value) && inputPrice.value >= 0 && outputPrice.value >= 0
+  const validRequired = (value: number) => Number.isFinite(value) && value >= 0
+  const validOptional = (value: number | undefined) => value == null || (Number.isFinite(value) && value >= 0)
+  return Boolean(
+    modelId.value.trim()
+      && validRequired(inputPrice.value)
+      && validRequired(outputPrice.value)
+      && validOptional(cacheReadPrice.value)
+      && validOptional(cacheWritePrice.value)
+  )
 }
 </script>
 
@@ -148,7 +167,7 @@ const isValid = () => {
           v-model="inputCurrency"
           class="theme-input w-full cursor-pointer appearance-none rounded-lg px-2.5 py-1.5 text-xs"
         >
-          <option v-for="code in store.settings.currency.trackedCurrencies" :key="code" :value="code">
+          <option v-for="code in availableInputCurrencies" :key="code" :value="code">
             {{ code }} ({{ getCurrencySymbol(code) }})
           </option>
         </select>

@@ -45,6 +45,9 @@ impl ProxyDatabase {
 
     /// 批量插入/更新模型价格（用于同步 API 数据）
     pub fn upsert_model_pricings(&self, pricings: &[ModelPricingConfig]) -> Result<usize, String> {
+        for pricing in pricings {
+            crate::models::validate_model_pricing(pricing)?;
+        }
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         let mut count = 0;
 
@@ -242,6 +245,7 @@ impl ProxyDatabase {
 
     /// 添加自定义模型价格（使用 UPSERT，如果已存在则更新）
     pub fn add_custom_pricing(&self, pricing: &ModelPricingConfig) -> Result<(), String> {
+        crate::models::validate_model_pricing(pricing)?;
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         conn.execute(
             r#"
@@ -273,6 +277,7 @@ impl ProxyDatabase {
 
     /// 更新自定义模型价格
     pub fn update_custom_pricing(&self, pricing: &ModelPricingConfig) -> Result<(), String> {
+        crate::models::validate_model_pricing(pricing)?;
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         conn.execute(
             r#"
@@ -625,7 +630,7 @@ impl ProxyDatabase {
         }
 
         let pricings = vec![pricing.clone()];
-        let snapshot_id = Self::pricing_snapshot_id(&pricings, "exact");
+        let snapshot_id = Self::pricing_snapshot_id(&pricings, filter.match_mode);
         let settings = crate::settings::load_settings_blocking().unwrap_or_default();
         let today = Self::today_local_date_with_settings(&settings);
 
@@ -667,7 +672,7 @@ impl ProxyDatabase {
                     *cache_read,
                     model,
                     &pricings,
-                    "exact",
+                    filter.match_mode,
                 );
                 update_stmt
                     .execute(rusqlite::params![cost, &snapshot_id, now, id])
@@ -858,6 +863,8 @@ mod tests {
     async fn preview_pricing_apply_fuzzy_match_finds_normalized_model_names() {
         let (_tmp, db) = temp_db();
         let now_ms = 1_800_000_000_000i64; // 固定时间戳，避免依赖当前时钟与跨天副作用
+        let pricing_cfg = pricing("gpt-4o", "api", 5.0, 15.0);
+        insert_pricing(&db, &pricing_cfg);
         insert_usage_record(
             &db,
             now_ms,
@@ -894,6 +901,21 @@ mod tests {
         assert_eq!(result.matched_count, 1);
         assert_eq!(result.model_counts[0].model, "gpt-4o-2024-05-13");
         assert!((result.total_current_cost - 0.5).abs() < f64::EPSILON);
+
+        let updated = db
+            .apply_pricing_to_records(&pricing_cfg, &filter)
+            .await
+            .expect("apply fuzzy pricing");
+        assert_eq!(updated, 1);
+        let conn = db.conn.lock().expect("lock conn");
+        let cost: f64 = conn
+            .query_row(
+                "SELECT estimated_cost FROM usage_records WHERE message_id = 'm1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read fuzzy cost");
+        assert!((cost - 0.0125).abs() < 1e-9);
     }
 
     #[tokio::test]

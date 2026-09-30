@@ -438,12 +438,14 @@ fn migrate_currency(settings: &mut AppSettings) {
         settings.currency = CurrencySettings::default();
         return;
     }
-    if !settings.currency.exchange_rates.contains_key("USD") {
-        settings
-            .currency
-            .exchange_rates
-            .insert("USD".to_string(), 1.0);
-    }
+    settings
+        .currency
+        .exchange_rates
+        .retain(|_, rate| rate.is_finite() && *rate > 0.0);
+    settings
+        .currency
+        .exchange_rates
+        .insert("USD".to_string(), 1.0);
     if !settings
         .currency
         .tracked_currencies
@@ -459,6 +461,11 @@ fn migrate_currency(settings: &mut AppSettings) {
         .currency
         .tracked_currencies
         .contains(&settings.currency.display_currency)
+        || !settings
+            .currency
+            .exchange_rates
+            .get(&settings.currency.display_currency)
+            .is_some_and(|rate| rate.is_finite() && *rate > 0.0)
     {
         settings.currency.display_currency = "USD".to_string();
     }

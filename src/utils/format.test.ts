@@ -161,6 +161,10 @@ describe('formatCost', () => {
     expect(formatCost(NaN)).toBe('$0.0000')
     expect(formatCost(Infinity)).toBe('$0.0000')
   })
+
+  it('falls_back_to_usd_for_invalid_currency_rate', () => {
+    expect(formatCost(1.2, currency('CNY', 0))).toBe('$1.2000')
+  })
 })
 
 describe('convertCost', () => {

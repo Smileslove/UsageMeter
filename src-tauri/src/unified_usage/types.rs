@@ -1350,7 +1350,7 @@ impl MergedRequestFact {
             cache_read_tokens: record.cache_read_tokens,
             total_tokens: record.total_tokens,
             request_count: 1,
-            estimated_cost: record.estimated_cost,
+            estimated_cost: record.estimated_cost.max(0.0),
             estimated: false,
             coverage_origin: CoverageOrigin::ProxyOnly,
             status_code: Some(record.status_code),
@@ -1409,27 +1409,8 @@ impl MergedRequestFact {
         };
         let model = normalize_model_bucket(&tool, &model);
 
-        // 用量：proxy 优先 input/output，local 优先 cache_*
-        let input_tokens = if proxy.input_tokens > 0 {
-            proxy.input_tokens
-        } else {
-            local.input_tokens
-        };
-        let output_tokens = if proxy.output_tokens > 0 {
-            proxy.output_tokens
-        } else {
-            local.output_tokens
-        };
-        let cache_create_tokens = if local.cache_create_tokens > 0 {
-            local.cache_create_tokens
-        } else {
-            proxy.cache_create_tokens
-        };
-        let cache_read_tokens = if local.cache_read_tokens > 0 {
-            local.cache_read_tokens
-        } else {
-            proxy.cache_read_tokens
-        };
+        let (input_tokens, output_tokens, cache_create_tokens, cache_read_tokens) =
+            merged_token_usage(proxy, local);
         // total 显式重新计算，不取任一方的旧值——避免任一方丢字段导致 total 漂移
         let total_tokens = input_tokens
             .saturating_add(output_tokens)
@@ -1439,10 +1420,25 @@ impl MergedRequestFact {
         // 成本：cost_locked 表示用户/系统已经按"当时价格"冻结过这条记录，
         // 不能被实时估算覆盖；未 lock 的 proxy cost 与 local 估算同源，
         // 用 local 反而能在用户改价格表后立刻生效。
-        let estimated_cost = if proxy.cost_locked {
-            proxy.estimated_cost
+        let proxy_usage = (
+            proxy.input_tokens,
+            proxy.output_tokens,
+            proxy.cache_create_tokens,
+            proxy.cache_read_tokens,
+        );
+        let merged_usage = (
+            input_tokens,
+            output_tokens,
+            cache_create_tokens,
+            cache_read_tokens,
+        );
+        let estimated_cost = if proxy.cost_locked && proxy_usage == merged_usage {
+            proxy.estimated_cost.max(0.0)
         } else {
-            local.explicit_estimated_cost.unwrap_or(fallback_cost)
+            local
+                .explicit_estimated_cost
+                .unwrap_or(fallback_cost)
+                .max(0.0)
         };
         let local_request_key = canonical_request_key_for_local(local);
         let canonical_request_key = if !local_request_key.trim().is_empty() {
@@ -1488,6 +1484,35 @@ impl MergedRequestFact {
             ),
         }
     }
+}
+
+/// 统一合并时的用量字段优先级，供费用计算和事实构造共同使用。
+pub(crate) fn merged_token_usage(
+    proxy: &UsageRecord,
+    local: &LocalRequestRecord,
+) -> (u64, u64, u64, u64) {
+    (
+        if proxy.input_tokens > 0 {
+            proxy.input_tokens
+        } else {
+            local.input_tokens
+        },
+        if proxy.output_tokens > 0 {
+            proxy.output_tokens
+        } else {
+            local.output_tokens
+        },
+        if local.cache_create_tokens > 0 {
+            local.cache_create_tokens
+        } else {
+            proxy.cache_create_tokens
+        },
+        if local.cache_read_tokens > 0 {
+            local.cache_read_tokens
+        } else {
+            proxy.cache_read_tokens
+        },
+    )
 }
 
 #[cfg(test)]
@@ -1594,11 +1619,20 @@ mod tests {
     }
 
     #[test]
-    fn merge_estimated_cost_respects_cost_locked() {
-        // cost_locked=true：用 proxy 冻结值
+    fn merge_estimated_cost_recomputes_when_tokens_are_completed() {
+        // local 补出了 cache token，冻结费用的计价口径已变化，必须重算。
         let proxy_locked = proxy_with(100, 200, 0, 0, 0.99, true);
         let local = local_with(100, 200, 100, 100, "sess-real", 1_700_000_000);
         let merged = MergedRequestFact::merge_proxy_preferred(&proxy_locked, &local, None, 0.42);
+        assert!((merged.estimated_cost - 0.42).abs() < 1e-9);
+
+        let local_without_cache = local_with(100, 200, 0, 0, "sess-real", 1_700_000_000);
+        let merged = MergedRequestFact::merge_proxy_preferred(
+            &proxy_locked,
+            &local_without_cache,
+            None,
+            0.42,
+        );
         assert!((merged.estimated_cost - 0.99).abs() < 1e-9);
 
         // cost_locked=false：忽略 proxy.estimated_cost，使用 local 实时估算（fallback_cost）

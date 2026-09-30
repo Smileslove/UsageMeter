@@ -70,6 +70,8 @@ impl ProxyDatabase {
         } else {
             Self::estimate_record_cost(record, &pricings, &match_mode)
         };
+        let pricing_matched = record.cost_locked
+            || crate::models::find_pricing(&record.model, &pricings, &match_mode).is_some();
         let pricing_snapshot_id = record
             .pricing_snapshot_id
             .clone()
@@ -92,7 +94,7 @@ impl ProxyDatabase {
              migration_attempted_at, estimated_cost, pricing_snapshot_id, cost_locked, api_key_prefix, request_base_url,
              client_tool, proxy_profile_id, client_detection_method, ingress_kind, gateway_profile_id,
              gateway_caller_label, usage_source, gateway_request_id, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, ?19, ?20, 1, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)
             "#,
             rusqlite::params![
                 record.timestamp,
@@ -115,6 +117,7 @@ impl ProxyDatabase {
                 record.status_code as i64,
                 estimated_cost,
                 pricing_snapshot_id,
+                if pricing_matched { 1 } else { 0 },
                 &record.api_key_prefix,
                 &record.request_base_url,
                 &record.client_tool,
@@ -241,6 +244,38 @@ impl ProxyDatabase {
             .lock()
             .map_err(|e| format!("Failed to lock connection: {}", e))?;
 
+        // 修复旧版本把未知模型按 $0 锁定的记录；真正匹配到零价模型的记录保持冻结。
+        let stale_locked: Vec<(i64, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, model FROM usage_records
+                     WHERE cost_locked = 1 AND estimated_cost = 0",
+                )
+                .map_err(|e| format!("Failed to prepare stale cost query: {}", e))?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(|e| format!("Failed to query stale costs: {}", e))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to collect stale costs: {}", e))?;
+            rows
+        };
+        if !stale_locked.is_empty() {
+            let mut stmt = conn
+                .prepare(
+                    "UPDATE usage_records
+                     SET cost_locked = 0, pricing_snapshot_id = NULL, updated_at = ?1
+                     WHERE id = ?2",
+                )
+                .map_err(|e| format!("Failed to prepare stale cost repair: {}", e))?;
+            let now = chrono::Utc::now().timestamp();
+            for (id, model) in stale_locked {
+                if crate::models::find_pricing(&model, &pricings, &match_mode).is_none() {
+                    stmt.execute(rusqlite::params![now, id])
+                        .map_err(|e| format!("Failed to repair stale cost: {}", e))?;
+                }
+            }
+        }
+
         let records = {
             let mut stmt = conn
                 .prepare(
@@ -285,7 +320,11 @@ impl ProxyDatabase {
             )
             .map_err(|e| format!("Failed to prepare cost backfill update: {}", e))?;
 
+        let mut updated_count = 0;
         for (id, timestamp, input, output, cache_create, cache_read, model) in &records {
+            if crate::models::find_pricing(model, &pricings, &match_mode).is_none() {
+                continue;
+            }
             let cost = crate::models::estimate_session_cost(
                 *input,
                 *output,
@@ -297,6 +336,7 @@ impl ProxyDatabase {
             );
             stmt.execute(rusqlite::params![cost, snapshot_id, now, id])
                 .map_err(|e| format!("Failed to update cost backfill record: {}", e))?;
+            updated_count += 1;
             let date = Self::record_local_date(*timestamp);
             if date < Self::today_local_date() {
                 touched_dates.insert(date);
@@ -310,7 +350,7 @@ impl ProxyDatabase {
 
         eprintln!(
             "[database] Backfilled frozen cost for {} usage records",
-            records.len()
+            updated_count
         );
         if !touched_dates.is_empty() {
             if let Ok(local_db) = crate::local_usage::LocalUsageDatabase::get_global() {
@@ -319,7 +359,7 @@ impl ProxyDatabase {
                 );
             }
         }
-        Ok(records.len())
+        Ok(updated_count)
     }
 }
 
@@ -381,5 +421,90 @@ mod tests {
             records[0].gateway_request_id.as_deref(),
             Some("gw-request-roundtrip")
         );
+        assert!(!records[0].cost_locked);
+    }
+
+    #[tokio::test]
+    async fn insert_record_locks_zero_cost_only_when_pricing_matches() {
+        let temp = tempfile::tempdir().expect("temp database directory");
+        let database = ProxyDatabase::new_with_path(&temp.path().join("proxy_data.db"))
+            .expect("open proxy database");
+        database
+            .upsert_model_pricings(&[ModelPricingConfig {
+                model_id: "free-model".to_string(),
+                display_name: None,
+                input_price: 0.0,
+                output_price: 0.0,
+                cache_write_price: Some(0.0),
+                cache_read_price: Some(0.0),
+                source: "custom".to_string(),
+                last_updated: 0,
+            }])
+            .expect("insert pricing");
+
+        let base = UsageRecord {
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            input_tokens: 100,
+            model: "free-model".to_string(),
+            message_id: "known-zero".to_string(),
+            ..Default::default()
+        };
+        database.insert_record(&base).await.expect("insert known");
+
+        let mut unknown = base.clone();
+        unknown.model = "unknown-model".to_string();
+        unknown.message_id = "unknown-zero".to_string();
+        database
+            .insert_record(&unknown)
+            .await
+            .expect("insert unknown");
+
+        let records = database
+            .get_records_since(base.timestamp.saturating_sub(1))
+            .await
+            .expect("query records");
+        let known = records
+            .iter()
+            .find(|record| record.message_id == "known-zero")
+            .unwrap();
+        let unknown = records
+            .iter()
+            .find(|record| record.message_id == "unknown-zero")
+            .unwrap();
+        assert!(known.cost_locked);
+        assert!(!unknown.cost_locked);
+    }
+
+    #[tokio::test]
+    async fn backfill_unlocks_legacy_unknown_zero_cost_records() {
+        let temp = tempfile::tempdir().expect("temp database directory");
+        let database = ProxyDatabase::new_with_path(&temp.path().join("proxy_data.db"))
+            .expect("open proxy database");
+        let record = UsageRecord {
+            timestamp: chrono::Utc::now().timestamp_millis(),
+            input_tokens: 100,
+            model: "legacy-unknown".to_string(),
+            message_id: "legacy-unknown".to_string(),
+            cost_locked: true,
+            estimated_cost: 0.0,
+            ..Default::default()
+        };
+        database
+            .insert_record(&record)
+            .await
+            .expect("insert legacy");
+        let updated = database
+            .backfill_unlocked_costs()
+            .await
+            .expect("repair legacy");
+        assert_eq!(updated, 0);
+        let stored = database
+            .get_records_since(record.timestamp.saturating_sub(1))
+            .await
+            .expect("query legacy")
+            .into_iter()
+            .find(|item| item.message_id == "legacy-unknown")
+            .expect("legacy record");
+        assert!(!stored.cost_locked);
     }
 }

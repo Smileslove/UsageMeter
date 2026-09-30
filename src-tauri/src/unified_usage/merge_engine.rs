@@ -1,6 +1,6 @@
 use super::match_support::{
-    attach_proxy_session_ids, compute_local_request_cost_cached, request_key_for_local,
-    request_key_for_proxy,
+    attach_proxy_session_ids, compute_local_request_cost_cached,
+    compute_merged_request_cost_cached, request_key_for_local, request_key_for_proxy,
 };
 use super::types::{
     adapter_orphan_pools, codex_orphan_pools, find_adapter_fuzzy_matches, find_codex_fuzzy_matches,
@@ -157,7 +157,8 @@ pub(super) fn merge_realtime_facts(input: RealtimeMergeInput) -> Vec<MergedReque
                     (local_index.get(&local_key), proxy_index.get(&proxy_key))
                 {
                     let meta = session_meta_by_id.get(&local.session_id);
-                    let fallback_cost = compute_local_request_cost_cached(
+                    let fallback_cost = compute_merged_request_cost_cached(
+                        proxy,
                         local,
                         &pricings,
                         &pricing_match_mode,
@@ -192,7 +193,8 @@ pub(super) fn merge_realtime_facts(input: RealtimeMergeInput) -> Vec<MergedReque
                     (local_index.get(&local_key), proxy_index.get(&proxy_key))
                 {
                     let meta = session_meta_by_id.get(&local.session_id);
-                    let fallback_cost = compute_local_request_cost_cached(
+                    let fallback_cost = compute_merged_request_cost_cached(
+                        proxy,
                         local,
                         &pricings,
                         &pricing_match_mode,
@@ -257,7 +259,8 @@ pub(super) fn merge_realtime_facts(input: RealtimeMergeInput) -> Vec<MergedReque
                     continue;
                 }
                 let meta = session_meta_by_id.get(&local.session_id);
-                let fallback_cost = compute_local_request_cost_cached(
+                let fallback_cost = compute_merged_request_cost_cached(
+                    proxy,
                     local,
                     &pricings,
                     &pricing_match_mode,
