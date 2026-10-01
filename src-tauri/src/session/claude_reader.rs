@@ -200,7 +200,7 @@ pub(super) fn parse_claude_session_file(
     let mut models_set: BTreeSet<String> = BTreeSet::new();
     let mut earliest_timestamp: Option<i64> = None;
     let mut latest_timestamp: Option<i64> = None;
-    let mut request_map: HashMap<String, LocalRequestRecord> = HashMap::new();
+    let mut request_map: HashMap<String, ParsedRequest> = HashMap::new();
 
     for transcript_path in &session.transcript_paths {
         let file_handle = match fs::File::open(transcript_path) {
@@ -216,7 +216,7 @@ pub(super) fn parse_claude_session_file(
                 continue;
             };
 
-            if let Some(ts) = extract_timestamp(&json) {
+            if let Some(ts) = extract_claude_timestamp(&json) {
                 earliest_timestamp = Some(
                     earliest_timestamp
                         .map(|current| current.min(ts))
@@ -258,21 +258,18 @@ pub(super) fn parse_claude_session_file(
                 }
             }
 
-            if let Some(model) = extract_model(&json) {
+            if let Some(model) = extract_claude_model(&json) {
                 models_set.insert(model);
             }
 
             let Some(request) = extract_request_record(&json, session, is_subagent) else {
                 continue;
             };
-            let request_key = request.message_id.clone();
+            let request_key = request.record.message_id.clone();
             request_map
                 .entry(request_key)
                 .and_modify(|existing| {
-                    if request.total_tokens > existing.total_tokens
-                        || (request.total_tokens == existing.total_tokens
-                            && request.timestamp > existing.timestamp)
-                    {
+                    if should_replace_request(existing, &request) {
                         *existing = request.clone();
                     }
                 })
@@ -280,7 +277,10 @@ pub(super) fn parse_claude_session_file(
         }
     }
 
-    let mut requests: Vec<LocalRequestRecord> = request_map.into_values().collect();
+    let mut requests: Vec<LocalRequestRecord> = request_map
+        .into_values()
+        .map(|request| request.record)
+        .collect();
     requests.sort_by_key(|request| request.timestamp);
 
     meta.cwd = cwd_found.clone();
@@ -348,10 +348,14 @@ fn derive_root_session_id(project_path: &Path, transcript_path: &Path) -> Option
         .collect();
 
     if components.len() == 1 {
-        return Path::new(&components[0])
+        let stem = Path::new(&components[0])
             .file_stem()
             .and_then(|stem| stem.to_str())
-            .map(|stem| stem.to_string());
+            .map(str::to_string);
+        if components[0].starts_with("agent-") {
+            return recorded_session_id(transcript_path).or(stem);
+        }
+        return stem.or_else(|| recorded_session_id(transcript_path));
     }
 
     if let Some(subagent_index) = components
@@ -363,6 +367,10 @@ fn derive_root_session_id(project_path: &Path, transcript_path: &Path) -> Option
         }
     }
 
+    if components.len() >= 2 {
+        return components.get(components.len() - 2).cloned();
+    }
+
     None
 }
 
@@ -370,26 +378,36 @@ fn is_primary_transcript(project_path: &Path, transcript_path: &Path) -> bool {
     transcript_path
         .strip_prefix(project_path)
         .ok()
-        .map(|relative| relative.components().count() == 1)
+        .map(|relative| {
+            let components = relative.components().count();
+            let is_regular_root_file = components == 1;
+            let is_chat_file = components == 2
+                && transcript_path.file_name().and_then(|name| name.to_str()) == Some("chat.jsonl");
+            (is_regular_root_file || is_chat_file) && !is_flat_agent_transcript(transcript_path)
+        })
         .unwrap_or(false)
 }
 
 fn is_subagent_transcript(session: &SessionFile, transcript_path: &str) -> bool {
-    transcript_path != session.file_path
+    transcript_path != session.file_path || is_flat_agent_transcript(Path::new(transcript_path))
+}
+
+fn is_flat_agent_transcript(transcript_path: &Path) -> bool {
+    transcript_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem.starts_with("agent-"))
 }
 
 fn extract_request_record(
     json: &serde_json::Value,
     session: &SessionFile,
     is_subagent: bool,
-) -> Option<LocalRequestRecord> {
-    if json.get("type").and_then(|value| value.as_str()) != Some("assistant") {
-        return None;
-    }
+) -> Option<ParsedRequest> {
+    let message = claude_message(json)?;
 
-    let message_id = json
-        .get("message")
-        .and_then(|message| message.get("id"))
+    let message_id = message
+        .get("id")
         .and_then(|value| value.as_str())?
         .to_string();
 
@@ -399,22 +417,90 @@ fn extract_request_record(
         return None;
     }
 
-    let timestamp = extract_timestamp(json).unwrap_or(session.last_modified);
+    let timestamp = extract_claude_timestamp(json).unwrap_or(session.last_modified);
 
-    Some(LocalRequestRecord {
-        session_id: session.session_id.clone(),
-        tool: session.tool.clone(),
-        timestamp,
-        message_id,
-        input_tokens: usage.input,
-        output_tokens: usage.output,
-        cache_create_tokens: usage.cache_create,
-        cache_read_tokens: usage.cache_read,
-        total_tokens,
-        model: extract_model(json).unwrap_or_else(|| "unknown".to_string()),
-        is_subagent,
-        ..Default::default()
+    Some(ParsedRequest {
+        record: LocalRequestRecord {
+            session_id: session.session_id.clone(),
+            tool: session.tool.clone(),
+            timestamp,
+            message_id,
+            input_tokens: usage.input,
+            output_tokens: usage.output,
+            cache_create_tokens: usage.cache_create,
+            cache_read_tokens: usage.cache_read,
+            total_tokens,
+            model: extract_claude_model(json).unwrap_or_else(|| "unknown".to_string()),
+            is_subagent,
+            ..Default::default()
+        },
+        is_sidechain: extract_bool(json, "isSidechain"),
     })
+}
+
+#[derive(Clone)]
+struct ParsedRequest {
+    record: LocalRequestRecord,
+    is_sidechain: bool,
+}
+
+fn should_replace_request(existing: &ParsedRequest, candidate: &ParsedRequest) -> bool {
+    if existing.is_sidechain != candidate.is_sidechain {
+        return existing.is_sidechain;
+    }
+    candidate.record.total_tokens > existing.record.total_tokens
+        || (candidate.record.total_tokens == existing.record.total_tokens
+            && candidate.record.timestamp > existing.record.timestamp)
+}
+
+fn claude_message(json: &serde_json::Value) -> Option<&serde_json::Value> {
+    if let Some(message) = json.get("message") {
+        if json.get("type").and_then(|value| value.as_str()) == Some("assistant")
+            || message.get("usage").is_some()
+        {
+            return Some(message);
+        }
+    }
+
+    json.pointer("/data/message/message")
+}
+
+fn extract_claude_model(json: &serde_json::Value) -> Option<String> {
+    claude_message(json)
+        .and_then(|message| extract_model(&serde_json::json!({ "message": message })))
+}
+
+fn extract_claude_timestamp(json: &serde_json::Value) -> Option<i64> {
+    extract_timestamp(json).or_else(|| {
+        json.pointer("/data/message/timestamp")
+            .and_then(|value| extract_timestamp(&serde_json::json!({ "timestamp": value })))
+    })
+}
+
+fn extract_bool(json: &serde_json::Value, key: &str) -> bool {
+    json.get(key)
+        .or_else(|| json.pointer(&format!("/data/message/{key}")))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+fn recorded_session_id(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let value = json
+            .get("sessionId")
+            .or_else(|| json.pointer("/data/sessionId"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(value) = value {
+            return Some(value.to_string());
+        }
+    }
+    None
 }
 
 fn is_system_message(text: &str) -> bool {
@@ -539,6 +625,7 @@ mod tests {
     fn test_derive_root_session_id() {
         let project = Path::new("/tmp/projects/my-project");
         let top_level = Path::new("/tmp/projects/my-project/abc-session.jsonl");
+        let chat_file = Path::new("/tmp/projects/my-project/abc-session/chat.jsonl");
         let subagent = Path::new("/tmp/projects/my-project/abc-session/subagents/agent-1.jsonl");
 
         assert_eq!(
@@ -546,8 +633,46 @@ mod tests {
             Some("abc-session".to_string())
         );
         assert_eq!(
+            derive_root_session_id(project, chat_file),
+            Some("abc-session".to_string())
+        );
+        assert!(is_primary_transcript(project, chat_file));
+        assert_eq!(
             derive_root_session_id(project, subagent),
             Some("abc-session".to_string())
+        );
+    }
+
+    #[test]
+    fn test_derive_root_session_id_uses_recorded_session_for_flat_agent() {
+        let tmpdir = tempdir().unwrap();
+        let project = tmpdir.path().join("my-project");
+        fs::create_dir_all(&project).unwrap();
+        let agent = project.join("agent-1234.jsonl");
+        fs::write(
+            &agent,
+            r#"{"type":"assistant","sessionId":"parent-session","message":{"id":"m","usage":{"input_tokens":1,"output_tokens":1}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            derive_root_session_id(&project, &agent),
+            Some("parent-session".to_string())
+        );
+        assert!(!is_primary_transcript(&project, &agent));
+        assert!(is_flat_agent_transcript(&agent));
+
+        let nested = project.join("parent-session").join("subagents");
+        fs::create_dir_all(&nested).unwrap();
+        let nested_agent = nested.join("agent-child.jsonl");
+        fs::write(
+            &nested_agent,
+            r#"{"sessionId":"child-session","type":"assistant"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            derive_root_session_id(&project, &nested_agent),
+            Some("parent-session".to_string())
         );
     }
 
@@ -634,6 +759,31 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_direct_usage_without_message_type() {
+        let tmpdir = tempdir().unwrap();
+        let session_path = tmpdir.path().join("chat.jsonl");
+        fs::write(
+            &session_path,
+            r#"{"timestamp":"2026-01-01T00:00:00Z","message":{"id":"msg-1","model":"claude-sonnet-4","usage":{"input_tokens":3,"output_tokens":2}}}"#,
+        )
+        .unwrap();
+        let session = SessionFile {
+            session_id: "project::session".to_string(),
+            tool: TOOL_CLAUDE_CODE.to_string(),
+            project_path: "project".to_string(),
+            file_path: session_path.to_string_lossy().to_string(),
+            transcript_paths: vec![session_path.to_string_lossy().to_string()],
+            file_size: fs::metadata(&session_path).unwrap().len(),
+            last_modified: 1_700_000_000,
+            fingerprint: 1,
+        };
+
+        let (_, requests) = parse_claude_session_file(&session);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].total_tokens, 5);
+    }
+
+    #[test]
     fn test_parse_claude_session_file_keeps_latest_request_variant() {
         let tmpdir = tempdir().unwrap();
         let project_dir = tmpdir.path().join("project-a");
@@ -685,5 +835,63 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].output_tokens, 8);
         assert_eq!(meta.message_count, 1);
+    }
+
+    #[test]
+    fn test_parse_claude_session_file_supports_agent_progress_and_prefers_main_chain() {
+        let tmpdir = tempdir().unwrap();
+        let project_dir = tmpdir.path().join("project-a");
+        fs::create_dir_all(&project_dir).unwrap();
+        let session_path = project_dir.join("session-1.jsonl");
+        let mut file = fs::File::create(&session_path).unwrap();
+
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "progress",
+                "data": { "message": {
+                    "timestamp": "2026-01-01T00:00:01Z",
+                    "isSidechain": true,
+                    "message": {
+                        "id": "msg-1",
+                        "model": "claude-sonnet-4",
+                        "usage": { "input_tokens": 10, "output_tokens": 90 }
+                    }
+                }}
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "assistant",
+                "timestamp": "2026-01-01T00:00:02Z",
+                "message": {
+                    "id": "msg-1",
+                    "model": "claude-sonnet-4",
+                    "usage": { "input_tokens": 10, "output_tokens": 8 }
+                }
+            })
+        )
+        .unwrap();
+
+        let session = SessionFile {
+            session_id: "project-a::session-1".to_string(),
+            tool: TOOL_CLAUDE_CODE.to_string(),
+            project_path: "project-a".to_string(),
+            file_path: session_path.to_string_lossy().to_string(),
+            transcript_paths: vec![session_path.to_string_lossy().to_string()],
+            file_size: fs::metadata(&session_path).unwrap().len(),
+            last_modified: 1_700_000_000,
+            fingerprint: 1,
+        };
+
+        let (meta, requests) = parse_claude_session_file(&session);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].output_tokens, 8);
+        assert_eq!(requests[0].model, "claude-sonnet-4");
+        assert_eq!(meta.start_time, 1_767_225_601);
     }
 }
