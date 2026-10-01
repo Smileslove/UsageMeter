@@ -1575,7 +1575,7 @@ impl ProxyServer {
             )
         }) {
             manager
-                .active_source_ids()
+                .active_source_ids_for_port(self.config.port)
                 .into_iter()
                 .filter_map(|id| registry.get(&id))
                 .collect::<Vec<_>>()

@@ -10,8 +10,18 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(not(test))]
+use std::sync::{LazyLock, Mutex};
 
 const RUNTIME_DOCUMENT_KEY: &str = "pi_proxy_source_handles";
+const TOUCH_WRITE_INTERVAL_MS: i64 = 30_000;
+static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+#[cfg(not(test))]
+static SOURCE_REGISTRY_CACHE: LazyLock<Mutex<Option<PiSourceRegistryData>>> =
+    LazyLock::new(|| Mutex::new(None));
+#[cfg(not(test))]
+static SOURCE_REGISTRY_UPDATE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -109,10 +119,17 @@ impl PiSourceRegistry {
     }
 
     pub fn touch_used(&self, id: &str) -> Result<(), String> {
+        #[cfg(not(test))]
+        let _update_guard = SOURCE_REGISTRY_UPDATE_LOCK
+            .lock()
+            .map_err(|_| "Pi source registry update lock poisoned".to_string())?;
         let mut data = self.read_data()?;
         if let Some(handle) = data.handles.iter_mut().find(|handle| handle.id == id) {
-            handle.last_used_at_ms = now_ms();
-            self.write_data(&data)?;
+            let now = now_ms();
+            if now.saturating_sub(handle.last_used_at_ms) >= TOUCH_WRITE_INTERVAL_MS {
+                handle.last_used_at_ms = now;
+                self.write_data(&data)?;
+            }
         }
         Ok(())
     }
@@ -121,6 +138,10 @@ impl PiSourceRegistry {
         &self,
         provider_state: PiProviderRouteState,
     ) -> Result<PiSourceHandle, String> {
+        #[cfg(not(test))]
+        let _update_guard = SOURCE_REGISTRY_UPDATE_LOCK
+            .lock()
+            .map_err(|_| "Pi source registry update lock poisoned".to_string())?;
         if PiConfigManager::is_usagemeter_proxy_url(&provider_state.original_base_url) {
             return Err("Refusing to register UsageMeter proxy URL as a Pi upstream".to_string());
         }
@@ -166,9 +187,21 @@ impl PiSourceRegistry {
     fn read_data(&self) -> Result<PiSourceRegistryData, String> {
         #[cfg(not(test))]
         {
+            if let Some(data) = SOURCE_REGISTRY_CACHE
+                .lock()
+                .map_err(|_| "Pi source registry cache lock poisoned".to_string())?
+                .clone()
+            {
+                return Ok(data);
+            }
             if let Some(value) = crate::app_config::load_runtime_document(RUNTIME_DOCUMENT_KEY)? {
-                return serde_json::from_value(value)
-                    .map_err(|e| format!("Failed to parse Pi source registry: {e}"));
+                let data: PiSourceRegistryData = serde_json::from_value(value)
+                    .map_err(|e| format!("Failed to parse Pi source registry: {e}"))?;
+                *SOURCE_REGISTRY_CACHE
+                    .lock()
+                    .map_err(|_| "Pi source registry cache lock poisoned".to_string())? =
+                    Some(data.clone());
+                return Ok(data);
             }
         }
         if !self.path.exists() {
@@ -185,7 +218,12 @@ impl PiSourceRegistry {
         {
             let value = serde_json::to_value(data)
                 .map_err(|e| format!("Failed to serialize Pi source registry: {e}"))?;
-            crate::app_config::save_runtime_document(RUNTIME_DOCUMENT_KEY, &value)
+            crate::app_config::save_runtime_document(RUNTIME_DOCUMENT_KEY, &value)?;
+            *SOURCE_REGISTRY_CACHE
+                .lock()
+                .map_err(|_| "Pi source registry cache lock poisoned".to_string())? =
+                Some(data.clone());
+            Ok(())
         }
         #[cfg(test)]
         {
@@ -247,25 +285,35 @@ impl PiConfigManager {
         if handles.is_empty() {
             return Err("No supported Pi providers with a baseUrl were found".to_string());
         }
-        let mut root = read_json(&self.config_path)?;
+        let (mut root, expected_fingerprint) = read_json_with_fingerprint(&self.config_path)?;
         let providers = root
             .get_mut("providers")
             .and_then(Value::as_object_mut)
             .ok_or_else(|| "Pi models.json providers must be an object".to_string())?;
+        let mut matched = 0;
+        let mut modified = 0;
         for handle in handles {
             if let Some(provider) = providers.get_mut(&handle.provider_id) {
+                matched += 1;
                 let object = provider.as_object_mut().ok_or_else(|| {
                     format!("Pi provider '{}' must be an object", handle.provider_id)
                 })?;
-                object.insert(
-                    "baseUrl".to_string(),
-                    Value::String(url_identity::prefixed_proxy_url(
-                        proxy_port, "pi", &handle.id, "",
-                    )),
-                );
+                let proxy_url = url_identity::prefixed_proxy_url(proxy_port, "pi", &handle.id, "");
+                if object.get("baseUrl").and_then(Value::as_str) != Some(proxy_url.as_str()) {
+                    object.insert("baseUrl".to_string(), Value::String(proxy_url));
+                    modified += 1;
+                }
             }
         }
-        write_json_atomically(&self.config_path, &root)
+        if matched == 0 {
+            return Err(
+                "None of the Pi source handles matched a provider in models.json".to_string(),
+            );
+        }
+        if modified > 0 {
+            write_json_atomically_if_unchanged(&self.config_path, &root, &expected_fingerprint)?;
+        }
+        Ok(())
     }
 
     pub fn restore_from_sources(&self, source_ids: &[String]) -> Result<usize, String> {
@@ -282,7 +330,7 @@ impl PiConfigManager {
         registry: &PiSourceRegistry,
         source_ids: &[String],
     ) -> Result<usize, String> {
-        let mut root = read_json(&self.config_path)?;
+        let (mut root, expected_fingerprint) = read_json_with_fingerprint(&self.config_path)?;
         let providers = root
             .get_mut("providers")
             .and_then(Value::as_object_mut)
@@ -309,7 +357,9 @@ impl PiConfigManager {
                 restored += 1;
             }
         }
-        write_json_atomically(&self.config_path, &root)?;
+        if restored > 0 {
+            write_json_atomically_if_unchanged(&self.config_path, &root, &expected_fingerprint)?;
+        }
         Ok(restored)
     }
 
@@ -319,7 +369,7 @@ impl PiConfigManager {
         registry: &PiSourceRegistry,
         source_ids: &[String],
     ) -> Result<usize, String> {
-        let mut root = read_json(&self.config_path)?;
+        let (mut root, expected_fingerprint) = read_json_with_fingerprint(&self.config_path)?;
         let providers = root
             .get_mut("providers")
             .and_then(Value::as_object_mut)
@@ -346,7 +396,9 @@ impl PiConfigManager {
                 restored += 1;
             }
         }
-        write_json_atomically(&self.config_path, &root)?;
+        if restored > 0 {
+            write_json_atomically_if_unchanged(&self.config_path, &root, &expected_fingerprint)?;
+        }
         Ok(restored)
     }
 
@@ -355,6 +407,20 @@ impl PiConfigManager {
             .unwrap_or_default()
             .providers
             .into_iter()
+            .filter_map(|provider| {
+                Self::extract_source_id_from_proxy_url(&provider.original_base_url)
+            })
+            .collect()
+    }
+
+    pub fn active_source_ids_for_port(&self, proxy_port: u16) -> Vec<String> {
+        self.read_live_snapshot()
+            .unwrap_or_default()
+            .providers
+            .into_iter()
+            .filter(|provider| {
+                Self::is_usagemeter_proxy_url_for_port(&provider.original_base_url, proxy_port)
+            })
             .filter_map(|provider| {
                 Self::extract_source_id_from_proxy_url(&provider.original_base_url)
             })
@@ -429,11 +495,19 @@ fn compute_handle_id(state: &PiProviderRouteState) -> Result<String, String> {
 }
 
 fn read_json(path: &Path) -> Result<Value, String> {
-    let content =
-        fs::read_to_string(path).map_err(|e| format!("Failed to read Pi models.json: {e}"))?;
-    serde_json::from_str(&content).map_err(|e| format!("Failed to parse Pi models.json: {e}"))
+    read_json_with_fingerprint(path).map(|(value, _)| value)
 }
 
+fn read_json_with_fingerprint(path: &Path) -> Result<(Value, [u8; 32]), String> {
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("Failed to read Pi models.json: {e}"))?;
+    let fingerprint: [u8; 32] = Sha256::digest(content.as_bytes()).into();
+    let value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse Pi models.json: {e}"))?;
+    Ok((value, fingerprint))
+}
+
+#[cfg(test)]
 fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let content = serde_json::to_string_pretty(value)
         .map_err(|e| format!("Failed to serialize Pi models.json: {e}"))?;
@@ -441,12 +515,57 @@ fn write_json_atomically<T: Serialize>(path: &Path, value: &T) -> Result<(), Str
         .parent()
         .ok_or_else(|| "Pi models.json has no parent directory".to_string())?;
     fs::create_dir_all(parent).map_err(|e| format!("Failed to create Pi config directory: {e}"))?;
-    let temp = path.with_extension(format!("json.usagemeter-{}", std::process::id()));
+    let temp = unique_temp_path(path);
     fs::write(&temp, content).map_err(|e| format!("Failed to write Pi temporary config: {e}"))?;
     fs::rename(&temp, path).map_err(|e| {
         let _ = fs::remove_file(&temp);
         format!("Failed to replace Pi models.json atomically: {e}")
     })
+}
+
+fn write_json_atomically_if_unchanged<T: Serialize>(
+    path: &Path,
+    value: &T,
+    expected_fingerprint: &[u8; 32],
+) -> Result<(), String> {
+    let current = fs::read(path)
+        .map_err(|e| format!("Failed to re-read Pi models.json before write: {e}"))?;
+    let current_fingerprint: [u8; 32] = Sha256::digest(&current).into();
+    if &current_fingerprint != expected_fingerprint {
+        return Err(
+            "Pi models.json changed while UsageMeter was preparing a takeover; retry the operation"
+                .to_string(),
+        );
+    }
+    let content = serde_json::to_string_pretty(value)
+        .map_err(|e| format!("Failed to serialize Pi models.json: {e}"))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Pi models.json has no parent directory".to_string())?;
+    fs::create_dir_all(parent).map_err(|e| format!("Failed to create Pi config directory: {e}"))?;
+    let temp = unique_temp_path(path);
+    fs::write(&temp, content).map_err(|e| format!("Failed to write Pi temporary config: {e}"))?;
+    let current = fs::read(path).map_err(|e| {
+        let _ = fs::remove_file(&temp);
+        format!("Failed to re-read Pi models.json before replace: {e}")
+    })?;
+    let current_fingerprint: [u8; 32] = Sha256::digest(&current).into();
+    if &current_fingerprint != expected_fingerprint {
+        let _ = fs::remove_file(&temp);
+        return Err(
+            "Pi models.json changed while UsageMeter was preparing a takeover; retry the operation"
+                .to_string(),
+        );
+    }
+    fs::rename(&temp, path).map_err(|e| {
+        let _ = fs::remove_file(&temp);
+        format!("Failed to replace Pi models.json atomically: {e}")
+    })
+}
+
+fn unique_temp_path(path: &Path) -> PathBuf {
+    let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    path.with_extension(format!("json.usagemeter-{}-{sequence}", std::process::id()))
 }
 
 fn now_ms() -> i64 {
@@ -502,6 +621,78 @@ mod tests {
             restored["providers"]["openai"]["baseUrl"],
             "https://api.example"
         );
+    }
+
+    #[test]
+    fn takeover_rejects_external_change_before_replacing_file() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("models.json");
+        fs::write(
+            &path,
+            r#"{"providers":{"openai":{"api":"openai-completions","baseUrl":"https://api.example"}}}"#,
+        )
+        .unwrap();
+        let (root, expected_fingerprint) = read_json_with_fingerprint(&path).unwrap();
+        fs::write(
+            &path,
+            r#"{"providers":{"openai":{"api":"openai-completions","baseUrl":"https://user.changed"}}}"#,
+        )
+        .unwrap();
+        let error =
+            write_json_atomically_if_unchanged(&path, &root, &expected_fingerprint).unwrap_err();
+        assert!(error.contains("changed while UsageMeter"));
+        let current: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(
+            current["providers"]["openai"]["baseUrl"],
+            "https://user.changed"
+        );
+    }
+
+    #[test]
+    fn takeover_rejects_handles_that_no_longer_match_config() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("models.json");
+        fs::write(
+            &path,
+            r#"{"providers":{"anthropic":{"api":"anthropic-messages","baseUrl":"https://api.example"}}}"#,
+        )
+        .unwrap();
+        let manager = PiConfigManager::new_for_path(path);
+        let handle = PiSourceHandle {
+            id: "pi_deadbeef".to_string(),
+            provider_id: "missing".to_string(),
+            api: PiProviderApi::AnthropicMessages,
+            real_base_url: "https://api.example".to_string(),
+            route_state: PiProviderRouteState {
+                provider_id: "missing".to_string(),
+                api: PiProviderApi::AnthropicMessages,
+                original_base_url: "https://api.example".to_string(),
+            },
+            created_at_ms: 0,
+            last_seen_at_ms: 0,
+            last_used_at_ms: 0,
+        };
+        let error = manager.takeover_with_handles(18765, &[handle]).unwrap_err();
+        assert!(error.contains("matched a provider"));
+    }
+
+    #[test]
+    fn active_source_ids_are_filtered_by_port() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("models.json");
+        fs::write(
+            &path,
+            serde_json::to_string(&serde_json::json!({
+                "providers": {
+                    "one": {"api": "openai-completions", "baseUrl": url_identity::prefixed_proxy_url(18765, "pi", "pi_one", "")},
+                    "two": {"api": "openai-completions", "baseUrl": url_identity::prefixed_proxy_url(18766, "pi", "pi_two", "")}
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let manager = PiConfigManager::new_for_path(path);
+        assert_eq!(manager.active_source_ids_for_port(18765), vec!["pi_one"]);
     }
 
     #[test]

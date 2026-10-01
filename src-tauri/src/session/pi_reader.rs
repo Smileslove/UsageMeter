@@ -7,8 +7,7 @@ use super::shared::{
 };
 use super::source::{ParsedSessionData, SessionSource, SourceSnapshot, SourceUpdateMode};
 use serde_json::Value;
-use std::collections::BTreeSet;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
@@ -71,6 +70,34 @@ fn file_modified(path: &Path) -> i64 {
         .unwrap_or(0)
 }
 
+fn file_modified_nanos(path: &Path) -> u128 {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
+}
+
+fn collect_jsonl_files(directory: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            collect_jsonl_files(&path, files);
+        } else if file_type.is_file()
+            && path.extension().and_then(|value| value.to_str()) == Some("jsonl")
+        {
+            files.push(path);
+        }
+    }
+}
+
 fn scan_pi_session_files() -> Vec<SessionFile> {
     let Some(root) = pi_sessions_root() else {
         return Vec::new();
@@ -78,9 +105,10 @@ fn scan_pi_session_files() -> Vec<SessionFile> {
     let Ok(project_dirs) = fs::read_dir(root) else {
         return Vec::new();
     };
-    let mut sessions = Vec::new();
-    let mut seen_session_ids = HashSet::new();
-    for project_entry in project_dirs.flatten() {
+    let mut project_dirs: Vec<_> = project_dirs.flatten().collect();
+    project_dirs.sort_by_key(|entry| entry.path());
+    let mut sessions = BTreeMap::<String, SessionFile>::new();
+    for project_entry in project_dirs {
         let project_dir = project_entry.path();
         if !project_dir.is_dir() {
             continue;
@@ -90,14 +118,10 @@ fn scan_pi_session_files() -> Vec<SessionFile> {
             .and_then(|value| value.to_str())
             .unwrap_or_default()
             .to_string();
-        let Ok(files) = fs::read_dir(&project_dir) else {
-            continue;
-        };
-        for file_entry in files.flatten() {
-            let path = file_entry.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
-                continue;
-            }
+        let mut files = Vec::new();
+        collect_jsonl_files(&project_dir, &mut files);
+        files.sort();
+        for path in files {
             let Some(header) = session_header(&path) else {
                 continue;
             };
@@ -115,31 +139,33 @@ fn scan_pi_session_files() -> Vec<SessionFile> {
                 continue;
             }
             let modified = file_modified(&path);
+            let modified_nanos = file_modified_nanos(&path);
             let path_string = path.to_string_lossy().to_string();
-            let mut fingerprint = std::collections::hash_map::DefaultHasher::new();
-            path_string.hash(&mut fingerprint);
-            metadata.len().hash(&mut fingerprint);
-            modified.hash(&mut fingerprint);
             let base_id = format!("{TOOL_PI}::{raw_id}");
-            let session_id = if seen_session_ids.insert(base_id.clone()) {
-                base_id
-            } else {
-                let mut path_hasher = std::collections::hash_map::DefaultHasher::new();
-                path_string.hash(&mut path_hasher);
-                format!("{TOOL_PI}::{raw_id}::{:016x}", path_hasher.finish())
-            };
-            sessions.push(SessionFile {
-                session_id,
-                tool: TOOL_PI.to_string(),
-                project_path: project_path.clone(),
-                file_path: path_string.clone(),
-                transcript_paths: vec![path_string],
-                file_size: metadata.len(),
-                last_modified: modified,
-                fingerprint: fingerprint.finish(),
-            });
+            let session = sessions
+                .entry(base_id.clone())
+                .or_insert_with(|| SessionFile {
+                    session_id: base_id,
+                    tool: TOOL_PI.to_string(),
+                    project_path: project_path.clone(),
+                    file_path: path_string.clone(),
+                    transcript_paths: Vec::new(),
+                    file_size: 0,
+                    last_modified: modified,
+                    fingerprint: 0,
+                });
+            session.transcript_paths.push(path_string);
+            session.file_size = session.file_size.saturating_add(metadata.len());
+            session.last_modified = session.last_modified.max(modified);
+            let mut fingerprint = std::collections::hash_map::DefaultHasher::new();
+            session.fingerprint.hash(&mut fingerprint);
+            session.transcript_paths.last().hash(&mut fingerprint);
+            metadata.len().hash(&mut fingerprint);
+            modified_nanos.hash(&mut fingerprint);
+            session.fingerprint = fingerprint.finish();
         }
     }
+    let mut sessions: Vec<_> = sessions.into_values().collect();
     sessions.sort_by_key(|session| std::cmp::Reverse(session.last_modified));
     sessions
 }
@@ -163,12 +189,16 @@ pub(super) fn parse_pi_session_file(session: &SessionFile) -> ParsedSessionData 
     let mut session_name = None;
     let mut earliest = None;
     let mut latest = None;
-    let mut seen_message_ids = std::collections::HashSet::new();
+    let mut seen_entry_ids = std::collections::HashSet::new();
+    let mut used_message_ids = std::collections::HashSet::new();
 
     for path in &session.transcript_paths {
         let Ok(file) = fs::File::open(path) else {
             continue;
         };
+        let mut path_hasher = std::collections::hash_map::DefaultHasher::new();
+        path.hash(&mut path_hasher);
+        let path_identity = path_hasher.finish();
         let file_timestamp = file_modified(Path::new(path)).max(session.last_modified);
         for (line_idx, line) in BufReader::new(file)
             .lines()
@@ -213,6 +243,7 @@ pub(super) fn parse_pi_session_file(session: &SessionFile) -> ParsedSessionData 
                     current_model = json
                         .get("modelId")
                         .and_then(Value::as_str)
+                        .or_else(|| json.get("model").and_then(Value::as_str))
                         .unwrap_or_default()
                         .to_string();
                 }
@@ -272,11 +303,20 @@ pub(super) fn parse_pi_session_file(session: &SessionFile) -> ParsedSessionData 
                     let cache_create =
                         parse_u64_from_value(usage.get("cacheWrite").unwrap_or(&Value::Null))
                             .unwrap_or(0);
-                    let reasoning =
-                        parse_u64_from_value(usage.get("reasoning").unwrap_or(&Value::Null))
-                            .unwrap_or(0)
-                            .min(output);
-                    if input == 0 && output == 0 && cache_read == 0 && cache_create == 0 {
+                    let reasoning = parse_u64_from_value(
+                        usage
+                            .get("reasoningTokens")
+                            .or_else(|| usage.get("reasoning"))
+                            .unwrap_or(&Value::Null),
+                    )
+                    .unwrap_or(0)
+                    .min(output);
+                    if input == 0
+                        && output == 0
+                        && cache_read == 0
+                        && cache_create == 0
+                        && reasoning == 0
+                    {
                         continue;
                     }
                     let raw_model = if current_model.is_empty() {
@@ -290,15 +330,35 @@ pub(super) fn parse_pi_session_file(session: &SessionFile) -> ParsedSessionData 
                         format!("{}/{}", current_provider, raw_model)
                     };
                     models.insert(model.clone());
-                    let message_id = message
+                    // Pi assigns the stable dedupe id at the outer record level.
+                    // Keep responseId as the exported request id when available
+                    // so proxy and local facts can reconcile exactly.
+                    let fallback_id =
+                        format!("pi:{}:{path_identity:016x}:{line_idx}", session.session_id);
+                    let entry_id = json
                         .get("id")
                         .and_then(Value::as_str)
+                        .or_else(|| message.get("id").and_then(Value::as_str))
+                        .filter(|value| !value.trim().is_empty())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| fallback_id.clone());
+                    if !seen_entry_ids.insert(entry_id.clone()) {
+                        continue;
+                    }
+                    let mut message_id = message
+                        .get("responseId")
+                        .and_then(Value::as_str)
+                        .or_else(|| message.get("id").and_then(Value::as_str))
                         .or_else(|| json.get("id").and_then(Value::as_str))
                         .filter(|value| !value.trim().is_empty())
                         .map(str::to_string)
-                        .unwrap_or_else(|| format!("pi:{}:{}", session.session_id, line_idx));
-                    if !seen_message_ids.insert(message_id.clone()) {
-                        continue;
+                        .unwrap_or(fallback_id);
+                    if !used_message_ids.insert(message_id.clone()) {
+                        message_id = entry_id;
+                        if !used_message_ids.insert(message_id.clone()) {
+                            message_id = format!("{message_id}:{path_identity:016x}:{line_idx}");
+                            used_message_ids.insert(message_id.clone());
+                        }
                     }
                     let explicit_cost = usage
                         .get("cost")
@@ -424,6 +484,120 @@ mod tests {
     }
 
     #[test]
+    fn deduplicates_entry_ids_across_transcripts_in_one_session() {
+        let temp = tempdir().unwrap();
+        let first = temp.path().join("first.jsonl");
+        let second = temp.path().join("second.jsonl");
+        let assistant = |id: &str| {
+            serde_json::json!({
+                "type": "message",
+                "id": id,
+                "timestamp": "2026-09-01T10:00:01Z",
+                "message": {
+                    "role": "assistant",
+                    "responseId": "response-1",
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4-6",
+                    "usage": {"input": 10, "output": 5}
+                }
+            })
+        };
+        fs::write(&first, format!("{}\n", assistant("message-a"))).unwrap();
+        fs::write(&second, format!("{}\n", assistant("message-a"))).unwrap();
+        let mut session = session(&first);
+        session.transcript_paths = vec![
+            first.to_string_lossy().to_string(),
+            second.to_string_lossy().to_string(),
+        ];
+        let parsed = parse_pi_session_file(&session);
+        assert_eq!(parsed.requests.len(), 1);
+        assert_eq!(parsed.requests[0].message_id, "response-1");
+    }
+
+    #[test]
+    fn does_not_merge_distinct_entries_with_same_response_id() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("session.jsonl");
+        let entries = ["message-a", "message-b"].into_iter().map(|id| {
+            serde_json::json!({
+                "type": "message",
+                "id": id,
+                "timestamp": "2026-09-01T10:00:01Z",
+                "message": {
+                    "role": "assistant",
+                    "responseId": "response-reused",
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4-6",
+                    "usage": {"input": 10, "output": 5}
+                }
+            })
+        });
+        fs::write(
+            &path,
+            entries
+                .map(|entry| entry.to_string())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        let parsed = parse_pi_session_file(&session(&path));
+        assert_eq!(parsed.requests.len(), 2);
+        assert_eq!(parsed.requests[0].message_id, "response-reused");
+        assert_eq!(parsed.requests[1].message_id, "message-b");
+    }
+
+    #[test]
+    fn parses_reasoning_tokens_alias() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("session.jsonl");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "type": "message",
+                "id": "assistant-1",
+                "timestamp": "2026-09-01T10:00:01Z",
+                "message": {
+                    "role": "assistant",
+                    "model": "model",
+                    "usage": {"input": 10, "output": 8, "reasoningTokens": 6}
+                }
+            })
+            .to_string()
+                + "\n",
+        )
+        .unwrap();
+        let parsed = parse_pi_session_file(&session(&path));
+        assert_eq!(parsed.meta.total_reasoning_tokens, 6);
+        assert_eq!(parsed.requests[0].reasoning_tokens, 6);
+    }
+
+    #[test]
+    fn fallback_ids_include_transcript_identity() {
+        let temp = tempdir().unwrap();
+        let first = temp.path().join("first.jsonl");
+        let second = temp.path().join("second.jsonl");
+        let entry = serde_json::json!({
+            "type": "message",
+            "timestamp": "2026-09-01T10:00:01Z",
+            "message": {
+                "role": "assistant",
+                "model": "model",
+                "usage": {"input": 10, "output": 5}
+            }
+        });
+        fs::write(&first, format!("{}\n", entry)).unwrap();
+        fs::write(&second, format!("{}\n", entry)).unwrap();
+        let mut session = session(&first);
+        session.transcript_paths = vec![
+            first.to_string_lossy().to_string(),
+            second.to_string_lossy().to_string(),
+        ];
+        let parsed = parse_pi_session_file(&session);
+        assert_eq!(parsed.requests.len(), 2);
+        assert_ne!(parsed.requests[0].message_id, parsed.requests[1].message_id);
+    }
+
+    #[test]
     fn session_header_skips_invalid_rows_before_session_record() {
         let temp = tempdir().unwrap();
         let path = temp.path().join("invalid.jsonl");
@@ -432,13 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_session_ids_get_stable_path_suffix() {
-        let base = "pi::same";
-        let path = "/tmp/pi/--other--/same.jsonl";
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        path.hash(&mut hasher);
-        let derived = format!("{TOOL_PI}::same::{:016x}", hasher.finish());
-        assert_ne!(base, derived);
-        assert!(derived.starts_with("pi::same::"));
+    fn duplicate_session_ids_share_one_stable_identity() {
+        assert_eq!(format!("{TOOL_PI}::same"), "pi::same");
     }
 }

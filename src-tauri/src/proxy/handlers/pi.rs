@@ -71,11 +71,18 @@ pub(crate) async fn handle_pi_request(
     let request_start_instant = std::time::Instant::now();
     let (request_headers, body_bytes) = collect_body(req).await?;
 
-    let source_id = client_route
-        .source_id
-        .clone()
-        .map(String::from)
-        .or_else(|| PiConfigManager::new().active_source_id());
+    let source_id = if let Some(source_id) = client_route.source_id.clone() {
+        Some(String::from(source_id))
+    } else {
+        // Legacy Pi URLs may omit the source path. Resolve only a source that
+        // belongs to this listener; another UsageMeter instance may own a
+        // different port and upstream.
+        let proxy_port = state.config.read().await.port;
+        PiConfigManager::new()
+            .active_source_ids_for_port(proxy_port)
+            .into_iter()
+            .next()
+    };
     let source_handle = match resolve_registry_source_handle(
         source_id.as_deref(),
         "Pi",

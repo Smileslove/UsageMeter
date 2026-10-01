@@ -388,7 +388,7 @@ pub(crate) fn restore_pi_takeover_if_active(port: u16) -> Result<(), String> {
     if !manager.is_takeover_active(port).unwrap_or(false) {
         return Ok(());
     }
-    let active_source_ids = manager.active_source_ids();
+    let active_source_ids = manager.active_source_ids_for_port(port);
     if active_source_ids.is_empty() {
         return Err("Pi is pointed at UsageMeter, but no restorable source handles were found. Restore ~/.pi/agent/models.json manually or re-enable takeover.".to_string());
     }
@@ -428,7 +428,7 @@ async fn set_pi_takeover(
         if snapshot.providers.iter().any(|provider| {
             PiConfigManager::is_usagemeter_proxy_url_for_port(&provider.original_base_url, port)
         }) {
-            let active_ids = manager.active_source_ids();
+            let active_ids = manager.active_source_ids_for_port(port);
             if active_ids.is_empty() {
                 return Err("Pi is already pointed at UsageMeter, but no original source handles were found. Disable takeover once or restore ~/.pi/agent/models.json manually, then enable it again.".to_string());
             }
