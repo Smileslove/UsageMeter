@@ -12,3 +12,4 @@ pub const TOOL_QODER_CLI: &str = "qoder_cli";
 pub const TOOL_QODER_WORK: &str = "qoder_work";
 pub const TOOL_QODER_WORK_CN: &str = "qoder_work_cn";
 pub const TOOL_COPILOT: &str = "copilot";
+pub const TOOL_PI: &str = "pi";

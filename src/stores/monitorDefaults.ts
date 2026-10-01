@@ -31,6 +31,7 @@ const createDefaultClientTools = (): ClientToolSettings => ({
     { id: 'codex', tool: 'codex', displayName: 'Codex', pathPrefix: 'codex', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'codex' },
     { id: 'deepseek_harness', tool: 'deepseek_harness', displayName: 'DeepSeek Harness', pathPrefix: 'deepseek-harness', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'deepseek' },
     { id: 'hermes', tool: 'hermes', displayName: 'Hermes Agent', pathPrefix: 'hermes', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'hermesagent' },
+    { id: 'pi', tool: 'pi', displayName: 'Pi Agent', pathPrefix: 'pi', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'pi' },
     { id: 'openclaw', tool: 'openclaw', displayName: 'OpenClaw', pathPrefix: 'openclaw', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'openclaw' },
     { id: 'opencode', tool: 'opencode', displayName: 'OpenCode', pathPrefix: 'opencode', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'opencode' },
     { id: 'qoder_ide', tool: 'qoder_ide', displayName: 'Qoder IDE', pathPrefix: 'qoder', enabled: false, autoDetected: false, firstSeenMs: 0, lastSeenMs: 0, icon: 'qoder' },

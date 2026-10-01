@@ -4,6 +4,7 @@ import { getFamilyForTool, getFamilyHead, getVariantLabel } from '../toolFamilie
 
 const FALLBACK_TOOL_NAMES: Record<string, string> = {
   copilot: 'GitHub Copilot CLI',
+  pi: 'Pi Agent',
 }
 
 function translatedToolName(locale: AppLocale | undefined, tool: string): string | null {

@@ -9,6 +9,7 @@ use super::hermes_reader::HERMES_SOURCE;
 use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
 use super::openclaw_reader::OpenClawSource;
 use super::opencode_reader::OpenCodeSource;
+use super::pi_reader::PiSource;
 use super::qoder_cli_reader::QoderCliSource;
 use super::qoder_ide_reader::QoderIdeSource;
 use super::qoder_work_reader::QoderWorkSource;
@@ -20,6 +21,7 @@ static CODEX_SOURCE: CodexSource = CodexSource;
 static DEEPSEEK_HARNESS_SOURCE: DeepSeekHarnessSource = DeepSeekHarnessSource;
 static OPENCLAW_SOURCE: OpenClawSource = OpenClawSource;
 static OPENCODE_SOURCE: OpenCodeSource = OpenCodeSource;
+static PI_SOURCE: PiSource = PiSource;
 static QODER_IDE_SOURCE: QoderIdeSource =
     QoderIdeSource::new(super::constants::TOOL_QODER_IDE, "Qoder");
 static QODER_IDE_CN_SOURCE: QoderIdeSource =
@@ -34,7 +36,7 @@ static QODER_WORK_CN_SOURCE: QoderWorkSource = QoderWorkSource::new(
 );
 static GEMINI_SOURCE: GeminiSource = GeminiSource;
 
-pub fn all_sources() -> [&'static dyn SessionSource; 13] {
+pub fn all_sources() -> [&'static dyn SessionSource; 14] {
     [
         &CLAUDE_SOURCE,
         &COPILOT_CLI_SOURCE,
@@ -42,6 +44,7 @@ pub fn all_sources() -> [&'static dyn SessionSource; 13] {
         &DEEPSEEK_HARNESS_SOURCE,
         &OPENCLAW_SOURCE,
         &OPENCODE_SOURCE,
+        &PI_SOURCE,
         &QODER_IDE_SOURCE,
         &QODER_IDE_CN_SOURCE,
         &QODER_CLI_SOURCE,
@@ -52,13 +55,14 @@ pub fn all_sources() -> [&'static dyn SessionSource; 13] {
     ]
 }
 
-pub fn file_backed_sources() -> [&'static dyn SessionSource; 7] {
+pub fn file_backed_sources() -> [&'static dyn SessionSource; 8] {
     [
         &CLAUDE_SOURCE,
         &COPILOT_CLI_SOURCE,
         &CODEX_SOURCE,
         &DEEPSEEK_HARNESS_SOURCE,
         &OPENCLAW_SOURCE,
+        &PI_SOURCE,
         &QODER_CLI_SOURCE,
         &GEMINI_SOURCE,
     ]

@@ -215,6 +215,7 @@ export const TOOL_LOBE_ICONS: Record<string, string> = {
   reasonix: 'reasonix',
   gemini: 'geminicli',
   hermes: 'hermesagent',
+  pi: 'pi',
 }
 
 const TOOL_ICON_ALIASES: Record<string, string> = {

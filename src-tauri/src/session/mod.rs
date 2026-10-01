@@ -13,6 +13,7 @@ mod meta;
 mod openclaw_reader;
 mod opencode;
 pub(crate) mod opencode_reader;
+mod pi_reader;
 pub(crate) mod qoder_cli_reader;
 pub(crate) mod qoder_ide_reader;
 pub(crate) mod qoder_work_reader;

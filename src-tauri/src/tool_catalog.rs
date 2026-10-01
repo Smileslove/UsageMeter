@@ -6,7 +6,7 @@
 
 use crate::session::constants::{
     TOOL_CLAUDE_CODE, TOOL_CODEX, TOOL_COPILOT, TOOL_DEEPSEEK_HARNESS, TOOL_GEMINI, TOOL_HERMES,
-    TOOL_OPENCLAW, TOOL_OPENCODE, TOOL_QODER_CLI, TOOL_QODER_IDE, TOOL_QODER_IDE_CN,
+    TOOL_OPENCLAW, TOOL_OPENCODE, TOOL_PI, TOOL_QODER_CLI, TOOL_QODER_IDE, TOOL_QODER_IDE_CN,
     TOOL_QODER_WORK, TOOL_QODER_WORK_CN, TOOL_REASONIX,
 };
 
@@ -89,6 +89,13 @@ const TOOLS: &[ToolDescriptor] = &[
         supports_reconciliation: false,
     },
     ToolDescriptor {
+        id: TOOL_PI,
+        path_prefix: "pi",
+        has_local_sessions: true,
+        supports_proxy: false,
+        supports_reconciliation: false,
+    },
+    ToolDescriptor {
         id: TOOL_QODER_IDE,
         path_prefix: "qoder_ide",
         has_local_sessions: true,
@@ -155,6 +162,8 @@ mod tests {
     #[test]
     fn catalog_exposes_expected_capabilities() {
         assert_eq!(find("claude_code").unwrap().path_prefix, "claude-code");
+        assert!(find("pi").unwrap().has_local_sessions);
+        assert!(!find("pi").unwrap().supports_proxy);
         assert!(find("codex").unwrap().supports_proxy);
         assert!(!find("qoder_cli").unwrap().supports_proxy);
         assert!(find("claude_code").unwrap().supports_reconciliation);
