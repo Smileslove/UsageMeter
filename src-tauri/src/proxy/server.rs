@@ -9,6 +9,7 @@ use super::gemini_config::{GeminiConfigManager, GeminiSourceRegistry};
 use super::gemini_forwarder::GeminiForwarder;
 use super::openai_forwarder::OpenAiForwarder;
 use super::opencode_config::{OpenCodeConfigManager, OpenCodeSourceRegistry};
+use super::pi_config::{PiConfigManager, PiSourceRegistry};
 use super::reasonix_config::{ReasonixConfigManager, ReasonixSourceRegistry};
 use super::request_common::{
     get_settings_snapshot, refresh_settings_snapshot_if_needed, settings_file_mtime,
@@ -19,7 +20,7 @@ use super::types::{ProxyConfig, ProxyState, ProxyStatus};
 use crate::commands::{
     restore_claude_takeover_if_proxy_url_present, restore_codex_takeover_if_proxy_url_present,
     restore_gemini_takeover_if_proxy_url_present, restore_opencode_takeover_if_proxy_url_present,
-    restore_reasonix_takeover_if_proxy_url_present,
+    restore_pi_takeover_if_proxy_url_present, restore_reasonix_takeover_if_proxy_url_present,
 };
 use crate::models::AppSettings;
 use crate::net::HttpClientFactory;
@@ -790,6 +791,93 @@ pub(crate) async fn sync_gemini_external_config_change(
     }
 }
 
+pub(crate) async fn sync_pi_external_config_change(
+    proxy_port: u16,
+    state: Arc<ProxyState>,
+    mode: ExternalConfigSyncMode,
+) {
+    if mode == ExternalConfigSyncMode::PassiveRecoveryOnly {
+        let _ = restore_pi_takeover_if_proxy_url_present(proxy_port);
+        return;
+    }
+
+    let settings = get_settings_snapshot(&state).await;
+    if !settings
+        .client_tools
+        .profiles
+        .iter()
+        .any(|profile| profile.tool == "pi" && profile.enabled)
+        || is_takeover_conflict_paused(&state, "pi").await
+    {
+        return;
+    }
+
+    let manager = PiConfigManager::new();
+    if manager.ensure_config_exists().is_err() {
+        return;
+    }
+    let snapshot = match manager.read_live_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(_) => return,
+    };
+    if snapshot.providers.is_empty() {
+        return;
+    }
+    if snapshot.providers.iter().all(|provider| {
+        PiConfigManager::is_usagemeter_proxy_url_for_port(&provider.original_base_url, proxy_port)
+    }) {
+        return;
+    }
+
+    let external_providers = snapshot
+        .providers
+        .into_iter()
+        .filter(|provider| {
+            !PiConfigManager::is_usagemeter_proxy_url_for_port(
+                &provider.original_base_url,
+                proxy_port,
+            )
+        })
+        .collect::<Vec<_>>();
+    let external_base_url = external_providers
+        .first()
+        .map(|provider| format!("provider: {}", provider.provider_id))
+        .unwrap_or_else(|| "external override detected".to_string());
+    let route_state = super::pi_config::PiRouteState {
+        providers: external_providers,
+    };
+    let registry = PiSourceRegistry::new();
+    let handles = match registry.upsert_from_state(&route_state) {
+        Ok(handles) => handles,
+        Err(_) => return,
+    };
+    if handles.is_empty()
+        || !should_reclaim_external_config(
+            &state,
+            "pi",
+            manager.config_path().display().to_string(),
+            external_base_url.clone(),
+        )
+        .await
+    {
+        return;
+    }
+    if manager.takeover_with_handles(proxy_port, &handles).is_ok() {
+        mark_takeover_config_write(&state, "pi").await;
+    } else {
+        pause_takeover_conflict(&state, "pi", Some(external_base_url.clone())).await;
+        emit_takeover_conflict_detected(
+            &state,
+            "pi",
+            manager.config_path().display().to_string(),
+            external_base_url,
+            1,
+            0,
+        )
+        .await;
+    }
+}
+
 /// 代理服务器
 pub struct ProxyServer {
     /// 代理配置
@@ -1030,6 +1118,12 @@ impl ProxyServer {
             ExternalConfigSyncMode::RunningTakeover,
         )
         .await;
+        sync_pi_external_config_change(
+            self.config.port,
+            self.state.clone(),
+            ExternalConfigSyncMode::RunningTakeover,
+        )
+        .await;
 
         // 创建关闭通道
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
@@ -1093,6 +1187,12 @@ impl ProxyServer {
                         )
                         .await;
                         sync_gemini_external_config_change(
+                            proxy_port,
+                            state.clone(),
+                            ExternalConfigSyncMode::RunningTakeover,
+                        )
+                        .await;
+                        sync_pi_external_config_change(
                             proxy_port,
                             state.clone(),
                             ExternalConfigSyncMode::RunningTakeover,
@@ -1192,6 +1292,7 @@ impl ProxyServer {
                 config_manager.clear_legacy_backup()?;
             }
         }
+        crate::commands::restore_pi_takeover_if_proxy_url_present(self.config.port)?;
 
         // 更新状态
         {
@@ -1270,6 +1371,7 @@ impl ProxyServer {
             "opencode" => self.force_reclaim_opencode_takeover().await?,
             "reasonix" => self.force_reclaim_reasonix_takeover().await?,
             "gemini" => self.force_reclaim_gemini_takeover().await?,
+            "pi" => self.force_reclaim_pi_takeover().await?,
             other => return Err(format!("Unsupported takeover tool: {}", other)),
         };
         clear_takeover_conflict(&self.state, tool).await;
@@ -1458,6 +1560,33 @@ impl ProxyServer {
 
         config_manager.takeover_with_source(self.config.port, &handle.id)?;
         mark_takeover_config_write(&self.state, "gemini").await;
+        Ok(())
+    }
+
+    async fn force_reclaim_pi_takeover(&self) -> Result<(), String> {
+        let manager = PiConfigManager::new();
+        manager.ensure_config_exists()?;
+        let registry = PiSourceRegistry::new();
+        let snapshot = manager.read_live_snapshot()?;
+        let handles = if snapshot.providers.iter().any(|provider| {
+            PiConfigManager::is_usagemeter_proxy_url_for_port(
+                &provider.original_base_url,
+                self.config.port,
+            )
+        }) {
+            manager
+                .active_source_ids()
+                .into_iter()
+                .filter_map(|id| registry.get(&id))
+                .collect::<Vec<_>>()
+        } else {
+            registry.upsert_from_state(&snapshot)?
+        };
+        if handles.is_empty() {
+            return Err("No supported Pi providers with a baseUrl were found".to_string());
+        }
+        manager.takeover_with_handles(self.config.port, &handles)?;
+        mark_takeover_config_write(&self.state, "pi").await;
         Ok(())
     }
 
