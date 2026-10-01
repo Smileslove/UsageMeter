@@ -9,6 +9,7 @@ use super::shared::{
 };
 use super::source::{ParsedSessionData, SessionSource, SourceSnapshot, SourceUpdateMode};
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::env;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
@@ -54,18 +55,17 @@ impl SessionSource for CodexSource {
 
     fn scan(&self) -> SourceSnapshot {
         let mut sessions = Vec::new();
-        if let Some(home) = dirs::home_dir() {
-            let codex_root = home.join(".codex").join("sessions");
-            if codex_root.exists() {
-                sessions.extend(collect_codex_session_files(&codex_root));
-            }
+        if let Some(codex_home) = codex_home_dir() {
+            sessions.extend(collect_codex_home_session_files(&codex_home));
         }
         // 额外扫描 WSL 发行版内的 Codex sessions（仅 Windows，且 wslScan 开启时）。
         #[cfg(windows)]
         if let Some(cfg) = super::wsl::scan_config_if_enabled() {
             for root in super::wsl::codex_session_roots(&cfg) {
                 if root.exists() {
-                    sessions.extend(collect_codex_session_files(&root));
+                    if let Some(codex_home) = root.parent() {
+                        sessions.extend(collect_codex_home_session_files(codex_home));
+                    }
                 }
             }
         }
@@ -100,10 +100,11 @@ pub(super) struct CodexParsedData {
     pub(super) requests: Vec<LocalRequestRecord>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct CodexCumulativeTokens {
     input: u64,
     output: u64,
+    reasoning: u64,
     cache_create: u64,
     cache_read: u64,
 }
@@ -208,6 +209,64 @@ pub(super) fn collect_codex_session_files(root: &Path) -> Vec<SessionFile> {
         .collect()
 }
 
+fn codex_home_dir() -> Option<PathBuf> {
+    env::var_os("CODEX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+}
+
+fn collect_codex_home_session_files(codex_home: &Path) -> Vec<SessionFile> {
+    let sessions_root = codex_home.join("sessions");
+    let archived_root = codex_home.join("archived_sessions");
+    let mut sessions = collect_codex_session_files(&sessions_root);
+    let active_relative_paths: BTreeSet<PathBuf> = sessions
+        .iter()
+        .flat_map(|session| session.transcript_paths.iter())
+        .filter_map(|path| Path::new(path).strip_prefix(&sessions_root).ok())
+        .map(Path::to_path_buf)
+        .collect();
+
+    for mut archived in collect_codex_session_files(&archived_root) {
+        archived.transcript_paths.retain(|path| {
+            Path::new(path)
+                .strip_prefix(&archived_root)
+                .map(|relative| !active_relative_paths.contains(relative))
+                .unwrap_or(true)
+        });
+        if archived.transcript_paths.is_empty() {
+            continue;
+        }
+        archived.file_path = archived
+            .transcript_paths
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        archived.file_size = archived
+            .transcript_paths
+            .iter()
+            .filter_map(|path| fs::metadata(path).ok().map(|metadata| metadata.len()))
+            .sum();
+        sessions.push(archived);
+    }
+    let mut by_session = HashMap::<String, SessionFile>::new();
+    for mut session in sessions {
+        let Some(existing) = by_session.get_mut(&session.session_id) else {
+            by_session.insert(session.session_id.clone(), session);
+            continue;
+        };
+        existing.file_size += session.file_size;
+        existing.last_modified = existing.last_modified.max(session.last_modified);
+        existing.fingerprint ^= session.fingerprint;
+        existing
+            .transcript_paths
+            .append(&mut session.transcript_paths);
+        existing.transcript_paths.sort();
+        existing.transcript_paths.dedup();
+    }
+    by_session.into_values().collect()
+}
+
 /// 解析一个 Codex 会话（包括所有关联 rollout 文件），返回元数据和请求事实。
 pub(super) fn parse_codex_session_file(session: &SessionFile) -> CodexParsedData {
     let mut meta = SessionMeta {
@@ -243,6 +302,7 @@ pub(super) fn parse_codex_session_file(session: &SessionFile) -> CodexParsedData
     let mut models_set: BTreeSet<String> = BTreeSet::new();
     let mut earliest_timestamp: Option<i64> = None;
     let mut latest_timestamp: Option<i64> = None;
+    let mut total_reasoning_tokens = 0_u64;
     let mut requests: Vec<LocalRequestRecord> = Vec::new();
     let mut event_index: u64 = 0;
     let mut first_user_message_ts: Option<i64> = None;
@@ -259,6 +319,7 @@ pub(super) fn parse_codex_session_file(session: &SessionFile) -> CodexParsedData
         let fork_start_ts: Option<i64> = file_identity
             .as_ref()
             .and_then(|identity| identity.fork_start_ts);
+        let mut subagent_usage_started = !is_subagent_file;
         let mut prev_total: Option<CodexCumulativeTokens> = None;
         let mut current_model: String = "unknown".to_string();
 
@@ -371,8 +432,13 @@ pub(super) fn parse_codex_session_file(session: &SessionFile) -> CodexParsedData
                     let Some(payload) = json.get("payload") else {
                         continue;
                     };
-                    if payload.get("type").and_then(|value| value.as_str()) != Some("token_count") {
-                        continue;
+                    match payload.get("type").and_then(|value| value.as_str()) {
+                        Some("task_started") if is_subagent_file => {
+                            subagent_usage_started = true;
+                            continue;
+                        }
+                        Some("token_count") => {}
+                        _ => continue,
                     }
                     let Some(info) = payload.get("info") else {
                         continue;
@@ -399,6 +465,13 @@ pub(super) fn parse_codex_session_file(session: &SessionFile) -> CodexParsedData
                     let total = total_usage.and_then(parse_codex_cumulative_tokens);
                     let last = last_usage.and_then(parse_codex_cumulative_tokens);
 
+                    if !subagent_usage_started {
+                        if let Some(current_total) = total.as_ref() {
+                            prev_total = Some(current_total.clone());
+                        }
+                        continue;
+                    }
+
                     // Fork replay handling: events at or before fork_start_ts are history
                     // replayed from the original session. Advance prev_total to establish
                     // the correct baseline so the first genuinely new event's delta is
@@ -413,17 +486,18 @@ pub(super) fn parse_codex_session_file(session: &SessionFile) -> CodexParsedData
                     }
 
                     let delta = if let Some(current_total) = total.clone() {
-                        let delta = if let Some(previous_total) = prev_total.as_ref() {
-                            if codex_total_rolled_back(previous_total, &current_total) {
-                                last.clone().unwrap_or(current_total.clone())
-                            } else {
-                                compute_codex_delta(Some(previous_total), &current_total)
-                            }
+                        let previous_total = prev_total.replace(current_total.clone());
+                        if previous_total.as_ref() == Some(&current_total) {
+                            None
+                        } else if let Some(last_usage) = last {
+                            Some(last_usage)
+                        } else if previous_total.as_ref().is_some_and(|previous| {
+                            codex_total_rolled_back(previous, &current_total)
+                        }) {
+                            Some(current_total)
                         } else {
-                            last.clone().unwrap_or(current_total.clone())
-                        };
-                        prev_total = Some(current_total);
-                        Some(delta)
+                            Some(compute_codex_delta(previous_total.as_ref(), &current_total))
+                        }
                     } else {
                         last.clone()
                     };
@@ -450,11 +524,12 @@ pub(super) fn parse_codex_session_file(session: &SessionFile) -> CodexParsedData
                         message_id: format!("codex:{}:{}", session.session_id, event_index),
                         input_tokens: normalized.input,
                         output_tokens: normalized.output,
+                        reasoning_tokens: normalized.reasoning,
                         cache_create_tokens: normalized.cache_create,
                         cache_read_tokens: normalized.cache_read,
                         total_tokens,
                         model: current_model.clone(),
-                        is_subagent: false,
+                        is_subagent: is_subagent_file,
                         ..Default::default()
                     });
                 }
@@ -485,7 +560,9 @@ pub(super) fn parse_codex_session_file(session: &SessionFile) -> CodexParsedData
         meta.total_output_tokens += request.output_tokens;
         meta.total_cache_create_tokens += request.cache_create_tokens;
         meta.total_cache_read_tokens += request.cache_read_tokens;
+        total_reasoning_tokens += request.reasoning_tokens;
     }
+    meta.total_reasoning_tokens = total_reasoning_tokens;
 
     CodexParsedData { meta, requests }
 }
@@ -731,6 +808,11 @@ fn parse_codex_cumulative_tokens(value: &serde_json::Value) -> Option<CodexCumul
             .get("output_tokens")
             .and_then(parse_u64_from_value)
             .unwrap_or(0),
+        reasoning: value
+            .get("reasoning_output_tokens")
+            .or_else(|| value.get("reasoning_tokens"))
+            .and_then(parse_u64_from_value)
+            .unwrap_or(0),
         cache_create: value
             .get("cache_creation_input_tokens")
             .or_else(|| value.get("cache_create_tokens"))
@@ -760,6 +842,7 @@ fn compute_codex_delta(
         Some(previous) => CodexCumulativeTokens {
             input: current.input.saturating_sub(previous.input),
             output: current.output.saturating_sub(previous.output),
+            reasoning: current.reasoning.saturating_sub(previous.reasoning),
             cache_create: current.cache_create.saturating_sub(previous.cache_create),
             cache_read: current.cache_read.saturating_sub(previous.cache_read),
         },
@@ -772,6 +855,7 @@ fn normalize_codex_delta(delta: CodexCumulativeTokens) -> CodexCumulativeTokens 
     CodexCumulativeTokens {
         input: delta.input.saturating_sub(cache_read),
         output: delta.output,
+        reasoning: delta.reasoning.min(delta.output),
         cache_create: delta.cache_create,
         cache_read,
     }
@@ -884,6 +968,39 @@ mod tests {
         assert_eq!(data.requests[1].input_tokens, 25);
         assert_eq!(data.requests[1].cache_read_tokens, 5);
         assert_eq!(data.requests[1].output_tokens, 4);
+    }
+
+    #[test]
+    fn test_parse_codex_uses_last_usage_and_ignores_repeated_totals() {
+        let temp = tempdir().unwrap();
+        let rollout_path = temp.path().join("rollout-last-usage.jsonl");
+        let mut file = fs::File::create(&rollout_path).unwrap();
+        for line in [
+            serde_json::json!({"timestamp":"2026-05-09T10:00:00Z","type":"session_meta","payload":{"id":"last-usage"}}),
+            serde_json::json!({"timestamp":"2026-05-09T10:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":3},"last_token_usage":{"input_tokens":40,"cached_input_tokens":10,"output_tokens":5,"reasoning_output_tokens":2}}}}),
+            serde_json::json!({"timestamp":"2026-05-09T10:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":3},"last_token_usage":{"input_tokens":99,"output_tokens":99}}}}),
+            serde_json::json!({"timestamp":"2026-05-09T10:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":30,"output_tokens":20,"reasoning_output_tokens":5},"last_token_usage":{"input_tokens":12,"cached_input_tokens":4,"output_tokens":6,"reasoning_output_tokens":1}}}}),
+        ] {
+            writeln!(file, "{line}").unwrap();
+        }
+
+        let path = rollout_path.to_string_lossy().to_string();
+        let data = parse_codex_session_file(&make_codex_session(
+            "codex::last-usage",
+            "project",
+            vec![path],
+        ));
+
+        assert_eq!(data.requests.len(), 2);
+        assert_eq!(data.requests[0].input_tokens, 30);
+        assert_eq!(data.requests[0].cache_read_tokens, 10);
+        assert_eq!(data.requests[0].output_tokens, 5);
+        assert_eq!(data.requests[0].reasoning_tokens, 2);
+        assert_eq!(data.requests[1].input_tokens, 8);
+        assert_eq!(data.requests[1].cache_read_tokens, 4);
+        assert_eq!(data.requests[1].output_tokens, 6);
+        assert_eq!(data.requests[1].reasoning_tokens, 1);
+        assert_eq!(data.meta.total_reasoning_tokens, 3);
     }
 
     #[test]
@@ -1048,5 +1165,73 @@ mod tests {
             total_output, 20,
             "output delta should be 20, got {total_output}"
         );
+    }
+
+    #[test]
+    fn test_parse_codex_subagent_skips_replay_and_marks_its_usage() {
+        let temp = tempdir().unwrap();
+        let rollout_path = temp.path().join("rollout-subagent.jsonl");
+        let mut file = fs::File::create(&rollout_path).unwrap();
+        for line in [
+            serde_json::json!({"timestamp":"2026-06-16T10:00:00Z","type":"session_meta","payload":{"id":"subagent-1","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-1"}}}}}),
+            serde_json::json!({"timestamp":"2026-06-16T10:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"output_tokens":20},"last_token_usage":{"input_tokens":100,"output_tokens":20}}}}),
+            serde_json::json!({"timestamp":"2026-06-16T10:00:02Z","type":"event_msg","payload":{"type":"task_started"}}),
+            serde_json::json!({"timestamp":"2026-06-16T10:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":130,"output_tokens":25},"last_token_usage":{"input_tokens":30,"output_tokens":5}}}}),
+        ] {
+            writeln!(file, "{line}").unwrap();
+        }
+
+        let path = rollout_path.to_string_lossy().to_string();
+        let data = parse_codex_session_file(&make_codex_session(
+            "codex::parent-1",
+            "project",
+            vec![path],
+        ));
+
+        assert_eq!(data.requests.len(), 1);
+        assert_eq!(data.requests[0].input_tokens, 30);
+        assert_eq!(data.requests[0].output_tokens, 5);
+        assert!(data.requests[0].is_subagent);
+    }
+
+    #[test]
+    fn test_collect_codex_home_prefers_active_copy_and_includes_archived_only() {
+        let temp = tempdir().unwrap();
+        let home = temp.path().join("codex-home");
+        let active = home.join("sessions/2026/05/09");
+        let archived = home.join("archived_sessions/2026/05/09");
+        fs::create_dir_all(&active).unwrap();
+        fs::create_dir_all(&archived).unwrap();
+        let active_copy = active.join("rollout-same.jsonl");
+        let archived_copy = archived.join("rollout-same.jsonl");
+        let archived_only = archived.join("rollout-archived-only.jsonl");
+        for (path, id) in [
+            (&active_copy, "same"),
+            (&archived_copy, "same"),
+            (&archived_only, "archived-only"),
+        ] {
+            fs::write(
+                path,
+                format!(
+                    "{}\n",
+                    serde_json::json!({"type":"session_meta","payload":{"id":id}})
+                ),
+            )
+            .unwrap();
+        }
+
+        let sessions = collect_codex_home_session_files(&home);
+        assert_eq!(sessions.len(), 2);
+        let same = sessions
+            .iter()
+            .find(|session| session.session_id.ends_with("::same"))
+            .unwrap();
+        assert_eq!(same.transcript_paths, vec![active_copy.to_string_lossy()]);
+        assert!(sessions.iter().any(|session| {
+            session
+                .transcript_paths
+                .iter()
+                .any(|path| path == &archived_only.to_string_lossy())
+        }));
     }
 }
