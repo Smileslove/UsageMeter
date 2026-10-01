@@ -3,8 +3,8 @@
 use crate::proxy::{
     codex_snapshot_uses_official_provider, request_common, server, ClaudeConfigManager,
     CodexConfigManager, CodexSourceRegistry, GeminiConfigManager, GeminiSourceRegistry,
-    OpenCodeConfigManager, OpenCodeSourceRegistry, ProxyConfig, ProxyServer, ProxyStatus,
-    ReasonixConfigManager, ReasonixSourceRegistry,
+    OpenCodeConfigManager, OpenCodeSourceRegistry, PiConfigManager, PiSourceRegistry, ProxyConfig,
+    ProxyServer, ProxyStatus, ReasonixConfigManager, ReasonixSourceRegistry,
 };
 use tauri::State;
 
@@ -81,6 +81,12 @@ pub async fn ensure_passive_proxy_monitor_started(state: &ProxyState) {
                     )
                     .await;
                     server::sync_gemini_external_config_change(
+                        port,
+                        proxy_state.clone(),
+                        server::ExternalConfigSyncMode::PassiveRecoveryOnly,
+                    )
+                    .await;
+                    server::sync_pi_external_config_change(
                         port,
                         proxy_state.clone(),
                         server::ExternalConfigSyncMode::PassiveRecoveryOnly,
@@ -212,6 +218,7 @@ pub async fn stop_proxy_runtime_only_inner(
     restore_codex_takeover_if_active(port)?;
     restore_opencode_takeover_if_active(port)?;
     restore_gemini_takeover_if_active(port)?;
+    restore_pi_takeover_if_active(port)?;
 
     // 代理停止后 live 配置已恢复真实地址，顺带清理 cc-switch 库内残留的代理地址。
     // 等待完成（上限 5 秒）：应用退出流程随后会 app.exit(0)，fire-and-forget 跑不完。
@@ -267,6 +274,7 @@ pub async fn set_takeover_for_app(
         "opencode" => set_opencode_takeover(enabled, state, app_handle).await,
         "reasonix" => set_reasonix_takeover(enabled, state, app_handle).await,
         "gemini" => set_gemini_takeover(enabled, state, app_handle).await,
+        "pi" => set_pi_takeover(enabled, state, app_handle).await,
         other => Err(format!("Unsupported takeover app: {}", other)),
     }
 }
@@ -373,6 +381,78 @@ pub(crate) fn restore_codex_takeover_if_proxy_url_present(port: u16) -> Result<b
 
     restore_codex_takeover_if_active(port)?;
     Ok(true)
+}
+
+pub(crate) fn restore_pi_takeover_if_active(port: u16) -> Result<(), String> {
+    let manager = PiConfigManager::new();
+    if !manager.is_takeover_active(port).unwrap_or(false) {
+        return Ok(());
+    }
+    let active_source_ids = manager.active_source_ids();
+    if active_source_ids.is_empty() {
+        return Err("Pi is pointed at UsageMeter, but no restorable source handles were found. Restore ~/.pi/agent/models.json manually or re-enable takeover.".to_string());
+    }
+    let restored = manager.restore_from_sources(&active_source_ids)?;
+    if restored == 0 {
+        return Err("Pi is pointed at UsageMeter, but its original provider routes are unavailable. Restore ~/.pi/agent/models.json manually before stopping the proxy.".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn restore_pi_takeover_if_proxy_url_present(port: u16) -> Result<bool, String> {
+    let manager = PiConfigManager::new();
+    let snapshot = match manager.read_live_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(_) => return Ok(false),
+    };
+    if !snapshot.providers.iter().any(|provider| {
+        PiConfigManager::is_usagemeter_proxy_url_for_port(&provider.original_base_url, port)
+    }) {
+        return Ok(false);
+    }
+    restore_pi_takeover_if_active(port)?;
+    Ok(true)
+}
+
+async fn set_pi_takeover(
+    enabled: bool,
+    state: State<'_, ProxyState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let settings = load_settings().unwrap_or_default();
+    let port = settings.proxy.port;
+    let manager = PiConfigManager::new();
+    if enabled {
+        manager.ensure_config_exists()?;
+        let mut snapshot = manager.read_live_snapshot()?;
+        if snapshot.providers.iter().any(|provider| {
+            PiConfigManager::is_usagemeter_proxy_url_for_port(&provider.original_base_url, port)
+        }) {
+            let active_ids = manager.active_source_ids();
+            if active_ids.is_empty() {
+                return Err("Pi is already pointed at UsageMeter, but no original source handles were found. Disable takeover once or restore ~/.pi/agent/models.json manually, then enable it again.".to_string());
+            }
+            manager.restore_from_sources(&active_ids)?;
+            snapshot = manager.read_live_snapshot()?;
+        }
+        let handles = PiSourceRegistry::new().upsert_from_state(&snapshot)?;
+        if handles.is_empty() {
+            return Err("No supported Pi providers with a baseUrl were found. Configure providers in ~/.pi/agent/models.json first.".to_string());
+        }
+        {
+            let server_guard = state.server.read().await;
+            if server_guard.is_none() {
+                drop(server_guard);
+                start_proxy(port, state.clone(), app_handle).await?;
+            }
+        }
+        manager.takeover_with_handles(port, &handles)?;
+        mark_client_tool_enabled("pi", true)?;
+    } else {
+        restore_pi_takeover_if_active(port)?;
+        mark_client_tool_enabled("pi", false)?;
+    }
+    Ok(())
 }
 
 async fn set_codex_takeover(
@@ -862,6 +942,14 @@ pub async fn get_takeover_statuses(
         Some(server) => server.takeover_conflict_external_base_url("gemini").await,
         None => None,
     };
+    let pi_conflict_paused = match server {
+        Some(server) => server.is_takeover_conflict_paused("pi").await,
+        None => false,
+    };
+    let pi_conflict_external_base_url = match server {
+        Some(server) => server.takeover_conflict_external_base_url("pi").await,
+        None => None,
+    };
     drop(server_guard);
 
     let codex_manager = CodexConfigManager::new();
@@ -953,6 +1041,24 @@ pub async fn get_takeover_statuses(
         Ok(active) => (active, gemini_manager.active_source_id(), None),
         Err(e) => (false, None, Some(e)),
     };
+    let pi_manager = PiConfigManager::new();
+    let pi_snapshot = pi_manager.read_live_snapshot().unwrap_or_default();
+    let pi_managed_provider_ids: Vec<String> = pi_snapshot
+        .providers
+        .iter()
+        .map(|provider| provider.provider_id.clone())
+        .collect();
+    let pi_enabled = settings
+        .client_tools
+        .profiles
+        .iter()
+        .find(|profile| profile.tool == "pi")
+        .map(|profile| profile.enabled)
+        .unwrap_or(false);
+    let (pi_active, pi_source, pi_error) = match pi_manager.is_takeover_active(port) {
+        Ok(active) => (active, pi_manager.active_source_id(), None),
+        Err(e) => (false, None, Some(e)),
+    };
 
     Ok(vec![
         ToolTakeoverStatus {
@@ -1034,6 +1140,22 @@ pub async fn get_takeover_statuses(
             yielded_to: None,
             scope_warning_key: Some("settings.geminiConfigScopeWarning".to_string()),
             last_error: gemini_error,
+        },
+        ToolTakeoverStatus {
+            tool: "pi".to_string(),
+            enabled: pi_enabled,
+            takeover_active: pi_active,
+            conflict_paused: pi_conflict_paused,
+            config_path: Some(pi_manager.config_path().display().to_string()),
+            auth_path: None,
+            auth_mode: Some("api_key".to_string()),
+            official_provider: false,
+            active_source_id: pi_source,
+            managed_provider_ids: Some(pi_managed_provider_ids),
+            conflict_external_base_url: pi_conflict_external_base_url,
+            yielded_to: None,
+            scope_warning_key: None,
+            last_error: pi_error,
         },
     ])
 }

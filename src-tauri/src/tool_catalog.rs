@@ -92,8 +92,8 @@ const TOOLS: &[ToolDescriptor] = &[
         id: TOOL_PI,
         path_prefix: "pi",
         has_local_sessions: true,
-        supports_proxy: false,
-        supports_reconciliation: false,
+        supports_proxy: true,
+        supports_reconciliation: true,
     },
     ToolDescriptor {
         id: TOOL_QODER_IDE,
@@ -163,7 +163,7 @@ mod tests {
     fn catalog_exposes_expected_capabilities() {
         assert_eq!(find("claude_code").unwrap().path_prefix, "claude-code");
         assert!(find("pi").unwrap().has_local_sessions);
-        assert!(!find("pi").unwrap().supports_proxy);
+        assert!(find("pi").unwrap().supports_proxy);
         assert!(find("codex").unwrap().supports_proxy);
         assert!(!find("qoder_cli").unwrap().supports_proxy);
         assert!(find("claude_code").unwrap().supports_reconciliation);

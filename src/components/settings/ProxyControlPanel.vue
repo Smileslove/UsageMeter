@@ -223,6 +223,8 @@ function toolConfigPaths(profile: ClientToolProfile): string[] {
       return ['~/.reasonix/config.toml']
     case 'gemini':
       return ['~/.gemini/.env']
+    case 'pi':
+      return ['~/.pi/agent/models.json']
     default:
       return []
   }
