@@ -1,9 +1,8 @@
 //! Gemini CLI 本地会话读取模块
 //!
-//! 解析 `~/.gemini/tmp/<project_hash>/chats/session-*.json` 格式的 Gemini CLI 会话日志。
-//! 与 Claude / Codex 不同，Gemini 会话文件是单个 JSON 对象（非 JSONL），顶层含
-//! `sessionId` 与 `messages` 数组。每条 `type == "gemini"` 的消息自带独立 `tokens`
-//! 用量（per-message 独立值，不需累计差分），按 message `id` 去重。
+//! 解析 `~/.gemini/tmp/<project_hash>/chats/` 下的 Gemini CLI JSON 和 JSONL 会话日志。
+//! 每条 `type == "gemini"` 的消息自带独立 `tokens` 用量（per-message 独立值，不需累计差分），
+//! 按 message `id` 去重。
 
 use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
 use super::shared::{
@@ -61,7 +60,7 @@ impl SessionSource for GeminiSource {
     }
 }
 
-/// 扫描 `~/.gemini/tmp` 下所有 `session-*.json` 文件，按 sessionId 分组为 SessionFile。
+/// 扫描旧版 `session-*.json` 和 `chats/` 下的新式 JSON/JSONL 会话文件。
 ///
 /// session_id 直接从文件名（`session-<id>.json`）派生，避免在 scan 阶段解析整个
 /// JSON（Gemini 会话文件是单个大对象，逐个全量解析代价高）。
@@ -186,7 +185,7 @@ pub(super) fn parse_gemini_session_file(
         let Ok(raw) = fs::read_to_string(transcript_path) else {
             continue;
         };
-        let Ok(root) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        let Some(root) = parse_gemini_transcript(&raw) else {
             continue;
         };
 
@@ -339,11 +338,7 @@ fn collect_gemini_session_paths(root: &Path) -> Vec<PathBuf> {
                 continue;
             }
 
-            let is_session = entry_path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("session-") && name.ends_with(".json"))
-                .unwrap_or(false);
+            let is_session = is_gemini_session_path(&entry_path);
 
             if is_session {
                 files.push(entry_path);
@@ -352,6 +347,52 @@ fn collect_gemini_session_paths(root: &Path) -> Vec<PathBuf> {
     }
 
     files
+}
+
+fn is_gemini_session_path(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let extension = path.extension().and_then(|value| value.to_str());
+    let in_chats_dir = path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        == Some("chats");
+
+    (file_name.starts_with("session-") && extension == Some("json"))
+        || (in_chats_dir && matches!(extension, Some("json" | "jsonl")))
+}
+
+fn parse_gemini_transcript(raw: &str) -> Option<serde_json::Value> {
+    if let Ok(root) = serde_json::from_str(raw) {
+        return Some(root);
+    }
+
+    let mut root = serde_json::Map::new();
+    let mut messages = Vec::new();
+    for line in raw.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+
+        let is_header = value.get("type").is_none()
+            && value.get("tokens").is_none()
+            && (value.get("sessionId").is_some() || value.get("session_id").is_some());
+        if is_header {
+            if let Some(fields) = value.as_object() {
+                root.extend(fields.clone());
+            }
+        } else {
+            messages.push(value);
+        }
+    }
+
+    if messages.is_empty() && root.is_empty() {
+        return None;
+    }
+    root.insert("messages".to_string(), serde_json::Value::Array(messages));
+    Some(serde_json::Value::Object(root))
 }
 
 fn derive_gemini_session_id(path: &Path) -> Option<String> {
@@ -399,44 +440,77 @@ struct GeminiTokens {
 
 /// 归一化 Gemini per-message token 用量。
 ///
-/// Gemini 的 `input` 为 cache-inclusive 总 prompt，`cached` 是其中命中缓存的子集；
-/// 为避免 total 双计，将 `cached` 从 `input` 扣出单独记为 cache_read（与 Codex 口径一致）。
-/// `thoughts`（推理）与 `tool`（工具）token 计入输出；`thoughts` 另单独保留为 reasoning。
+/// 按 `total` 判断 `cached` 是否已包含在 `input` 中；缺少 `total` 时兼容旧日志，视为已包含。
+/// 单独记录 cache_read，避免缓存 token 与普通输入重复累计。
+/// `thoughts`（推理）计入输出并另单独保留为 reasoning；`tool` 计入输入。
 /// Gemini 日志不提供 cache creation，固定为 0。
 fn extract_gemini_tokens(tokens: &serde_json::Value) -> Option<GeminiTokens> {
-    let input_total = tokens
-        .get("input")
-        .and_then(parse_u64_from_value)
-        .unwrap_or(0);
-    let output = tokens
-        .get("output")
-        .and_then(parse_u64_from_value)
-        .unwrap_or(0);
-    let cached = tokens
-        .get("cached")
-        .and_then(parse_u64_from_value)
-        .unwrap_or(0);
-    let thoughts = tokens
-        .get("thoughts")
-        .and_then(parse_u64_from_value)
-        .unwrap_or(0);
-    let tool = tokens
-        .get("tool")
-        .and_then(parse_u64_from_value)
-        .unwrap_or(0);
+    let input_total = extract_gemini_token_value(
+        tokens,
+        &[
+            "input",
+            "prompt",
+            "input_tokens",
+            "prompt_tokens",
+            "promptTokenCount",
+        ],
+    )
+    .unwrap_or(0);
+    let output = extract_gemini_token_value(
+        tokens,
+        &[
+            "output",
+            "candidates",
+            "output_tokens",
+            "completion_tokens",
+            "candidatesTokenCount",
+        ],
+    )
+    .unwrap_or(0);
+    let cached = extract_gemini_token_value(
+        tokens,
+        &["cached", "cached_tokens", "cachedContentTokenCount"],
+    )
+    .unwrap_or(0);
+    let thoughts = extract_gemini_token_value(
+        tokens,
+        &[
+            "thoughts",
+            "reasoning",
+            "thoughts_tokens",
+            "reasoning_tokens",
+            "thoughtsTokenCount",
+        ],
+    )
+    .unwrap_or(0);
+    let tool =
+        extract_gemini_token_value(tokens, &["tool", "tool_tokens", "toolUsePromptTokenCount"])
+            .unwrap_or(0);
+    let total = extract_gemini_token_value(tokens, &["total", "totalTokenCount", "total_tokens"]);
 
     if input_total == 0 && output == 0 && cached == 0 && thoughts == 0 && tool == 0 {
         return None;
     }
 
-    let cache_read = cached.min(input_total);
+    let total_without_cache = input_total + output + thoughts + tool;
+    let cache_is_in_input = total.is_none_or(|total| total == total_without_cache);
+    let cache_read = if cache_is_in_input {
+        cached.min(input_total)
+    } else {
+        cached
+    };
     Some(GeminiTokens {
-        input: input_total.saturating_sub(cache_read),
-        output: output + thoughts + tool,
+        input: input_total.saturating_sub(if cache_is_in_input { cache_read } else { 0 }) + tool,
+        output: output + thoughts,
         reasoning: thoughts,
         cache_create: 0,
         cache_read,
     })
+}
+
+fn extract_gemini_token_value(tokens: &serde_json::Value, keys: &[&str]) -> Option<u64> {
+    keys.iter()
+        .find_map(|key| tokens.get(*key).and_then(parse_u64_from_value))
 }
 
 fn normalize_gemini_model(raw: &str) -> String {
@@ -455,7 +529,19 @@ fn extract_gemini_user_text(message: &serde_json::Value) -> Option<String> {
                 return Some(trimmed.to_string());
             }
         }
-        if let Some(items) = message.get(key).and_then(|value| value.as_array()) {
+        let Some(value) = message.get(key) else {
+            continue;
+        };
+        if let Some(text) = value
+            .as_object()
+            .and_then(|part| part.get("text"))
+            .and_then(|text| text.as_str())
+        {
+            if !text.trim().is_empty() {
+                return Some(text.trim().to_string());
+            }
+        }
+        if let Some(items) = value.as_array() {
             let mut parts = Vec::new();
             for item in items {
                 if let Some(text) = item.as_str() {
@@ -619,11 +705,48 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_gemini_jsonl_and_normalizes_token_breakdown() {
+        let temp = tempdir().unwrap();
+        let chats = temp.path().join("h").join("chats");
+        fs::create_dir_all(&chats).unwrap();
+        let session_path = chats.join("8a8b-session.jsonl");
+        fs::write(
+            &session_path,
+            concat!(
+                "{\"sessionId\":\"canonical-id\",\"startTime\":\"2026-05-01T00:00:00Z\"}\n",
+                "{\"type\":\"user\",\"id\":\"u1\",\"timestamp\":\"2026-05-01T00:00:01Z\",\"content\":{\"text\":\"Look at this file\"}}\n",
+                "{\"type\":\"gemini\",\"id\":\"g1\",\"timestamp\":\"2026-05-01T00:00:02Z\",\"model\":\"gemini-2.5-pro\",\"tokens\":{\"input\":20,\"output\":2,\"thoughts\":3,\"cached\":5,\"tool\":4,\"total\":29}}\n",
+                "{\"type\":\"gemini\",\"id\":\"g2\",\"timestamp\":\"2026-05-01T00:00:03Z\",\"model\":\"gemini-2.5-pro\",\"tokens\":{\"promptTokenCount\":20,\"candidatesTokenCount\":2,\"thoughtsTokenCount\":3,\"cachedContentTokenCount\":5,\"toolUsePromptTokenCount\":4,\"totalTokenCount\":34}}\n",
+                "{\"type\":\"gemini\",\"id\":\"partial"
+            ),
+        )
+        .unwrap();
+
+        let path = session_path.to_string_lossy().to_string();
+        let session = make_gemini_session("gemini::8a8b-session", path);
+        let (meta, requests) = parse_gemini_session_file(&session);
+
+        assert_eq!(meta.topic.as_deref(), Some("Look at this file"));
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].input_tokens, 19);
+        assert_eq!(requests[0].cache_read_tokens, 5);
+        assert_eq!(requests[0].output_tokens, 5);
+        assert_eq!(requests[0].reasoning_tokens, 3);
+        assert_eq!(requests[0].total_tokens, 29);
+        assert_eq!(requests[1].input_tokens, 24);
+        assert_eq!(requests[1].cache_read_tokens, 5);
+        assert_eq!(requests[1].output_tokens, 5);
+        assert_eq!(requests[1].total_tokens, 34);
+    }
+
+    #[test]
     fn test_collect_gemini_session_files_derives_id_from_filename() {
         let temp = tempdir().unwrap();
         let chats = temp.path().join("phash").join("chats");
         fs::create_dir_all(&chats).unwrap();
         let session_path = chats.join("session-xyz.json");
+        let uuid_json_path = chats.join("8a8b-session.json");
+        let jsonl_path = chats.join("session-jsonl.jsonl");
         {
             let mut file = fs::File::create(&session_path).unwrap();
             write!(
@@ -633,10 +756,18 @@ mod tests {
             )
             .unwrap();
         }
+        fs::write(&uuid_json_path, r#"{"messages":[]}"#).unwrap();
+        fs::write(&jsonl_path, "{\"sessionId\":\"jsonl\"}\n").unwrap();
 
         let sessions = collect_gemini_session_files(temp.path());
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].session_id, "gemini::xyz");
-        assert_eq!(sessions[0].tool, "gemini");
+        assert_eq!(sessions.len(), 3);
+        let session_ids: BTreeSet<_> = sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect();
+        assert!(session_ids.contains("gemini::xyz"));
+        assert!(session_ids.contains("gemini::8a8b-session"));
+        assert!(session_ids.contains("gemini::jsonl"));
+        assert!(sessions.iter().all(|session| session.tool == "gemini"));
     }
 }
