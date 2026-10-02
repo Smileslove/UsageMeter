@@ -1,20 +1,20 @@
 //! GitHub Copilot CLI 本地会话读取模块
 //!
-//! 扫描 `~/.copilot/session-state/*/events.jsonl`，解析 Copilot CLI 的事件流。
-//! 这里优先使用 `session.shutdown` 作为会话总量真值；
-//! 若会话仍在进行中，则退化为使用 `assistant.message` 事件构造近似请求事实。
+//! 优先读取 Copilot CLI `session-store.db` 的逐请求用量；旧版本回退到
+//! `~/.copilot/session-state/*/events.jsonl` 的模型汇总和 assistant 输出事件。
 
 use super::constants::TOOL_COPILOT;
 use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
-use super::shared::{
-    extract_project_name, extract_timestamp, parse_u64_from_value, truncate_string,
-};
+use super::shared::{extract_project_name, extract_timestamp, parse_u64_from_value};
 use super::source::{ParsedSessionData, SessionSource, SourceSnapshot, SourceUpdateMode};
+use rusqlite::{params, Connection, OpenFlags};
 use serde_json::Value;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
+use std::path::Path;
+use std::time::{Duration, UNIX_EPOCH};
 
 const COPILOT_CLI_SOURCE_KIND: &str = "copilot_cli_session";
 
@@ -42,7 +42,11 @@ impl SessionSource for CopilotCliSource {
     }
 
     fn parse(&self, session: &SessionFile) -> Result<ParsedSessionData, String> {
-        let (meta, requests) = parse_copilot_cli_session(session);
+        let (meta, requests) = if session.file_path.contains("#store:") {
+            parse_copilot_store_session(session)
+        } else {
+            parse_copilot_cli_session(session)
+        };
         Ok(ParsedSessionData { meta, requests })
     }
 }
@@ -81,6 +85,14 @@ fn collect_copilot_cli_session_files() -> Vec<SessionFile> {
             continue;
         }
 
+        let producer = read_copilot_session_producer(&events_path);
+        if producer
+            .as_deref()
+            .is_some_and(|producer| !is_copilot_cli_producer(producer))
+        {
+            continue;
+        }
+
         let metadata = fs::metadata(&events_path).ok();
         let file_size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
         if file_size == 0 {
@@ -115,8 +127,125 @@ fn collect_copilot_cli_session_files() -> Vec<SessionFile> {
         });
     }
 
+    let cli_session_ids = sessions
+        .iter()
+        .filter_map(|session| {
+            let path = Path::new(&session.file_path);
+            read_copilot_session_producer(path)
+                .filter(|producer| is_copilot_cli_producer(producer))
+                .map(|_| session.project_path.clone())
+        })
+        .collect::<HashSet<_>>();
+    let store_path = root
+        .parent()
+        .map(|copilot_home| copilot_home.join("session-store.db"));
+    if let Some(store_path) = store_path {
+        let store_sessions = collect_copilot_store_session_files(&store_path, &cli_session_ids);
+        let store_ids = store_sessions
+            .iter()
+            .map(|session| session.project_path.as_str())
+            .collect::<HashSet<_>>();
+        sessions.retain(|session| !store_ids.contains(session.project_path.as_str()));
+        sessions.extend(store_sessions);
+    }
+
     sessions.sort_by_key(|session| std::cmp::Reverse(session.last_modified));
     sessions
+}
+
+fn is_copilot_cli_producer(producer: &str) -> bool {
+    let producer = producer.trim().to_ascii_lowercase();
+    producer.starts_with("copilot-agent") || producer.starts_with("copilot-cli")
+}
+
+fn read_copilot_session_producer(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(event) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if event.get("type").and_then(Value::as_str) != Some("session.start") {
+            continue;
+        }
+        return event
+            .get("data")
+            .and_then(|data| data.get("producer"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+    }
+    None
+}
+
+fn open_copilot_store(path: &Path) -> rusqlite::Result<Connection> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(Duration::from_millis(500))?;
+    Ok(conn)
+}
+
+fn has_copilot_usage_store(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='assistant_usage_events')",
+        [],
+        |row| row.get(0),
+    )
+    .unwrap_or(false)
+}
+
+fn collect_copilot_store_session_files(
+    path: &Path,
+    cli_session_ids: &HashSet<String>,
+) -> Vec<SessionFile> {
+    if cli_session_ids.is_empty() || !path.is_file() {
+        return Vec::new();
+    }
+    let Ok(conn) = open_copilot_store(path) else {
+        return Vec::new();
+    };
+    if !has_copilot_usage_store(&conn) {
+        return Vec::new();
+    }
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT DISTINCT session_id FROM assistant_usage_events WHERE session_id IS NOT NULL AND session_id != ''",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) else {
+        return Vec::new();
+    };
+    let Ok(metadata) = fs::metadata(path) else {
+        return Vec::new();
+    };
+    let file_size = metadata.len();
+    let last_modified = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    let file_path = path.to_string_lossy().to_string();
+    rows.filter_map(Result::ok)
+        .filter(|session_id| cli_session_ids.contains(session_id))
+        .map(|session_id| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            file_path.hash(&mut hasher);
+            session_id.hash(&mut hasher);
+            file_size.hash(&mut hasher);
+            last_modified.hash(&mut hasher);
+            SessionFile {
+                session_id: format!("copilot_cli::{session_id}"),
+                tool: TOOL_COPILOT.to_string(),
+                project_path: session_id.clone(),
+                file_path: format!("{file_path}#store:{session_id}"),
+                transcript_paths: vec![file_path.clone()],
+                file_size,
+                last_modified,
+                fingerprint: hasher.finish(),
+            }
+        })
+        .collect()
 }
 
 #[derive(Default)]
@@ -185,8 +314,6 @@ fn parse_copilot_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRe
     };
 
     let mut cwd_found: Option<String> = None;
-    let mut first_user_message: Option<String> = None;
-    let mut last_user_message: Option<String> = None;
     let mut models_set: BTreeSet<String> = BTreeSet::new();
     let mut earliest_timestamp: Option<i64> = None;
     let mut latest_timestamp: Option<i64> = None;
@@ -241,17 +368,7 @@ fn parse_copilot_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRe
                         .or(event_timestamp);
                 }
             }
-            "user.message" => {
-                if let Some(text) = data.get("content").and_then(|value| value.as_str()) {
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty() {
-                        if first_user_message.is_none() {
-                            first_user_message = Some(trimmed.to_string());
-                        }
-                        last_user_message = Some(trimmed.to_string());
-                    }
-                }
-            }
+            "user.message" => {}
             "assistant.message" => {
                 let output_tokens = data
                     .get("outputTokens")
@@ -309,32 +426,42 @@ fn parse_copilot_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRe
                             .and_then(|value| value.get("count"))
                             .and_then(parse_u64_from_value)
                             .unwrap_or(0);
+                        let input_raw = usage
+                            .get("inputTokens")
+                            .and_then(parse_u64_from_value)
+                            .unwrap_or(0);
+                        let cache_read_tokens = usage
+                            .get("cacheReadTokens")
+                            .and_then(parse_u64_from_value)
+                            .unwrap_or(0)
+                            .min(input_raw);
+                        let cache_create_tokens = usage
+                            .get("cacheWriteTokens")
+                            .and_then(parse_u64_from_value)
+                            .unwrap_or(0)
+                            .min(input_raw.saturating_sub(cache_read_tokens));
+                        let output_tokens = usage
+                            .get("outputTokens")
+                            .and_then(parse_u64_from_value)
+                            .unwrap_or(0);
                         let summary = ModelSummary {
                             request_count: requests,
-                            input_tokens: usage
-                                .get("inputTokens")
-                                .and_then(parse_u64_from_value)
-                                .unwrap_or(0),
-                            output_tokens: usage
-                                .get("outputTokens")
-                                .and_then(parse_u64_from_value)
-                                .unwrap_or(0),
-                            cache_read_tokens: usage
-                                .get("cacheReadTokens")
-                                .and_then(parse_u64_from_value)
-                                .unwrap_or(0),
-                            cache_create_tokens: usage
-                                .get("cacheWriteTokens")
-                                .and_then(parse_u64_from_value)
-                                .unwrap_or(0),
+                            input_tokens: input_raw
+                                .saturating_sub(cache_read_tokens)
+                                .saturating_sub(cache_create_tokens),
+                            output_tokens,
+                            cache_read_tokens,
+                            cache_create_tokens,
                             reasoning_tokens: usage
                                 .get("reasoningTokens")
                                 .and_then(parse_u64_from_value)
-                                .unwrap_or(0),
+                                .unwrap_or(0)
+                                .min(output_tokens),
                         };
                         if summary.request_count > 0
                             || summary.input_tokens > 0
                             || summary.output_tokens > 0
+                            || summary.reasoning_tokens > 0
                             || summary.cache_read_tokens > 0
                             || summary.cache_create_tokens > 0
                         {
@@ -371,6 +498,11 @@ fn parse_copilot_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRe
                         .and_then(|value| value.get("tokenCount"))
                         .and_then(parse_u64_from_value)
                         .unwrap_or(0);
+                    shutdown.cache_create_tokens = token_details
+                        .get("cache_write")
+                        .and_then(|value| value.get("tokenCount"))
+                        .and_then(parse_u64_from_value)
+                        .unwrap_or(0);
                 }
             }
             _ => {}
@@ -379,12 +511,6 @@ fn parse_copilot_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRe
 
     meta.cwd = cwd_found.clone();
     meta.project_name = cwd_found.as_deref().and_then(extract_project_name);
-    meta.topic = first_user_message
-        .as_deref()
-        .map(|value| truncate_string(value, 50));
-    meta.last_prompt = last_user_message
-        .as_deref()
-        .map(|value| truncate_string(value, 100));
     meta.start_time = shutdown
         .start_time
         .or(earliest_timestamp)
@@ -394,24 +520,21 @@ fn parse_copilot_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRe
         .or(latest_timestamp)
         .unwrap_or(session.last_modified);
 
-    let mut requests = if shutdown.request_count > 0 {
+    let shutdown_has_usage = shutdown.input_tokens > 0
+        || shutdown.output_tokens > 0
+        || shutdown.cache_read_tokens > 0
+        || shutdown.cache_create_tokens > 0;
+    let requests = if shutdown.request_count > 0 || shutdown_has_usage {
         build_requests_from_shutdown(session, &assistant_events, &shutdown)
     } else {
         build_requests_from_assistant_events(session, &assistant_events)
     };
 
-    if requests.is_empty() && shutdown.request_count == 0 && !assistant_events.is_empty() {
-        requests = build_requests_from_assistant_events(session, &assistant_events);
-    }
-
-    if shutdown.input_tokens > 0
-        || shutdown.output_tokens > 0
-        || shutdown.cache_read_tokens > 0
-        || shutdown.cache_create_tokens > 0
-    {
+    if shutdown_has_usage {
         meta.total_input_tokens = shutdown.input_tokens;
         meta.total_output_tokens = shutdown.output_tokens;
         meta.total_cache_read_tokens = shutdown.cache_read_tokens;
+        meta.total_reasoning_tokens = shutdown.reasoning_tokens;
         meta.total_cache_create_tokens = shutdown.cache_create_tokens;
     } else {
         for request in &requests {
@@ -423,7 +546,7 @@ fn parse_copilot_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRe
     }
 
     if shutdown.request_count > 0 {
-        meta.message_count = shutdown.request_count.max(requests.len() as u64);
+        meta.message_count = shutdown.request_count;
     } else {
         meta.message_count = requests.len() as u64;
     }
@@ -443,67 +566,90 @@ fn parse_copilot_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRe
     (meta, requests)
 }
 
-fn build_requests_from_shutdown(
-    session: &SessionFile,
-    assistant_events: &[AssistantEvent],
-    shutdown: &ShutdownSummary,
-) -> Vec<LocalRequestRecord> {
-    let request_count = shutdown.request_count.max(assistant_events.len() as u64);
-    if request_count == 0 {
-        return Vec::new();
+fn parse_copilot_store_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRequestRecord>) {
+    let Some((db_path, session_id)) = session.file_path.split_once("#store:") else {
+        return (SessionMeta::default(), Vec::new());
+    };
+    let Ok(conn) = open_copilot_store(Path::new(db_path)) else {
+        return (SessionMeta::default(), Vec::new());
+    };
+    if !has_copilot_usage_store(&conn) {
+        return (SessionMeta::default(), Vec::new());
     }
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id, model, input_tokens, output_tokens, cache_read_tokens,
+                cache_write_tokens, reasoning_tokens, token_details_json, created_at
+         FROM assistant_usage_events
+         WHERE session_id = ?1
+         ORDER BY created_at ASC, id ASC",
+    ) else {
+        return (SessionMeta::default(), Vec::new());
+    };
+    let Ok(rows) = stmt.query_map(params![session_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+            row.get::<_, Option<i64>>(5)?,
+            row.get::<_, Option<i64>>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, Option<String>>(8)?,
+        ))
+    }) else {
+        return (SessionMeta::default(), Vec::new());
+    };
 
-    let event_count = request_count as usize;
-    let timestamps = distribute_timestamps(
-        shutdown.start_time.unwrap_or(session.last_modified),
-        shutdown.end_time.unwrap_or(session.last_modified),
-        event_count,
-    );
-    let input_parts = distribute_u64(shutdown.input_tokens, event_count);
-    let output_parts = distribute_u64(shutdown.output_tokens, event_count);
-    let cache_read_parts = distribute_u64(shutdown.cache_read_tokens, event_count);
-    let cache_create_parts = distribute_u64(shutdown.cache_create_tokens, event_count);
-    let reasoning_parts = distribute_u64(shutdown.reasoning_tokens, event_count);
-
-    let model_sequence = build_model_sequence(&shutdown.model_metrics, event_count);
-    let mut requests = Vec::with_capacity(event_count);
-
-    for idx in 0..event_count {
-        let maybe_event = assistant_events.get(idx);
-        let message_id = maybe_event
-            .map(|event| event.message_id.clone())
-            .unwrap_or_else(|| format!("copilot_cli_shutdown_{}_{idx}", session.session_id));
-        let timestamp = maybe_event
-            .map(|event| event.timestamp)
-            .unwrap_or(timestamps[idx]);
-        let model = maybe_event
-            .map(|event| event.model.clone())
-            .filter(|value| !value.trim().is_empty() && value != "unknown")
-            .unwrap_or_else(|| model_sequence[idx].clone());
-        let output_tokens = if maybe_event.is_some() && shutdown.output_tokens > 0 {
-            output_parts[idx]
-        } else {
-            maybe_event
-                .map(|event| event.output_tokens)
-                .filter(|value| *value > 0)
-                .unwrap_or(output_parts[idx])
-        };
-        let input_tokens = input_parts[idx];
-        let cache_create_tokens = cache_create_parts[idx];
-        let cache_read_tokens = cache_read_parts[idx];
-        let reasoning_tokens = reasoning_parts[idx];
-        let total_tokens = input_tokens + output_tokens + cache_create_tokens + cache_read_tokens;
-
+    let mut requests = Vec::new();
+    let mut models = BTreeSet::new();
+    for row in rows.flatten() {
+        let (
+            id,
+            model,
+            raw_input,
+            raw_output,
+            raw_cache_read,
+            raw_cache_write,
+            raw_reasoning,
+            details,
+            created_at,
+        ) = row;
+        let input_raw = nonnegative(raw_input);
+        let output = nonnegative(raw_output);
+        let cache_read_raw = nonnegative(raw_cache_read);
+        let cache_write_raw = nonnegative(raw_cache_write);
+        let (input, cache_read, cache_write) = normalize_copilot_store_input(
+            input_raw,
+            cache_read_raw,
+            cache_write_raw,
+            details.as_deref(),
+        );
+        let reasoning = nonnegative(raw_reasoning).min(output);
+        let timestamp = created_at
+            .as_deref()
+            .and_then(parse_copilot_timestamp)
+            .unwrap_or(session.last_modified);
+        let model = model
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .unwrap_or("unknown")
+            .to_string();
+        if model != "unknown" {
+            models.insert(model.clone());
+        }
+        let total_tokens = input + cache_read + cache_write + output;
         requests.push(LocalRequestRecord {
             session_id: session.session_id.clone(),
             tool: TOOL_COPILOT.to_string(),
             timestamp,
-            message_id,
-            input_tokens,
-            output_tokens,
-            reasoning_tokens,
-            cache_create_tokens,
-            cache_read_tokens,
+            message_id: format!("copilot_store_{id}"),
+            input_tokens: input,
+            output_tokens: output,
+            reasoning_tokens: reasoning,
+            cache_create_tokens: cache_write,
+            cache_read_tokens: cache_read,
             total_tokens,
             request_count: 1,
             model,
@@ -514,8 +660,250 @@ fn build_requests_from_shutdown(
         });
     }
 
-    requests.sort_by_key(|request| request.timestamp);
-    requests
+    let total_input_tokens = requests.iter().map(|request| request.input_tokens).sum();
+    let total_output_tokens = requests.iter().map(|request| request.output_tokens).sum();
+    let total_cache_create_tokens = requests
+        .iter()
+        .map(|request| request.cache_create_tokens)
+        .sum();
+    let total_cache_read_tokens = requests
+        .iter()
+        .map(|request| request.cache_read_tokens)
+        .sum();
+    let total_reasoning_tokens = requests
+        .iter()
+        .map(|request| request.reasoning_tokens)
+        .sum();
+    let cwd = read_copilot_store_session_cwd(Path::new(db_path), session_id);
+    let start_time = requests
+        .iter()
+        .map(|request| request.timestamp)
+        .min()
+        .unwrap_or(session.last_modified);
+    let end_time = requests
+        .iter()
+        .map(|request| request.timestamp)
+        .max()
+        .unwrap_or(session.last_modified);
+    let meta = SessionMeta {
+        session_id: session.session_id.clone(),
+        tool: TOOL_COPILOT.to_string(),
+        cwd: cwd.clone(),
+        project_name: cwd.as_deref().and_then(extract_project_name),
+        topic: None,
+        last_prompt: None,
+        session_name: None,
+        file_path: db_path.to_string(),
+        file_size: session.file_size,
+        last_modified: session.last_modified.max(end_time),
+        total_input_tokens,
+        total_output_tokens,
+        total_cache_create_tokens,
+        total_cache_read_tokens,
+        total_reasoning_tokens,
+        models: models.into_iter().collect(),
+        message_count: requests.len() as u64,
+        start_time,
+        end_time,
+        source: "copilot_cli_session_store".to_string(),
+        message_ids: requests
+            .iter()
+            .map(|request| request.message_id.clone())
+            .collect(),
+        ..Default::default()
+    };
+    (meta, requests)
+}
+
+fn read_copilot_store_session_cwd(db_path: &Path, session_id: &str) -> Option<String> {
+    let events_path = db_path
+        .parent()?
+        .join("session-state")
+        .join(session_id)
+        .join("events.jsonl");
+    let file = fs::File::open(events_path).ok()?;
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let Ok(event) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if event.get("type").and_then(Value::as_str) != Some("session.start") {
+            continue;
+        }
+        return event
+            .get("data")
+            .and_then(|data| data.get("context"))
+            .and_then(|context| context.get("cwd"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+    }
+    None
+}
+
+fn nonnegative(value: Option<i64>) -> u64 {
+    value.unwrap_or(0).max(0) as u64
+}
+
+fn normalize_copilot_store_input(
+    input_raw: u64,
+    cache_read_raw: u64,
+    cache_write_raw: u64,
+    token_details: Option<&str>,
+) -> (u64, u64, u64) {
+    if let Some((input, cache_read, cache_write)) = token_details
+        .and_then(parse_copilot_store_token_details)
+        .filter(|(input, cache_read, cache_write)| {
+            input
+                .saturating_add(*cache_read)
+                .saturating_add(*cache_write)
+                == input_raw
+        })
+    {
+        return (input, cache_read, cache_write);
+    }
+    let cache_read = cache_read_raw.min(input_raw);
+    let cache_write = cache_write_raw.min(input_raw.saturating_sub(cache_read));
+    (
+        input_raw
+            .saturating_sub(cache_read)
+            .saturating_sub(cache_write),
+        cache_read,
+        cache_write,
+    )
+}
+
+fn parse_copilot_store_token_details(raw: &str) -> Option<(u64, u64, u64)> {
+    let entries = serde_json::from_str::<Value>(raw).ok()?;
+    let entries = entries.as_array()?;
+    let mut input = 0u64;
+    let mut cache_read = 0u64;
+    let mut cache_write = 0u64;
+    let mut found = false;
+    for entry in entries {
+        let count = entry
+            .get("tokenCount")
+            .and_then(parse_u64_from_value)
+            .unwrap_or(0);
+        match entry.get("tokenType").and_then(Value::as_str) {
+            Some("input") => {
+                input = input.saturating_add(count);
+                found = true;
+            }
+            Some("cache_read") => {
+                cache_read = cache_read.saturating_add(count);
+                found = true;
+            }
+            Some("cache_write") => {
+                cache_write = cache_write.saturating_add(count);
+                found = true;
+            }
+            _ => {}
+        }
+    }
+    found.then_some((input, cache_read, cache_write))
+}
+
+fn parse_copilot_timestamp(raw: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|timestamp| timestamp.timestamp())
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S")
+                .ok()
+                .map(|timestamp| timestamp.and_utc().timestamp())
+        })
+}
+
+fn build_requests_from_shutdown(
+    session: &SessionFile,
+    assistant_events: &[AssistantEvent],
+    shutdown: &ShutdownSummary,
+) -> Vec<LocalRequestRecord> {
+    let timestamp = shutdown.end_time.unwrap_or(session.last_modified);
+    let mut summaries: Vec<(&str, &ModelSummary)> = shutdown
+        .model_metrics
+        .iter()
+        .map(|(model, summary)| (model.as_str(), summary))
+        .collect();
+    summaries.sort_by(|left, right| left.0.cmp(right.0));
+
+    if summaries.is_empty() {
+        if shutdown.input_tokens == 0
+            && shutdown.output_tokens == 0
+            && shutdown.cache_read_tokens == 0
+            && shutdown.cache_create_tokens == 0
+        {
+            return build_requests_from_assistant_events(session, assistant_events);
+        }
+        let model = shutdown
+            .current_model
+            .as_deref()
+            .filter(|model| !model.trim().is_empty())
+            .unwrap_or("unknown");
+        return vec![build_shutdown_summary_request(
+            session,
+            model,
+            shutdown.request_count,
+            shutdown.input_tokens,
+            shutdown.output_tokens,
+            shutdown.cache_read_tokens,
+            shutdown.cache_create_tokens,
+            shutdown.reasoning_tokens,
+            timestamp,
+        )];
+    }
+
+    summaries
+        .into_iter()
+        .map(|(model, summary)| {
+            build_shutdown_summary_request(
+                session,
+                model,
+                summary.request_count,
+                summary.input_tokens,
+                summary.output_tokens,
+                summary.cache_read_tokens,
+                summary.cache_create_tokens,
+                summary.reasoning_tokens,
+                timestamp,
+            )
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_shutdown_summary_request(
+    session: &SessionFile,
+    model: &str,
+    request_count: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_create_tokens: u64,
+    reasoning_tokens: u64,
+    timestamp: i64,
+) -> LocalRequestRecord {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    session.session_id.hash(&mut hasher);
+    model.hash(&mut hasher);
+    let message_id = format!("copilot_cli_summary_{:016x}", hasher.finish());
+    LocalRequestRecord {
+        session_id: session.session_id.clone(),
+        tool: TOOL_COPILOT.to_string(),
+        timestamp,
+        message_id,
+        input_tokens,
+        output_tokens,
+        reasoning_tokens,
+        cache_create_tokens,
+        cache_read_tokens,
+        total_tokens: input_tokens + output_tokens + cache_create_tokens + cache_read_tokens,
+        request_count,
+        model: model.to_string(),
+        is_subagent: false,
+        request_key: None,
+        explicit_estimated_cost: None,
+        source_file_present: None,
+    }
 }
 
 fn build_requests_from_assistant_events(
@@ -542,59 +930,6 @@ fn build_requests_from_assistant_events(
             explicit_estimated_cost: None,
             source_file_present: None,
         })
-        .collect()
-}
-
-fn build_model_sequence(
-    model_metrics: &HashMap<String, ModelSummary>,
-    count: usize,
-) -> Vec<String> {
-    let mut sequence = Vec::new();
-    let mut models: Vec<(&String, &ModelSummary)> = model_metrics.iter().collect();
-    models.sort_by(|a, b| a.0.cmp(b.0));
-    for (model_name, summary) in models {
-        let repeats = summary.request_count.max(1) as usize;
-        for _ in 0..repeats {
-            sequence.push(model_name.clone());
-        }
-    }
-    if sequence.is_empty() {
-        sequence.push("unknown".to_string());
-    }
-    while sequence.len() < count {
-        let fallback = sequence
-            .last()
-            .cloned()
-            .unwrap_or_else(|| "unknown".to_string());
-        sequence.push(fallback);
-    }
-    sequence.truncate(count);
-    sequence
-}
-
-fn distribute_u64(total: u64, buckets: usize) -> Vec<u64> {
-    if buckets == 0 {
-        return Vec::new();
-    }
-    let base = total / buckets as u64;
-    let remainder = (total % buckets as u64) as usize;
-    let mut result = vec![base; buckets];
-    for item in result.iter_mut().take(remainder) {
-        *item += 1;
-    }
-    result
-}
-
-fn distribute_timestamps(start: i64, end: i64, buckets: usize) -> Vec<i64> {
-    if buckets == 0 {
-        return Vec::new();
-    }
-    if buckets == 1 || end <= start {
-        return vec![end.max(start); buckets];
-    }
-    let span = end - start;
-    (0..buckets)
-        .map(|index| start + ((span * index as i64) / (buckets as i64 - 1)))
         .collect()
 }
 
@@ -697,20 +1032,87 @@ mod tests {
 
         let (meta, requests) = parse_copilot_cli_session(&session);
         assert_eq!(meta.project_name.as_deref(), Some("project-a"));
-        assert_eq!(meta.topic.as_deref(), Some("Help me fix this bug"));
-        assert_eq!(meta.total_input_tokens, 120);
+        assert_eq!(meta.topic, None);
+        assert_eq!(meta.last_prompt, None);
+        assert_eq!(meta.total_input_tokens, 90);
         assert_eq!(meta.total_output_tokens, 60);
         assert_eq!(meta.total_cache_read_tokens, 30);
+        assert_eq!(meta.total_reasoning_tokens, 10);
         assert_eq!(meta.message_count, 2);
-        assert_eq!(requests.len(), 2);
-        assert_eq!(
-            requests
-                .iter()
-                .map(|request| request.total_tokens)
-                .sum::<u64>(),
-            210
-        );
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].request_count, 2);
+        assert_eq!(requests[0].input_tokens, 90);
+        assert_eq!(requests[0].cache_read_tokens, 30);
+        assert_eq!(requests[0].total_tokens, 180);
         assert_eq!(requests[0].model, "gpt-5-mini");
+    }
+
+    #[test]
+    fn parse_copilot_store_session_preserves_per_request_token_details() {
+        let temp = tempdir().unwrap();
+        let copilot_home = temp.path().join(".copilot");
+        let db_path = copilot_home.join("session-store.db");
+        let events_dir = copilot_home.join("session-state").join("session-1");
+        fs::create_dir_all(&events_dir).unwrap();
+        fs::write(
+            events_dir.join("events.jsonl"),
+            "{\"type\":\"session.start\",\"data\":{\"context\":{\"cwd\":\"/Users/test/project-a\"}}}\n",
+        )
+        .unwrap();
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE assistant_usage_events (
+                id INTEGER PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_read_tokens INTEGER,
+                cache_write_tokens INTEGER,
+                reasoning_tokens INTEGER,
+                token_details_json TEXT,
+                created_at TEXT
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO assistant_usage_events VALUES (
+                1, 'session-1', 'gpt-5-mini', 120, 60, 30, 0, 10,
+                ?1, '2026-06-12T12:00:10Z'
+            )",
+            [r#"[{"tokenType":"input","tokenCount":90},{"tokenType":"cache_read","tokenCount":30},{"tokenType":"output","tokenCount":60}]"#],
+        )
+        .unwrap();
+        drop(conn);
+
+        let db_file = db_path.to_string_lossy();
+        let session = SessionFile {
+            session_id: "copilot_cli::session-1".to_string(),
+            tool: TOOL_COPILOT.to_string(),
+            project_path: "session-1".to_string(),
+            file_path: format!("{db_file}#store:session-1"),
+            transcript_paths: vec![db_file.to_string()],
+            file_size: fs::metadata(&db_path).unwrap().len(),
+            last_modified: 1_781_265_900,
+            fingerprint: 1,
+        };
+        let (meta, requests) = parse_copilot_store_session(&session);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].input_tokens, 90);
+        assert_eq!(requests[0].cache_read_tokens, 30);
+        assert_eq!(requests[0].output_tokens, 60);
+        assert_eq!(requests[0].reasoning_tokens, 10);
+        assert_eq!(requests[0].total_tokens, 180);
+        assert_eq!(meta.total_reasoning_tokens, 10);
+        assert_eq!(meta.cwd.as_deref(), Some("/Users/test/project-a"));
+        assert_eq!(meta.project_name.as_deref(), Some("project-a"));
+    }
+
+    #[test]
+    fn copilot_producer_filter_excludes_non_cli_clients() {
+        assert!(is_copilot_cli_producer("copilot-agent"));
+        assert!(is_copilot_cli_producer("copilot-cli"));
+        assert!(!is_copilot_cli_producer("copilot-chat"));
     }
 
     #[test]
