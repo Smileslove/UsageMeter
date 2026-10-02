@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const QODER_CLI_SOURCE_KIND: &str = "qoder_cli_jsonl";
 
@@ -51,15 +51,24 @@ fn collect_qoder_cli_session_files() -> Vec<SessionFile> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
-    let projects_root = home.join(".qoder").join("projects");
-    if !projects_root.exists() {
-        return Vec::new();
+    let mut sessions = Vec::new();
+    for (root_name, projects_root) in [
+        ("qoder", home.join(".qoder").join("projects")),
+        ("qoder-cn", home.join(".qoder-cn").join("projects")),
+    ] {
+        sessions.extend(collect_qoder_cli_sessions_from_root(
+            &projects_root,
+            root_name,
+        ));
     }
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.last_modified));
+    sessions
+}
 
-    let Ok(project_entries) = fs::read_dir(&projects_root) else {
+fn collect_qoder_cli_sessions_from_root(projects_root: &Path, root_name: &str) -> Vec<SessionFile> {
+    let Ok(project_entries) = fs::read_dir(projects_root) else {
         return Vec::new();
     };
-
     let mut sessions = Vec::new();
     for entry in project_entries.flatten() {
         let project_dir = entry.path();
@@ -75,16 +84,7 @@ fn collect_qoder_cli_session_files() -> Vec<SessionFile> {
             continue;
         }
 
-        let transcript_dir = project_dir.join("transcript");
-        if !transcript_dir.exists() {
-            continue;
-        }
-        let Ok(transcript_entries) = fs::read_dir(&transcript_dir) else {
-            continue;
-        };
-
-        for t_entry in transcript_entries.flatten() {
-            let jsonl_path = t_entry.path();
+        for jsonl_path in collect_qoder_cli_jsonl_files(&project_dir) {
             if jsonl_path
                 .extension()
                 .and_then(|ext| ext.to_str())
@@ -118,7 +118,21 @@ fn collect_qoder_cli_session_files() -> Vec<SessionFile> {
                 continue;
             }
 
-            let session_id = format!("qoder_cli::{}::{}", encoded_cwd, session_stem);
+            let relative = jsonl_path.strip_prefix(&project_dir).unwrap_or(&jsonl_path);
+            let relative_key = relative
+                .with_extension("")
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "::");
+            let old_layout =
+                root_name == "qoder" && relative.parent() == Some(Path::new("transcript"));
+            let session_id = if old_layout {
+                format!("qoder_cli::{}::{}", encoded_cwd, session_stem)
+            } else {
+                format!(
+                    "qoder_cli::{}::{}::{}",
+                    root_name, encoded_cwd, relative_key
+                )
+            };
             let file_path_str = jsonl_path.to_string_lossy().to_string();
 
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -139,9 +153,32 @@ fn collect_qoder_cli_session_files() -> Vec<SessionFile> {
             });
         }
     }
-
-    sessions.sort_by_key(|s| std::cmp::Reverse(s.last_modified));
     sessions
+}
+
+fn collect_qoder_cli_jsonl_files(project_dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![project_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("jsonl"))
+                == Some(true)
+            {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
 }
 
 fn parse_qoder_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRequestRecord>) {
@@ -188,7 +225,7 @@ fn parse_qoder_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRequ
         std::collections::HashMap::new();
 
     let reader = BufReader::new(file_handle);
-    for line in reader.lines().map_while(Result::ok) {
+    for (line_idx, line) in reader.lines().map_while(Result::ok).enumerate() {
         let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
@@ -223,7 +260,7 @@ fn parse_qoder_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRequ
                 models_set.insert(model);
             }
 
-            let Some(record) = extract_cli_request_record(&json, session) else {
+            let Some(record) = extract_cli_request_record(&json, session, line_idx as u64) else {
                 continue;
             };
             let key = record.message_id.clone();
@@ -270,6 +307,7 @@ fn parse_qoder_cli_session(session: &SessionFile) -> (SessionMeta, Vec<LocalRequ
 fn extract_cli_request_record(
     json: &serde_json::Value,
     session: &SessionFile,
+    line_idx: u64,
 ) -> Option<LocalRequestRecord> {
     let usage = extract_cli_token_usage(json).unwrap_or_default();
     let total = usage.input + usage.output + usage.cache_create + usage.cache_read;
@@ -282,7 +320,7 @@ fn extract_cli_request_record(
         .map(|s| s.to_string())
         .unwrap_or_else(|| {
             let ts = extract_timestamp(json).unwrap_or(session.last_modified);
-            format!("cli_{}_{}", ts, total)
+            format!("cli_{}_{}_{}", ts, total, line_idx)
         });
 
     let timestamp = extract_timestamp(json).unwrap_or(session.last_modified);
@@ -541,11 +579,64 @@ mod tests {
     }
 
     #[test]
+    fn qoder_cli_missing_uuid_fallback_keeps_same_second_requests_distinct() {
+        let session = SessionFile {
+            session_id: "qoder_cli::qoder::project::session".to_string(),
+            tool: TOOL_QODER_CLI.to_string(),
+            project_path: "project".to_string(),
+            file_path: "/tmp/session.jsonl".to_string(),
+            transcript_paths: vec![],
+            file_size: 100,
+            last_modified: 1_781_000_000,
+            fingerprint: 1,
+        };
+        let event = serde_json::json!({
+            "type": "assistant",
+            "timestamp": "2026-06-11T03:01:10Z",
+            "message": {"usage": {"input_tokens": 10, "output_tokens": 5}}
+        });
+        let first = extract_cli_request_record(&event, &session, 2).unwrap();
+        let second = extract_cli_request_record(&event, &session, 3).unwrap();
+        assert_ne!(first.message_id, second.message_id);
+    }
+
+    #[test]
     fn decode_qoder_project_name_returns_last_segment() {
         assert_eq!(
             decode_qoder_project_name("-Users-test-myproject"),
             Some("myproject".to_string())
         );
         assert_eq!(decode_qoder_project_name(""), None);
+    }
+
+    #[test]
+    fn qoder_cli_scan_covers_legacy_nested_and_cn_layouts() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("projects");
+        let project = root.join("-Users-test-project");
+        let cn_root = temp.path().join("cn-projects");
+        let paths = [
+            project.join("transcript/legacy.jsonl"),
+            project.join("new.jsonl"),
+            cn_root.join("-Users-test-project/nested/child.jsonl"),
+        ];
+        for path in &paths {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, format!("{}\n", "x".repeat(60))).unwrap();
+        }
+
+        let intl = collect_qoder_cli_sessions_from_root(&root, "qoder");
+        let cn = collect_qoder_cli_sessions_from_root(&cn_root, "qoder-cn");
+        assert_eq!(intl.len(), 2);
+        assert_eq!(cn.len(), 1);
+        assert!(intl
+            .iter()
+            .any(|session| { session.session_id == "qoder_cli::-Users-test-project::legacy" }));
+        assert!(intl
+            .iter()
+            .any(|session| session.session_id.contains("::qoder::")));
+        assert!(cn
+            .iter()
+            .all(|session| session.session_id.contains("::qoder-cn::")));
     }
 }

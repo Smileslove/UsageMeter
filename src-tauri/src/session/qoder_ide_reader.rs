@@ -56,6 +56,7 @@ struct QoderSessionRow {
     project_uri: Option<String>,
     gmt_create_ms: i64,
     gmt_modified_ms: i64,
+    preferred_model_info: Option<String>,
 }
 
 impl QoderIdeSource {
@@ -168,16 +169,24 @@ pub(crate) fn scan_qoder_ide_sessions_for(
         }
     };
 
-    let mut stmt = match conn.prepare(
+    let preferred_model_sql = if qoder_db_has_column(&conn, "chat_session", "preferred_model_info")
+    {
+        "preferred_model_info"
+    } else {
+        "NULL"
+    };
+    let session_sql = format!(
         "SELECT session_id,
                 COALESCE(session_title, ''),
                 project_name,
                 project_uri,
                 COALESCE(gmt_create, 0),
-                COALESCE(gmt_modified, 0)
+                COALESCE(gmt_modified, 0),
+                {preferred_model_sql}
          FROM chat_session
-         ORDER BY gmt_modified DESC",
-    ) {
+         ORDER BY gmt_modified DESC"
+    );
+    let mut stmt = match conn.prepare(&session_sql) {
         Ok(stmt) => stmt,
         Err(err) => {
             eprintln!(
@@ -197,6 +206,7 @@ pub(crate) fn scan_qoder_ide_sessions_for(
             project_uri: row.get(3)?,
             gmt_create_ms: row.get(4)?,
             gmt_modified_ms: row.get(5)?,
+            preferred_model_info: row.get(6)?,
         })
     }) {
         Ok(rows) => rows,
@@ -237,15 +247,51 @@ pub(crate) fn find_qoder_ide_db() -> Option<PathBuf> {
 }
 
 pub(crate) fn find_qoder_ide_db_for(app_dir: &str) -> Option<PathBuf> {
-    dirs::data_dir()
-        .map(|dir| {
-            dir.join(app_dir)
-                .join("SharedClientCache")
-                .join("cache")
-                .join("db")
-                .join("local.db")
+    let support_dir = dirs::data_dir()?.join(app_dir);
+    [
+        support_dir.join("SharedClientCache/cache/db/local.db"),
+        support_dir.join("main.sqlite"),
+        support_dir.join("SharedClientCache/cache/db/main.sqlite"),
+    ]
+    .into_iter()
+    .find(|path| qoder_db_has_legacy_schema(path))
+}
+
+fn qoder_db_has_legacy_schema(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    let Ok(conn) = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return false;
+    };
+    ["chat_session", "chat_message"]
+        .iter()
+        .all(|table| qoder_db_has_table(&conn, table))
+}
+
+fn qoder_db_has_table(conn: &Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
+}
+
+fn qoder_db_has_column(conn: &Connection, table: &str, column: &str) -> bool {
+    if !matches!(table, "chat_session" | "chat_message") {
+        return false;
+    }
+    conn.prepare(&format!("PRAGMA table_info({table})"))
+        .and_then(|mut stmt| {
+            stmt.query_map([], |row| row.get::<_, String>(1))?
+                .collect::<rusqlite::Result<Vec<_>>>()
         })
-        .filter(|path| path.exists())
+        .map(|columns| columns.iter().any(|name| name == column))
+        .unwrap_or(false)
 }
 
 pub(crate) fn compute_qoder_scan_fingerprint(sessions: &[QoderIdeSessionData]) -> u64 {
@@ -263,15 +309,23 @@ fn parse_qoder_session(
     session_row: &QoderSessionRow,
     tool_id: &str,
 ) -> Option<QoderIdeSessionData> {
-    let mut stmt = match conn.prepare(
-        "SELECT id, COALESCE(gmt_create, 0), token_info, model_info
+    let record_extra_sql = if qoder_db_has_table(conn, "chat_record")
+        && qoder_db_has_column(conn, "chat_message", "request_id")
+    {
+        "(SELECT extra FROM chat_record WHERE chat_record.request_id = chat_message.request_id LIMIT 1)"
+    } else {
+        "NULL"
+    };
+    let message_sql = format!(
+        "SELECT id, COALESCE(gmt_create, 0), token_info, model_info, {record_extra_sql}
          FROM chat_message
          WHERE session_id = ?1
            AND role = 'assistant'
            AND token_info IS NOT NULL
            AND token_info != ''
-         ORDER BY gmt_create ASC",
-    ) {
+         ORDER BY gmt_create ASC"
+    );
+    let mut stmt = match conn.prepare(&message_sql) {
         Ok(stmt) => stmt,
         Err(err) => {
             eprintln!(
@@ -288,6 +342,7 @@ fn parse_qoder_session(
             row.get::<_, i64>(1)?,
             row.get::<_, Option<String>>(2)?,
             row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
         ))
     }) {
         Ok(rows) => rows,
@@ -310,7 +365,8 @@ fn parse_qoder_session(
     let mut latest_timestamp: Option<i64> = None;
 
     for row in rows {
-        let Ok((message_id, timestamp_ms, token_info_raw, model_info_raw)) = row else {
+        let Ok((message_id, timestamp_ms, token_info_raw, model_info_raw, record_extra_raw)) = row
+        else {
             continue;
         };
         let Some(token_info_str) = token_info_raw else {
@@ -331,7 +387,8 @@ fn parse_qoder_session(
         let cached_tokens = token_info
             .get("cached_tokens")
             .and_then(parse_u64_from_value)
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .min(prompt_tokens);
 
         if prompt_tokens == 0 && completion_tokens == 0 {
             continue;
@@ -358,6 +415,8 @@ fn parse_qoder_session(
         );
 
         let model = extract_qoder_model(model_info_raw.as_deref())
+            .or_else(|| extract_qoder_record_model(record_extra_raw.as_deref()))
+            .or_else(|| extract_qoder_preferred_model(session_row.preferred_model_info.as_deref()))
             .unwrap_or_else(|| QODER_MODEL_FALLBACK.to_string());
         models.insert(model.clone());
 
@@ -450,7 +509,9 @@ fn parse_qoder_session(
 
 fn qoder_db_meta(db_path: &Path) -> Option<QoderDbMeta> {
     let db_metadata = std::fs::metadata(db_path).ok()?;
-    let wal_path = db_path.with_extension("db-wal");
+    let mut wal_path = db_path.as_os_str().to_os_string();
+    wal_path.push("-wal");
+    let wal_path = PathBuf::from(wal_path);
     let wal_metadata = std::fs::metadata(&wal_path).ok();
 
     let db_size = db_metadata.len();
@@ -535,6 +596,27 @@ fn extract_qoder_model(raw: Option<&str>) -> Option<String> {
         .map(|value| value.to_string())
 }
 
+fn extract_qoder_record_model(raw: Option<&str>) -> Option<String> {
+    let parsed = parse_qoder_json(raw?)?;
+    parsed
+        .pointer("/modelConfig/key")
+        .or_else(|| parsed.pointer("/model_config/key"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn extract_qoder_preferred_model(raw: Option<&str>) -> Option<String> {
+    let parsed = parse_qoder_json(raw?)?;
+    ["model_key", "modelKey", "preferred_model", "preferredModel"]
+        .iter()
+        .find_map(|key| parsed.get(key).and_then(Value::as_str))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
 fn compute_qoder_session_fingerprint(
     db_fingerprint: u64,
     session_id: &str,
@@ -579,6 +661,41 @@ mod tests {
     }
 
     #[test]
+    fn qoder_model_fallbacks_cover_record_and_session_preferences() {
+        assert_eq!(
+            extract_qoder_record_model(Some(r#"{"modelConfig":{"key":"record-model"}}"#)),
+            Some("record-model".to_string())
+        );
+        assert_eq!(
+            extract_qoder_record_model(Some(r#"{"model_config":{"key":"snake-model"}}"#)),
+            Some("snake-model".to_string())
+        );
+        assert_eq!(
+            extract_qoder_preferred_model(Some(r#"{"preferredModel":"session-model"}"#)),
+            Some("session-model".to_string())
+        );
+    }
+
+    #[test]
+    fn qoder_main_database_candidate_requires_known_chat_schema() {
+        let dir = tempdir().expect("create temp dir");
+        let path = dir.path().join("main.sqlite");
+        let conn = Connection::open(&path).expect("create sqlite");
+        conn.execute_batch("CREATE TABLE unrelated (id INTEGER);")
+            .unwrap();
+        drop(conn);
+        assert!(!qoder_db_has_legacy_schema(&path));
+
+        let conn = Connection::open(&path).expect("reopen sqlite");
+        conn.execute_batch(
+            "CREATE TABLE chat_session (id TEXT); CREATE TABLE chat_message (id TEXT);",
+        )
+        .unwrap();
+        drop(conn);
+        assert!(qoder_db_has_legacy_schema(&path));
+    }
+
+    #[test]
     fn qoder_json_skips_empty_shapes() {
         assert!(parse_qoder_json("").is_none());
         assert!(parse_qoder_json("{}").is_none());
@@ -599,7 +716,8 @@ mod tests {
                 project_uri TEXT,
                 project_name TEXT,
                 gmt_create INTEGER,
-                gmt_modified INTEGER
+                gmt_modified INTEGER,
+                preferred_model_info TEXT
             );
             CREATE TABLE chat_message (
                 id TEXT PRIMARY KEY,
@@ -607,8 +725,10 @@ mod tests {
                 role TEXT,
                 token_info TEXT,
                 model_info TEXT,
+                request_id TEXT,
                 gmt_create INTEGER
             );
+            CREATE TABLE chat_record (request_id TEXT, extra TEXT);
             ",
         )
         .expect("create schema");
@@ -627,29 +747,36 @@ mod tests {
         )
         .expect("insert session");
         conn.execute(
-            "INSERT INTO chat_message (id, session_id, role, token_info, model_info, gmt_create)
-             VALUES (?1, ?2, 'assistant', ?3, ?4, ?5)",
+            "INSERT INTO chat_message (id, session_id, role, token_info, model_info, request_id, gmt_create)
+             VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6)",
             params![
                 "msg_1",
                 "sess_1",
                 "{\"prompt_tokens\":25054,\"completion_tokens\":273,\"cached_tokens\":3072}",
                 "{\"model_key\":\"custom_model\"}",
+                "req_1",
                 1_781_147_500_000i64
             ],
         )
         .expect("insert first message");
         conn.execute(
-            "INSERT INTO chat_message (id, session_id, role, token_info, model_info, gmt_create)
-             VALUES (?1, ?2, 'assistant', ?3, ?4, ?5)",
+            "INSERT INTO chat_message (id, session_id, role, token_info, model_info, request_id, gmt_create)
+             VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6)",
             params![
                 "msg_2",
                 "sess_1",
-                "{\"prompt_tokens\":26887,\"completion_tokens\":174,\"cached_tokens\":25024}",
+                "{\"prompt_tokens\":26887,\"completion_tokens\":174,\"cached_tokens\":35000}",
                 "{}",
+                "req_2",
                 1_781_147_560_000i64
             ],
         )
         .expect("insert second message");
+        conn.execute(
+            "INSERT INTO chat_record (request_id, extra) VALUES ('req_2', ?1)",
+            [r#"{"modelConfig":{"key":"record-model"}}"#],
+        )
+        .expect("insert record model");
 
         let db_meta = qoder_db_meta(&db_path).expect("db meta");
         let session_row = QoderSessionRow {
@@ -659,6 +786,7 @@ mod tests {
             project_uri: Some("/Users/test/work/reference-project".to_string()),
             gmt_create_ms: 1_781_147_471_063i64,
             gmt_modified_ms: 1_781_147_982_238i64,
+            preferred_model_info: None,
         };
 
         let conn = open_qoder_db_read_only(&db_path).expect("reopen qoder db");
@@ -672,11 +800,14 @@ mod tests {
             Some("/Users/test/work/reference-project")
         );
         assert_eq!(parsed.meta.message_count, 2);
-        assert_eq!(parsed.meta.total_input_tokens, 23_845);
+        assert_eq!(parsed.meta.total_input_tokens, 21_982);
         assert_eq!(parsed.meta.total_output_tokens, 447);
-        assert_eq!(parsed.meta.total_cache_read_tokens, 28_096);
+        assert_eq!(parsed.meta.total_cache_read_tokens, 29_959);
         assert_eq!(parsed.meta.total_cache_create_tokens, 0);
-        assert_eq!(parsed.meta.models, vec!["custom_model".to_string()]);
+        assert_eq!(
+            parsed.meta.models,
+            vec!["custom_model".to_string(), "record-model".to_string()]
+        );
         assert_eq!(parsed.requests.len(), 2);
 
         let first = &parsed.requests[0];
@@ -688,10 +819,10 @@ mod tests {
         assert_eq!(first.model, "custom_model");
 
         let second = &parsed.requests[1];
-        assert_eq!(second.input_tokens, 1_863);
-        assert_eq!(second.cache_read_tokens, 25_024);
+        assert_eq!(second.input_tokens, 0);
+        assert_eq!(second.cache_read_tokens, 26_887);
         assert_eq!(second.output_tokens, 174);
         assert_eq!(second.total_tokens, 27_061);
-        assert_eq!(second.model, "custom_model");
+        assert_eq!(second.model, "record-model");
     }
 }
