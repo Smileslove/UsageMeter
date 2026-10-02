@@ -10,10 +10,60 @@ pub(in crate::session) fn parse_message_snapshot(
     fallback_time_updated_ms: i64,
     source_kind: &'static str,
 ) -> Option<OpenCodeMessageSnapshot> {
-    let role = data
-        .get("role")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
+    parse_message_snapshot_with_role(
+        storage_id,
+        source_path,
+        raw_session_id,
+        raw_message_id,
+        data,
+        fallback_time_updated_ms,
+        source_kind,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::session) fn parse_v2_message_snapshot(
+    storage_id: &str,
+    source_path: &str,
+    raw_session_id: &str,
+    raw_message_id: &str,
+    message_type: &str,
+    data: &Value,
+    fallback_time_updated_ms: i64,
+    source_kind: &'static str,
+) -> Option<OpenCodeMessageSnapshot> {
+    if !matches!(message_type, "assistant" | "compaction") {
+        return None;
+    }
+    parse_message_snapshot_with_role(
+        storage_id,
+        source_path,
+        raw_session_id,
+        raw_message_id,
+        data,
+        fallback_time_updated_ms,
+        source_kind,
+        Some("assistant"),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_message_snapshot_with_role(
+    storage_id: &str,
+    source_path: &str,
+    raw_session_id: &str,
+    raw_message_id: &str,
+    data: &Value,
+    fallback_time_updated_ms: i64,
+    source_kind: &'static str,
+    role_override: Option<&str>,
+) -> Option<OpenCodeMessageSnapshot> {
+    let role = role_override.unwrap_or_else(|| {
+        data.get("role")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+    });
     if role != "assistant" {
         return None;
     }
@@ -35,10 +85,13 @@ pub(in crate::session) fn parse_message_snapshot(
         return None;
     }
 
-    let tokens = data.get("tokens")?.as_object()?;
-    let input_tokens = tokens.get("input").map(to_non_negative_u64).unwrap_or(0);
+    let tokens = data.get("tokens").and_then(Value::as_object);
+    let input_tokens = tokens
+        .and_then(|tokens| tokens.get("input"))
+        .map(to_non_negative_u64)
+        .unwrap_or(0);
     let reasoning_tokens = tokens
-        .get("reasoning")
+        .and_then(|tokens| tokens.get("reasoning"))
         .map(to_non_negative_u64)
         .unwrap_or(0);
     // 上游 opencode 的 raw tokens.output 不含 reasoning（reasoning 单列在 tokens.reasoning），
@@ -46,20 +99,27 @@ pub(in crate::session) fn parse_message_snapshot(
     // output_tokens 含 reasoning，total_tokens = input + cache_read + cache_write + output
     // （不把 reasoning 单列成 total 的加项）。
     // 注意：若上游将来把 reasoning 并入 output 字段，此处的相加必须移除，否则会双计。
-    let output_tokens =
-        tokens.get("output").map(to_non_negative_u64).unwrap_or(0) + reasoning_tokens;
+    let output_tokens = tokens
+        .and_then(|tokens| tokens.get("output"))
+        .map(to_non_negative_u64)
+        .unwrap_or(0)
+        + reasoning_tokens;
     let cache_read_tokens = tokens
-        .get("cache")
+        .and_then(|tokens| tokens.get("cache"))
         .and_then(|cache| cache.get("read"))
         .map(to_non_negative_u64)
         .unwrap_or(0);
     let cache_create_tokens = tokens
-        .get("cache")
+        .and_then(|tokens| tokens.get("cache"))
         .and_then(|cache| cache.get("write"))
         .map(to_non_negative_u64)
         .unwrap_or(0);
     let total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_create_tokens;
-    if total_tokens == 0 {
+    let explicit_cost = data
+        .get("cost")
+        .and_then(|value| value.as_f64())
+        .filter(|cost| cost.is_finite() && *cost > 0.0);
+    if total_tokens == 0 && explicit_cost.unwrap_or(0.0) <= 0.0 {
         return None;
     }
 
@@ -78,9 +138,21 @@ pub(in crate::session) fn parse_message_snapshot(
     let model_id = data
         .get("modelID")
         .or_else(|| data.get("modelId"))
-        .or_else(|| data.get("model"))
+        .or_else(|| data.get("model").filter(|value| value.is_string()))
+        .or_else(|| {
+            data.get("model")
+                .and_then(|value| value.as_object())
+                .and_then(|model| model.get("id"))
+        })
         .and_then(|value| value.as_str())
         .map(str::to_string);
+    let provider_id = provider_id.or_else(|| {
+        data.get("model")
+            .and_then(|value| value.as_object())
+            .and_then(|model| model.get("providerID"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    });
     let model = normalize_model_string(provider_id.as_deref(), model_id.as_deref());
     let cwd = data
         .pointer("/path/cwd")
@@ -107,6 +179,7 @@ pub(in crate::session) fn parse_message_snapshot(
         cache_create_tokens,
         cache_read_tokens,
         total_tokens,
+        explicit_cost,
         source_kind,
     })
 }
@@ -146,18 +219,18 @@ pub(in crate::session) fn canonical_opencode_session_id_for_storage(
 }
 
 fn extract_opencode_timestamp_ms(data: &Value) -> Option<i64> {
-    let completed = data
-        .pointer("/time/completed")
-        .and_then(|value| value.as_i64())
-        .unwrap_or(0);
-    if completed > 0 {
-        return Some(completed);
-    }
     let created = data
         .pointer("/time/created")
         .and_then(|value| value.as_i64())
         .unwrap_or(0);
-    (created > 0).then_some(created)
+    if created > 0 {
+        return Some(created);
+    }
+    let completed = data
+        .pointer("/time/completed")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0);
+    (completed > 0).then_some(completed)
 }
 
 fn to_non_negative_u64(value: &Value) -> u64 {

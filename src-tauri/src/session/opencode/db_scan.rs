@@ -2,6 +2,7 @@ use crate::session::opencode_reader::{
     OpenCodeDbCacheState, OpenCodeDbCheckpoint, OpenCodeMessageSnapshot, OpenCodePathSignature,
     OpenCodeSchemaMode, OpenCodeStorageRoot, OpenCodeStorageSignature,
     OPENCODE_DB_FULL_RECONCILE_INTERVAL_SECS, REQUIRED_MESSAGE_COLUMNS, REQUIRED_SESSION_COLUMNS,
+    REQUIRED_V2_MESSAGE_COLUMNS,
 };
 use rusqlite::{params, Connection, OpenFlags};
 use serde_json::Value;
@@ -15,6 +16,8 @@ struct DbMessageRow {
     id: String,
     session_id: String,
     time_updated_ms: i64,
+    time_created_ms: i64,
+    message_type: Option<String>,
     data: Value,
 }
 
@@ -77,6 +80,7 @@ pub(in crate::session) fn refresh_db_messages_for_path(
     }
 
     let checkpoint = read_db_checkpoint(&conn);
+    let v2_has_rows = has_v2_message_rows(&conn);
     let checkpoint_unchanged = checkpoint.schema_fingerprint == state.schema_fingerprint
         && checkpoint.assistant_row_count == state.assistant_row_count
         && checkpoint.max_rowid == state.last_rowid
@@ -102,6 +106,7 @@ pub(in crate::session) fn refresh_db_messages_for_path(
         || previous_schema_mode != schema_mode
         || checkpoint.schema_fingerprint != state.schema_fingerprint
         || (storage_signature_changed && !checkpoint_advanced)
+        || v2_has_rows
         || now_ms.saturating_sub(state.last_full_reconcile_at_ms)
             >= OPENCODE_DB_FULL_RECONCILE_INTERVAL_SECS * 1000;
 
@@ -113,6 +118,11 @@ pub(in crate::session) fn refresh_db_messages_for_path(
             Some(state.last_time_updated_ms),
             Some(state.last_rowid),
         )
+    };
+    let v2_rows = if should_full_reconcile && v2_has_rows {
+        query_v2_message_rows(&conn)
+    } else {
+        Vec::new()
     };
 
     if should_full_reconcile {
@@ -139,6 +149,22 @@ pub(in crate::session) fn refresh_db_messages_for_path(
             &row.id,
             &row.data,
             row.time_updated_ms,
+            "opencode_db",
+        ) {
+            state
+                .messages
+                .insert(snapshot.message_identity_key(), snapshot);
+        }
+    }
+    for row in v2_rows {
+        if let Some(snapshot) = super::message::parse_v2_message_snapshot(
+            &root.id,
+            &root.db_path.to_string_lossy(),
+            &row.session_id,
+            &row.id,
+            row.message_type.as_deref().unwrap_or_default(),
+            &row.data,
+            row.time_updated_ms.max(row.time_created_ms),
             "opencode_db",
         ) {
             state
@@ -264,6 +290,77 @@ fn query_db_message_rows(
             id: row.get::<_, String>(1).unwrap_or_default(),
             session_id: row.get::<_, String>(2).unwrap_or_default(),
             time_updated_ms: row.get::<_, i64>(3).unwrap_or(0),
+            time_created_ms: 0,
+            message_type: None,
+            data,
+        });
+    }
+    out
+}
+
+fn has_v2_message_rows(conn: &Connection) -> bool {
+    if !REQUIRED_V2_MESSAGE_COLUMNS
+        .iter()
+        .all(|column| table_has_column(conn, "session_message", column))
+    {
+        return false;
+    }
+    conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM session_message
+            WHERE type IN ('assistant', 'compaction')
+        )",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|value| value != 0)
+    .unwrap_or(false)
+}
+
+fn query_v2_message_rows(conn: &Connection) -> Vec<DbMessageRow> {
+    let session_table = if table_has_column(conn, "session_v2", "id") {
+        Some("session_v2")
+    } else if table_has_column(conn, "session", "id") {
+        Some("session")
+    } else {
+        None
+    };
+    let (join, fork_filter) = match session_table {
+        Some(table) if table_has_column(conn, table, "time_created") => (
+            format!(" LEFT JOIN {table} s ON s.id = m.session_id"),
+            " AND (s.time_created IS NULL OR m.time_created >= s.time_created)",
+        ),
+        _ => (String::new(), ""),
+    };
+    let sql = format!(
+        "SELECT m.rowid, m.id, m.session_id, COALESCE(m.time_updated, 0),
+                COALESCE(m.time_created, 0), m.type, m.data
+         FROM session_message m{join}
+         WHERE m.type IN ('assistant', 'compaction'){fork_filter}
+         ORDER BY COALESCE(m.time_created, 0) ASC, m.seq ASC, m.rowid ASC"
+    );
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return Vec::new();
+    };
+    let Ok(mut rows) = stmt.query([]) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    while let Ok(Some(row)) = rows.next() {
+        let data_str: String = match row.get(6) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let Ok(data) = serde_json::from_str::<Value>(&data_str) else {
+            continue;
+        };
+        out.push(DbMessageRow {
+            rowid: row.get(0).unwrap_or(0),
+            id: row.get::<_, String>(1).unwrap_or_default(),
+            session_id: row.get::<_, String>(2).unwrap_or_default(),
+            time_updated_ms: row.get::<_, i64>(3).unwrap_or(0),
+            time_created_ms: row.get::<_, i64>(4).unwrap_or(0),
+            message_type: row.get::<_, String>(5).ok(),
             data,
         });
     }
@@ -313,27 +410,52 @@ fn read_db_checkpoint(conn: &Connection) -> OpenCodeDbCheckpoint {
         schema_fingerprint: compute_schema_fingerprint(conn),
         ..Default::default()
     };
-    let values: rusqlite::Result<(i64, i64, i64)> = conn.query_row(
-        "SELECT
-            COUNT(*),
-            COALESCE(MAX(rowid), 0),
-            COALESCE(MAX(COALESCE(time_updated, 0)), 0)
-         FROM message
-         WHERE json_extract(data, '$.role') = 'assistant'",
-        [],
-        |row| {
-            Ok((
-                row.get::<_, i64>(0).unwrap_or(0),
-                row.get::<_, i64>(1).unwrap_or(0),
-                row.get::<_, i64>(2).unwrap_or(0),
-            ))
-        },
-    );
-    if let Ok((count, max_rowid, max_time)) = values {
-        checkpoint.assistant_row_count = count.max(0) as u64;
-        checkpoint.max_rowid = max_rowid.max(0);
-        checkpoint.max_time_updated_ms = max_time.max(0);
+    let mut values = (0_i64, 0_i64, 0_i64);
+    if table_has_column(conn, "message", "data") {
+        values = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(rowid), 0),
+                        COALESCE(MAX(COALESCE(time_updated, 0)), 0)
+                 FROM message
+                 WHERE json_extract(data, '$.role') = 'assistant'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0).unwrap_or(0),
+                        row.get::<_, i64>(1).unwrap_or(0),
+                        row.get::<_, i64>(2).unwrap_or(0),
+                    ))
+                },
+            )
+            .unwrap_or(values);
     }
+    if REQUIRED_V2_MESSAGE_COLUMNS
+        .iter()
+        .all(|column| table_has_column(conn, "session_message", column))
+    {
+        let v2 = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(rowid), 0),
+                        COALESCE(MAX(COALESCE(time_updated, 0)), 0)
+                 FROM session_message
+                 WHERE type IN ('assistant', 'compaction')",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0).unwrap_or(0),
+                        row.get::<_, i64>(1).unwrap_or(0),
+                        row.get::<_, i64>(2).unwrap_or(0),
+                    ))
+                },
+            )
+            .unwrap_or((0, 0, 0));
+        values.0 += v2.0;
+        values.1 = values.1.max(v2.1);
+        values.2 = values.2.max(v2.2);
+    }
+    checkpoint.assistant_row_count = values.0.max(0) as u64;
+    checkpoint.max_rowid = values.1.max(0);
+    checkpoint.max_time_updated_ms = values.2.max(0);
     checkpoint
 }
 
@@ -342,7 +464,7 @@ fn compute_schema_fingerprint(conn: &Connection) -> u64 {
     let mut stmt = match conn.prepare(
         "SELECT name, COALESCE(sql, '')
          FROM sqlite_schema
-         WHERE type = 'table' AND name IN ('message', 'session')
+         WHERE type = 'table' AND name IN ('message', 'session', 'session_message', 'session_v2')
          ORDER BY name ASC",
     ) {
         Ok(stmt) => stmt,
@@ -443,6 +565,7 @@ mod tests {
             cache_create_tokens: 0,
             cache_read_tokens: 0,
             total_tokens: 2,
+            explicit_cost: None,
             source_kind: "test",
         }
     }
@@ -607,5 +730,94 @@ mod tests {
         assert!(second.contains_key("opencode::test::sess_1|m1"));
         assert_eq!(state.last_rowid, 2);
         assert_eq!(state.assistant_row_count, 2);
+    }
+
+    #[test]
+    fn refresh_db_reads_v2_session_messages_and_compaction_cost() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("opencode.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT NOT NULL);
+            CREATE TABLE session_message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL,
+                data TEXT NOT NULL
+            );
+            INSERT INTO session_v2 (id, directory) VALUES ('ses_v2', '/tmp/v2');
+            INSERT INTO session_message
+                (id, session_id, type, seq, time_created, time_updated, data)
+            VALUES
+                ('msg_v2', 'ses_v2', 'assistant', 1, 1700000001000, 1700000009000,
+                 '{"id":"msg_v2","model":{"id":"claude-sonnet","providerID":"anthropic"},"time":{"created":1700000002000,"completed":1700000009000},"tokens":{"input":10,"output":2,"reasoning":1,"cache":{"read":3,"write":4}},"cost":0.25}'),
+                ('cmp_v2', 'ses_v2', 'compaction', 2, 1700000010000, 1700000011000,
+                 '{"id":"cmp_v2","model":{"id":"claude-sonnet","providerID":"anthropic"},"time":{"created":1700000010000},"cost":0.5}');
+            "#,
+        )
+        .unwrap();
+
+        let root = make_root(&db_path);
+        let mut state = OpenCodeDbCacheState::default();
+        let messages = refresh_db_messages_for_path(&mut state, &root);
+
+        assert_eq!(messages.len(), 2);
+        let assistant = messages
+            .get("opencode::test::ses_v2|msg_v2")
+            .expect("v2 assistant message");
+        assert_eq!(assistant.timestamp_sec, 1_700_000_002);
+        assert_eq!(assistant.model, "claude-sonnet");
+        assert_eq!(assistant.total_tokens, 20);
+        assert_eq!(assistant.explicit_cost, Some(0.25));
+        let compaction = messages
+            .get("opencode::test::ses_v2|cmp_v2")
+            .expect("v2 compaction message");
+        assert_eq!(compaction.explicit_cost, Some(0.5));
+        assert_eq!(state.assistant_row_count, 2);
+    }
+
+    #[test]
+    fn refresh_db_keeps_legacy_and_v2_rows_in_transitional_database() {
+        let tmp = tempdir().unwrap();
+        let db_path = tmp.path().join("opencode.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE message (
+                id TEXT,
+                session_id TEXT,
+                time_updated INTEGER,
+                data TEXT
+            );
+            CREATE TABLE session_message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL,
+                data TEXT NOT NULL
+            );
+            INSERT INTO message (id, session_id, time_updated, data)
+            VALUES ('legacy', 'ses_old', 1700000000000,
+                    '{"role":"assistant","modelID":"gpt-4o","time":{"created":1700000000000},"tokens":{"input":1,"output":1}}');
+            INSERT INTO session_message
+                (id, session_id, type, seq, time_created, time_updated, data)
+            VALUES ('new', 'ses_new', 'assistant', 1, 1700000010000, 1700000010000,
+                    '{"model":{"id":"gpt-5","providerID":"openai"},"time":{"created":1700000010000},"tokens":{"input":2,"output":3}}');
+            "#,
+        )
+        .unwrap();
+
+        let root = make_root(&db_path);
+        let mut state = OpenCodeDbCacheState::default();
+        let messages = refresh_db_messages_for_path(&mut state, &root);
+        assert!(messages.contains_key("opencode::test::ses_old|legacy"));
+        assert!(messages.contains_key("opencode::test::ses_new|new"));
+        assert_eq!(messages.len(), 2);
     }
 }

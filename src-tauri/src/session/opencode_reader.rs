@@ -35,6 +35,15 @@ pub(in crate::session) const REQUIRED_SESSION_COLUMNS: &[&str] = &[
 ];
 pub(in crate::session) const REQUIRED_MESSAGE_COLUMNS: &[&str] =
     &["id", "session_id", "data", "time_updated"];
+pub(in crate::session) const REQUIRED_V2_MESSAGE_COLUMNS: &[&str] = &[
+    "id",
+    "session_id",
+    "type",
+    "seq",
+    "data",
+    "time_created",
+    "time_updated",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum OpenCodeSchemaMode {
@@ -108,6 +117,7 @@ pub(in crate::session) struct OpenCodeMessageSnapshot {
     pub cache_create_tokens: u64,
     pub cache_read_tokens: u64,
     pub total_tokens: u64,
+    pub explicit_cost: Option<f64>,
     pub source_kind: &'static str,
 }
 
@@ -324,7 +334,32 @@ fn native_opencode_storage_root() -> Option<OpenCodeStorageRoot> {
 fn discover_opencode_storage_roots() -> Vec<OpenCodeStorageRoot> {
     let mut roots = Vec::new();
     if let Some(native) = native_opencode_storage_root() {
+        let home = native.home.clone();
+        let explicit_db = std::env::var_os("OPENCODE_DB").is_some();
         roots.push(native);
+        if !explicit_db {
+            if let Ok(entries) = std::fs::read_dir(&home) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                        continue;
+                    };
+                    if !is_opencode_db_filename(name) || name == "opencode.db" {
+                        continue;
+                    }
+                    let channel = name
+                        .strip_prefix("opencode-")
+                        .and_then(|value| value.strip_suffix(".db"))
+                        .unwrap_or("channel");
+                    roots.push(OpenCodeStorageRoot {
+                        id: format!("native:{}", sanitize_storage_id_segment(channel)),
+                        home: home.clone(),
+                        db_path: path,
+                        message_root: home.join("storage").join("message"),
+                    });
+                }
+            }
+        }
     }
 
     #[cfg(windows)]
@@ -353,12 +388,16 @@ fn dedupe_storage_roots(roots: Vec<OpenCodeStorageRoot>) -> Vec<OpenCodeStorageR
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for root in roots {
-        let key = root.home.to_string_lossy().to_ascii_lowercase();
+        let key = root.db_path.to_string_lossy().to_ascii_lowercase();
         if seen.insert(key) {
             out.push(root);
         }
     }
     out
+}
+
+fn is_opencode_db_filename(name: &str) -> bool {
+    name == "opencode.db" || (name.starts_with("opencode-") && name.ends_with(".db"))
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -476,10 +515,19 @@ pub fn scan_opencode_sessions() -> Vec<OpenCodeSessionData> {
         let store_cache = cache.stores.entry(root.id.clone()).or_default();
         let db_messages =
             super::opencode::db_scan::refresh_db_messages_for_path(&mut store_cache.db_state, root);
-        let file_messages = super::opencode::legacy_scan::refresh_legacy_file_messages_for_root(
-            &mut store_cache.file_state,
-            root,
-        );
+        let file_messages = if root.id == "native" || root.id.starts_with("wsl:") {
+            super::opencode::legacy_scan::refresh_legacy_file_messages_for_root(
+                &mut store_cache.file_state,
+                root,
+            )
+        } else {
+            // Channel databases share the data directory with the native DB but do not
+            // own its legacy storage/message files; parsing those files under every
+            // channel would duplicate the same sessions under different IDs.
+            store_cache.file_state.files.clear();
+            store_cache.file_state.messages.clear();
+            HashMap::new()
+        };
 
         if root.db_path.exists() {
             for snapshot in db_messages.values() {
@@ -618,42 +666,58 @@ fn hash_path_signature(
 }
 
 pub(in crate::session) fn query_session_rows(conn: &Connection) -> HashMap<String, SessionRow> {
-    let mut stmt = match conn.prepare(
-        "SELECT id, directory, title, model,
-                COALESCE(tokens_input, 0), COALESCE(tokens_output, 0), COALESCE(tokens_reasoning, 0),
-                COALESCE(tokens_cache_read, 0), COALESCE(tokens_cache_write, 0),
-                COALESCE(time_created, 0), COALESCE(time_updated, 0)
-         FROM session
-         WHERE time_archived IS NULL
-         ORDER BY time_updated DESC",
-    ) {
-        Ok(stmt) => stmt,
-        Err(_) => return HashMap::new(),
-    };
-    let rows = match stmt.query_map([], |row| {
-        Ok(SessionRow {
-            id: row.get::<_, String>(0)?,
-            directory: row.get::<_, String>(1).unwrap_or_default(),
-            title: row.get::<_, String>(2).unwrap_or_default(),
-            model_json: row.get::<_, Option<String>>(3)?,
-            tokens_input: row.get::<_, i64>(4).unwrap_or(0),
-            tokens_output: row.get::<_, i64>(5).unwrap_or(0),
-            tokens_reasoning: row.get::<_, i64>(6).unwrap_or(0),
-            tokens_cache_read: row.get::<_, i64>(7).unwrap_or(0),
-            tokens_cache_write: row.get::<_, i64>(8).unwrap_or(0),
-            time_created_ms: row.get::<_, i64>(9).unwrap_or(0),
-            time_updated_ms: row.get::<_, i64>(10).unwrap_or(0),
-        })
-    }) {
-        Ok(rows) => rows,
-        Err(_) => return HashMap::new(),
-    };
-
     let mut out = HashMap::new();
-    for row in rows.flatten() {
-        out.insert(row.id.clone(), row);
+    for table in ["session_v2", "session"] {
+        let columns_ok = REQUIRED_SESSION_COLUMNS
+            .iter()
+            .all(|column| table_has_column(conn, table, column));
+        if !columns_ok {
+            continue;
+        }
+        let sql = format!(
+            "SELECT id, directory, title, model,
+                    COALESCE(tokens_input, 0), COALESCE(tokens_output, 0), COALESCE(tokens_reasoning, 0),
+                    COALESCE(tokens_cache_read, 0), COALESCE(tokens_cache_write, 0),
+                    COALESCE(time_created, 0), COALESCE(time_updated, 0)
+             FROM {table}
+             WHERE time_archived IS NULL
+             ORDER BY time_updated DESC"
+        );
+        let Ok(mut stmt) = conn.prepare(&sql) else {
+            continue;
+        };
+        let Ok(rows) = stmt.query_map([], |row| {
+            Ok(SessionRow {
+                id: row.get::<_, String>(0)?,
+                directory: row.get::<_, String>(1).unwrap_or_default(),
+                title: row.get::<_, String>(2).unwrap_or_default(),
+                model_json: row.get::<_, Option<String>>(3)?,
+                tokens_input: row.get::<_, i64>(4).unwrap_or(0),
+                tokens_output: row.get::<_, i64>(5).unwrap_or(0),
+                tokens_reasoning: row.get::<_, i64>(6).unwrap_or(0),
+                tokens_cache_read: row.get::<_, i64>(7).unwrap_or(0),
+                tokens_cache_write: row.get::<_, i64>(8).unwrap_or(0),
+                time_created_ms: row.get::<_, i64>(9).unwrap_or(0),
+                time_updated_ms: row.get::<_, i64>(10).unwrap_or(0),
+            })
+        }) else {
+            continue;
+        };
+        for row in rows.flatten() {
+            out.entry(row.id.clone()).or_insert(row);
+        }
     }
     out
+}
+
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> bool {
+    let sql = format!("PRAGMA table_info({table})");
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        return false;
+    };
+    stmt.query_map([], |row| row.get::<_, String>(1))
+        .map(|rows| rows.flatten().any(|name| name == column))
+        .unwrap_or(false)
 }
 
 impl OpenCodeMessageSnapshot {
@@ -724,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_message_snapshot_uses_completed_time_and_model_fallbacks() {
+    fn parse_message_snapshot_prefers_created_time_and_model_fallbacks() {
         let data = serde_json::json!({
             "id": "msg_1",
             "sessionID": "sess_1",
@@ -751,7 +815,7 @@ mod tests {
         )
         .expect("snapshot");
 
-        assert_eq!(snapshot.timestamp_sec, 2);
+        assert_eq!(snapshot.timestamp_sec, 1);
         assert_eq!(snapshot.canonical_session_id, "opencode::native::sess_1");
         assert_eq!(snapshot.model, "glm-4.7-free");
         assert_eq!(snapshot.cwd.as_deref(), Some("/Users/me/demo"));

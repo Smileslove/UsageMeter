@@ -21,14 +21,11 @@ pub(in crate::session) fn build_session_data_from_messages(
 ) -> Vec<OpenCodeSessionData> {
     let mut message_by_session: HashMap<String, Vec<OpenCodeMessageSnapshot>> = HashMap::new();
     let mut raw_message_id_sessions: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut source_kinds: HashSet<&'static str> = HashSet::new();
-
     for snapshot in combined.into_values() {
         raw_message_id_sessions
             .entry(snapshot.raw_message_id.clone())
             .or_default()
             .insert(snapshot.canonical_session_id.clone());
-        source_kinds.insert(snapshot.source_kind);
         message_by_session
             .entry(snapshot.canonical_session_id.clone())
             .or_default()
@@ -93,7 +90,6 @@ pub(in crate::session) fn build_session_data_from_messages(
                 snapshots,
                 rows_by_session.get(&canonical_session_id),
                 &raw_message_id_sessions,
-                &source_kinds,
                 schema_mode_by_session
                     .get(&canonical_session_id)
                     .copied()
@@ -112,7 +108,6 @@ fn build_single_session_data(
     snapshots: Vec<OpenCodeMessageSnapshot>,
     session_row: Option<&SessionRow>,
     raw_message_id_sessions: &HashMap<String, HashSet<String>>,
-    source_kinds: &HashSet<&'static str>,
     schema_mode: OpenCodeSchemaMode,
     source_locator: String,
 ) -> OpenCodeSessionData {
@@ -129,6 +124,7 @@ fn build_single_session_data(
     let mut total_output = 0_u64;
     let mut total_cache_create = 0_u64;
     let mut total_cache_read = 0_u64;
+    let mut explicit_cost = 0.0_f64;
 
     let session_model = session_row.and_then(|row| {
         row.model_json
@@ -160,6 +156,7 @@ fn build_single_session_data(
         total_output += snapshot.output_tokens;
         total_cache_create += snapshot.cache_create_tokens;
         total_cache_read += snapshot.cache_read_tokens;
+        explicit_cost += snapshot.explicit_cost.unwrap_or(0.0);
         message_ids.push(snapshot.raw_message_id.clone());
 
         let request_key = if raw_message_id_sessions
@@ -191,7 +188,7 @@ fn build_single_session_data(
             model: snapshot.model.clone(),
             is_subagent: false,
             request_key,
-            explicit_estimated_cost: None,
+            explicit_estimated_cost: snapshot.explicit_cost,
             source_file_present: Some(true),
         });
     }
@@ -236,11 +233,17 @@ fn build_single_session_data(
                 .find_map(|snapshot| snapshot.title.clone())
         });
 
+    let has_db_source = snapshots
+        .iter()
+        .any(|snapshot| snapshot.source_kind == "opencode_db");
+    let has_file_source = snapshots
+        .iter()
+        .any(|snapshot| snapshot.source_kind == "opencode_file");
     let source = match schema_mode {
         OpenCodeSchemaMode::Full => {
-            if source_kinds.contains("opencode_db") && source_kinds.contains("opencode_file") {
+            if has_db_source && has_file_source {
                 "opencode_mixed"
-            } else if source_kinds.contains("opencode_db") {
+            } else if has_db_source {
                 "opencode_sqlite"
             } else {
                 "opencode_file"
@@ -295,7 +298,7 @@ fn build_single_session_data(
             source,
             message_ids,
             scope: None,
-            explicit_estimated_cost: None,
+            explicit_estimated_cost: (explicit_cost > 0.0).then_some(explicit_cost),
             ..Default::default()
         },
         requests,
@@ -333,6 +336,10 @@ fn compute_session_fingerprint(session_id: &str, requests: &[LocalRequestRecord]
         request.cache_create_tokens.hash(&mut hasher);
         request.cache_read_tokens.hash(&mut hasher);
         request.total_tokens.hash(&mut hasher);
+        request
+            .explicit_estimated_cost
+            .map(f64::to_bits)
+            .hash(&mut hasher);
         request.request_key.hash(&mut hasher);
     }
     hasher.finish()
@@ -509,7 +516,7 @@ mod tests {
             VALUES ('ses_x', '/my/project', 'Test Session', 999, 99, 4000, 7000);
             INSERT INTO message (id, session_id, time_created, time_updated, data)
             VALUES ('msg_x', 'ses_x', 5000, 6000,
-                    '{\"role\":\"assistant\",\"tokens\":{\"input\":20,\"output\":2}}');
+                    '{\"role\":\"assistant\",\"tokens\":{\"input\":20,\"output\":2},\"cost\":0.25}');
         ",
         )
         .unwrap();
@@ -519,6 +526,7 @@ mod tests {
             "id": "msg_x",
             "role": "assistant",
             "tokens": { "input": 20, "output": 2 },
+            "cost": 0.25,
             "time": { "created": 5000, "completed": 6000 }
         });
         let snapshot = parse_message_snapshot(
@@ -558,5 +566,7 @@ mod tests {
             "cwd should come from session row (proves raw-id lookup worked)"
         );
         assert_eq!(sessions[0].meta.topic.as_deref(), Some("Test Session"));
+        assert_eq!(sessions[0].meta.explicit_estimated_cost, Some(0.25));
+        assert_eq!(sessions[0].requests[0].explicit_estimated_cost, Some(0.25));
     }
 }
