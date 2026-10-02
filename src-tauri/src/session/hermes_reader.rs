@@ -117,8 +117,9 @@ pub(crate) fn scan_hermes_sessions() -> Vec<HermesSessionData> {
         return Vec::new();
     }
 
-    let mut sessions = Vec::new();
-    let mut seen_session_ids = HashSet::new();
+    let mut sessions_by_id: HashMap<String, HermesSessionData> = HashMap::new();
+    let mut seen_model_rows = HashSet::new();
+    let mut counted_sessions = HashSet::new();
 
     for db_path in db_paths {
         let Some(db_meta) = hermes_db_meta(&db_path) else {
@@ -136,35 +137,221 @@ pub(crate) fn scan_hermes_sessions() -> Vec<HermesSessionData> {
             }
         };
 
-        let mut stmt = match conn.prepare(
-            "SELECT id, COALESCE(model, ''), COALESCE(started_at, 0), COALESCE(ended_at, 0),
-                    COALESCE(message_count, 0), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
-                    COALESCE(cache_read_tokens, 0), COALESCE(cache_write_tokens, 0),
-                    COALESCE(reasoning_tokens, 0), estimated_cost_usd, actual_cost_usd
-             FROM sessions
-             WHERE TRIM(COALESCE(model, '')) != ''
-               AND (
-                    COALESCE(input_tokens, 0) > 0 OR
-                    COALESCE(output_tokens, 0) > 0 OR
-                    COALESCE(cache_read_tokens, 0) > 0 OR
-                    COALESCE(cache_write_tokens, 0) > 0 OR
-                    COALESCE(reasoning_tokens, 0) > 0 OR
-                    COALESCE(actual_cost_usd, estimated_cost_usd, 0) > 0
-               )
-             ORDER BY started_at DESC",
-        ) {
-            Ok(stmt) => stmt,
-            Err(err) => {
-                eprintln!(
-                    "[UsageMeter] Failed to query Hermes sessions from {}: {}",
-                    db_path.display(),
-                    err
-                );
+        let rows = query_hermes_usage_rows(&conn);
+        for mut row in rows {
+            if row.raw_session_id.trim().is_empty() {
                 continue;
             }
-        };
+            let canonical_session_id = canonical_hermes_session_id(&row.raw_session_id);
+            if !seen_model_rows.insert((canonical_session_id.clone(), row.model.clone())) {
+                continue;
+            }
+            if counted_sessions.contains(&canonical_session_id) {
+                row.message_count = 0;
+            } else if row.message_count == 0 {
+                row.message_count = 1;
+            }
+            if let Some(session) = build_hermes_session(&db_meta, &canonical_session_id, row) {
+                counted_sessions.insert(canonical_session_id.clone());
+                if let Some(existing) = sessions_by_id.get_mut(&canonical_session_id) {
+                    merge_hermes_session(existing, session);
+                } else {
+                    sessions_by_id.insert(canonical_session_id, session);
+                }
+            }
+        }
+    }
 
-        let rows = match stmt.query_map([], |row| {
+    let mut sessions = sessions_by_id.into_values().collect::<Vec<_>>();
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.meta.last_modified));
+    sessions
+}
+
+fn merge_hermes_session(existing: &mut HermesSessionData, incoming: HermesSessionData) {
+    existing.meta.total_input_tokens = existing
+        .meta
+        .total_input_tokens
+        .saturating_add(incoming.meta.total_input_tokens);
+    existing.meta.total_output_tokens = existing
+        .meta
+        .total_output_tokens
+        .saturating_add(incoming.meta.total_output_tokens);
+    existing.meta.total_cache_create_tokens = existing
+        .meta
+        .total_cache_create_tokens
+        .saturating_add(incoming.meta.total_cache_create_tokens);
+    existing.meta.total_cache_read_tokens = existing
+        .meta
+        .total_cache_read_tokens
+        .saturating_add(incoming.meta.total_cache_read_tokens);
+    existing.meta.message_count = existing
+        .meta
+        .message_count
+        .saturating_add(incoming.meta.message_count);
+    existing.meta.start_time = match (existing.meta.start_time, incoming.meta.start_time) {
+        (0, value) => value,
+        (value, 0) => value,
+        (left, right) => left.min(right),
+    };
+    existing.meta.end_time = existing.meta.end_time.max(incoming.meta.end_time);
+    existing.meta.last_modified = existing.meta.last_modified.max(incoming.meta.last_modified);
+    existing.meta.models.extend(incoming.meta.models);
+    existing.meta.models.sort();
+    existing.meta.models.dedup();
+    existing.meta.message_ids.extend(incoming.meta.message_ids);
+    existing.requests.extend(incoming.requests);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    existing.fingerprint.hash(&mut hasher);
+    incoming.fingerprint.hash(&mut hasher);
+    existing.fingerprint = hasher.finish();
+}
+
+fn table_columns(conn: &Connection, table: &str) -> HashSet<String> {
+    let mut columns = HashSet::new();
+    let query = format!("PRAGMA table_info({table})");
+    if let Ok(mut statement) = conn.prepare(&query) {
+        if let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(1)) {
+            columns.extend(rows.flatten());
+        }
+    }
+    columns
+}
+
+fn has_table(conn: &Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+        [table],
+        |_| Ok(()),
+    )
+    .is_ok()
+}
+
+fn numeric_column(columns: &HashSet<String>, table_alias: &str, name: &str) -> String {
+    if columns.contains(name) {
+        format!("COALESCE({table_alias}.{name}, 0)")
+    } else {
+        "0".to_string()
+    }
+}
+
+fn optional_cost_column(columns: &HashSet<String>, table_alias: &str, name: &str) -> String {
+    if columns.contains(name) {
+        format!("{table_alias}.{name}")
+    } else {
+        "NULL".to_string()
+    }
+}
+
+fn query_hermes_usage_rows(conn: &Connection) -> Vec<HermesSessionRow> {
+    let sessions = table_columns(conn, "sessions");
+    if !sessions.contains("id") {
+        return Vec::new();
+    }
+    let session_expr = |name: &str| numeric_column(&sessions, "s", name);
+    let session_cost_est = optional_cost_column(&sessions, "s", "estimated_cost_usd");
+    let session_cost_actual = optional_cost_column(&sessions, "s", "actual_cost_usd");
+    let model_expr = if sessions.contains("model") {
+        "COALESCE(s.model, '')"
+    } else {
+        "''"
+    };
+    let mut rows = Vec::new();
+    let mut covered = HashSet::new();
+
+    if has_table(conn, "session_model_usage") {
+        let usage = table_columns(conn, "session_model_usage");
+        if usage.contains("session_id") && usage.contains("model") {
+            let field = |name: &str| numeric_column(&usage, "u", name);
+            let actual = optional_cost_column(&usage, "u", "actual_cost_usd");
+            let estimated = optional_cost_column(&usage, "u", "estimated_cost_usd");
+            let join = if sessions.contains("started_at")
+                || sessions.contains("ended_at")
+                || sessions.contains("message_count")
+                || sessions.contains("model")
+            {
+                "LEFT JOIN sessions s ON s.id = u.session_id"
+            } else {
+                ""
+            };
+            let session_id = "u.session_id";
+            let started = if sessions.contains("started_at") {
+                "COALESCE(s.started_at, 0)"
+            } else {
+                "0"
+            };
+            let ended = if sessions.contains("ended_at") {
+                "COALESCE(s.ended_at, 0)"
+            } else {
+                "0"
+            };
+            let message_count = if sessions.contains("message_count") {
+                "COALESCE(s.message_count, 0)"
+            } else {
+                "0"
+            };
+            let actual_cost = if usage.contains("actual_cost_usd") {
+                format!("SUM(COALESCE(NULLIF({actual}, 0), {estimated}, 0))")
+            } else if usage.contains("estimated_cost_usd") {
+                format!("SUM(COALESCE({estimated}, 0))")
+            } else {
+                "0".to_string()
+            };
+            let provider_join = join;
+            let order = if sessions.contains("model") {
+                "CASE WHEN u.model = s.model THEN 0 ELSE 1 END, u.model"
+            } else {
+                "u.model"
+            };
+            let query = format!(
+                "SELECT {session_id}, u.model, {started}, {ended}, {message_count}, SUM({input}), SUM({output}), SUM({cache_read}), SUM({cache_write}), SUM({reasoning}), {actual_cost}, 0 FROM session_model_usage u {provider_join} WHERE TRIM(COALESCE(u.model, '')) != '' GROUP BY u.session_id, u.model HAVING SUM({input}) > 0 OR SUM({output}) > 0 OR SUM({cache_read}) > 0 OR SUM({cache_write}) > 0 OR SUM({reasoning}) > 0 OR {actual_cost} > 0 ORDER BY {started} DESC, {order}",
+                input = field("input_tokens"), output = field("output_tokens"),
+                cache_read = field("cache_read_tokens"), cache_write = field("cache_write_tokens"),
+                reasoning = field("reasoning_tokens")
+            );
+            if let Ok(mut statement) = conn.prepare(&query) {
+                if let Ok(mapped) = statement.query_map([], |row| {
+                    Ok(HermesSessionRow {
+                        raw_session_id: row.get(0)?,
+                        model: row.get(1)?,
+                        started_at: normalize_hermes_timestamp(row.get::<_, f64>(2)?),
+                        ended_at: normalize_hermes_timestamp(row.get::<_, f64>(3)?),
+                        message_count: row.get::<_, i64>(4)?.max(0) as u64,
+                        input_tokens: row.get::<_, i64>(5)?.max(0) as u64,
+                        output_tokens: row.get::<_, i64>(6)?.max(0) as u64,
+                        cache_read_tokens: row.get::<_, i64>(7)?.max(0) as u64,
+                        cache_write_tokens: row.get::<_, i64>(8)?.max(0) as u64,
+                        reasoning_tokens: row.get::<_, i64>(9)?.max(0) as u64,
+                        estimated_cost_usd: row.get(10)?,
+                        actual_cost_usd: row.get(11)?,
+                    })
+                }) {
+                    for row in mapped.flatten() {
+                        covered.insert(row.raw_session_id.clone());
+                        rows.push(row);
+                    }
+                }
+            }
+        }
+    }
+
+    let started = session_expr("started_at");
+    let ended = session_expr("ended_at");
+    let count = session_expr("message_count");
+    let input = session_expr("input_tokens");
+    let output = session_expr("output_tokens");
+    let cache_read = session_expr("cache_read_tokens");
+    let cache_write = session_expr("cache_write_tokens");
+    let reasoning = session_expr("reasoning_tokens");
+    let model_filter = if sessions.contains("model") {
+        "TRIM(COALESCE(s.model, '')) != ''"
+    } else {
+        "1 = 1"
+    };
+    let query = format!(
+        "SELECT s.id, {model_expr}, {started}, {ended}, {count}, {input}, {output}, {cache_read}, {cache_write}, {reasoning}, {session_cost_est}, {session_cost_actual} FROM sessions s WHERE {model_filter} ORDER BY {started} DESC"
+    );
+    if let Ok(mut statement) = conn.prepare(&query) {
+        if let Ok(mapped) = statement.query_map([], |row| {
             Ok(HermesSessionRow {
                 raw_session_id: row.get(0)?,
                 model: row.get(1)?,
@@ -180,33 +367,14 @@ pub(crate) fn scan_hermes_sessions() -> Vec<HermesSessionData> {
                 actual_cost_usd: row.get(11)?,
             })
         }) {
-            Ok(rows) => rows,
-            Err(err) => {
-                eprintln!(
-                    "[UsageMeter] Failed to iterate Hermes sessions from {}: {}",
-                    db_path.display(),
-                    err
-                );
-                continue;
-            }
-        };
-
-        for row in rows.flatten() {
-            if row.raw_session_id.trim().is_empty() {
-                continue;
-            }
-            let canonical_session_id = canonical_hermes_session_id(&row.raw_session_id);
-            if !seen_session_ids.insert(canonical_session_id.clone()) {
-                continue;
-            }
-            if let Some(session) = build_hermes_session(&db_meta, &canonical_session_id, row) {
-                sessions.push(session);
+            for row in mapped.flatten() {
+                if !covered.contains(&row.raw_session_id) {
+                    rows.push(row);
+                }
             }
         }
     }
-
-    sessions.sort_by_key(|session| std::cmp::Reverse(session.meta.last_modified));
-    sessions
+    rows
 }
 
 pub(crate) fn compute_hermes_scan_fingerprint(sessions: &[HermesSessionData]) -> u64 {
@@ -230,7 +398,7 @@ fn build_hermes_session(
     let output_tokens = row.output_tokens + row.reasoning_tokens;
     let total_tokens =
         row.input_tokens + row.cache_read_tokens + row.cache_write_tokens + output_tokens;
-    let request_count = row.message_count.max(1);
+    let request_count = row.message_count;
     if total_tokens == 0
         && row.reasoning_tokens == 0
         && effective_hermes_cost(row.actual_cost_usd, row.estimated_cost_usd) <= 0.0
@@ -255,9 +423,10 @@ fn build_hermes_session(
     // request_key 与 record.total_tokens 使用同一口径（total_tokens 已含 reasoning），
     // 保证持久化的 request_key 与事实表的 total_tokens 一致。
     let request_key = Some(format!(
-        "{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}",
         super::constants::TOOL_HERMES,
         canonical_session_id,
+        model,
         activity_time,
         total_tokens
     ));
@@ -266,7 +435,7 @@ fn build_hermes_session(
         session_id: canonical_session_id.to_string(),
         tool: super::constants::TOOL_HERMES.to_string(),
         timestamp: activity_time.max(0),
-        message_id: format!("session:{}", row.raw_session_id),
+        message_id: format!("session:{}:{}", row.raw_session_id, model),
         input_tokens: row.input_tokens,
         // raw output_tokens 不含 reasoning，已合并（见 build_hermes_session 上方注释）。
         output_tokens,
@@ -451,7 +620,11 @@ fn normalize_hermes_timestamp(value: f64) -> i64 {
 }
 
 fn effective_hermes_cost(actual: Option<f64>, estimated: Option<f64>) -> f64 {
-    actual.or(estimated).unwrap_or(0.0).max(0.0)
+    actual
+        .filter(|value| *value > 0.0)
+        .or(estimated)
+        .unwrap_or(0.0)
+        .max(0.0)
 }
 
 fn resolve_hermes_activity_time(started_at: i64, ended_at: i64, db_last_modified: i64) -> i64 {
@@ -564,5 +737,104 @@ mod tests {
             request_key.ends_with(":68"),
             "request_key must use the same reasoning-inclusive total: {request_key}"
         );
+    }
+
+    #[test]
+    fn hermes_query_splits_models_and_falls_back_for_uncovered_legacy_sessions() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT, started_at REAL, message_count INTEGER, input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER, reasoning_tokens INTEGER, estimated_cost_usd REAL, actual_cost_usd REAL);
+             CREATE TABLE session_model_usage (session_id TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER, estimated_cost_usd REAL, actual_cost_usd REAL);",
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions VALUES ('multi', 'model-a', 1000, 7, 300, 60, 0, 0, 0, NULL, NULL);
+             INSERT INTO session_model_usage VALUES ('multi', 'model-a', 100, 20, 0, 0, 0.1, 0.1);
+             INSERT INTO session_model_usage VALUES ('multi', 'model-b', 200, 40, 0, 0, 0.2, 0.2);
+             INSERT INTO sessions VALUES ('legacy', 'model-c', 2000, 3, 50, 10, 4, 0, 0, NULL, NULL);",
+        )
+        .unwrap();
+
+        let rows = query_hermes_usage_rows(&conn);
+        assert_eq!(rows.len(), 3);
+        let model_a = rows
+            .iter()
+            .find(|row| row.raw_session_id == "multi" && row.model == "model-a")
+            .unwrap();
+        let model_b = rows
+            .iter()
+            .find(|row| row.raw_session_id == "multi" && row.model == "model-b")
+            .unwrap();
+        let legacy = rows
+            .iter()
+            .find(|row| row.raw_session_id == "legacy")
+            .unwrap();
+        assert_eq!(model_a.input_tokens, 100);
+        assert_eq!(model_b.input_tokens, 200);
+        assert_eq!(model_a.message_count, 7);
+        assert_eq!(model_b.message_count, 7);
+        assert_eq!(legacy.input_tokens, 50);
+        assert_eq!(legacy.cache_read_tokens, 4);
+    }
+
+    #[test]
+    fn hermes_query_tolerates_old_session_model_usage_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT, started_at REAL, input_tokens INTEGER, output_tokens INTEGER);
+             CREATE TABLE session_model_usage (session_id TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER);
+             INSERT INTO sessions VALUES ('old', 'fallback', 1000, 9, 2);
+             INSERT INTO session_model_usage VALUES ('old', 'actual-model', 6, 1);",
+        )
+        .unwrap();
+
+        let rows = query_hermes_usage_rows(&conn);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].model, "actual-model");
+        assert_eq!(rows[0].input_tokens, 6);
+        assert_eq!(rows[0].output_tokens, 1);
+    }
+
+    #[test]
+    fn hermes_multimodel_rows_merge_into_one_session_and_count_requests_once() {
+        let db_meta = HermesDbMeta {
+            db_path: PathBuf::from("/tmp/hermes/state.db"),
+            file_size: 100,
+            last_modified: 1_717_000_000,
+            fingerprint: 1,
+        };
+        let first = HermesSessionRow {
+            raw_session_id: "sess-multi".to_string(),
+            model: "model-a".to_string(),
+            started_at: 1_717_000_000,
+            ended_at: 1_717_000_100,
+            message_count: 7,
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            estimated_cost_usd: None,
+            actual_cost_usd: None,
+        };
+        let second = HermesSessionRow {
+            model: "model-b".to_string(),
+            message_count: 0,
+            input_tokens: 200,
+            output_tokens: 40,
+            ..first.clone()
+        };
+
+        let mut combined = build_hermes_session(&db_meta, "hermes::sess-multi", first).unwrap();
+        let another = build_hermes_session(&db_meta, "hermes::sess-multi", second).unwrap();
+        merge_hermes_session(&mut combined, another);
+
+        assert_eq!(combined.requests.len(), 2);
+        assert_eq!(combined.meta.models, vec!["model-a", "model-b"]);
+        assert_eq!(combined.meta.total_input_tokens, 300);
+        assert_eq!(combined.meta.total_output_tokens, 60);
+        assert_eq!(combined.meta.message_count, 7);
+        assert_eq!(combined.requests[0].request_count, 7);
+        assert_eq!(combined.requests[1].request_count, 0);
     }
 }

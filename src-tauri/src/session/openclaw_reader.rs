@@ -7,12 +7,16 @@ use super::shared::{
     extract_project_name, extract_timestamp, parse_u64_from_value, truncate_string,
 };
 use super::source::{ParsedSessionData, SessionSource, SourceSnapshot, SourceUpdateMode};
+use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, BufReader};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+const OPENCLAW_SQLITE_LOCATOR_PREFIX: &str = "openclaw-sqlite:";
 
 pub(super) struct OpenClawSource;
 
@@ -108,10 +112,6 @@ pub(super) fn collect_openclaw_session_files_from_root(root: &Path) -> Vec<Sessi
             continue;
         };
         let sessions_dir = agent_path.join("sessions");
-        if !sessions_dir.is_dir() {
-            continue;
-        }
-
         for path in collect_openclaw_jsonl_files(&sessions_dir) {
             let Some(raw_session_id) = derive_openclaw_raw_session_id(&path) else {
                 continue;
@@ -160,6 +160,68 @@ pub(super) fn collect_openclaw_session_files_from_root(root: &Path) -> Vec<Sessi
             last_modified.hash(&mut hasher);
             group.fingerprint ^= hasher.finish();
         }
+
+        let db_path = agent_path.join("agent").join("openclaw-agent.sqlite");
+        for raw_session_id in openclaw_sqlite_session_ids(&db_path) {
+            let unique_id = format!(
+                "{}::{}::{}",
+                super::constants::TOOL_OPENCLAW,
+                agent_id,
+                raw_session_id
+            );
+            let locator = openclaw_sqlite_locator(&db_path, &raw_session_id);
+            let group = groups
+                .entry(unique_id.clone())
+                .or_insert_with(|| SessionGroupBuilder {
+                    project_path: agent_id.to_string(),
+                    session_id: unique_id,
+                    ..Default::default()
+                });
+            if !group.transcript_paths.contains(&locator) {
+                group.transcript_paths.push(locator.clone());
+                let db_metadata = fs::metadata(&db_path).ok();
+                let wal_path = db_path.with_file_name(format!(
+                    "{}-wal",
+                    db_path.file_name().unwrap_or_default().to_string_lossy()
+                ));
+                let wal_metadata = fs::metadata(&wal_path).ok();
+                let db_size = db_metadata
+                    .as_ref()
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0)
+                    .saturating_add(
+                        wal_metadata
+                            .as_ref()
+                            .map(|metadata| metadata.len())
+                            .unwrap_or(0),
+                    );
+                let db_mtime = db_metadata
+                    .and_then(|metadata| metadata.modified().ok())
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_secs() as i64)
+                    .unwrap_or(0)
+                    .max(
+                        wal_metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.modified().ok())
+                            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|duration| duration.as_secs() as i64)
+                            .unwrap_or(0),
+                    );
+                group.file_size = group.file_size.saturating_add(db_size);
+                group.last_modified = group.last_modified.max(db_mtime);
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                locator.hash(&mut hasher);
+                db_size.hash(&mut hasher);
+                db_mtime.hash(&mut hasher);
+                wal_metadata
+                    .as_ref()
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0)
+                    .hash(&mut hasher);
+                group.fingerprint ^= hasher.finish();
+            }
+        }
     }
 
     groups
@@ -172,7 +234,13 @@ pub(super) fn collect_openclaw_session_files_from_root(root: &Path) -> Vec<Sessi
                 project_path: group.project_path,
                 file_path: group
                     .primary_file_path
-                    .or_else(|| group.transcript_paths.first().cloned())
+                    .or_else(|| {
+                        group.transcript_paths.first().map(|path| {
+                            parse_openclaw_sqlite_locator(path)
+                                .map(|(db_path, _)| db_path.to_string_lossy().to_string())
+                                .unwrap_or_else(|| path.clone())
+                        })
+                    })
                     .unwrap_or_default(),
                 transcript_paths: group.transcript_paths,
                 file_size: group.file_size,
@@ -222,32 +290,30 @@ pub(super) fn parse_openclaw_session_file(
     let mut requests = Vec::new();
 
     let mut transcript_paths = session.transcript_paths.clone();
-    transcript_paths.sort();
-    if let Some(primary_idx) = transcript_paths
-        .iter()
-        .position(|path| path == &session.file_path)
-    {
-        let primary = transcript_paths.remove(primary_idx);
-        transcript_paths.insert(0, primary);
-    }
+    transcript_paths.sort_by_key(|path| {
+        if path.starts_with(OPENCLAW_SQLITE_LOCATOR_PREFIX) {
+            0
+        } else if path == &session.file_path {
+            1
+        } else if is_openclaw_primary_transcript(Path::new(path)) {
+            2
+        } else {
+            3
+        }
+    });
 
+    let mut seen_event_ids = HashSet::new();
     for transcript_path in &transcript_paths {
-        let file_handle = match fs::File::open(transcript_path) {
-            Ok(file) => file,
-            Err(_) => continue,
+        let Some(contents) = read_openclaw_transcript(transcript_path) else {
+            continue;
         };
-        let file_timestamp = fs::metadata(transcript_path)
-            .and_then(|value| value.modified())
-            .ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|duration| duration.as_secs() as i64)
-            .unwrap_or(session.last_modified);
-        let reader = BufReader::new(file_handle);
+        let file_timestamp =
+            openclaw_path_timestamp(transcript_path).unwrap_or(session.last_modified);
         let mut current_model: Option<String> = None;
         let transcript_token = openclaw_transcript_token(transcript_path);
 
-        for (line_idx, line) in reader.lines().map_while(Result::ok).enumerate() {
-            let Ok(json) = serde_json::from_str::<Value>(&line) else {
+        for (line_idx, line) in contents.lines().enumerate() {
+            let Ok(json) = serde_json::from_str::<Value>(line) else {
                 continue;
             };
 
@@ -339,8 +405,15 @@ pub(super) fn parse_openclaw_session_file(
                             .unwrap_or(0);
                     let output = parse_u64_from_value(usage.get("output").unwrap_or(&Value::Null))
                         .unwrap_or(0);
-                    let input = raw_input.saturating_sub(cache_read);
-                    let total_tokens = input + cache_create + cache_read + output;
+                    let input = raw_input;
+                    let computed_total = input
+                        .saturating_add(cache_create)
+                        .saturating_add(cache_read)
+                        .saturating_add(output);
+                    let explicit_total =
+                        parse_u64_from_value(usage.get("totalTokens").unwrap_or(&Value::Null))
+                            .unwrap_or(0);
+                    let total_tokens = computed_total.max(explicit_total);
                     if total_tokens == 0 {
                         continue;
                     }
@@ -355,11 +428,24 @@ pub(super) fn parse_openclaw_session_file(
                     models_set.insert(model.clone());
                     current_model = Some(model.clone());
 
-                    let message_id = message
+                    let event_id = json
                         .get("id")
                         .and_then(|value| value.as_str())
-                        .filter(|value| !value.trim().is_empty())
-                        .map(|value| value.to_string())
+                        .filter(|value| !value.trim().is_empty());
+                    if let Some(event_id) = event_id {
+                        if !seen_event_ids.insert(event_id.to_string()) {
+                            continue;
+                        }
+                    }
+                    let message_id = event_id
+                        .map(str::to_string)
+                        .or_else(|| {
+                            message
+                                .get("id")
+                                .and_then(|value| value.as_str())
+                                .filter(|value| !value.trim().is_empty())
+                                .map(|value| value.to_string())
+                        })
                         .unwrap_or_else(|| {
                             format!(
                                 "openclaw:{}:{}:{}",
@@ -540,6 +626,158 @@ fn openclaw_transcript_token(path: &str) -> String {
         .unwrap_or_else(|| "session".to_string())
 }
 
+fn openclaw_sqlite_locator(db_path: &Path, session_id: &str) -> String {
+    format!(
+        "{}{}",
+        OPENCLAW_SQLITE_LOCATOR_PREFIX,
+        serde_json::json!([db_path.to_string_lossy(), session_id])
+    )
+}
+
+fn parse_openclaw_sqlite_locator(locator: &str) -> Option<(PathBuf, String)> {
+    let value: Value =
+        serde_json::from_str(locator.strip_prefix(OPENCLAW_SQLITE_LOCATOR_PREFIX)?).ok()?;
+    Some((
+        PathBuf::from(value.get(0)?.as_str()?),
+        value.get(1)?.as_str()?.to_string(),
+    ))
+}
+
+fn openclaw_sqlite_session_ids(db_path: &Path) -> Vec<String> {
+    let Ok(conn) = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return Vec::new();
+    };
+    let Ok(mut statement) =
+        conn.prepare("SELECT DISTINCT session_id FROM transcript_events ORDER BY session_id")
+    else {
+        return Vec::new();
+    };
+    statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|id| !id.trim().is_empty())
+        .collect()
+}
+
+fn read_openclaw_transcript(locator: &str) -> Option<String> {
+    if let Some((db_path, session_id)) = parse_openclaw_sqlite_locator(locator) {
+        return read_openclaw_sqlite_session(&db_path, &session_id);
+    }
+    let path = Path::new(locator);
+    let file = fs::File::open(path).ok()?;
+    if path.extension().and_then(|value| value.to_str()) == Some("zst") {
+        let mut decoder = zstd::stream::read::Decoder::new(file).ok()?;
+        decoder.window_log_max(26).ok()?;
+        let mut contents = String::new();
+        decoder
+            .take(64 * 1024 * 1024 + 1)
+            .read_to_string(&mut contents)
+            .ok()?;
+        (contents.len() <= 64 * 1024 * 1024).then_some(contents)
+    } else {
+        fs::read_to_string(path).ok()
+    }
+}
+
+fn openclaw_path_timestamp(locator: &str) -> Option<i64> {
+    let path = parse_openclaw_sqlite_locator(locator)
+        .map(|(path, _)| path)
+        .unwrap_or_else(|| PathBuf::from(locator));
+    fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs() as i64)
+}
+
+fn read_openclaw_sqlite_session(db_path: &Path, session_id: &str) -> Option<String> {
+    let conn = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    conn.busy_timeout(Duration::from_millis(500)).ok()?;
+    let has_compressed = conn
+        .prepare("SELECT event_zstd, event_utf8_bytes FROM transcript_events LIMIT 0")
+        .is_ok();
+    let has_created_at = conn
+        .prepare("SELECT created_at FROM transcript_events LIMIT 0")
+        .is_ok();
+    let query = if has_compressed {
+        if has_created_at {
+            "SELECT event_json, event_zstd, event_utf8_bytes, created_at FROM transcript_events WHERE session_id = ?1 ORDER BY seq"
+        } else {
+            "SELECT event_json, event_zstd, event_utf8_bytes, NULL FROM transcript_events WHERE session_id = ?1 ORDER BY seq"
+        }
+    } else {
+        if has_created_at {
+            "SELECT event_json, NULL, NULL, created_at FROM transcript_events WHERE session_id = ?1 ORDER BY seq"
+        } else {
+            "SELECT event_json, NULL, NULL, NULL FROM transcript_events WHERE session_id = ?1 ORDER BY seq"
+        }
+    };
+    let mut statement = conn.prepare(query).ok()?;
+    let rows = statement
+        .query_map([session_id], |row| {
+            let text: Option<String> = row.get(0)?;
+            if let Some(text) = text {
+                return Ok(Some(text));
+            }
+            let blob: Option<Vec<u8>> = row.get(1)?;
+            let raw_bytes: Option<i64> = row.get(2)?;
+            let decoded = match (blob, raw_bytes) {
+                (Some(blob), Some(size)) if (0..=64 * 1024 * 1024).contains(&size) => {
+                    zstd::bulk::decompress(&blob, size as usize)
+                        .ok()
+                        .filter(|bytes| bytes.len() == size as usize)
+                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                }
+                _ => None,
+            };
+            let created_at: Option<f64> = row.get(3)?;
+            Ok(decoded.map(|event| add_openclaw_row_timestamp(&event, created_at)))
+        })
+        .ok()?;
+    let mut events = Vec::new();
+    for row in rows {
+        if let Some(event) = row.ok().flatten() {
+            events.push(event);
+        }
+    }
+    (!events.is_empty()).then(|| events.join("\n"))
+}
+
+fn add_openclaw_row_timestamp(event: &str, created_at: Option<f64>) -> String {
+    let Some(timestamp) = created_at.filter(|timestamp| *timestamp > 0.0) else {
+        return event.to_string();
+    };
+    let Ok(mut value) = serde_json::from_str::<Value>(event) else {
+        return event.to_string();
+    };
+    let has_timestamp = value.get("timestamp").is_some_and(|value| !value.is_null())
+        || value
+            .get("message")
+            .and_then(|message| message.get("timestamp"))
+            .is_some_and(|value| !value.is_null());
+    if has_timestamp {
+        return event.to_string();
+    }
+    if let Some(object) = value.as_object_mut() {
+        object.insert("timestamp".to_string(), Value::from(timestamp as i64));
+        serde_json::to_string(&value).unwrap_or_else(|_| event.to_string())
+    } else {
+        event.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -708,7 +946,7 @@ mod tests {
         assert_eq!(meta.session_name.as_deref(), Some("登录重构"));
         assert_eq!(meta.topic.as_deref(), Some("Fix the login redirect loop"));
         assert_eq!(meta.message_count, 2);
-        assert_eq!(meta.total_input_tokens, 100);
+        assert_eq!(meta.total_input_tokens, 135);
         assert_eq!(meta.total_output_tokens, 42);
         assert_eq!(meta.total_cache_create_tokens, 8);
         assert_eq!(meta.total_cache_read_tokens, 40);
@@ -721,12 +959,68 @@ mod tests {
         );
 
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].input_tokens, 100);
-        assert_eq!(requests[0].total_tokens, 155);
+        assert_eq!(requests[0].input_tokens, 120);
+        assert_eq!(requests[0].total_tokens, 175);
         assert_eq!(requests[0].model, "claude-sonnet-4-6");
-        assert_eq!(requests[1].input_tokens, 0);
+        assert_eq!(requests[1].input_tokens, 15);
         assert_eq!(requests[1].cache_read_tokens, 20);
-        assert_eq!(requests[1].total_tokens, 35);
+        assert_eq!(requests[1].total_tokens, 50);
         assert_eq!(requests[1].model, "claude-opus-4-6");
+    }
+
+    #[test]
+    fn sqlite_and_zstd_archives_use_outer_event_ids_and_deduplicate() {
+        let temp = tempdir().unwrap();
+        let agent = temp.path().join("agent-main");
+        let sessions_dir = agent.join("sessions");
+        let db_path = agent.join("agent").join("openclaw-agent.sqlite");
+        fs::create_dir_all(&sessions_dir).unwrap();
+        fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+
+        let event = serde_json::json!({
+            "type": "message",
+            "id": "event-stable-1",
+            "message": {"role": "assistant", "model": "model-a", "usage": {
+                "input": 10, "output": 4, "cacheRead": 3, "totalTokens": 25
+            }}
+        });
+        let compressed_path = sessions_dir.join("sess-1.jsonl.deleted.1.zst");
+        let compressed = zstd::bulk::compress(format!("{}\n", event).as_bytes(), 1).unwrap();
+        fs::write(&compressed_path, compressed).unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE transcript_events (session_id TEXT, seq INTEGER, event_json TEXT, event_zstd BLOB, event_utf8_bytes INTEGER, created_at INTEGER);",
+        )
+        .unwrap();
+        let event_text = event.to_string();
+        let event_zstd = zstd::bulk::compress(event_text.as_bytes(), 1).unwrap();
+        conn.execute(
+            "INSERT INTO transcript_events VALUES (?1, ?2, NULL, ?3, ?4, ?5)",
+            rusqlite::params![
+                "sess-1",
+                1_i64,
+                event_zstd,
+                event_text.len() as i64,
+                1_760_000_000_123_i64
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let sessions = collect_openclaw_session_files_from_root(temp.path());
+        assert_eq!(sessions.len(), 1);
+        assert!(sessions[0]
+            .transcript_paths
+            .iter()
+            .any(|p| p.starts_with(OPENCLAW_SQLITE_LOCATOR_PREFIX)));
+        let (meta, requests) = parse_openclaw_session_file(&sessions[0]);
+        assert_eq!(meta.message_count, 1);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].message_id, "event-stable-1");
+        assert_eq!(requests[0].timestamp, 1_760_000_000);
+        assert_eq!(requests[0].input_tokens, 10);
+        assert_eq!(requests[0].cache_read_tokens, 3);
+        assert_eq!(requests[0].total_tokens, 25);
     }
 }

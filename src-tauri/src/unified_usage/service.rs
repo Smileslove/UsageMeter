@@ -1481,7 +1481,7 @@ fn build_fact_backed_session_stats(
         if !fact.is_accounting_primary() {
             continue;
         }
-        let request_count = fact.request_count.max(1);
+        let request_count = fact.request_count;
         total_requests = total_requests.saturating_add(request_count);
         if !fact.model.trim().is_empty() {
             models.insert(fact.model.clone());
@@ -2079,7 +2079,7 @@ async fn get_merged_project_stats_with_db(
             entry.stats.project_identity = Some(descriptor.identity.clone());
         }
 
-        let request_count = fact.request_count.max(1);
+        let request_count = fact.request_count;
         entry.stats.total_input_tokens += fact.input_tokens;
         entry.stats.total_output_tokens += fact.output_tokens;
         entry.stats.total_cache_create_tokens += fact.cache_create_tokens;

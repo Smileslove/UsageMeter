@@ -177,7 +177,7 @@ pub struct LocalRequestRecord {
     /// 总 Token = input + cache_create + cache_read + output
     #[serde(default)]
     pub total_tokens: u64,
-    /// 该事实代表的请求数权重。逐请求来源通常为 1，会话级聚合来源可大于 1。
+    /// 该事实代表的请求数权重。逐请求来源通常为 1；会话/模型汇总可为 0 或大于 1。
     #[serde(default = "default_request_count")]
     pub request_count: u64,
     /// 使用模型

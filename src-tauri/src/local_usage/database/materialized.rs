@@ -102,7 +102,7 @@ impl LocalUsageDatabase {
             if !fact.is_accounting_primary() {
                 continue;
             }
-            let request_count = fact.request_count.max(1);
+            let request_count = fact.request_count;
             summary.request_count += request_count;
             let visible = fact.status_code.map(|code| code < 300).unwrap_or(true);
             if visible {
@@ -183,7 +183,7 @@ impl LocalUsageDatabase {
                         materialized_at,
                         ..Default::default()
                     });
-            let request_count = fact.request_count.max(1);
+            let request_count = fact.request_count;
             entry.request_count += request_count;
             if fact.estimated {
                 entry.estimated_request_count += request_count;
@@ -1037,7 +1037,7 @@ impl LocalUsageDatabase {
                     cache_create_tokens: row.get::<_, i64>(12)?.max(0) as u64,
                     cache_read_tokens: row.get::<_, i64>(13)?.max(0) as u64,
                     total_tokens: row.get::<_, i64>(14)?.max(0) as u64,
-                    request_count: row.get::<_, i64>(15)?.max(1) as u64,
+                    request_count: row.get::<_, i64>(15)?.max(0) as u64,
                     estimated_cost: row.get(16)?,
                     estimated: row.get::<_, i64>(17)?.max(0) > 0,
                     coverage_origin: CoverageOrigin::from_storage_str(
@@ -1157,7 +1157,7 @@ impl LocalUsageDatabase {
                     cache_create_tokens: row.get::<_, i64>(12)?.max(0) as u64,
                     cache_read_tokens: row.get::<_, i64>(13)?.max(0) as u64,
                     total_tokens: row.get::<_, i64>(14)?.max(0) as u64,
-                    request_count: row.get::<_, i64>(15)?.max(1) as u64,
+                    request_count: row.get::<_, i64>(15)?.max(0) as u64,
                     estimated_cost: row.get(16)?,
                     estimated: row.get::<_, i64>(17)?.max(0) > 0,
                     coverage_origin: CoverageOrigin::from_storage_str(
@@ -1256,7 +1256,7 @@ impl LocalUsageDatabase {
                         cache_create_tokens: row.get::<_, i64>(13)?.max(0) as u64,
                         cache_read_tokens: row.get::<_, i64>(14)?.max(0) as u64,
                         total_tokens: row.get::<_, i64>(15)?.max(0) as u64,
-                        request_count: row.get::<_, i64>(16)?.max(1) as u64,
+                        request_count: row.get::<_, i64>(16)?.max(0) as u64,
                         estimated_cost: row.get(17)?,
                         estimated: row.get::<_, i64>(18)?.max(0) > 0,
                         coverage_origin: CoverageOrigin::from_storage_str(

@@ -756,10 +756,14 @@ impl LocalUsageDatabase {
                 .map_err(|e| format!("Failed to serialize model list: {}", e))?;
             let usage_sources_json = serde_json::to_string(&meta.usage_sources)
                 .map_err(|e| format!("Failed to serialize session usage sources: {}", e))?;
-            let total_tokens = meta.total_input_tokens
+            let bucket_total_tokens = meta.total_input_tokens
                 + meta.total_output_tokens
                 + meta.total_cache_create_tokens
                 + meta.total_cache_read_tokens;
+            let request_total_tokens = requests.iter().fold(0_u64, |total, request| {
+                total.saturating_add(request.total_tokens)
+            });
+            let total_tokens = bucket_total_tokens.max(request_total_tokens);
 
             tx.execute(
                 "INSERT INTO local_sessions (

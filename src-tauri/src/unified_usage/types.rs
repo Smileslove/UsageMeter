@@ -1294,7 +1294,7 @@ impl MergedRequestFact {
             cache_create_tokens: record.cache_create_tokens,
             cache_read_tokens: record.cache_read_tokens,
             total_tokens: record.total_tokens,
-            request_count: record.request_count.max(1),
+            request_count: record.request_count,
             estimated_cost: record.explicit_estimated_cost.unwrap_or(cost).max(0.0),
             estimated: meta.map(|m| m.estimated).unwrap_or(false),
             coverage_origin: CoverageOrigin::LocalOnly,
@@ -1463,7 +1463,7 @@ impl MergedRequestFact {
             cache_create_tokens,
             cache_read_tokens,
             total_tokens,
-            request_count: local.request_count.max(1),
+            request_count: local.request_count,
             estimated_cost,
             estimated: meta.map(|m| m.estimated).unwrap_or(false),
             coverage_origin: CoverageOrigin::MergedProxyPreferred,
@@ -1724,6 +1724,16 @@ mod tests {
         let local = local_with(100, 200, 0, 0, "sess", 1_700_000_000);
         let fact = MergedRequestFact::from_local(&local, None, 0.0);
         assert_eq!(fact.source_label, None);
+    }
+
+    #[test]
+    fn local_only_preserves_explicit_zero_request_weight() {
+        let mut local = local_with(100, 200, 0, 0, "sess", 1_700_000_000);
+        local.request_count = 0;
+
+        let fact = MergedRequestFact::from_local(&local, None, 0.0);
+
+        assert_eq!(fact.request_count, 0);
     }
 
     #[test]
