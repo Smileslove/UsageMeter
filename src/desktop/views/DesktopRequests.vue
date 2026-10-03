@@ -34,7 +34,8 @@ const locale = computed(() => store.settings.locale)
 const {
   formatTime,
   formatTokens,
-  formatCost,
+  displayRequestCost,
+  displayRequestTokens,
   formatDuration,
   requestModelLabel,
   requestStatusLabel,
@@ -494,11 +495,11 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
                 <span v-if="request.coverageOrigin === 'local_only'" class="text-xs text-[var(--theme-text-quaternary)]">—</span>
                 <StatusBadge v-else :label="requestStatusLabel(request)" :cls="requestStatusClasses(request)" />
               </td>
-              <td v-if="isColumnVisible('input')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(request.inputTokens) }}</td>
-              <td v-if="isColumnVisible('output')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(request.outputTokens) }}</td>
+              <td v-if="isColumnVisible('input')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ displayRequestTokens(request, request.inputTokens) }}</td>
+              <td v-if="isColumnVisible('output')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ displayRequestTokens(request, request.outputTokens) }}</td>
               <td v-if="isColumnVisible('cache')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(requestCacheTokens(request)) }}</td>
-              <td v-if="isColumnVisible('totalTokens')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono font-semibold text-[var(--theme-text-primary)]">{{ formatTokens(request.totalTokens) }}</td>
-              <td v-if="isColumnVisible('cost')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-chart-cost)]">{{ formatCost(request.estimatedCost) }}</td>
+              <td v-if="isColumnVisible('totalTokens')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono font-semibold text-[var(--theme-text-primary)]">{{ displayRequestTokens(request, request.totalTokens) }}</td>
+              <td v-if="isColumnVisible('cost')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-chart-cost)]">{{ displayRequestCost(request) }}</td>
               <td v-if="isColumnVisible('ttft')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">{{ requestHasProxyPerformance(request) ? formatDuration(request.ttftMs) : '—' }}</td>
               <td v-if="isColumnVisible('duration')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">{{ requestHasProxyPerformance(request) ? formatDuration(request.durationMs) : '—' }}</td>
               <td v-if="isColumnVisible('rate')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">{{ requestHasProxyPerformance(request) && request.outputTokensPerSecond ? `${request.outputTokensPerSecond.toFixed(1)}t/s` : '—' }}</td>
@@ -560,7 +561,7 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
                 </div>
                 <div class="desktop-detail-drawer__metric">
                   <span class="desktop-detail-drawer__metric-icon desktop-detail-drawer__metric-icon--green"><DollarSign class="h-4 w-4" /></span>
-                  <div class="desktop-detail-drawer__metric-copy"><span>{{ t(locale, 'sessions.cost') }}</span><strong class="desktop-detail-drawer__metric-value--cost">{{ formatCost(selectedRequest.estimatedCost) }}</strong></div>
+                  <div class="desktop-detail-drawer__metric-copy"><span>{{ t(locale, 'sessions.cost') }}</span><strong class="desktop-detail-drawer__metric-value--cost">{{ displayRequestCost(selectedRequest) }}</strong></div>
                 </div>
                 <div class="desktop-detail-drawer__metric">
                   <span class="desktop-detail-drawer__metric-icon desktop-detail-drawer__metric-icon--blue"><Timer class="h-4 w-4" /></span>
@@ -619,7 +620,7 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
                   <span class="shrink-0 text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.requestAttribution') }}</span>
                   <span class="text-xs font-medium text-[var(--theme-text-secondary)]">{{ requestAttributionLabel(selectedRequest) }}</span>
                 </div>
-                <div class="flex items-center justify-between gap-2 py-1">
+                <div v-if="selectedRequest.tool !== 'cursor'" class="flex items-center justify-between gap-2 py-1">
                   <label class="shrink-0 text-xs text-[var(--theme-text-tertiary)]" for="manual-request-attribution">{{ t(locale, 'sessions.manualAttribution') }}</label>
                   <select
                     id="manual-request-attribution"
@@ -631,7 +632,7 @@ function handleSortClick(col: { sortable: boolean; sortField?: RequestSortField 
                     <option v-for="option in manualAttributionOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
                   </select>
                 </div>
-                <label class="flex cursor-pointer items-center justify-end gap-1.5 py-1 text-xs text-[var(--theme-text-secondary)]" for="apply-manual-attribution-to-session">
+                <label v-if="selectedRequest.tool !== 'cursor'" class="flex cursor-pointer items-center justify-end gap-1.5 py-1 text-xs text-[var(--theme-text-secondary)]" for="apply-manual-attribution-to-session">
                   <input
                     id="apply-manual-attribution-to-session"
                     v-model="applyManualAttributionToSession"

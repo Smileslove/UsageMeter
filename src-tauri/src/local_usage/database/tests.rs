@@ -897,7 +897,7 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
             |row| row.get(0),
         )
         .expect("read schema version");
-    assert_eq!(schema_version, "35");
+    assert_eq!(schema_version, "36");
     for table in ["local_sessions", "remote_sessions"] {
         let columns: Vec<String> = conn
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -1133,7 +1133,7 @@ fn v35_migration_clears_stale_unified_materialization() {
         )
         .expect("count materialized facts");
 
-    assert_eq!(schema_version, "35");
+    assert_eq!(schema_version, "36");
     assert_eq!(materialized_count, 0);
 }
 
@@ -1870,6 +1870,7 @@ fn unified_materialized_facts_round_trip() {
         source_label: Some("sk-ant-1234".to_string()),
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        provenance: None,
         reconciliation: unified_usage::ReconciliationMetadata {
             observation_sources: unified_usage::ObservationSources::from_storage_str(
                 "local_file+gateway",
@@ -2178,6 +2179,7 @@ fn unified_materialization_state_persists_day_boundary_mode() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        provenance: None,
         reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
 
@@ -2303,6 +2305,7 @@ fn cold_facts_shard_cache_only_refetches_rematerialized_day() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        provenance: None,
         reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     let build_state =
@@ -2566,6 +2569,7 @@ fn v16_migration_clears_stale_unified_materialization_from_codex_fuzzy_match_fix
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        provenance: None,
         reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     db.replace_unified_day_materialization(
@@ -2655,6 +2659,7 @@ fn v17_migration_clears_stale_unified_materialization_from_codex_session_id_pref
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        provenance: None,
         reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     db.replace_unified_day_materialization(
@@ -2744,6 +2749,7 @@ fn v18_migration_clears_stale_unified_materialization_from_codex_session_id_remo
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        provenance: None,
         reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     db.replace_unified_day_materialization(
@@ -2833,6 +2839,7 @@ fn v19_migration_clears_stale_unified_materialization_from_per_field_match_fix()
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        provenance: None,
         reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     db.replace_unified_day_materialization(
@@ -2918,6 +2925,7 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        provenance: None,
         reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     db.replace_unified_day_materialization(
@@ -2986,7 +2994,7 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
             .get_local_sync_state("schema_version")
             .unwrap()
             .as_deref(),
-        Some("35")
+        Some("36")
     );
     assert!(
         reopened
@@ -3138,6 +3146,7 @@ fn purge_orphan_uses_business_day_bucketing_for_invalidated_dates() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        provenance: None,
         reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     db.replace_unified_day_materialization(
@@ -3234,6 +3243,7 @@ fn invalidate_unified_materialization_clears_rows_and_bumps_version() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        provenance: None,
         reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     db.replace_unified_day_materialization(
@@ -3315,6 +3325,7 @@ fn unified_visible_counts_exclude_3xx_statuses() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        provenance: None,
         reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     let redirect_fact = MergedRequestFact {
@@ -3401,6 +3412,7 @@ fn unified_local_only_day_is_not_marked_partial() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        provenance: None,
         reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
 
@@ -3469,6 +3481,7 @@ fn unified_mixed_day_is_marked_partial() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        provenance: None,
         reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
     let proxy_fact = MergedRequestFact {
@@ -3498,6 +3511,7 @@ fn unified_mixed_day_is_marked_partial() {
         source_label: Some("sk-ant-1234".to_string()),
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        provenance: None,
         reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
 
@@ -3569,6 +3583,7 @@ fn unified_summary_respects_request_count_weight() {
         source_label: None,
         attribution_source_id: None,
         attribution_method: unified_usage::AttributionMethod::Unattributed,
+        provenance: None,
         reconciliation: unified_usage::ReconciliationMetadata::default(),
     };
 

@@ -10,6 +10,7 @@ import LocalCacheManagementPanel from '../components/settings/LocalCacheManageme
 import NetworkProxyPanel from '../components/settings/NetworkProxyPanel.vue'
 import SyncSettingsPanel from '../components/settings/SyncSettingsPanel.vue'
 import WslScanPanel from '../components/settings/WslScanPanel.vue'
+import CursorSettingsPanel from '../components/settings/CursorSettingsPanel.vue'
 import ConfirmDialog from '../components/settings/ConfirmDialog.vue'
 import { useMonitorStore } from '../stores/monitor'
 import { t } from '../i18n'
@@ -101,6 +102,7 @@ const confirmQuit = async () => {
             <SyncSettingsPanel />
             <LocalCacheManagementPanel />
             <WslScanPanel />
+            <CursorSettingsPanel />
           </div>
         </div>
       </section>

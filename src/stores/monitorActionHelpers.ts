@@ -16,9 +16,9 @@ import { failedSubscriptionQuery } from './subscriptionErrors'
 
 /** Normalize persisted values before they are consumed by settings UI or back-end calls. */
 export function normalizeSettings(settings: AppSettings): AppSettings {
-  return settings.numberFormat === 'chinese'
-    ? settings
-    : { ...settings, numberFormat: 'international' }
+  if (settings.numberFormat === 'chinese' && settings.cursor) return settings
+  return { ...settings, cursor: settings.cursor ?? { accountSyncEnabled: false, databasePath: null },
+    numberFormat: settings.numberFormat === 'chinese' ? 'chinese' : 'international' }
 }
 
 /** Merge the deferred overview response without mutating the current snapshot. */

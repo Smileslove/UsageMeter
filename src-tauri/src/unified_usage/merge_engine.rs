@@ -43,9 +43,11 @@ pub(crate) fn build_coverage(facts: &[MergedRequestFact]) -> MergedCoverage {
 
     let has_partial =
         has_partial_coverage(coverage.proxy_backed_requests, coverage.local_only_requests);
-    // Local-only requests carry a synthetic Some(200); status suppression is no longer needed.
-    coverage.has_partial_status_coverage = false;
-    coverage.has_partial_performance_coverage = has_partial;
+    coverage.has_partial_status_coverage = facts
+        .iter()
+        .any(|fact| fact.tool == "cursor" && fact.status_code.is_none());
+    coverage.has_partial_performance_coverage =
+        has_partial || facts.iter().any(|fact| fact.tool == "cursor");
     coverage
 }
 

@@ -5,6 +5,7 @@ use super::LocalUsageDatabase;
 impl LocalUsageDatabase {
     pub(super) fn create_tables(conn: &Connection) -> Result<(), String> {
         Self::create_cache_tables(conn)?;
+        Self::create_cursor_tables(conn)?;
         Self::create_sync_v2_tables(conn)?;
         Self::create_unified_materialized_tables(conn)?;
         Self::create_activity_tables(conn)?;

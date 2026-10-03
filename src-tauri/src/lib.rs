@@ -8,6 +8,7 @@ mod app_config;
 pub mod activity;
 mod commands;
 mod copilot;
+pub(crate) mod cursor;
 mod domain;
 mod gateway;
 mod local_usage;
@@ -221,6 +222,7 @@ pub fn run() {
     ));
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::default(),
             None,
@@ -319,6 +321,8 @@ pub fn run() {
                     }
                 });
             }
+
+            crate::cursor::sync::start_background_sync(app.handle().clone());
 
             // P0 优化：预热会话面板查询缓存，避免用户首次打开面板时的冷启动等待
             {
@@ -564,6 +568,13 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::select_cursor_csv,
+            commands::get_cursor_status,
+            commands::sync_cursor_usage,
+            commands::preview_cursor_csv_import,
+            commands::import_cursor_usage_csv,
+            commands::list_cursor_import_batches,
+            commands::revoke_cursor_import_batch,
             // 设置命令
             commands::load_settings,
             commands::save_settings,

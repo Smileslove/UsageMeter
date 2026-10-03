@@ -36,6 +36,10 @@ const rankPalette = ['#a855f7', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#63
 const MODEL_LIMIT = 5
 
 const totals = computed(() => props.summary?.totals ?? null)
+const cursorEvents = computed(() => props.summary?.capability.cursorUsageEvents ?? 0)
+const cursorOnly = computed(() => cursorEvents.value > 0 && cursorEvents.value === totals.value?.requestCount)
+const unknownCursorCost = computed(() => cursorOnly.value && (props.summary?.capability.cursorUnknownCostEvents ?? 0) === cursorEvents.value)
+const incompleteCursorTokens = computed(() => cursorOnly.value && (props.summary?.capability.cursorIncompleteUsageEvents ?? 0) > 0)
 const hasData = computed(() => (totals.value?.totalTokens ?? 0) > 0 || (totals.value?.requestCount ?? 0) > 0)
 
 const totalTokensValue = computed(() => totals.value?.totalTokens ?? 0)
@@ -47,9 +51,9 @@ function formatExact(value: number): string {
   return numberFormatter.value.format(Math.round(value))
 }
 
-const exactTotalTokens = computed(() => formatExact(totalTokensValue.value))
-const exactInputTokens = computed(() => formatExact((totals.value?.inputTokens ?? 0) + (totals.value?.cacheReadTokens ?? 0)))
-const exactOutputTokens = computed(() => formatExact(totals.value?.outputTokens ?? 0))
+const exactTotalTokens = computed(() => incompleteCursorTokens.value ? '—' : formatExact(totalTokensValue.value))
+const exactInputTokens = computed(() => incompleteCursorTokens.value ? '—' : formatExact((totals.value?.inputTokens ?? 0) + (totals.value?.cacheReadTokens ?? 0)))
+const exactOutputTokens = computed(() => incompleteCursorTokens.value ? '—' : formatExact(totals.value?.outputTokens ?? 0))
 
 const peakPoint = computed(() => {
   const points = props.summary?.trend ?? []
@@ -326,14 +330,14 @@ const proofMetrics = computed(() => [
   },
   {
     key: 'requests',
-    label: t(props.locale, 'statistics.requests'),
+    label: t(props.locale, cursorOnly.value ? 'cursor.eventCount' : 'statistics.requests'),
     value: formatRequestCount(totals.value?.requestCount ?? 0),
     tone: 'emerald'
   },
   {
     key: 'cost',
-    label: t(props.locale, 'statistics.cost'),
-    value: formatCost(totals.value?.cost ?? 0, props.currency),
+    label: t(props.locale, cursorOnly.value ? 'cursor.costValue' : 'statistics.cost'),
+    value: unknownCursorCost.value ? '—' : formatCost(totals.value?.cost ?? 0, props.currency),
     tone: 'amber'
   }
 ])
@@ -519,6 +523,9 @@ const proofMetrics = computed(() => [
 
     <footer class="share-card__footer">
       <div>
+        <p v-if="cursorEvents > 0">{{ t(locale, 'cursor.shareScopeNote') }}</p>
+        <p v-if="(summary?.capability.cursorUnknownCostEvents ?? 0) > 0">{{ t(locale, 'cursor.partialCost', { count: summary?.capability.cursorUnknownCostEvents ?? 0 }) }}</p>
+        <p v-if="(summary?.capability.cursorIncompleteUsageEvents ?? 0) > 0">{{ t(locale, 'cursor.knownTotalsNote') }}</p>
         <span>{{ t(locale, 'statistics.activeRange') }}</span>
         <strong>{{ rangeLabel }}</strong>
       </div>

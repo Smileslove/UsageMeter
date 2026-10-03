@@ -753,6 +753,9 @@ impl LocalUsageDatabase {
         source_id: Option<&str>,
         updated_at_ms: i64,
     ) -> Result<u64, String> {
+        if request_keys.iter().any(|key| key.starts_with("cursor:")) {
+            return Err("cursor_fixed_account_source".into());
+        }
         let source_id = source_id.map(str::trim).filter(|value| !value.is_empty());
         let conn = self.conn.lock().unwrap_or_else(|error| error.into_inner());
         let tx = conn

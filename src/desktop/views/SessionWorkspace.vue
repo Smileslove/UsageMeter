@@ -29,6 +29,9 @@ const {
   formatTime,
   formatTokens,
   formatCost,
+  displayRequestCost,
+  displayRequestTokens,
+  displaySessionCost,
   formatDuration,
   requestModelLabel,
   requestStatusLabel,
@@ -369,7 +372,7 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
           </div>
           <div class="theme-surface rounded-xl border px-3 py-2.5">
             <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.cost') }}</div>
-            <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-chart-cost)]">{{ sessionUsageVisible(session) ? formatCost(session.estimatedCost) : '—' }}</div>
+            <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-chart-cost)]">{{ displaySessionCost(session) }}</div>
           </div>
           <div class="theme-surface rounded-xl border px-3 py-2.5">
             <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.workspace.rate') }}</div>
@@ -479,11 +482,11 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
                   <span v-if="request.coverageOrigin === 'local_only'" class="text-xs text-[var(--theme-text-quaternary)]">—</span>
                   <span v-else class="inline-flex items-center rounded-full border px-1.5 py-px text-xs font-bold leading-none" :class="requestStatusClasses(request)">{{ requestStatusLabel(request) }}</span>
                 </td>
-                <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(request.inputTokens) }}</td>
-                <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(request.outputTokens) }}</td>
+                <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ displayRequestTokens(request, request.inputTokens) }}</td>
+                <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ displayRequestTokens(request, request.outputTokens) }}</td>
                 <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens(requestCacheTokens(request)) }}</td>
-                <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono font-semibold text-[var(--theme-text-primary)]">{{ formatTokens(request.totalTokens) }}</td>
-                <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-chart-cost)]">{{ formatCost(request.estimatedCost) }}</td>
+                <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono font-semibold text-[var(--theme-text-primary)]">{{ displayRequestTokens(request, request.totalTokens) }}</td>
+                <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-chart-cost)]">{{ displayRequestCost(request) }}</td>
                 <td class="whitespace-nowrap px-2.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">{{ request.durationMs != null ? formatDuration(request.durationMs) : '—' }}</td>
               </tr>
             </tbody>
@@ -502,7 +505,7 @@ const shortId = (value: string) => (value.length > 12 ? `${value.slice(0, 6)}…
                 </div>
                 <div class="flex flex-wrap gap-x-4 gap-y-0.5 text-xs text-[var(--theme-text-secondary)]">
                   <span>{{ t(locale, 'desktop.sessions.columnTotalTokens') }}: <b class="font-mono">{{ formatTokens(selectedRequest.totalTokens) }}</b></span>
-                  <span>{{ t(locale, 'sessions.cost') }}: <b class="font-mono text-[var(--theme-chart-cost)]">{{ formatCost(selectedRequest.estimatedCost) }}</b></span>
+                  <span>{{ t(locale, 'sessions.cost') }}: <b class="font-mono text-[var(--theme-chart-cost)]">{{ displayRequestCost(selectedRequest) }}</b></span>
                   <span>{{ t(locale, 'sessions.ttft') }}: <b class="font-mono">{{ selectedRequest.ttftMs != null ? formatDuration(selectedRequest.ttftMs) : '—' }}</b></span>
                   <span>{{ t(locale, 'sessions.requestCoverage') }}: <b>{{ requestCoverageLabel(selectedRequest.coverageOrigin) }}</b></span>
                   <span v-if="requestAttributionLabel(selectedRequest)">{{ t(locale, 'sessions.requestAttribution') }}: <b>{{ requestAttributionLabel(selectedRequest) }}</b></span>

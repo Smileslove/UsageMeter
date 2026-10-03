@@ -476,6 +476,7 @@ pub(super) fn parse_openclaw_session_file(
                         request_key: None,
                         explicit_estimated_cost: None,
                         source_file_present: None,
+                        provenance: None,
                     });
                 }
                 _ => {}

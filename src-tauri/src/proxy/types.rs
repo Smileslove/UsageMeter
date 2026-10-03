@@ -290,6 +290,8 @@ pub struct WindowStats {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStats {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<crate::session::UsageProvenance>,
     /// 会话 ID
     pub session_id: String,
     /// 客户端工具标识
@@ -371,6 +373,10 @@ pub struct SessionStats {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectStats {
+    #[serde(default)]
+    pub usage_known: Option<bool>,
+    #[serde(default)]
+    pub cost_complete: Option<bool>,
     /// 项目名称
     pub name: String,
     /// 结构化项目键，供前端稳定区分未知项目分组
@@ -425,6 +431,10 @@ pub struct ProjectStats {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectToolStats {
+    #[serde(default)]
+    pub usage_known: Option<bool>,
+    #[serde(default)]
+    pub cost_complete: Option<bool>,
     /// 客户端工具标识，如 claude_code / codex
     pub tool: String,
     /// 请求数量

@@ -146,6 +146,21 @@ pub struct SessionMeta {
     pub estimated: bool,
 }
 
+/// Evidence carried through local facts and cold materialization. All fields are
+/// content-free; billing value and actual cash spend are different measures.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageProvenance {
+    pub source_timestamp_ms: i64,
+    pub data_scope: String,
+    pub usage_basis: String,
+    pub cost_basis: String,
+    pub usage_complete: bool,
+    pub session_kind: String,
+    pub count_basis: String,
+    pub charged_amount_usd: Option<f64>,
+}
+
 /// 本地 transcript 中抽取出的单条请求事实
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -197,6 +212,8 @@ pub struct LocalRequestRecord {
     /// None 视为"未知/仍存在"。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_file_present: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<UsageProvenance>,
 }
 
 fn default_request_count() -> u64 {

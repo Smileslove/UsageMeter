@@ -4,7 +4,7 @@ import { Activity } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
 import LobeIcon from '../LobeIcon.vue'
-import { formatTokenValue, formatUsedTotal as formatUsedTotalPair } from '../../utils/format'
+import { formatCost, formatTokenValue, formatUsedTotal as formatUsedTotalPair } from '../../utils/format'
 import type { QuotaTier, SubscriptionQuota } from '../../types'
 
 const store = useMonitorStore()
@@ -20,6 +20,7 @@ function pickQuota(result: { success?: boolean; quota?: SubscriptionQuota } | nu
 const claudeQuota = computed(() => pickQuota(store.claudeQuota))
 const codexQuota = computed(() => pickQuota(store.subscriptionQuota))
 const copilotQuota = computed(() => pickQuota(store.copilotQuota))
+const cursorQuota = computed(() => pickQuota(store.cursorQuota))
 const geminiQuota = computed(() => pickQuota(store.geminiQuota))
 
 const configuredSourceQuotas = computed<SubscriptionQuota[]>(() =>
@@ -42,6 +43,7 @@ const hasContent = computed(() =>
   !!claudeQuota.value ||
   !!codexQuota.value ||
   !!geminiQuota.value ||
+  !!cursorQuota.value ||
   configuredSourceQuotas.value.length > 0
 )
 
@@ -160,7 +162,7 @@ type CompactQuotaRow = {
   sublabel: string
   detailText?: string
   resetText?: string
-  barPercent: number
+  barPercent: number | null
 }
 
 function formatUsedTotal(tier?: QuotaTier): string {
@@ -260,6 +262,17 @@ const officialRows = computed(() => {
       loading: store.subscriptionLoading,
       refresh: async () => { await store.refreshSubscriptionQuota() },
     })
+  }
+
+  if (cursorQuota.value) {
+    rows.push({ key: 'cursor', label: t(locale.value, 'cursor.title'), icon: 'cursor', toneClass: 'tone-sky',
+      rows: cursorQuota.value.tiers.map(tier => ({ key: tier.name, sublabel: t(locale.value, `cursor.${tier.name}`),
+        metric: tier.currency === 'USD' && tier.usedValue != null
+          ? t(locale.value, 'cursor.spent', { value: formatCost(tier.usedValue, store.settings.currency) })
+          : remainingPercentText(tier),
+        resetText: tier.resetsAt ? t(locale.value, 'survival.resetIn', { time: formatResetFromIso(tier.resetsAt) }) : undefined,
+        barPercent: tier.utilizationAvailable === false ? null : remainingPercent(tier) })),
+      loading: store.cursorQuotaLoading, refresh: async () => { await store.fetchCursorQuota(true) } })
   }
 
   const geminiTiers = geminiQuota.value?.tiers.filter(tier => tier.kind !== 'balance') ?? []
@@ -407,7 +420,7 @@ function sourceCaptionOf(q: SubscriptionQuota): string {
                   }
                 ]"
               >
-                <div class="compact-progress quota-strip-progress quota-strip-progress-official">
+                <div v-if="tierRow.barPercent != null" class="compact-progress quota-strip-progress quota-strip-progress-official">
                   <div class="compact-progress-fill" :style="{ width: `${tierRow.barPercent}%` }" />
                 </div>
                 <div

@@ -7,6 +7,7 @@ import { resolveTakeoverConflict as resolveTakeoverConflictRequest } from './api
 import { useMonitorStore } from './stores/monitor'
 import { useUpdaterStore } from './stores/updater'
 import type { UpdateInfo } from './stores/updater'
+import CursorUsageNotice from './components/CursorUsageNotice.vue'
 import Overview from './views/Overview.vue'
 import Statistics from './views/Statistics.vue'
 import Sessions from './views/Sessions.vue'
@@ -373,6 +374,7 @@ onUnmounted(() => {
       class="relative min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-5 pt-1 no-scrollbar"
       style="-webkit-app-region: no-drag; app-region: no-drag"
     >
+      <CursorUsageNotice v-if="currentView !== 'settings' && currentView !== 'gateway'" />
       <Overview v-if="currentView === 'overview'" />
       <Statistics v-else-if="currentView === 'statistics'" />
       <Sessions v-else-if="currentView === 'sessions'" />

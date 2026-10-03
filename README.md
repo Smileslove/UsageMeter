@@ -35,6 +35,15 @@ It is designed around a compact menu bar workflow on macOS: no Dock icon, fast p
 | Source/provider attribution | API sources detected from proxy traffic, manual source naming, source merge/delete/key-note management, source-level filtering |
 | Official or account quota queries | Codex ChatGPT OAuth, Claude, Gemini CLI, GitHub Copilot |
 | Relay/provider quota queries | Configured third-party relay sources with profile-based quota or balance querying |
+| Cursor IDE | Read-only local conversation/project metadata and preview/import/revoke of dashboard usage CSV files. Private account sync and quota code is gated until real-account contract validation is completed. |
+
+### Cursor data boundaries
+
+Open **Settings → Cursor** to import an exported usage CSV. Preview validates the entire file's token and cache-column totals before import; importing the same file into the same namespace is idempotent. Use one namespace per account, and revoke overlapping CSV batches before replacing them. CSV dates describe observed events, not a guarantee of complete historical coverage.
+
+Cursor tokens and metered usage value come from account billing events. These may include other devices or cloud agents; usage-event counts are not HTTP request counts, and metered value is separate from charged amounts. Missing cost, token buckets, status and performance remain unknown. Local `state.vscdb` and workspace databases supply only conversation IDs, dates and exact project associations; text length never becomes a token estimate. Events without conversation IDs appear as account-date buckets and do not increase real project session counts.
+
+The private dashboard API, pagination and quota provider are implemented behind a disabled compatibility gate. No account network requests are made until real-account validation permits enabling this gate and the user opts in. Cursor credentials are read in memory only, never copied into UsageMeter settings or exported. Cursor usage is excluded from WebDAV snapshots and outbox records. Cursor CLI, team-admin API, deep activity and proxy takeover are outside this integration.
 
 ## What It Can Do
 

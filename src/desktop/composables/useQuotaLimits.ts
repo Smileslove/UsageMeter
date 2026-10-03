@@ -4,6 +4,8 @@
  * limitSurvival / claudeQuota / subscriptionQuota / copilotQuota / geminiQuota / configuredSourceQuotas。
  */
 import { computed } from 'vue'
+import { formatCost } from '../../utils/format'
+import { t } from '../../i18n'
 import { useMonitorStore } from '../../stores/monitor'
 import type { QuotaTier, SubscriptionQuota, SurvivalConfidence } from '../../types'
 
@@ -17,6 +19,7 @@ export interface LimitRow {
   labelText: string | null
   windowLabelKey: string | null
   windowLabelText: string | null
+  amountText?: string
   usedPct: number | null
   barPct: number
   /** 距离重置的原始秒数（null 表示无重置信息，由组件层格式化）。 */
@@ -29,7 +32,7 @@ export interface LimitRow {
 
 /** 使用百分比：优先 (max - remaining) / max，其次 utilization。 */
 export function usedPercentOf(tier: QuotaTier | undefined): number | null {
-  if (!tier) return null
+  if (!tier || tier.utilizationAvailable === false) return null
   if (tier.maxValue != null && tier.remainingValue != null && tier.maxValue > 0) {
     return ((tier.maxValue - tier.remainingValue) / tier.maxValue) * 100
   }
@@ -52,6 +55,7 @@ export function useQuotaLimits() {
   const claudeQuota = computed(() => pickQuota(store.claudeQuota))
   const codexQuota = computed(() => pickQuota(store.subscriptionQuota))
   const copilotQuota = computed(() => pickQuota(store.copilotQuota))
+  const cursorQuota = computed(() => pickQuota(store.cursorQuota))
   const geminiQuota = computed(() => pickQuota(store.geminiQuota))
   const configuredQuotas = computed(() => store.configuredSourceQuotas.filter(q => (q.tiers?.length ?? 0) > 0))
 
@@ -71,6 +75,7 @@ export function useQuotaLimits() {
   }
 
   function tierLabelParts(name: string): { key: string | null; text: string | null } {
+    if (name.startsWith('cursor_')) return { key: `cursor.${name}`, text: null }
     if (name === 'five_hour') return { key: 'subscription.fiveHour', text: null }
     if (name === 'seven_day') return { key: 'subscription.sevenDay', text: null }
     return { key: null, text: name || null }
@@ -209,6 +214,15 @@ export function useQuotaLimits() {
     if (geminiQuota.value) {
       const row = quotaRow('gemini', { key: 'subscription.gemini', text: null }, geminiQuota.value)
       if (row) rows.push(row)
+    }
+    if (cursorQuota.value) {
+      for (const tier of cursorQuota.value.tiers) {
+        const row = quotaRow(`cursor:${tier.name}`, { key: 'cursor.title', text: null }, { ...cursorQuota.value, tiers: [tier] })
+        if (row) {
+          if (tier.currency === 'USD' && tier.usedValue != null) row.amountText = t(store.settings.locale, 'cursor.spent', { value: formatCost(tier.usedValue, store.settings.currency) })
+          rows.push(row)
+        }
+      }
     }
     for (const q of configuredQuotas.value) {
       const row = quotaRow(`source:${q.provider}:${q.tool}`, sourceToolLabelParts(q), q)

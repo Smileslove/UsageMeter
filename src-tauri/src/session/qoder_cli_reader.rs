@@ -343,6 +343,7 @@ fn extract_cli_request_record(
         request_key: None,
         explicit_estimated_cost: None,
         source_file_present: None,
+        provenance: None,
     })
 }
 

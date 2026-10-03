@@ -15,7 +15,7 @@ impl LocalUsageDatabase {
         let base_select = "SELECT session_id, tool, timestamp, message_id,
                         input_tokens, output_tokens, cache_create_tokens, cache_read_tokens,
                         total_tokens, COALESCE(request_count, 1), model, is_subagent, request_key,
-                        source_file_present, COALESCE(reasoning_tokens, 0), explicit_estimated_cost
+                        source_file_present, COALESCE(reasoning_tokens, 0), explicit_estimated_cost, provenance_json
                  FROM local_request_facts";
         let mapper = |row: &rusqlite::Row<'_>| {
             let request_key: Option<String> = row.get(12)?;
@@ -38,6 +38,9 @@ impl LocalUsageDatabase {
                 is_subagent: row.get::<_, i64>(11)? != 0,
                 request_key: request_key.filter(|v| !v.trim().is_empty()),
                 explicit_estimated_cost: row.get(15)?,
+                provenance: row
+                    .get::<_, Option<String>>(16)?
+                    .and_then(|json| serde_json::from_str(&json).ok()),
                 source_file_present: source_file_present.map(|v| v != 0),
                 reasoning_tokens: LocalUsageDatabase::saturating_i64_to_u64(row.get::<_, i64>(14)?),
             })

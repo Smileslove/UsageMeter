@@ -51,7 +51,7 @@ const hasCoverageData = computed(() => (
   coveredRequests.value > 0 || uncoveredRequests.value > 0 || props.session?.usageFullyCovered === false
 ))
 const sessionUsageVisible = computed(() => (
-  props.session?.tool !== 'reasonix' || hasCoverageData.value
+  props.session?.provenance?.usageBasis !== 'metadata_only' && props.session?.provenance?.usageComplete !== false && (props.session?.tool !== 'reasonix' || hasCoverageData.value)
 ))
 const sessionHasPartialCoverage = computed(() => props.session?.tool === 'reasonix' && uncoveredRequests.value > 0)
 const totalTokens = computed(() => {
@@ -60,14 +60,14 @@ const totalTokens = computed(() => {
   return session.totalInputTokens + session.totalOutputTokens + session.totalCacheCreateTokens + session.totalCacheReadTokens
 })
 const displayTokens = (tokens: number) => (sessionUsageVisible.value ? formatTokens(tokens) : '—')
-const displayCost = (cost: number | undefined) => (sessionUsageVisible.value ? formatCost(cost) : '—')
+const displayCost = (cost: number | undefined) => (props.session?.provenance?.usageBasis !== 'metadata_only' && props.session?.provenance?.costBasis !== 'unknown' && (props.session?.tool !== 'reasonix' || sessionUsageVisible.value) ? formatCost(cost) : '—')
 const displayRate = computed(() => {
   const session = props.session
   if (!sessionUsageVisible.value || !session || session.avgOutputTokensPerSecond <= 0) return '—'
   return session.avgOutputTokensPerSecond.toFixed(1)
 })
 const displayDuration = computed(() => (
-  sessionUsageVisible.value && props.session ? formatDuration(props.session.totalDurationMs) : '—'
+  sessionUsageVisible.value && props.session && props.session.tool !== 'cursor' ? formatDuration(props.session.totalDurationMs) : '—'
 ))
 const displayProxyTokenValue = computed(() => {
   const session = props.session
@@ -82,6 +82,8 @@ const displayProxyRate = computed(() => {
 const displaySessionTitle = computed(() => {
   const session = props.session
   if (!session) return t(store.settings.locale, 'sessions.untitled')
+  if (session.provenance?.sessionKind === 'account_bucket') return t(store.settings.locale, 'cursor.accountBucket')
+  if (session.provenance?.usageBasis === 'metadata_only') return t(store.settings.locale, 'cursor.metadataOnly')
   const sessionName = session.sessionName?.trim()
   if (session.topic?.trim()) return session.topic
   if (sessionName && !uuidLikePattern.test(sessionName)) return sessionName
@@ -158,6 +160,7 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
         </header>
 
         <div class="session-detail-modal__body detail-modal-body min-h-0 flex-1 overflow-y-auto">
+          <p v-if="session.tool === 'cursor' && session.provenance?.dataScope === 'account'" class="mb-3 text-xs leading-relaxed text-[var(--theme-text-secondary)]">{{ t(store.settings.locale, 'cursor.scopeNote') }}</p>
           <div v-if="sessionHasPartialCoverage || projectHint" class="session-detail-notice">
             <Info class="h-4 w-4 shrink-0" aria-hidden="true" />
             <div class="min-w-0">
@@ -190,8 +193,8 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
             <div class="session-detail-stat-grid">
               <div><span>{{ t(store.settings.locale, 'sessions.requests') }}</span><strong>{{ sessionHasPartialCoverage ? localRecordCount : session.totalRequests }}</strong></div>
               <div><span><Timer class="h-3.5 w-3.5" aria-hidden="true" />{{ t(store.settings.locale, 'sessions.ttft') }}</span><strong>{{ sessionUsageVisible && session.avgTtftMs ? `${session.avgTtftMs.toFixed(0)}ms` : '—' }}</strong></div>
-              <div><span><CheckCircle2 class="h-3.5 w-3.5" aria-hidden="true" />{{ t(store.settings.locale, 'common.success') }}</span><strong class="session-detail-stat--success">{{ sessionUsageVisible ? (session.successRequests || 0) : '—' }}</strong></div>
-              <div><span><AlertCircle class="h-3.5 w-3.5" aria-hidden="true" />{{ t(store.settings.locale, 'common.error') }}</span><strong class="session-detail-stat--error">{{ sessionUsageVisible ? (session.errorRequests || 0) : '—' }}</strong></div>
+              <div><span><CheckCircle2 class="h-3.5 w-3.5" aria-hidden="true" />{{ t(store.settings.locale, 'common.success') }}</span><strong class="session-detail-stat--success">{{ sessionUsageVisible && session.tool !== 'cursor' ? (session.successRequests || 0) : '—' }}</strong></div>
+              <div><span><AlertCircle class="h-3.5 w-3.5" aria-hidden="true" />{{ t(store.settings.locale, 'common.error') }}</span><strong class="session-detail-stat--error">{{ sessionUsageVisible && session.tool !== 'cursor' ? (session.errorRequests || 0) : '—' }}</strong></div>
             </div>
           </section>
 

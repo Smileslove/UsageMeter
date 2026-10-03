@@ -3,6 +3,7 @@
 use super::claude_reader::ClaudeSource;
 use super::codex_reader::CodexSource;
 use super::copilot_cli_reader::CopilotCliSource;
+use super::cursor_reader::CursorSource;
 use super::deepseek_harness_reader::DeepSeekHarnessSource;
 use super::gemini_reader::GeminiSource;
 use super::hermes_reader::HERMES_SOURCE;
@@ -15,6 +16,7 @@ use super::qoder_ide_reader::QoderIdeSource;
 use super::qoder_work_reader::QoderWorkSource;
 use super::source::{ParsedSessionData, SessionSource, UsageSource};
 
+static CURSOR_SOURCE: CursorSource = CursorSource;
 static CLAUDE_SOURCE: ClaudeSource = ClaudeSource;
 static COPILOT_CLI_SOURCE: CopilotCliSource = CopilotCliSource;
 static CODEX_SOURCE: CodexSource = CodexSource;
@@ -36,8 +38,9 @@ static QODER_WORK_CN_SOURCE: QoderWorkSource = QoderWorkSource::new(
 );
 static GEMINI_SOURCE: GeminiSource = GeminiSource;
 
-pub fn all_sources() -> [&'static dyn SessionSource; 14] {
+pub fn all_sources() -> [&'static dyn SessionSource; 15] {
     [
+        &CURSOR_SOURCE,
         &CLAUDE_SOURCE,
         &COPILOT_CLI_SOURCE,
         &CODEX_SOURCE,

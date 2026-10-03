@@ -119,6 +119,7 @@ fn balance_tier(currency: &str, remaining: f64, max: Option<f64>, ok: Option<boo
         max_value: max,
         currency: Some(currency.to_string()),
         limit_reached: ok.map(|v| !v),
+        ..Default::default()
     }
 }
 

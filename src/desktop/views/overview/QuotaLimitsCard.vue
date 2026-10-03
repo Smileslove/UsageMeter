@@ -95,7 +95,8 @@ function resetLabel(row: LimitRow, locale: string): string {
             {{ t(locale, row.conclusionKey) }}
           </span>
         </div>
-        <div class="mt-2 flex items-center gap-2">
+        <p v-if="row.amountText" class="mt-2 text-xs text-[var(--theme-text-secondary)]">{{ row.amountText }}</p>
+        <div v-if="row.usedPct != null" class="mt-2 flex items-center gap-2">
           <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--theme-text-primary)]/10">
             <div
               class="h-full rounded-full transition-[width] duration-300"

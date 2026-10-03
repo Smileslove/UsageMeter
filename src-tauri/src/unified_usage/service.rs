@@ -1540,7 +1540,47 @@ fn build_fact_backed_session_stats(
     let usage_fully_covered =
         session_usage_fully_covered(meta, &session_tool, proxy_backed_requests, 0, now_sec);
 
+    let mut provenance = session_facts
+        .iter()
+        .find_map(|fact| fact.provenance.clone());
+    if let Some(evidence) = provenance.as_mut() {
+        evidence.source_timestamp_ms = session_facts
+            .iter()
+            .map(|fact| fact.timestamp_ms)
+            .max()
+            .unwrap_or(0);
+        evidence.usage_complete = session_facts
+            .iter()
+            .all(|fact| fact.provenance.as_ref().is_some_and(|e| e.usage_complete));
+        let known_cost_count = session_facts
+            .iter()
+            .filter(|fact| {
+                fact.provenance
+                    .as_ref()
+                    .is_some_and(|e| e.cost_basis == "service_metered")
+            })
+            .count();
+        evidence.cost_basis = if known_cost_count == session_facts.len() {
+            "service_metered"
+        } else if known_cost_count > 0 {
+            "service_metered_partial"
+        } else {
+            "unknown"
+        }
+        .into();
+        let charges: Vec<f64> = session_facts
+            .iter()
+            .filter_map(|fact| fact.provenance.as_ref()?.charged_amount_usd)
+            .collect();
+        evidence.charged_amount_usd = if charges.len() == session_facts.len() {
+            Some(charges.iter().sum())
+        } else {
+            None
+        };
+    }
+    let is_cost_estimated = session_tool != "cursor";
     SessionStats {
+        provenance,
         session_id: session_id.to_string(),
         tool: session_tool,
         total_requests,
@@ -1577,7 +1617,7 @@ fn build_fact_backed_session_stats(
             error_requests
         },
         estimated_cost,
-        is_cost_estimated: true,
+        is_cost_estimated,
         usage_fully_covered,
         covered_requests: proxy_backed_requests,
         // ReasonX 本地会话链路已移除（v27）：uncovered 仅统计本地事实，
@@ -1850,7 +1890,7 @@ pub(crate) async fn get_manual_attribution_request_keys_for_session(
     .await?;
     let mut request_keys = std::collections::BTreeSet::new();
     for fact in facts {
-        if !fact.is_accounting_primary() {
+        if !fact.is_accounting_primary() || fact.tool == "cursor" {
             continue;
         }
         let request_key = fact.canonical_request_key.trim();
@@ -1881,7 +1921,7 @@ pub(crate) async fn get_manual_attribution_request_keys_for_time_range(
             .await?;
     let mut request_keys = std::collections::BTreeSet::new();
     for fact in facts.iter() {
-        if !fact.is_accounting_primary() {
+        if !fact.is_accounting_primary() || fact.tool == "cursor" {
             continue;
         }
         let request_key = fact.canonical_request_key.trim();
@@ -2090,12 +2130,18 @@ async fn get_merged_project_stats_with_db(
         if !fact.session_id.trim().is_empty() {
             let session_id = fact.session_id.as_str();
             fact_backed_project_session_ids.insert(session_id);
-            entry.sessions.insert(session_id);
-            entry
-                .tool_sessions
-                .entry(fact.tool.as_str())
-                .or_default()
-                .insert(session_id);
+            if fact
+                .provenance
+                .as_ref()
+                .is_none_or(|evidence| evidence.session_kind != "account_bucket")
+            {
+                entry.sessions.insert(session_id);
+                entry
+                    .tool_sessions
+                    .entry(fact.tool.as_str())
+                    .or_default()
+                    .insert(session_id);
+            }
         } else {
             entry.tool_sessions.entry(fact.tool.as_str()).or_default();
         }
@@ -2126,6 +2172,16 @@ async fn get_merged_project_stats_with_db(
         tool_stats.request_count += request_count;
         tool_stats.covered_requests += request_count;
         tool_stats.last_active = tool_stats.last_active.max(fact.timestamp_sec);
+        if let Some(evidence) = &fact.provenance {
+            entry.stats.usage_known =
+                Some(entry.stats.usage_known.unwrap_or(true) && evidence.usage_complete);
+            tool_stats.usage_known =
+                Some(tool_stats.usage_known.unwrap_or(true) && evidence.usage_complete);
+            let known_cost = evidence.cost_basis != "unknown";
+            entry.stats.cost_complete =
+                Some(entry.stats.cost_complete.unwrap_or(true) && known_cost);
+            tool_stats.cost_complete = Some(tool_stats.cost_complete.unwrap_or(true) && known_cost);
+        }
     }
 
     if metadata_only_sessions_allowed(&source_filter) {
@@ -2140,6 +2196,16 @@ async fn get_merged_project_stats_with_db(
     let mut projects: Vec<ProjectStats> = map
         .into_values()
         .map(|mut aggregate| {
+            if aggregate.stats.request_count == 0
+                && aggregate
+                    .stats
+                    .tool_breakdown
+                    .iter()
+                    .all(|tool| tool.tool == "cursor")
+            {
+                aggregate.stats.usage_known = Some(false);
+                aggregate.stats.cost_complete = Some(false);
+            }
             aggregate.stats.session_count = aggregate.sessions.len() as u64;
             let mut session_ids: Vec<&str> = aggregate.sessions.iter().copied().collect();
             session_ids.sort();
@@ -2154,6 +2220,10 @@ async fn get_merged_project_stats_with_db(
             aggregate.stats.usage_fully_covered = true;
             aggregate.stats.uncovered_requests = 0;
             for tool_stats in &mut aggregate.stats.tool_breakdown {
+                if tool_stats.tool == "cursor" && tool_stats.request_count == 0 {
+                    tool_stats.usage_known = Some(false);
+                    tool_stats.cost_complete = Some(false);
+                }
                 tool_stats.session_count = aggregate
                     .tool_sessions
                     .get(tool_stats.tool.as_str())
@@ -2429,6 +2499,7 @@ mod tests {
             source_label: None,
             attribution_source_id: None,
             attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
+            provenance: None,
             reconciliation: crate::unified_usage::ReconciliationMetadata::default(),
         };
 

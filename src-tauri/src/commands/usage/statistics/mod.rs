@@ -13,6 +13,34 @@ pub(crate) async fn get_statistics_summary_no_sync(
     query: &StatisticsQuery,
     settings: &AppSettings,
 ) -> Result<StatisticsSummary, String> {
+    let mut summary = build_summary(query, settings).await?;
+    let source_matches = settings
+        .source_aware
+        .active_source_filter
+        .as_deref()
+        .is_none_or(|source| source == crate::models::OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID);
+    let tool_matches = settings
+        .client_tools
+        .active_tool_filter
+        .as_deref()
+        .is_none_or(|tool| tool == "cursor");
+    if source_matches && tool_matches {
+        let db = crate::local_usage::get_local_usage_db()?;
+        let (events, unknown_cost, incomplete_usage) = db.cursor_quality_counts_in_range(
+            Some(summary.range.start_epoch),
+            Some(summary.range.end_epoch),
+        )?;
+        summary.capability.cursor_usage_events = events;
+        summary.capability.cursor_unknown_cost_events = unknown_cost;
+        summary.capability.cursor_incomplete_usage_events = incomplete_usage;
+    }
+    Ok(summary)
+}
+
+async fn build_summary(
+    query: &StatisticsQuery,
+    settings: &AppSettings,
+) -> Result<StatisticsSummary, String> {
     if let Some(summary) =
         daily_summary::try_build_statistics_summary_from_daily_summary(query, settings).await?
     {

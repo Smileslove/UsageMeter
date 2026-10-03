@@ -15,7 +15,7 @@ export function queryBoolean(command: string): Promise<boolean> {
 }
 
 export function querySubscriptionQuota(
-  provider: 'gpt' | 'claude' | 'gemini' | 'copilot',
+  provider: 'gpt' | 'claude' | 'gemini' | 'copilot' | 'cursor',
   refresh = false
 ): Promise<SubscriptionQueryResult> {
   return invoke(refresh ? 'refresh_subscription_quota' : 'get_subscription_quota', { provider })

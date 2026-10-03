@@ -16,6 +16,7 @@ import { metricColor } from '../../composables/useTrendChart'
 import { sourceLabel, t, windowNameLabel } from '../../../i18n'
 import { METRICS } from '../../../components/statistics/activityUtils'
 import {
+  OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID,
   OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID,
   OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
   OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
@@ -127,6 +128,7 @@ function clearAllFilters() {
 const activeSourceLabel = computed(() => {
   const id = store.settings.sourceAware.activeSourceFilter
   if (!id || id === '__unknown__') return t(locale.value, 'desktop.allSources')
+  if (id === OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID) return sourceLabel(locale.value, id)
   if (id === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return sourceLabel(locale.value, id)
   if (id === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) return sourceLabel(locale.value, id)
   if (id === OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID) return sourceLabel(locale.value, id)

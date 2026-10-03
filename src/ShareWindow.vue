@@ -6,6 +6,7 @@ import { Check, Copy, Download, Loader2, Sparkles, X } from 'lucide-vue-next'
 import { sourceLabel, t } from './i18n'
 import { useMonitorStore } from './stores/monitor'
 import {
+  OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID,
   OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID,
   OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
   OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
@@ -153,6 +154,7 @@ const generatedAtLabel = computed(() => {
 
 function sourceDisplayName(sourceId: string): string | null {
   if (sourceId === '__unknown__') return t(locale.value, 'sources.unknown')
+  if (sourceId === OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID) return sourceLabel(locale.value, sourceId)
   if (sourceId === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return sourceLabel(locale.value, sourceId)
   if (sourceId === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) return sourceLabel(locale.value, sourceId)
   if (sourceId === OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID) return sourceLabel(locale.value, sourceId)

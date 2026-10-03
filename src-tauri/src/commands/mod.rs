@@ -1,5 +1,7 @@
 //! Tauri 命令模块
 
+mod cursor;
+pub use cursor::*;
 mod autostart;
 mod ccswitch;
 mod copilot;

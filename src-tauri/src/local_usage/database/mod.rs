@@ -13,6 +13,7 @@ const OPENCODE_MESSAGE_ID_CONFLICT_PREFIX: &str = "opencode_message_id_conflict_
 
 mod attribution;
 mod attribution_watcher;
+pub(crate) mod cursor;
 mod maintenance;
 mod materialized;
 mod migrations;

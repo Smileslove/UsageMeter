@@ -25,6 +25,7 @@ import SyncSettingsPanel from '../../components/settings/SyncSettingsPanel.vue'
 import ProxyControlPanel from '../../components/settings/ProxyControlPanel.vue'
 import CcSwitchCompatPanel from '../../components/settings/CcSwitchCompatPanel.vue'
 import ConfirmDialog from '../../components/settings/ConfirmDialog.vue'
+import CursorSettingsPanel from '../../components/settings/CursorSettingsPanel.vue'
 import ThemeSelector from '../../components/ThemeSelector.vue'
 import ApiSourceList from '../../components/ApiSourceList.vue'
 import ModelPricingSettings from '../../components/ModelPricingSettings.vue'
@@ -240,6 +241,7 @@ const confirmQuit = async () => {
         <h3 class="px-1 text-xs font-semibold uppercase tracking-wider text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.settings.sectionDataSources') }}</h3>
         <p class="px-1 text-xs leading-relaxed text-[var(--theme-text-quaternary)]">{{ t(locale, 'desktop.settings.sectionDataSourcesDesc') }}</p>
         <!-- 桌面设置内嵌数据源管理（组件自带返回按钮，这里 no-op：由目录切换承担返回语义） -->
+        <CursorSettingsPanel />
         <ApiSourceList @back="() => {}" />
       </section>
 

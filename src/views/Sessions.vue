@@ -15,7 +15,9 @@ const store = useMonitorStore()
 const {
   formatTime,
   formatTokens,
-  formatCost,
+  displayRequestCost,
+  displayRequestTokens,
+  displaySessionCost,
   formatDuration,
   requestModelLabel,
   sessionModelLabel,
@@ -344,7 +346,7 @@ onUnmounted(() => {
           <!-- 费用 -->
           <div class="flex items-center gap-0.5">
             <svg class="w-[10px] h-[10px] text-[#00E5FF] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-            <span class="font-semibold text-[var(--theme-chart-cost)]">{{ displayCost(session.estimatedCost, sessionUsageVisible(session)) }}</span>
+            <span class="font-semibold text-[var(--theme-chart-cost)]">{{ displaySessionCost(session) }}</span>
           </div>
           </template>
         </div>
@@ -431,10 +433,10 @@ onUnmounted(() => {
               </span>
               <div class="flex items-center gap-2">
                 <span class="font-mono text-[10px] font-semibold text-gray-700 dark:text-gray-200">
-                  {{ formatTokens(request.totalTokens) }}
+                  {{ displayRequestTokens(request, request.totalTokens) }}
                 </span>
                 <span class="font-mono text-[10px] font-semibold text-[var(--theme-chart-cost)]">
-                  {{ formatCost(request.estimatedCost) }}
+                  {{ displayRequestCost(request) }}
                 </span>
               </div>
             </div>
@@ -446,14 +448,14 @@ onUnmounted(() => {
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
               </svg>
               <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.input') }}</span>
-              <span class="font-mono font-semibold text-gray-700 dark:text-gray-300">{{ formatTokens(request.inputTokens) }}</span>
+              <span class="font-mono font-semibold text-gray-700 dark:text-gray-300">{{ displayRequestTokens(request, request.inputTokens) }}</span>
             </div>
             <div class="flex items-center gap-0.5">
               <svg class="h-[10px] w-[10px] shrink-0 text-sky-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
               </svg>
               <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.output') }}</span>
-              <span class="font-mono font-semibold text-gray-700 dark:text-gray-300">{{ formatTokens(request.outputTokens) }}</span>
+              <span class="font-mono font-semibold text-gray-700 dark:text-gray-300">{{ displayRequestTokens(request, request.outputTokens) }}</span>
             </div>
             <div class="flex items-center gap-0.5">
               <svg class="h-[10px] w-[10px] shrink-0 text-violet-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">

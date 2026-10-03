@@ -13,6 +13,8 @@ mod types;
 #[cfg(all(test, feature = "performance-tests"))]
 mod performance_tests;
 
+#[cfg(test)]
+pub(crate) use attribution::apply_passive_attribution;
 pub(crate) use merge_engine::build_coverage;
 pub(crate) use service::{
     clear_runtime_caches, combined_data_time_bounds, count_stale_materialization_days,

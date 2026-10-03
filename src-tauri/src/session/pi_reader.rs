@@ -389,6 +389,7 @@ pub(super) fn parse_pi_session_file(session: &SessionFile) -> ParsedSessionData 
                         request_key: None,
                         explicit_estimated_cost: explicit_cost,
                         source_file_present: None,
+                        provenance: None,
                     });
                 }
                 _ => {}

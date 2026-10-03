@@ -8,6 +8,7 @@ use std::collections::HashMap;
 /// Stable category for requests made through Codex's official ChatGPT OAuth flow.
 /// This is deliberately not a user-configurable API source.
 pub const OFFICIAL_OPENAI_OAUTH_SOURCE_ID: &str = "__openai_official_oauth__";
+pub const OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID: &str = "__cursor_official_account__";
 /// Internal presentation marker for a plan confirmed by the official OAuth usage endpoint.
 pub const OPENAI_OAUTH_PLAN_LABEL_PREFIX: &str = "__openai_oauth_plan:";
 /// Stable category for Gemini CLI requests authenticated by Google's official OAuth flow.
@@ -457,6 +458,18 @@ pub fn default_client_tool_profiles() -> Vec<ClientToolProfile> {
     let now = chrono::Utc::now().timestamp_millis();
     vec![
         ClientToolProfile {
+            id: "cursor".into(),
+            tool: "cursor".into(),
+            display_name: Some("Cursor".into()),
+            path_prefix: "cursor".into(),
+            target_base_url: None,
+            enabled: false,
+            auto_detected: false,
+            first_seen_ms: now,
+            last_seen_ms: now,
+            icon: Some("cursor".into()),
+        },
+        ClientToolProfile {
             id: "claude_code".to_string(),
             tool: DEFAULT_CLIENT_TOOL.to_string(),
             display_name: Some("Claude Code".to_string()),
@@ -862,6 +875,13 @@ impl SourceAwareSettings {
                 SourceFilter::OfficialAnthropicClaudeOAuth
             }
             Some(source_id) => {
+                if source_id == OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID {
+                    return SourceFilter::Source {
+                        source_id: source_id.clone(),
+                        api_key_prefixes: vec![],
+                        base_url: None,
+                    };
+                }
                 // 查找对应的来源
                 self.sources
                     .iter()
@@ -1028,6 +1048,8 @@ pub struct AppSettings {
     /// 可选的 DeepSeek Harness 会话根目录；空值遵循 DSH_HOME / ~/.dsh/sessions。
     #[serde(default)]
     pub deepseek_harness_session_root: Option<String>,
+    #[serde(default)]
+    pub cursor: CursorSettings,
     /// 深度事件索引级别（"off"|"structured"|"ondemand"；fulltext 留 M3）。
     /// 见设计文档 11.3。
     #[serde(default = "default_deep_index_level")]
@@ -1035,6 +1057,16 @@ pub struct AppSettings {
     /// 深度事件索引保留天数（结构化事件默认 90 天）。
     #[serde(default = "default_deep_index_retention_days")]
     pub deep_index_retention_days: i64,
+}
+
+/// Cursor network access is explicit opt-in. Credentials remain owned by Cursor.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CursorSettings {
+    #[serde(default)]
+    pub account_sync_enabled: bool,
+    #[serde(default)]
+    pub database_path: Option<String>,
 }
 
 /// WSL 被动扫描设置（仅在 Windows 上生效）。
@@ -1258,6 +1290,7 @@ impl Default for AppSettings {
             skipped_update_version: String::new(),
             wsl_scan: WslScanSettings::default(),
             deepseek_harness_session_root: None,
+            cursor: CursorSettings::default(),
             deep_index_level: default_deep_index_level(),
             deep_index_retention_days: default_deep_index_retention_days(),
         }

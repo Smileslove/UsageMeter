@@ -1,4 +1,4 @@
-mod database;
+pub(crate) mod database;
 
 pub use database::start_passive_attribution_watcher;
 #[cfg(test)]

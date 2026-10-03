@@ -31,7 +31,7 @@ const locale = computed(() => store.settings.locale)
 const {
   formatTime,
   formatTokens,
-  formatCost,
+  displaySessionCost,
   formatDuration,
   sessionModelLabel,
   requestToolLabel,
@@ -440,7 +440,7 @@ onUnmounted(() => {
               </td>
               <td v-if="isColumnVisible('requests')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ session.totalRequests ?? 0 }}</td>
               <td v-if="isColumnVisible('tokens')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ sessionUsageVisible(session) ? formatTokens(sessionTotalTokens(session)) : '—' }}</td>
-              <td v-if="isColumnVisible('cost')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-chart-cost)]">{{ sessionUsageVisible(session) ? formatCost(session.estimatedCost) : '—' }}</td>
+              <td v-if="isColumnVisible('cost')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-chart-cost)]">{{ displaySessionCost(session) }}</td>
               <td v-if="isColumnVisible('rate')" class="whitespace-nowrap px-1.5 py-1.5 text-right font-mono text-[var(--theme-text-secondary)]">
                 {{ sessionUsageVisible(session) && (session.avgOutputTokensPerSecond || 0) > 0 ? `${session.avgOutputTokensPerSecond.toFixed(1)}t/s` : '—' }}
               </td>
@@ -505,7 +505,7 @@ onUnmounted(() => {
                 </div>
                 <div class="theme-surface-muted rounded-lg border px-2 py-1.5 text-center">
                   <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'sessions.cost') }}</div>
-                  <div class="font-mono text-xs font-semibold text-[var(--theme-chart-cost)]">{{ sessionUsageVisible(selectedSession) ? formatCost(selectedSession.estimatedCost) : '—' }}</div>
+                  <div class="font-mono text-xs font-semibold text-[var(--theme-chart-cost)]">{{ displaySessionCost(selectedSession) }}</div>
                 </div>
               </div>
 

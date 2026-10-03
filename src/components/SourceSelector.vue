@@ -3,6 +3,7 @@ import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import { sourceLabel, t } from '../i18n'
 import {
+  OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID,
   OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID,
   OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
   OFFICIAL_OPENAI_OAUTH_SOURCE_ID
@@ -23,6 +24,8 @@ const showSelector = computed(() => {
   return sources.value.length > 0
     || store.hasChatGptOAuth
     || store.hasGeminiOAuth
+    || store.hasCursorUsage
+    || activeFilter.value === OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID
     || store.hasClaudeOAuth
     || activeFilter.value === OFFICIAL_OPENAI_OAUTH_SOURCE_ID
     || activeFilter.value === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID
@@ -47,6 +50,7 @@ const currentSource = computed(() => {
 })
 
 const currentColor = computed(() => {
+  if (activeFilter.value === OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID) return '#6B7280'
   if (activeFilter.value === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return '#10A37F'
   if (activeFilter.value === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) return '#4285F4'
   if (activeFilter.value === OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID) return '#D97757'
@@ -57,6 +61,7 @@ const currentColor = computed(() => {
 const currentIcon = computed(() => currentSource.value?.icon || null)
 
 const currentLabel = computed(() => {
+  if (activeFilter.value === OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID) return sourceLabel(store.settings.locale, activeFilter.value)
   if (!activeFilter.value) return t(store.settings.locale, 'sources.all')
   if (activeFilter.value === '__unknown__') return t(store.settings.locale, 'sources.unknown')
   if (activeFilter.value === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) {
@@ -190,6 +195,11 @@ onUnmounted(() => {
             <span class="truncate">{{ sourceLabel(store.settings.locale, OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) }}</span>
           </button>
         </div>
+
+        <button v-if="store.hasCursorUsage || activeFilter === OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID" class="w-full flex items-center gap-2.5 border-t border-gray-50 px-3 py-2 text-left text-xs text-gray-700 hover:bg-gray-50 dark:border-neutral-800 dark:text-gray-200 dark:hover:bg-neutral-800" @click="selectSource(OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID)">
+          <LobeIcon slug="cursor" :size="14" />
+          <span>{{ sourceLabel(store.settings.locale, OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID) }}</span>
+        </button>
 
         <div v-if="sources.length > 0" class="border-t border-gray-50 dark:border-neutral-800">
           <button

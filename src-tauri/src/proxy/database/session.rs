@@ -295,6 +295,7 @@ impl ProxyDatabase {
             );
 
             Ok(SessionStats {
+                provenance: None,
                 session_id: String::new(), // 调用方会填充
                 tool: crate::models::DEFAULT_CLIENT_TOOL.to_string(),
                 total_requests: row.get::<_, i64>(0)? as u64,

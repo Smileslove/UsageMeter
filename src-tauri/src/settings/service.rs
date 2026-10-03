@@ -153,6 +153,7 @@ fn apply_preferences(settings: &mut AppSettings, preferences: AppSettings) {
     settings.auto_check_update = preferences.auto_check_update;
     settings.skipped_update_version = preferences.skipped_update_version;
     settings.wsl_scan = preferences.wsl_scan;
+    settings.cursor = preferences.cursor;
     settings.deepseek_harness_session_root = preferences.deepseek_harness_session_root;
     settings.source_aware.active_source_filter = preferences.source_aware.active_source_filter;
     settings.client_tools.active_tool_filter = preferences.client_tools.active_tool_filter;
@@ -378,6 +379,20 @@ fn normalize_settings(settings: &mut AppSettings) -> Result<(), String> {
         .as_ref()
         .map(|path| path.trim().to_string())
         .filter(|path| !path.is_empty());
+    settings.cursor.database_path = settings
+        .cursor
+        .database_path
+        .as_ref()
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty());
+    if settings
+        .cursor
+        .database_path
+        .as_ref()
+        .is_some_and(|path| !std::path::Path::new(path).is_absolute())
+    {
+        return Err("cursor_invalid_database_path".into());
+    }
     Ok(())
 }
 

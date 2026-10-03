@@ -449,6 +449,7 @@ fn build_hermes_session(
         request_key,
         explicit_estimated_cost: (explicit_cost > 0.0).then_some(explicit_cost),
         source_file_present: None,
+        provenance: None,
     }];
 
     let meta = SessionMeta {

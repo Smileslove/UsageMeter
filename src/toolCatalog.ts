@@ -7,6 +7,7 @@ export interface ToolDescriptor {
 }
 
 export const TOOL_CATALOG: readonly ToolDescriptor[] = [
+  { id: 'cursor', pathPrefix: 'cursor', hasLocalSessions: true, supportsProxy: false },
   { id: 'claude_code', pathPrefix: 'claude-code', hasLocalSessions: true, supportsProxy: true },
   { id: 'codex', pathPrefix: 'codex', hasLocalSessions: true, supportsProxy: true },
   { id: 'deepseek_harness', pathPrefix: 'deepseek-harness', hasLocalSessions: true, supportsProxy: false },

@@ -158,8 +158,11 @@ impl LocalUsageDatabase {
         summary.success_model_count = success_models.len() as u64;
         let has_partial =
             has_partial_coverage(summary.proxy_backed_requests, summary.local_only_requests);
-        summary.has_partial_status_coverage = false;
-        summary.has_partial_performance_coverage = has_partial;
+        summary.has_partial_status_coverage = facts
+            .iter()
+            .any(|fact| fact.tool == "cursor" && fact.status_code.is_none());
+        summary.has_partial_performance_coverage =
+            has_partial || facts.iter().any(|fact| fact.tool == "cursor");
         summary
     }
 
@@ -665,7 +668,7 @@ impl LocalUsageDatabase {
                         observation_sources, reconciliation_status, reconciliation_method,
                         reconciliation_confidence, accounting_role, local_observation_key,
                         proxy_observation_id,
-                        status_code, duration_ms, output_tokens_per_second, ttft_ms, source_label
+                        status_code, duration_ms, output_tokens_per_second, ttft_ms, source_label, provenance_json
                     ) VALUES (
                         ?1, ?2, ?3, ?4, ?5,
                         ?6, ?7, ?8, ?9, ?10,
@@ -673,7 +676,7 @@ impl LocalUsageDatabase {
                         ?15, ?16, ?17, ?18,
                         ?19, ?20,
                         ?21, ?22, ?23, ?24, ?25, ?26, ?27,
-                        ?28, ?29, ?30, ?31, ?32
+                        ?28, ?29, ?30, ?31, ?32, ?33
                     )
                     "#,
                 )
@@ -714,6 +717,11 @@ impl LocalUsageDatabase {
                     fact.output_tokens_per_second,
                     fact.ttft_ms.map(|v| v as i64),
                     fact.source_label,
+                    fact.provenance
+                        .as_ref()
+                        .map(serde_json::to_string)
+                        .transpose()
+                        .map_err(|_| "cursor_invalid_event")?,
                 ])
                 .map_err(|e| format!("Failed to insert unified materialized fact: {}", e))?;
             }
@@ -1003,7 +1011,7 @@ impl LocalUsageDatabase {
                 reconciliation_method, reconciliation_confidence, accounting_role,
                 local_observation_key, proxy_observation_id, status_code, duration_ms,
                 output_tokens_per_second, ttft_ms,
-                source_label
+                source_label, provenance_json
             FROM unified_daily_materialized_facts
             WHERE local_date IN ({date_placeholders}) {tool_clause}
             ORDER BY timestamp_ms ASC
@@ -1067,6 +1075,9 @@ impl LocalUsageDatabase {
                     output_tokens_per_second: row.get(28)?,
                     ttft_ms: row.get::<_, Option<i64>>(29)?.map(|v| v.max(0) as u64),
                     source_label: row.get(30)?,
+                    provenance: row
+                        .get::<_, Option<String>>(31)?
+                        .and_then(|json| serde_json::from_str(&json).ok()),
                     attribution_source_id: None,
                     attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
                 })
@@ -1120,7 +1131,7 @@ impl LocalUsageDatabase {
                 estimated, coverage_origin, observation_sources, reconciliation_status, reconciliation_method,
                 reconciliation_confidence, accounting_role, local_observation_key,
                 proxy_observation_id, status_code, duration_ms, output_tokens_per_second, ttft_ms,
-                source_label
+                source_label, provenance_json
             FROM unified_daily_materialized_facts
             WHERE local_date IN ({date_placeholders})
               AND session_id = ?
@@ -1191,6 +1202,9 @@ impl LocalUsageDatabase {
                         .get::<_, Option<i64>>(29)?
                         .map(|value| value.max(0) as u64),
                     source_label: row.get(30)?,
+                    provenance: row
+                        .get::<_, Option<String>>(31)?
+                        .and_then(|json| serde_json::from_str(&json).ok()),
                     attribution_source_id: None,
                     attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
                 })
@@ -1227,7 +1241,7 @@ impl LocalUsageDatabase {
                 reconciliation_method, reconciliation_confidence, accounting_role,
                 local_observation_key, proxy_observation_id, status_code, duration_ms,
                 output_tokens_per_second, ttft_ms,
-                source_label
+                source_label, provenance_json
             FROM unified_daily_materialized_facts
             WHERE local_date IN ({date_placeholders})
             ORDER BY timestamp_ms ASC
@@ -1286,6 +1300,9 @@ impl LocalUsageDatabase {
                         output_tokens_per_second: row.get(29)?,
                         ttft_ms: row.get::<_, Option<i64>>(30)?.map(|v| v.max(0) as u64),
                         source_label: row.get(31)?,
+                        provenance: row
+                            .get::<_, Option<String>>(32)?
+                            .and_then(|json| serde_json::from_str(&json).ok()),
                         attribution_source_id: None,
                         attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
                     },

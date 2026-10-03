@@ -441,6 +441,7 @@ fn parse_qoder_session(
             request_key: None,
             explicit_estimated_cost: None,
             source_file_present: None,
+            provenance: None,
         });
     }
 

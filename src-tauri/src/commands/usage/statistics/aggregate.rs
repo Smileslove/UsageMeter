@@ -30,6 +30,7 @@ fn merged_stat_capability_from_facts(facts: &[MergedRequestFact]) -> StatisticsC
         has_basic_usage: true,
         has_performance,
         has_status_codes,
+        ..Default::default()
     }
 }
 
@@ -301,6 +302,7 @@ mod tests {
             source_label: None,
             attribution_source_id: None,
             attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
+            provenance: None,
             reconciliation: crate::unified_usage::ReconciliationMetadata::default(),
         }
     }
