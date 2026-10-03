@@ -578,7 +578,7 @@ impl LocalUsageDatabase {
 
         let plan_type = normalize_oauth_plan_type(auth_mode, snapshot.plan_type).or_else(|| {
             (!snapshot.plan_is_confirmed)
-                .then(|| previous.as_ref())
+                .then_some(previous.as_ref())
                 .flatten()
                 .and_then(
                     |(

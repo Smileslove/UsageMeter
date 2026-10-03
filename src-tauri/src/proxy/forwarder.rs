@@ -307,7 +307,7 @@ impl RequestForwarder {
             context,
             request_start_time,
             request_end_time,
-            duration_ms as u64,
+            duration_ms,
             status_code,
         )
         .await;
