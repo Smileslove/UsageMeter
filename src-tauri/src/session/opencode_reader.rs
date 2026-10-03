@@ -172,6 +172,7 @@ pub struct OpenCodeDbScanStates {
 #[derive(Debug, Clone)]
 pub(in crate::session) struct OpenCodeStorageRoot {
     pub id: String,
+    #[allow(dead_code)]
     pub home: PathBuf,
     pub db_path: PathBuf,
     pub message_root: PathBuf,
@@ -280,17 +281,37 @@ fn get_scan_cache() -> &'static Arc<Mutex<OpenCodeScanCache>> {
 }
 
 pub fn find_opencode_db() -> Option<PathBuf> {
-    native_opencode_storage_root().and_then(|root| root.db_path.exists().then_some(root.db_path))
+    discover_opencode_storage_roots()
+        .into_iter()
+        .find_map(|root| root.db_path.exists().then_some(root.db_path))
 }
 
 fn resolve_opencode_home() -> PathBuf {
-    if let Ok(v) = std::env::var("OPENCODE_HOME") {
-        let path = PathBuf::from(v);
-        if path.exists() {
-            return path;
+    resolve_opencode_homes()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| PathBuf::from(".").join("opencode"))
+}
+
+/// OpenCode documents OPENCODE_DATA_DIR as a single or comma-separated list
+/// of data roots. Keep OPENCODE_HOME as a compatibility alias used by older
+/// versions and by UsageMeter's existing configuration takeover.
+fn resolve_opencode_homes() -> Vec<PathBuf> {
+    for key in ["OPENCODE_HOME", "OPENCODE_DATA_DIR"] {
+        if let Ok(value) = std::env::var(key) {
+            let paths = value
+                .split(',')
+                .map(str::trim)
+                .filter(|path| !path.is_empty())
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
+            if !paths.is_empty() {
+                return paths;
+            }
         }
     }
-    std::env::var("XDG_DATA_HOME")
+
+    vec![std::env::var("XDG_DATA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             dirs::home_dir()
@@ -298,45 +319,44 @@ fn resolve_opencode_home() -> PathBuf {
                 .join(".local")
                 .join("share")
         })
-        .join("opencode")
+        .join("opencode")]
 }
 
 pub(in crate::session) fn opencode_message_storage_root() -> PathBuf {
     resolve_opencode_home().join("storage").join("message")
 }
 
-fn native_opencode_storage_root() -> Option<OpenCodeStorageRoot> {
-    if let Ok(v) = std::env::var("OPENCODE_DB") {
-        let db_path = PathBuf::from(v);
+fn discover_opencode_storage_roots() -> Vec<OpenCodeStorageRoot> {
+    let mut roots = Vec::new();
+    if let Ok(value) = std::env::var("OPENCODE_DB") {
+        let db_path = PathBuf::from(value);
         if db_path.exists() {
             let home = db_path
                 .parent()
                 .map(Path::to_path_buf)
                 .unwrap_or_else(resolve_opencode_home);
-            return Some(OpenCodeStorageRoot {
+            roots.push(OpenCodeStorageRoot {
                 id: "native".to_string(),
                 db_path,
                 message_root: home.join("storage").join("message"),
                 home,
             });
+            return dedupe_storage_roots(roots);
         }
     }
-
-    let home = resolve_opencode_home();
-    Some(OpenCodeStorageRoot {
-        id: "native".to_string(),
-        db_path: home.join("opencode.db"),
-        message_root: home.join("storage").join("message"),
-        home,
-    })
-}
-
-fn discover_opencode_storage_roots() -> Vec<OpenCodeStorageRoot> {
-    let mut roots = Vec::new();
-    if let Some(native) = native_opencode_storage_root() {
-        let home = native.home.clone();
-        let explicit_db = std::env::var_os("OPENCODE_DB").is_some();
-        roots.push(native);
+    let explicit_db = std::env::var_os("OPENCODE_DB").is_some();
+    for (index, home) in resolve_opencode_homes().into_iter().enumerate() {
+        let db_path = home.join("opencode.db");
+        roots.push(OpenCodeStorageRoot {
+            id: if index == 0 {
+                "native".to_string()
+            } else {
+                format!("native:{}", index)
+            },
+            home: home.clone(),
+            db_path,
+            message_root: home.join("storage").join("message"),
+        });
         if !explicit_db {
             if let Ok(entries) = std::fs::read_dir(&home) {
                 for entry in entries.flatten() {
@@ -352,7 +372,11 @@ fn discover_opencode_storage_roots() -> Vec<OpenCodeStorageRoot> {
                         .and_then(|value| value.strip_suffix(".db"))
                         .unwrap_or("channel");
                     roots.push(OpenCodeStorageRoot {
-                        id: format!("native:{}", sanitize_storage_id_segment(channel)),
+                        id: if index == 0 {
+                            format!("native:{}", sanitize_storage_id_segment(channel))
+                        } else {
+                            format!("native:{}:{}", index, sanitize_storage_id_segment(channel))
+                        },
                         home: home.clone(),
                         db_path: path,
                         message_root: home.join("storage").join("message"),
@@ -515,7 +539,9 @@ pub fn scan_opencode_sessions() -> Vec<OpenCodeSessionData> {
         let store_cache = cache.stores.entry(root.id.clone()).or_default();
         let db_messages =
             super::opencode::db_scan::refresh_db_messages_for_path(&mut store_cache.db_state, root);
-        let file_messages = if root.id == "native" || root.id.starts_with("wsl:") {
+        let scans_legacy_files = root.id.starts_with("wsl:")
+            || root.db_path.file_name().and_then(|name| name.to_str()) == Some("opencode.db");
+        let file_messages = if scans_legacy_files {
             super::opencode::legacy_scan::refresh_legacy_file_messages_for_root(
                 &mut store_cache.file_state,
                 root,
@@ -750,6 +776,44 @@ mod tests {
             canonical_opencode_session_id("opencode::native::sess_abc"),
             "opencode::native::sess_abc"
         );
+    }
+
+    #[test]
+    fn opencode_data_dir_supports_multiple_roots_and_takes_precedence() {
+        let _guard = crate::test_support::env_lock();
+        let old_home = std::env::var_os("OPENCODE_HOME");
+        let old_data = std::env::var_os("OPENCODE_DATA_DIR");
+        let old_xdg = std::env::var_os("XDG_DATA_HOME");
+
+        std::env::set_var("OPENCODE_HOME", "");
+        std::env::set_var("OPENCODE_DATA_DIR", "/tmp/opencode-a, /tmp/opencode-b");
+        std::env::set_var("XDG_DATA_HOME", "/tmp/ignored-xdg");
+        assert_eq!(
+            resolve_opencode_homes(),
+            vec![
+                PathBuf::from("/tmp/opencode-a"),
+                PathBuf::from("/tmp/opencode-b")
+            ]
+        );
+
+        std::env::set_var("OPENCODE_HOME", "/tmp/opencode-home");
+        assert_eq!(
+            resolve_opencode_homes(),
+            vec![PathBuf::from("/tmp/opencode-home")]
+        );
+
+        match old_home {
+            Some(value) => std::env::set_var("OPENCODE_HOME", value),
+            None => std::env::remove_var("OPENCODE_HOME"),
+        }
+        match old_data {
+            Some(value) => std::env::set_var("OPENCODE_DATA_DIR", value),
+            None => std::env::remove_var("OPENCODE_DATA_DIR"),
+        }
+        match old_xdg {
+            Some(value) => std::env::set_var("XDG_DATA_HOME", value),
+            None => std::env::remove_var("XDG_DATA_HOME"),
+        }
     }
 
     #[test]

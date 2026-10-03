@@ -247,7 +247,7 @@ pub(crate) fn find_qoder_ide_db() -> Option<PathBuf> {
 }
 
 pub(crate) fn find_qoder_ide_db_for(app_dir: &str) -> Option<PathBuf> {
-    let support_dir = dirs::data_dir()?.join(app_dir);
+    let support_dir = qoder_app_data_dir(app_dir)?;
     [
         support_dir.join("SharedClientCache/cache/db/local.db"),
         support_dir.join("main.sqlite"),
@@ -255,6 +255,18 @@ pub(crate) fn find_qoder_ide_db_for(app_dir: &str) -> Option<PathBuf> {
     ]
     .into_iter()
     .find(|path| qoder_db_has_legacy_schema(path))
+}
+
+/// Qoder is an Electron app and uses Application Support on macOS, Roaming
+/// AppData on Windows, and the XDG config directory on Linux.
+fn qoder_app_data_dir(app_dir: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        return dirs::config_dir().map(|dir| dir.join(app_dir));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    dirs::data_dir().map(|dir| dir.join(app_dir))
 }
 
 fn qoder_db_has_legacy_schema(path: &Path) -> bool {

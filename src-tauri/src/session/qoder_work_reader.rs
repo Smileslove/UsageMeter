@@ -2,7 +2,7 @@
 //!
 //! 两路数据来源合并到同一个 `tool_id`（`qoder_work` / `qoder_work_cn`）下：
 //!
-//! 1. Electron 主进程日志：`~/Library/Application Support/<app_dir>/logs/<ts>/main.log`，
+//! 1. Electron 主进程日志：平台数据目录下的 `<app_dir>/logs/<ts>/main.log`，
 //!    每个 `<ts>/main.log` 文件对应一个虚拟会话，解析 SSE message_delta 事件，日志行格式：
 //!    `[ISO_TIMESTAMP] [LEVEL] [SDK] [QueryHandler] Received message: stream_event {...json...}`，
 //!    提取其中 `event.type == "message_delta"` 的 `input_tokens` 和 `output_tokens`。
@@ -447,9 +447,19 @@ fn format_ts_name(ts: &str) -> String {
 }
 
 fn find_qoder_work_logs_root(app_dir: &str) -> Option<PathBuf> {
-    dirs::data_dir()
-        .map(|d| d.join(app_dir).join("logs"))
+    qoder_app_data_dir(app_dir)
+        .map(|d| d.join("logs"))
         .filter(|p| p.exists())
+}
+
+fn qoder_app_data_dir(app_dir: &str) -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        return dirs::config_dir().map(|dir| dir.join(app_dir));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    dirs::data_dir().map(|dir| dir.join(app_dir))
 }
 
 // ============================================================================

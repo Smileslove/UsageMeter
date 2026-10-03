@@ -836,7 +836,7 @@ mod tests {
 
     /// 将扫描器可能读取的全部环境变量隔离到临时空目录，Drop 时恢复。
     /// 覆盖 session/ 各 reader 实际读取的变量（grep env::var 确认）：
-    /// HOME / XDG_DATA_HOME / OPENCODE_HOME / OPENCODE_DB / REASONIX_HOME /
+    /// HOME / XDG_DATA_HOME / OPENCODE_HOME / OPENCODE_DATA_DIR / OPENCODE_DB / REASONIX_HOME /
     /// HERMES_HOME / DSH_HOME / LOCALAPPDATA。
     struct EnvGuard {
         /// 每个变量在隔离前的原始值，Drop 时据此恢复。
@@ -854,6 +854,7 @@ mod tests {
                     ("HOME", std::env::var_os("HOME")),
                     ("XDG_DATA_HOME", std::env::var_os("XDG_DATA_HOME")),
                     ("OPENCODE_HOME", std::env::var_os("OPENCODE_HOME")),
+                    ("OPENCODE_DATA_DIR", std::env::var_os("OPENCODE_DATA_DIR")),
                     ("OPENCODE_DB", std::env::var_os("OPENCODE_DB")),
                     ("REASONIX_HOME", std::env::var_os("REASONIX_HOME")),
                     ("HERMES_HOME", std::env::var_os("HERMES_HOME")),
