@@ -22,6 +22,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 static NEXT_PROFILE_SEQUENCE: AtomicU64 = AtomicU64::new(1); // used by next_key_id
+#[cfg(target_os = "macos")]
 const KEYRING_SERVICE: &str = "com.usagemeter.gateway";
 const CIRCUIT_FAILURE_THRESHOLD: u32 = 3;
 const CIRCUIT_AUTH_FAILURE_THRESHOLD: u32 = 2;
