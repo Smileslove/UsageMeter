@@ -927,7 +927,7 @@ async fn sync_shared_settings(
     // --- 拉取阶段：逐字段比较时间戳，取较新的值 ---
     if let Some(document) = remote_document.as_ref() {
         if document.version > local_version {
-            let mut changed = false;
+            let mut changed_fields = Vec::new();
             // 判断是否是升级前的老文档（没有 field_timestamps）
             let is_legacy_doc = document.field_timestamps.is_empty();
             for &field in SHARED_SETTING_FIELDS {
@@ -948,12 +948,18 @@ async fn sync_shared_settings(
                 if remote_ts > local_ts {
                     apply_shared_settings_field(&mut app_settings, field, &document.payload);
                     local_field_timestamps.insert(field.to_string(), remote_ts);
-                    changed = true;
+                    changed_fields.push(field);
                 }
             }
-            if changed {
-                crate::settings::save_settings_internal(app_settings.clone())
-                    .map_err(String::from)?;
+            if !changed_fields.is_empty() {
+                let payload = document.payload.clone();
+                crate::settings::update_settings_internal(move |settings| {
+                    for field in changed_fields {
+                        apply_shared_settings_field(settings, field, &payload);
+                    }
+                    Ok(())
+                })
+                .map_err(String::from)?;
                 // 持久化本地字段时间戳
                 for (field, ts) in &local_field_timestamps {
                     db.upsert_webdav_sync_state(

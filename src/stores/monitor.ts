@@ -41,7 +41,11 @@ import {
   addKeyPrefix,
   deleteSource,
   mergeSource,
+  setActiveSourceFilter,
   renameSource,
+  setActiveToolFilter,
+  updateSourceIcon as updateSourceIconRequest,
+  updateSourceQuotaQuery as updateSourceQuotaQueryRequest,
   updateSourceKeyNote
 } from './sourceQueries'
 
@@ -382,7 +386,7 @@ export const useMonitorStore = defineStore('monitor', {
      */
     async setActiveSourceFilter(sourceId: string | null) {
       this.settings.sourceAware.activeSourceFilter = sourceId
-      await this.saveSettings()
+      await setActiveSourceFilter(sourceId)
       await this.refreshFilteredViews()
     },
     /**
@@ -390,7 +394,7 @@ export const useMonitorStore = defineStore('monitor', {
      */
     async setActiveToolFilter(toolId: string | null) {
       this.settings.clientTools.activeToolFilter = toolId
-      await this.saveSettings()
+      await setActiveToolFilter(toolId)
       await this.refreshFilteredViews()
     },
     /**
@@ -451,9 +455,16 @@ export const useMonitorStore = defineStore('monitor', {
       if (!source) return
       source.quotaQuery = quotaQuery ?? undefined
       source.autoDetected = false
-      await this.saveSettings()
+      await updateSourceQuotaQueryRequest(sourceId, quotaQuery)
       await this.fetchSourceQuotaBindingStates()
       await this.forceFetchConfiguredSourceQuotas()
+    },
+    async updateSourceIcon(sourceId: string, icon: string | null) {
+      const source = this.settings.sourceAware.sources.find(s => s.id === sourceId)
+      if (!source) return
+      source.icon = icon || undefined
+      source.autoDetected = false
+      await updateSourceIconRequest(sourceId, icon)
     },
     async fetchSourceQuotaProfiles() {
       this.sourceQuotaProfiles = await querySourceQuotaProfiles()

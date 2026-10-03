@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import type { SourceQuotaBindingConfig } from '../types'
 
 export function renameSource(sourceId: string, name: string): Promise<void> {
   return invoke('rename_api_source', { sourceId, name })
@@ -18,4 +19,20 @@ export function addKeyPrefix(sourceId: string, keyPrefix: string): Promise<void>
 
 export function updateSourceKeyNote(sourceId: string, keyPrefix: string, note: string): Promise<void> {
   return invoke('update_api_source_key_note', { sourceId, keyPrefix, note })
+}
+
+export function setActiveToolFilter(toolId: string | null): Promise<void> {
+  return invoke('set_active_tool_filter', { toolId })
+}
+
+export function setActiveSourceFilter(sourceId: string | null): Promise<void> {
+  return invoke('set_active_source_filter', { sourceId })
+}
+
+export function updateSourceIcon(sourceId: string, icon: string | null): Promise<void> {
+  return invoke('update_api_source_icon', { sourceId, icon })
+}
+
+export function updateSourceQuotaQuery(sourceId: string, quotaQuery: SourceQuotaBindingConfig | null): Promise<void> {
+  return invoke('update_api_source_quota_query', { sourceId, quotaQuery })
 }

@@ -271,7 +271,7 @@ pub fn run() {
             // HTTP 客户端工厂必须最先初始化：所有后续后台任务（local_usage 同步、
             // WebDAV 同步、订阅查询等）都依赖 HttpClientFactory::global()。
             // 同时缓存 settings 供下方 locale 复用，避免重复 load。
-            let initial_settings = commands::load_settings_blocking().ok();
+            let initial_settings = crate::settings::initialize_settings().ok();
             net::HttpClientFactory::init(
                 initial_settings
                     .as_ref()
@@ -646,6 +646,9 @@ pub fn run() {
             commands::add_key_prefix_to_source,
             commands::update_api_source_key_note,
             commands::set_active_source_filter,
+            commands::set_active_tool_filter,
+            commands::update_api_source_icon,
+            commands::update_api_source_quota_query,
             commands::get_api_sources,
             // 货币命令
             commands::get_exchange_rates,

@@ -11,43 +11,37 @@ static SETTINGS_WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()
 
 /// 加载应用设置（同步实现，供 Rust 内部直接调用；macOS 上可能 spawn Keychain 子进程）
 pub fn load_settings_blocking() -> Result<AppSettings, String> {
-    // 偏好文件版本用于存量迁移判定：0.11.x 及更早（settingsVersion <= 2）落盘的
-    // streaming_idle_timeout_seconds=0 是旧默认值而非显式关闭；文件缺失时按旧版
-    // 处理，使 DB-only 的旧设置同样进入迁移。迁移作用于最终 settings（在
-    // apply_preferences / 默认值之后），保证文件与 DB 两个来源都被覆盖。
     let legacy_file_version = load_preferences_file_version();
     let mut settings = with_config_database(|database| {
-        if let Some(mut settings) = database.load_settings()? {
-            if let Some(preferences) = load_preferences_file()? {
-                apply_preferences(&mut settings, preferences);
-            }
-            normalize_settings(&mut settings)?;
-            migrate_legacy_streaming_idle_timeout(&mut settings, legacy_file_version);
-            migrate_legacy_model_pricings(&mut settings)?;
-            // Re-save once to remove the old full-snapshot documents after a
-            // user upgrades to the split preferences/entity layout.
-            database.save_settings(&settings)?;
-            write_preferences_file(&settings)?;
-            Ok(settings)
-        } else {
-            let mut settings = load_preferences_file()?.unwrap_or_default();
-            normalize_settings(&mut settings)?;
-            migrate_legacy_streaming_idle_timeout(&mut settings, legacy_file_version);
-            migrate_legacy_model_pricings(&mut settings)?;
-
-            let previous_settings = settings.clone();
-            crate::subscription::source_quota_secrets::persist_settings(
-                &mut settings,
-                &previous_settings,
-            )?;
-            database.save_settings(&settings)?;
-            write_preferences_file(&settings)?;
-            Ok(settings)
+        let mut settings = database.load_settings()?.unwrap_or_default();
+        if let Some(preferences) = load_preferences_file()? {
+            apply_preferences(&mut settings, preferences);
         }
+        normalize_settings(&mut settings)?;
+        migrate_legacy_streaming_idle_timeout(&mut settings, legacy_file_version);
+        Ok(settings)
     })?;
 
     crate::subscription::source_quota_secrets::hydrate_settings(&mut settings)?;
+    crate::settings::secrets::hydrate_settings(&mut settings)?;
     Ok(settings)
+}
+
+/// Perform one-time import/normalization explicitly during application startup.
+/// Read paths stay side-effect free so background readers cannot rewrite settings.
+pub fn initialize_settings() -> Result<AppSettings, String> {
+    let _guard = SETTINGS_WRITE_LOCK
+        .lock()
+        .map_err(|_| "ERR_SETTINGS_WRITE_LOCK_POISONED".to_string())?;
+    let mut settings = load_settings_blocking()?;
+    let previous = settings.clone();
+    migrate_legacy_model_pricings(&mut settings)?;
+    let runtime_settings = settings.clone();
+    crate::subscription::source_quota_secrets::persist_settings(&mut settings, &previous)?;
+    crate::settings::secrets::persist_settings(&mut settings, &previous)?;
+    with_config_database(|database| database.save_settings(&settings))?;
+    write_preferences_file(&settings)?;
+    Ok(runtime_settings)
 }
 
 fn load_preferences_file() -> Result<Option<AppSettings>, String> {
@@ -191,14 +185,13 @@ pub fn save_settings_internal(mut settings: AppSettings) -> Result<(), SaveSetti
     let _guard = SETTINGS_WRITE_LOCK
         .lock()
         .map_err(|_| SaveSettingsError::Other("ERR_SETTINGS_WRITE_LOCK_POISONED".to_string()))?;
-    let previous_settings = load_settings_blocking().unwrap_or_default();
-    // Gateway credentials and routing metadata are owned by the dedicated
-    // gateway mutation commands. Generic full-settings writers commonly hold
-    // an older UI/background snapshot, so allowing them to replace this
-    // namespace would reintroduce lost updates even though disk writes are
-    // serialized.
+    let previous_settings = load_settings_blocking().map_err(SaveSettingsError::Other)?;
+    // Entity namespaces are updated through their own read-modify-write paths.
+    // A generic UI snapshot may be stale and must never overwrite them.
     settings.gateway = previous_settings.gateway.clone();
-    save_settings_locked(settings, &previous_settings)
+    settings.source_aware = previous_settings.source_aware.clone();
+    settings.client_tools = previous_settings.client_tools.clone();
+    save_settings_locked(settings, &previous_settings).map(|_| ())
 }
 
 /// 基于磁盘上的最新设置执行原子局部更新。
@@ -214,17 +207,23 @@ where
     let previous_settings = load_settings_blocking().map_err(SaveSettingsError::Other)?;
     let mut settings = previous_settings.clone();
     let result = mutate(&mut settings).map_err(SaveSettingsError::Other)?;
-    save_settings_locked(settings.clone(), &previous_settings)?;
-    Ok((result, settings))
+    let runtime_settings = save_settings_locked(settings, &previous_settings)?;
+    Ok((result, runtime_settings))
 }
 
 fn save_settings_locked(
     mut settings: AppSettings,
     previous_settings: &AppSettings,
-) -> Result<(), SaveSettingsError> {
+) -> Result<AppSettings, SaveSettingsError> {
     normalize_settings(&mut settings).map_err(SaveSettingsError::Other)?;
     migrate_legacy_model_pricings(&mut settings).map_err(SaveSettingsError::Other)?;
+    // Keep a hydrated runtime copy. Persistence deliberately removes secrets
+    // from the serializable snapshot, but hot reloads and command results still
+    // need the credentials in memory.
+    let runtime_settings = settings.clone();
     crate::subscription::source_quota_secrets::persist_settings(&mut settings, previous_settings)
+        .map_err(SaveSettingsError::Other)?;
+    crate::settings::secrets::persist_settings(&mut settings, previous_settings)
         .map_err(SaveSettingsError::Other)?;
 
     let deep_index_policy_changed = previous_settings.deep_index_level != settings.deep_index_level;
@@ -283,11 +282,11 @@ fn save_settings_locked(
         reset_day_boundary_caches().map_err(SaveSettingsError::Other)?;
     }
 
-    if let Err(err) = HttpClientFactory::global().reload(&settings.network_proxy) {
+    if let Err(err) = HttpClientFactory::global().reload(&runtime_settings.network_proxy) {
         eprintln!("[UsageMeter] {err}");
         return Err(SaveSettingsError::ReloadFailed(err));
     }
-    Ok(())
+    Ok(runtime_settings)
 }
 
 /// Imports the pre-database pricing vector into its existing authoritative table.
@@ -303,8 +302,8 @@ fn migrate_legacy_model_pricings(settings: &mut AppSettings) -> Result<bool, Str
 }
 
 /// Writes only stable user preferences. Configurable entity collections live
-/// in `app_config.db`; existing credential locations are unchanged pending the
-/// separate SecretStore migration.
+/// in `app_config.db`; secret values are removed before this JSON document is
+/// written and restored from the dedicated secret store on load.
 fn write_preferences_file(settings: &AppSettings) -> Result<(), String> {
     let mut value =
         serde_json::to_value(settings).map_err(|e| format!("ERR_SERIALIZE_SETTINGS: {e}"))?;
@@ -861,14 +860,14 @@ mod tests {
             )
             .map_err(|e| e.to_string())?;
 
-            let imported = load_settings_blocking()?;
+            let imported = initialize_settings()?;
             legacy.locale = "zh-CN".to_string();
             fs::write(
                 settings_dir.join("settings.json"),
                 serde_json::to_string(&legacy).map_err(|e| e.to_string())?,
             )
             .map_err(|e| e.to_string())?;
-            let reloaded = load_settings_blocking()?;
+            let reloaded = initialize_settings()?;
             let compact_file = serde_json::from_str(
                 &fs::read_to_string(settings_dir.join("settings.json"))
                     .map_err(|e| e.to_string())?,
@@ -910,7 +909,7 @@ mod tests {
             )
             .map_err(|e| e.to_string())?;
 
-            let imported = load_settings_blocking()?;
+            let imported = initialize_settings()?;
             let first = imported.proxy.streaming_idle_timeout_seconds;
             let reloaded = load_settings_blocking()?;
             let second = reloaded.proxy.streaming_idle_timeout_seconds;

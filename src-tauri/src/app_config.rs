@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
-const CONFIG_SCHEMA_VERSION: i64 = 1;
+const CONFIG_SCHEMA_VERSION: i64 = 2;
 const ENTITY_DOCUMENT_KEYS: [&str; 3] = ["gateway", "sourceAware", "clientTools"];
 
 #[cfg(not(test))]
@@ -128,6 +128,38 @@ impl AppConfigDatabase {
             .map_err(|e| format!("ERR_PARSE_CONFIG_SCHEMA_VERSION: {e}"))?;
         if version > CONFIG_SCHEMA_VERSION {
             return Err(format!("ERR_CONFIG_SCHEMA_TOO_NEW:{version}"));
+        }
+        Self::migrate_schema(conn, version)?;
+        Ok(())
+    }
+
+    fn migrate_schema(conn: &Connection, mut version: i64) -> Result<(), String> {
+        while version < CONFIG_SCHEMA_VERSION {
+            let next = version + 1;
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("ERR_BEGIN_CONFIG_MIGRATION:{version}:{e}"))?;
+            match next {
+                2 => {
+                    tx.execute_batch(
+                        "CREATE INDEX IF NOT EXISTS idx_config_documents_updated_at
+                             ON config_documents(updated_at);
+                         CREATE INDEX IF NOT EXISTS idx_runtime_documents_updated_at
+                             ON runtime_documents(updated_at);",
+                    )
+                    .map_err(|e| format!("ERR_APPLY_CONFIG_MIGRATION:{next}:{e}"))?;
+                }
+                _ => return Err(format!("ERR_UNKNOWN_CONFIG_MIGRATION:{next}")),
+            }
+            tx.execute(
+                "UPDATE config_meta SET meta_value = ?1, updated_at = ?2
+                 WHERE meta_key = 'schema_version'",
+                params![next.to_string(), chrono::Utc::now().timestamp_millis()],
+            )
+            .map_err(|e| format!("ERR_WRITE_CONFIG_SCHEMA_VERSION:{next}:{e}"))?;
+            tx.commit()
+                .map_err(|e| format!("ERR_COMMIT_CONFIG_MIGRATION:{next}:{e}"))?;
+            version = next;
         }
         Ok(())
     }
@@ -363,6 +395,54 @@ mod tests {
 
         let error = AppConfigDatabase::new_with_path(&path).err().unwrap();
         assert_eq!(error, "ERR_CONFIG_SCHEMA_TOO_NEW:99");
+    }
+
+    #[test]
+    fn older_schema_runs_forward_migration() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("app_config.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE config_meta (
+                meta_key TEXT PRIMARY KEY,
+                meta_value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE config_documents (
+                document_key TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 1,
+                updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE runtime_documents (
+                document_key TEXT PRIMARY KEY,
+                payload_json TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+             );
+             INSERT INTO config_meta VALUES ('schema_version', '1', 0);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let db = AppConfigDatabase::new_with_path(&path).unwrap();
+        let index_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_index_list('config_documents') WHERE name = 'idx_config_documents_updated_at'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 1);
+        let version: String = db
+            .conn
+            .query_row(
+                "SELECT meta_value FROM config_meta WHERE meta_key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, "2");
     }
 
     #[test]

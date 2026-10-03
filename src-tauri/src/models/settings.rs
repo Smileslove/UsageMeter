@@ -36,8 +36,10 @@ pub struct ProxyConfig {
     pub streaming_idle_timeout_seconds: u64,
 }
 
-/// A local API gateway route. Gateway credentials are persisted in the local
-/// settings document (the same cross-platform model used by CC Switch).
+/// A local API gateway route. Gateway credentials are represented in memory;
+/// persistence stores only references in the settings document and keeps the
+/// secret material in the platform secret store (or the restricted fallback
+/// store on platforms without an integrated credential manager).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayProfile {
@@ -94,8 +96,8 @@ pub enum GatewayDispatchStrategy {
     PriorityFailover,
 }
 
-/// An upstream credential. `secret` is the v2 local-settings representation;
-/// `secret_ref` is retained solely for reading/migrating v1 profiles.
+/// An upstream credential. `secret` is populated only in runtime snapshots;
+/// `secret_ref` identifies the persisted secret and is retained for migration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayUpstreamKey {
@@ -109,14 +111,13 @@ pub struct GatewayUpstreamKey {
     pub priority: u16,
     #[serde(default)]
     pub secret: String,
-    /// Legacy reference to an OS credential-store entry.
+    /// Reference to the persisted credential-store entry.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub secret_ref: String,
 }
 
-/// A generated local credential. New profiles persist the raw value in
-/// `secret`; the salted verifier remains for compatibility with v1 data and
-/// for constant-time request authentication.
+/// A generated local credential. The raw value is kept only in runtime
+/// snapshots; the salted verifier remains available for request authentication.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayLocalKey {
@@ -131,7 +132,7 @@ pub struct GatewayLocalKey {
     /// Raw local key in the v2 settings representation.
     #[serde(default)]
     pub secret: String,
-    /// Legacy reference to the local credential in the OS credential store.
+    /// Reference to the persisted local credential.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub secret_ref: String,
     pub created_at_ms: i64,

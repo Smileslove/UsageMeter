@@ -126,7 +126,7 @@ const setSourceIcon = async (sourceId: string, icon: string | null) => {
   if (!source) return
   source.icon = icon || undefined
   source.autoDetected = false
-  await store.saveSettings()
+  await store.updateSourceIcon(sourceId, icon)
   iconPickerSourceId.value = null
 }
 
