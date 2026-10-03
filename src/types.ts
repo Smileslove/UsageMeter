@@ -2,7 +2,6 @@ export type AppLocale = 'zh-CN' | 'zh-TW' | 'en-US'
 
 /** Stable pseudo-source used for Codex requests authenticated by official ChatGPT OAuth. */
 export const OFFICIAL_OPENAI_OAUTH_SOURCE_ID = '__openai_official_oauth__'
-export const OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID = '__cursor_official_account__'
 /** Presentation-only marker emitted after the official quota endpoint confirms a plan. */
 export const OPENAI_OAUTH_PLAN_LABEL_PREFIX = '__openai_oauth_plan:'
 /** Stable pseudo-source used for Gemini CLI requests authenticated by official Google OAuth. */
@@ -200,7 +199,6 @@ export interface RemoteSyncDevice {
 }
 
 export interface AppSettings {
-  cursor: { accountSyncEnabled: boolean; databasePath: string | null }
   locale: AppLocale
   timezone: string
   refreshIntervalSeconds: number
@@ -629,18 +627,7 @@ export interface ModelTtftStats {
 }
 
 // 会话统计
-export interface UsageProvenance {
-  sourceTimestampMs: number
-  dataScope: string
-  usageBasis: string
-  costBasis: 'service_metered' | 'service_metered_partial' | 'unknown' | string
-  usageComplete: boolean
-  sessionKind: 'conversation' | 'account_bucket' | 'metadata_only' | string
-  countBasis: 'usage_event' | 'unknown' | string
-  chargedAmountUsd: number | null
-}
 export interface SessionStats {
-  provenance?: UsageProvenance | null
   sessionId: string
   tool: string
   totalRequests: number
@@ -675,8 +662,6 @@ export interface SessionStats {
 
 // 项目统计（聚合多个会话）
 export interface ProjectStats {
-  usageKnown?: boolean | null
-  costComplete?: boolean | null
   name: string
   projectKey?: string | null
   projectIdentity?: 'project' | 'global' | 'unknown'
@@ -698,8 +683,6 @@ export interface ProjectStats {
 }
 
 export interface ProjectToolStats {
-  usageKnown?: boolean | null
-  costComplete?: boolean | null
   tool: string
   requestCount: number
   sessionCount: number
@@ -727,7 +710,6 @@ export type RequestAttributionMethod =
 
 // 最近请求记录
 export interface RequestRecord {
-  provenance?: UsageProvenance | null
   requestKey: string
   sessionId: string
   projectName?: string | null
@@ -806,9 +788,6 @@ export interface StatisticsCapability {
   hasBasicUsage: boolean
   hasPerformance: boolean
   hasStatusCodes: boolean
-  cursorUsageEvents?: number
-  cursorUnknownCostEvents?: number
-  cursorIncompleteUsageEvents?: number
 }
 
 export interface StatisticsTotals {
@@ -936,7 +915,6 @@ export interface QuotaTier {
   name: string           // "five_hour" / "seven_day" / 余额币种
   kind?: QuotaKind       // 默认 window
   utilizationAvailable?: boolean | null
-  usedValue?: number | null
   utilization: number    // Usage percentage 0-100（余额型可为 0）
   resetsAt?: string      // ISO 8601 format reset time
   remainingValue?: number | null  // 余额型：剩余额度

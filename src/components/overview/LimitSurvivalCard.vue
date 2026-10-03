@@ -5,7 +5,7 @@ import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
 import LobeIcon from '../LobeIcon.vue'
 import { resolveToolLobeIcon } from '../../iconConfig'
-import { formatCost, formatCountdownSeconds, formatRate, formatTokenValue, formatUsedTotal as formatUsedTotalPair } from '../../utils/format'
+import { formatCountdownSeconds, formatRate, formatTokenValue, formatUsedTotal as formatUsedTotalPair } from '../../utils/format'
 import type { QuotaTier, SubscriptionQuota } from '../../types'
 
 const store = useMonitorStore()
@@ -21,7 +21,6 @@ function pickQuota(result: { success?: boolean; quota?: SubscriptionQuota } | nu
 const claudeQuota = computed(() => pickQuota(store.claudeQuota))
 const codexQuota = computed(() => pickQuota(store.subscriptionQuota))
 const copilotQuota = computed(() => pickQuota(store.copilotQuota))
-const cursorQuota = computed(() => pickQuota(store.cursorQuota))
 const geminiQuota = computed(() => pickQuota(store.geminiQuota))
 
 const configuredSourceQuotas = computed<SubscriptionQuota[]>(() =>
@@ -44,7 +43,6 @@ const hasContent = computed(() =>
   !!claudeQuota.value ||
   !!codexQuota.value ||
   !!geminiQuota.value ||
-  !!cursorQuota.value ||
   configuredSourceQuotas.value.length > 0
 )
 
@@ -255,18 +253,6 @@ const officialRows = computed(() => {
       loading: store.subscriptionLoading,
       refresh: async () => { await store.refreshSubscriptionQuota() },
     })
-  }
-
-  if (cursorQuota.value) {
-    rows.push({ key: 'cursor', label: t(locale.value, 'cursor.title'), icon: 'cursor', toneClass: 'tone-sky',
-      rows: cursorQuota.value.tiers.map(tier => ({ ...officialTierRow(tier), sublabel: t(locale.value, `cursor.${tier.name}`),
-        metricLabelKey: tier.currency === 'USD' && tier.usedValue != null ? 'survival.used' : 'survival.remaining',
-        metric: tier.currency === 'USD' && tier.usedValue != null
-          ? t(locale.value, 'cursor.spent', { value: formatCost(tier.usedValue, store.settings.currency) })
-          : officialTierRow(tier).metric,
-        resetText: tier.resetsAt ? formatResetFromIso(tier.resetsAt) : undefined,
-        barPercent: tier.utilizationAvailable === false ? null : remainingPercent(tier) })),
-      loading: store.cursorQuotaLoading, refresh: async () => { await store.fetchCursorQuota(true) } })
   }
 
   const geminiTiers = geminiQuota.value?.tiers.filter(tier => tier.kind !== 'balance') ?? []

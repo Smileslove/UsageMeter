@@ -283,11 +283,6 @@ impl LocalUsageDatabase {
         )?;
         log_sync_stage("qoder_work_cn_sync", stage_started, qoder_work_cn_count);
 
-        // A failed local Cursor read preserves its previous metadata and all account facts.
-        if let Err(code) = self.refresh_cursor_metadata() {
-            eprintln!("[UsageMeter] Cursor metadata unavailable: {code}");
-        }
-
         let stage_started = Instant::now();
         let hermes_sessions = crate::session::scan_hermes_sessions();
         log_sync_stage("hermes_scan", stage_started, hermes_sessions.len());
@@ -452,6 +447,9 @@ impl LocalUsageDatabase {
         dirty_sessions: Vec<DirtySessionSync>,
         removed_ids: Vec<String>,
     ) -> Result<(), String> {
+        let dirty_session_count = dirty_sessions.len();
+        let removed_session_count = removed_ids.len();
+
         let now = chrono::Utc::now().timestamp();
         let origin_device_id = self
             .get_webdav_sync_state("device_id")?
@@ -463,22 +461,7 @@ impl LocalUsageDatabase {
         let conn = self.conn.lock().unwrap();
         let tx = conn
             .unchecked_transaction()
-            .map_err(|e| format!("Failed to start local usage transaction: {e}"))?;
-        Self::sync_dirty_sessions_tx(&tx, dirty_sessions, removed_ids, &origin_device_id, now)?;
-        tx.commit()
-            .map_err(|e| format!("Failed to commit local usage sync: {e}"))?;
-        Ok(())
-    }
-
-    pub(super) fn sync_dirty_sessions_tx(
-        tx: &rusqlite::Transaction<'_>,
-        dirty_sessions: Vec<DirtySessionSync>,
-        removed_ids: Vec<String>,
-        origin_device_id: &str,
-        now: i64,
-    ) -> Result<(), String> {
-        let dirty_session_count = dirty_sessions.len();
-        let removed_session_count = removed_ids.len();
+            .map_err(|e| format!("Failed to start local usage transaction: {}", e))?;
         // Scanner failures must not abort local fact ingestion. A missing settings
         // snapshot disables outbox generation for this pass; startup reconciliation
         // will retry once the authoritative configuration is readable.
@@ -557,10 +540,10 @@ impl LocalUsageDatabase {
                     ],
                 )
                 .map_err(|e| format!("Failed to persist removed session tombstone: {e}"))?;
-                if sync_enabled && tool != "cursor" {
+                if sync_enabled {
                     outbox::enqueue_session_export_tx(
-                        tx,
-                        origin_device_id,
+                        &tx,
+                        &origin_device_id,
                         &SyncExportSession {
                             deleted: true,
                             session_id: session_id.clone(),
@@ -590,7 +573,7 @@ impl LocalUsageDatabase {
             }
             // 只统计即将被软删翻转的行（source_file_present != 0）覆盖的历史日期
             touched_history_dates.extend(Self::collect_history_dates_for_session_tx(
-                tx, session_id, &settings, &today,
+                &tx, session_id, &settings, &today,
             )?);
             let removed_facts: Vec<RemovedFact> = {
                 let mut stmt = tx
@@ -626,7 +609,7 @@ impl LocalUsageDatabase {
                 params![session_id],
             )
             .map_err(|e| format!("Failed to soft-delete local request facts: {}", e))?;
-            if sync_enabled && session_id.split("::").next() != Some("cursor") {
+            if sync_enabled {
                 for (
                     tool,
                     fact_session_id,
@@ -638,8 +621,8 @@ impl LocalUsageDatabase {
                 ) in removed_facts
                 {
                     outbox::enqueue_request_export_tx(
-                        tx,
-                        origin_device_id,
+                        &tx,
+                        &origin_device_id,
                         &SyncExportRequest {
                             deleted: true,
                             request_key: request_key.unwrap_or_else(|| {
@@ -848,8 +831,8 @@ impl LocalUsageDatabase {
                 usage_sources: meta.usage_sources.clone(),
                 model_list: meta.models.clone(),
             };
-            if sync_enabled && tool != "cursor" {
-                outbox::enqueue_session_export_tx(tx, origin_device_id, &session_export, now)?;
+            if sync_enabled {
+                outbox::enqueue_session_export_tx(&tx, &origin_device_id, &session_export, now)?;
             }
 
             let mut seen_dedupe_keys: HashSet<String> = HashSet::new();
@@ -1014,8 +997,13 @@ impl LocalUsageDatabase {
                     is_subagent: request.is_subagent,
                     source_kind: "local_usage".to_string(),
                 };
-                if sync_enabled && tool != "cursor" {
-                    outbox::enqueue_request_export_tx(tx, origin_device_id, &request_export, now)?;
+                if sync_enabled {
+                    outbox::enqueue_request_export_tx(
+                        &tx,
+                        &origin_device_id,
+                        &request_export,
+                        now,
+                    )?;
                 }
             }
 
@@ -1042,7 +1030,7 @@ impl LocalUsageDatabase {
                     if old_date < today {
                         touched_history_dates.insert(old_date);
                     }
-                    if sync_enabled && tool != "cursor" {
+                    if sync_enabled {
                         let tombstone = tx
                             .query_row(
                                 "SELECT session_id, request_key, message_id, model, project_key
@@ -1064,8 +1052,8 @@ impl LocalUsageDatabase {
                             .1
                             .unwrap_or_else(|| format!("{}:{}", tool.as_str(), stale_key.as_str()));
                         outbox::enqueue_request_export_tx(
-                            tx,
-                            origin_device_id,
+                            &tx,
+                            &origin_device_id,
                             &SyncExportRequest {
                                 deleted: true,
                                 request_key,
@@ -1093,26 +1081,28 @@ impl LocalUsageDatabase {
             }
         }
 
-        Self::upsert_sync_state(tx, "last_sync_completed_at", &now.to_string(), now)?;
+        Self::upsert_sync_state(&tx, "last_sync_completed_at", &now.to_string(), now)?;
         Self::upsert_sync_state(
-            tx,
+            &tx,
             "last_dirty_session_count",
             &dirty_session_count.to_string(),
             now,
         )?;
         Self::upsert_sync_state(
-            tx,
+            &tx,
             "last_removed_session_count",
             &removed_session_count.to_string(),
             now,
         )?;
-        Self::upsert_sync_state(tx, "last_sync_mode", "session_rebuild_v1", now)?;
+        Self::upsert_sync_state(&tx, "last_sync_mode", "session_rebuild_v1", now)?;
         Self::invalidate_unified_materialization_dates_tx(
-            tx,
+            &tx,
             &touched_history_dates.into_iter().collect::<Vec<_>>(),
             now,
         )?;
 
+        tx.commit()
+            .map_err(|e| format!("Failed to commit local usage sync: {}", e))?;
         Ok(())
     }
 }

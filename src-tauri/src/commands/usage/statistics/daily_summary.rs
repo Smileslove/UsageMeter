@@ -305,11 +305,8 @@ fn build_daily_summary_from_facts(
     summary.success_model_count = success_models.len() as u64;
     let has_partial =
         has_partial_coverage(summary.proxy_backed_requests, summary.local_only_requests);
-    summary.has_partial_status_coverage = facts
-        .iter()
-        .any(|fact| fact.tool == "cursor" && fact.status_code.is_none());
-    summary.has_partial_performance_coverage =
-        has_partial || facts.iter().any(|fact| fact.tool == "cursor");
+    summary.has_partial_status_coverage = false;
+    summary.has_partial_performance_coverage = has_partial;
     summary
 }
 
@@ -733,7 +730,6 @@ pub(super) async fn try_build_statistics_summary_from_daily_summary(
             + total_client_error_requests
             + total_server_error_requests
             > 0,
-        ..Default::default()
     };
     if !capability.has_status_codes {
         for model in &mut models {
@@ -880,7 +876,6 @@ mod tests {
             source_label: None,
             attribution_source_id: None,
             attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
-            provenance: None,
             reconciliation: crate::unified_usage::ReconciliationMetadata::default(),
         }
     }

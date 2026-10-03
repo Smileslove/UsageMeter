@@ -106,7 +106,6 @@ export const useMonitorStore = defineStore('monitor', {
     claudeQuota: null as SubscriptionQueryResult | null,
     claudeLoading: false,
     hasClaudeOAuth: false,
-    hasCursorUsage: false,
     sourceQuotaProfiles: [] as SourceQuotaProfileDescriptor[],
     sourceQuotaBindingStates: {} as Record<string, SourceQuotaBindingRuntimeState>,
     // 各工具已配置来源的第三方中转额度/余额（一行一来源；A 静默降级：空数组表示不可得）
@@ -124,8 +123,6 @@ export const useMonitorStore = defineStore('monitor', {
     configuredSourceLastError: null as string | null,
     // 限额生存层（本地信号：会话锚定块 / 燃烧速率 / 历史基线）
     limitSurvival: null as LimitSurvivalSnapshot | null,
-    cursorQuota: null as SubscriptionQueryResult | null,
-    cursorQuotaLoading: false,
     // Gemini 配额查询
     geminiQuota: null as SubscriptionQueryResult | null,
     geminiQuotaLoading: false,
@@ -176,8 +173,6 @@ export const useMonitorStore = defineStore('monitor', {
       if (this.hasGeminiOAuth) {
         await this.fetchGeminiQuota()
       }
-
-      if (this.settings.cursor.accountSyncEnabled) await this.fetchCursorQuota()
 
       await this.refreshCopilotAuthStatus()
       if (this.hasCopilotAuth) {
@@ -522,9 +517,6 @@ export const useMonitorStore = defineStore('monitor', {
      */
     async refreshClaudeQuota() {
       return runProviderQuotaAction(this, 'claude', true)
-    },
-    async fetchCursorQuota(force = false) {
-      return runProviderQuotaAction(this, 'cursor', force)
     },
     // === Gemini 额度查询 ===
     /**

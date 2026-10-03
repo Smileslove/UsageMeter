@@ -103,19 +103,6 @@ pub(crate) fn apply_passive_attribution(
     let intervals = database.passive_attribution_intervals_for_range(start_ms, end_ms)?;
 
     for fact in facts {
-        // Account billing identifies Cursor itself, regardless of the underlying model.
-        if fact.tool == "cursor"
-            && fact
-                .provenance
-                .as_ref()
-                .is_some_and(|evidence| evidence.data_scope == "account")
-        {
-            fact.attribution_source_id =
-                Some(crate::models::OFFICIAL_CURSOR_ACCOUNT_SOURCE_ID.into());
-            fact.source_label = fact.attribution_source_id.clone();
-            fact.attribution_method = AttributionMethod::ConfigInferred;
-            continue;
-        }
         // Materialized local facts may carry an earlier derived label. Clear it before each
         // resolution so deleting a source or exposing a configuration gap never leaves stale UI.
         if fact.coverage_origin == CoverageOrigin::LocalOnly {
@@ -229,7 +216,6 @@ mod tests {
             source_label: None,
             attribution_source_id: None,
             attribution_method: AttributionMethod::Unattributed,
-            provenance: None,
             reconciliation: crate::unified_usage::ReconciliationMetadata::default(),
         }
     }

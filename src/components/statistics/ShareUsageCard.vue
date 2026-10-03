@@ -36,10 +36,6 @@ const reportDate = computed(() => props.summary ? new Intl.DateTimeFormat(props.
 const MODEL_LIMIT = 5
 
 const totals = computed(() => props.summary?.totals ?? null)
-const cursorEvents = computed(() => props.summary?.capability.cursorUsageEvents ?? 0)
-const cursorOnly = computed(() => cursorEvents.value > 0 && cursorEvents.value === totals.value?.requestCount)
-const unknownCursorCost = computed(() => cursorOnly.value && (props.summary?.capability.cursorUnknownCostEvents ?? 0) === cursorEvents.value)
-const incompleteCursorTokens = computed(() => cursorOnly.value && (props.summary?.capability.cursorIncompleteUsageEvents ?? 0) > 0)
 const hasData = computed(() => (totals.value?.totalTokens ?? 0) > 0 || (totals.value?.requestCount ?? 0) > 0)
 
 const totalTokensValue = computed(() => totals.value?.totalTokens ?? 0)
@@ -51,16 +47,16 @@ function formatExact(value: number): string {
   return numberFormatter.value.format(Math.round(value))
 }
 
-const exactTotalTokens = computed(() => incompleteCursorTokens.value ? '—' : formatExact(totalTokensValue.value))
-const exactInputTokens = computed(() => incompleteCursorTokens.value ? '—' : formatExact((totals.value?.inputTokens ?? 0) + (totals.value?.cacheReadTokens ?? 0)))
-const exactOutputTokens = computed(() => incompleteCursorTokens.value ? '—' : formatExact(totals.value?.outputTokens ?? 0))
+const exactTotalTokens = computed(() => formatExact(totalTokensValue.value))
+const exactInputTokens = computed(() => formatExact((totals.value?.inputTokens ?? 0) + (totals.value?.cacheReadTokens ?? 0)))
+const exactOutputTokens = computed(() => formatExact(totals.value?.outputTokens ?? 0))
 
 const trendValues = computed(() => {
   const values = (props.summary?.trend ?? []).map(point => point.totalTokens)
   return values.length ? values : [0, 0, 0, 0, 0]
 })
 
-const heroFontSize = computed(() => hasData.value ? `${Math.min(props.includeTrend && props.visual !== 'chart' ? 145 : 176, 1780 / exactTotalTokens.value.length) * (cursorEvents.value > 0 ? 0.85 : 1)}px` : '72px')
+const heroFontSize = computed(() => hasData.value ? `${Math.min(props.includeTrend && props.visual !== 'chart' ? 145 : 176, 1780 / exactTotalTokens.value.length)}px` : '72px')
 const trendLabels = computed(() => {
   const points = props.summary?.trend ?? []
   const indexes = [...new Set([0, Math.floor((points.length - 1) / 2), points.length - 1])]
@@ -339,20 +335,20 @@ const proofMetrics = computed(() => [
   },
   {
     key: 'requests',
-    label: t(props.locale, cursorOnly.value ? 'cursor.eventCount' : 'statistics.requests'),
+    label: t(props.locale, 'statistics.requests'),
     value: formatRequestCount(totals.value?.requestCount ?? 0)
   },
   {
     key: 'cost',
-    label: t(props.locale, cursorOnly.value ? 'cursor.costValue' : 'statistics.cost'),
-    value: unknownCursorCost.value ? '—' : formatCost(totals.value?.cost ?? 0, props.currency)
+    label: t(props.locale, 'statistics.cost'),
+    value: formatCost(totals.value?.cost ?? 0, props.currency)
   }
 ])
 
 </script>
 
 <template>
-  <div class="share-card" :class="{ 'share-card--compact': topModels.length > 3 || cursorEvents > 0, 'share-card--annotated': cursorEvents > 0, 'share-card--heatmap': isHeatmap && includeTrend }" :style="themeVars">
+  <div class="share-card" :class="{ 'share-card--compact': topModels.length > 3, 'share-card--heatmap': isHeatmap && includeTrend }" :style="themeVars">
     <header class="share-card__header">
       <div class="share-card__brand-lockup">
         <span class="share-card__mark" aria-hidden="true"><i></i><i></i><i></i></span>
@@ -504,9 +500,6 @@ const proofMetrics = computed(() => [
 
     <footer class="share-card__footer">
       <div>
-        <p v-if="cursorEvents > 0">{{ t(locale, 'cursor.shareScopeNote') }}</p>
-        <p v-if="(summary?.capability.cursorUnknownCostEvents ?? 0) > 0">{{ t(locale, 'cursor.partialCost', { count: summary?.capability.cursorUnknownCostEvents ?? 0 }) }}</p>
-        <p v-if="(summary?.capability.cursorIncompleteUsageEvents ?? 0) > 0">{{ t(locale, 'cursor.knownTotalsNote') }}</p>
         <strong>{{ rangeLabel }}</strong>
       </div>
       <p>{{ t(locale, 'statistics.generatedBy') }}</p>

@@ -111,6 +111,6 @@ fn map_quota_detail(name: &str, detail: &QuotaDetail, resets_at: Option<String>)
         },
         currency: None,
         limit_reached: Some(!detail.unlimited && detail.remaining <= 0),
-        ..Default::default()
+        utilization_available: None,
     }
 }

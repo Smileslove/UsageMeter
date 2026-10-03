@@ -19,7 +19,7 @@ impl LocalUsageDatabase {
                         model_list_json, total_reasoning_tokens, total_elapsed_ms, explicit_cost,
                         explicit_cost_currency, usage_sources_json, estimated
                  FROM local_sessions
-                 WHERE tool != 'cursor' AND NOT EXISTS (
+                 WHERE NOT EXISTS (
                      SELECT 1 FROM local_session_tombstones t
                      WHERE t.session_id = local_sessions.session_id
                  )
@@ -79,7 +79,7 @@ impl LocalUsageDatabase {
             .prepare(
                 "SELECT session_id, tool, project_key, project_name, scope,
                         start_time, end_time
-                 FROM local_session_tombstones WHERE tool != 'cursor'
+                 FROM local_session_tombstones
                  ORDER BY deleted_at ASC",
             )
             .map_err(|e| format!("Failed to prepare sync session tombstone export: {}", e))?;
@@ -121,7 +121,7 @@ impl LocalUsageDatabase {
                         model, input_tokens, output_tokens, cache_create_tokens,
                         cache_read_tokens, total_tokens, request_count, explicit_estimated_cost,
                         is_subagent, source_file_present
-                 FROM local_request_facts WHERE tool != 'cursor'
+                 FROM local_request_facts
                  ORDER BY timestamp ASC",
             )
             .map_err(|e| format!("Failed to prepare sync request export: {}", e))?;
@@ -565,7 +565,6 @@ impl LocalUsageDatabase {
                 is_subagent: row.get::<_, i64>(12)? != 0,
                 request_key: request_key.filter(|v| !v.trim().is_empty()),
                 source_file_present: None,
-                provenance: None,
                 reasoning_tokens: 0,
             })
         };

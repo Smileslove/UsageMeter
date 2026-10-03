@@ -401,7 +401,6 @@ fn parse_work_log_line(
         request_key: None,
         explicit_estimated_cost: None,
         source_file_present: None,
-        provenance: None,
     })
 }
 
@@ -745,7 +744,6 @@ fn extract_qoder_work_cli_request_record(
         request_key: None,
         explicit_estimated_cost: None,
         source_file_present: None,
-        provenance: None,
     })
 }
 

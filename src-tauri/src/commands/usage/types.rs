@@ -61,9 +61,6 @@ pub struct StatisticsCapability {
     pub has_basic_usage: bool,
     pub has_performance: bool,
     pub has_status_codes: bool,
-    pub cursor_usage_events: u64,
-    pub cursor_unknown_cost_events: u64,
-    pub cursor_incomplete_usage_events: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, Default)]

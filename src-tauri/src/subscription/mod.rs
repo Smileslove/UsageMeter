@@ -4,7 +4,6 @@
 
 mod claude;
 mod copilot;
-pub(crate) mod cursor;
 mod gemini;
 mod gpt;
 pub mod query_profiles;

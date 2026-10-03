@@ -5,9 +5,9 @@
 //! for cross-cutting tool identity and capability discovery.
 
 use crate::session::constants::{
-    TOOL_CLAUDE_CODE, TOOL_CODEX, TOOL_COPILOT, TOOL_CURSOR, TOOL_DEEPSEEK_HARNESS, TOOL_GEMINI,
-    TOOL_HERMES, TOOL_OPENCLAW, TOOL_OPENCODE, TOOL_PI, TOOL_QODER_CLI, TOOL_QODER_IDE,
-    TOOL_QODER_IDE_CN, TOOL_QODER_WORK, TOOL_QODER_WORK_CN, TOOL_REASONIX,
+    TOOL_CLAUDE_CODE, TOOL_CODEX, TOOL_COPILOT, TOOL_DEEPSEEK_HARNESS, TOOL_GEMINI, TOOL_HERMES,
+    TOOL_OPENCLAW, TOOL_OPENCODE, TOOL_PI, TOOL_QODER_CLI, TOOL_QODER_IDE, TOOL_QODER_IDE_CN,
+    TOOL_QODER_WORK, TOOL_QODER_WORK_CN, TOOL_REASONIX,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,13 +22,6 @@ pub struct ToolDescriptor {
 }
 
 const TOOLS: &[ToolDescriptor] = &[
-    ToolDescriptor {
-        id: TOOL_CURSOR,
-        path_prefix: "cursor",
-        has_local_sessions: true,
-        supports_proxy: false,
-        supports_reconciliation: false,
-    },
     ToolDescriptor {
         id: TOOL_CLAUDE_CODE,
         path_prefix: "claude-code",

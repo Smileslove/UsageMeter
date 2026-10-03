@@ -402,7 +402,6 @@ mod tests {
             source_label: None,
             attribution_source_id: None,
             attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
-            provenance: None,
             reconciliation: crate::unified_usage::ReconciliationMetadata::default(),
         }
     }

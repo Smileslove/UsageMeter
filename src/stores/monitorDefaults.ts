@@ -52,7 +52,6 @@ export function createDefaultSettings(): AppSettings {
     sync: createDefaultSync(), networkProxy: createDefaultNetworkProxy(), autoCheckUpdate: true, skippedUpdateVersion: '',
     wslScan: createDefaultWslScan(),
     deepseekHarnessSessionRoot: null,
-    cursor: { accountSyncEnabled: false, databasePath: null },
     deepIndexLevel: 'off', deepIndexRetentionDays: 90
   }
 }

@@ -18,7 +18,6 @@ pub struct RequestRecordsQuery {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestRecordItem {
-    pub provenance: Option<crate::session::UsageProvenance>,
     pub request_key: String,
     pub session_id: String,
     pub project_name: Option<String>,
@@ -116,7 +115,6 @@ pub struct RequestRecordsPage {
 
 fn map_fact_to_item(fact: &MergedRequestFact) -> RequestRecordItem {
     RequestRecordItem {
-        provenance: fact.provenance.clone(),
         request_key: fact.canonical_request_key.clone(),
         session_id: fact.session_id.clone(),
         project_name: fact.project_name.clone(),
@@ -234,17 +232,7 @@ fn fact_sort_value(fact: &MergedRequestFact, field: &str) -> Option<f64> {
         "input" => Some(fact.input_tokens as f64),
         "output" => Some(fact.output_tokens as f64),
         "totalTokens" => Some(fact.total_tokens as f64),
-        "cost" => {
-            if fact
-                .provenance
-                .as_ref()
-                .is_some_and(|e| e.cost_basis == "unknown")
-            {
-                None
-            } else {
-                Some(fact.estimated_cost)
-            }
-        }
+        "cost" => Some(fact.estimated_cost),
         "duration" => fact.duration_ms.map(|v| v as f64),
         "rate" => fact.output_tokens_per_second,
         "ttft" => fact.ttft_ms.map(|v| v as f64),
@@ -397,7 +385,6 @@ mod tests {
             source_label: None,
             attribution_source_id: None,
             attribution_method: crate::unified_usage::AttributionMethod::Unattributed,
-            provenance: None,
             reconciliation: crate::unified_usage::ReconciliationMetadata::default(),
         }
     }

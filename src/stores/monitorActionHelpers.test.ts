@@ -152,7 +152,7 @@ describe('applyConfiguredSourceQuotaFailure', () => {
 
 describe('normalizeSettings', () => {
   it('returns_same_reference_for_chinese_format', () => {
-    const settings = { numberFormat: 'chinese', cursor: { accountSyncEnabled: false, databasePath: null } } as AppSettings
+    const settings = { numberFormat: 'chinese' } as AppSettings
     expect(normalizeSettings(settings)).toBe(settings)
   })
 
@@ -163,12 +163,6 @@ describe('normalizeSettings', () => {
     expect(result.numberFormat).toBe('international')
     expect(result.refreshIntervalSeconds).toBe(30)
     expect(settings).toEqual({ numberFormat: 'international', refreshIntervalSeconds: 30 })
-  })
-
-  it('migrates_old_cursor_settings_without_enabling_account_network', () => {
-    const old = { numberFormat: 'chinese' } as AppSettings
-    expect(normalizeSettings(old).cursor).toEqual({ accountSyncEnabled: false, databasePath: null })
-    expect(old.cursor).toBeUndefined()
   })
 
   it('normalizes_missing_numberFormat_to_international', () => {

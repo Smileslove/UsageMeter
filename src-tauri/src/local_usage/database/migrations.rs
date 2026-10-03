@@ -20,7 +20,7 @@ impl LocalUsageDatabase {
 
     pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 36 {
+        if schema_version >= 35 {
             return Ok(());
         }
         let mut cleared_runtime_caches = false;
@@ -1171,22 +1171,6 @@ impl LocalUsageDatabase {
             tx.commit()
                 .map_err(|e| format!("Failed to commit v35 schema migration: {e}"))?;
             cleared_runtime_caches = true;
-        }
-
-        if schema_version < 36 {
-            let tx = conn
-                .unchecked_transaction()
-                .map_err(|e| format!("Failed to start v36 schema migration: {e}"))?;
-            Self::add_column_if_missing(&tx, "local_request_facts", "provenance_json", "TEXT")?;
-            Self::add_column_if_missing(
-                &tx,
-                "unified_daily_materialized_facts",
-                "provenance_json",
-                "TEXT",
-            )?;
-            Self::upsert_sync_state(&tx, "schema_version", "36", chrono::Utc::now().timestamp())?;
-            tx.commit()
-                .map_err(|e| format!("Failed to commit v36 schema migration: {e}"))?;
         }
 
         if cleared_runtime_caches {

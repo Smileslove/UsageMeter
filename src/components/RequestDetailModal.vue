@@ -32,9 +32,8 @@ const emit = defineEmits<{ close: [] }>()
 const store = useMonitorStore()
 const {
   formatTime,
+  formatTokens,
   formatCost,
-  displayRequestCost,
-  displayRequestTokens,
   formatDuration,
   requestCoverageLabel,
   requestModelLabel,
@@ -53,7 +52,7 @@ const { copiedValue, copyText } = useClipboard()
 
 const cacheHitRate = computed(() => {
   const request = props.request
-  if (!request || request.provenance?.usageComplete === false) return '—'
+  if (!request) return '—'
   const denominator = (request.inputTokens || 0)
     + (request.outputTokens || 0)
     + (request.cacheCreateTokens || 0)
@@ -70,7 +69,7 @@ const requestStatusIcon = computed(() => {
 
 const projectValue = computed(() => {
   const request = props.request
-  if (!request || request.provenance?.usageComplete === false) return '—'
+  if (!request) return '—'
   return `${requestProjectLabel(request)} / ${requestToolLabel(request.tool)}`
 })
 
@@ -116,13 +115,9 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
         </header>
 
         <div class="request-detail-modal__body detail-modal-body min-h-0 flex-1 overflow-y-auto">
-          <div v-if="request.tool === 'cursor'" class="mb-3 space-y-1 text-xs leading-relaxed text-[var(--theme-text-secondary)]">
-            <p>{{ t(store.settings.locale, 'cursor.scopeNote') }}</p>
-            <p v-if="request.provenance?.chargedAmountUsd != null">{{ t(store.settings.locale, 'cursor.chargedValue', { value: formatCost(request.provenance.chargedAmountUsd) }) }}</p>
-          </div>
           <div class="grid grid-cols-4 gap-2 sm:gap-3">
-            <div class="request-detail-metric"><div class="request-detail-metric__icon request-detail-metric__icon--blue"><FileText class="h-5 w-5" aria-hidden="true" /></div><span>{{ t(store.settings.locale, 'sessions.requestTotalTokens') }}</span><strong>{{ displayRequestTokens(request, request.totalTokens) }}</strong></div>
-            <div class="request-detail-metric"><div class="request-detail-metric__icon request-detail-metric__icon--green"><DollarSign class="h-5 w-5" aria-hidden="true" /></div><span>{{ t(store.settings.locale, 'sessions.cost') }}</span><strong>{{ displayRequestCost(request) }}</strong></div>
+            <div class="request-detail-metric"><div class="request-detail-metric__icon request-detail-metric__icon--blue"><FileText class="h-5 w-5" aria-hidden="true" /></div><span>{{ t(store.settings.locale, 'sessions.requestTotalTokens') }}</span><strong>{{ formatTokens(request.totalTokens) }}</strong></div>
+            <div class="request-detail-metric"><div class="request-detail-metric__icon request-detail-metric__icon--green"><DollarSign class="h-5 w-5" aria-hidden="true" /></div><span>{{ t(store.settings.locale, 'sessions.cost') }}</span><strong>{{ formatCost(request.estimatedCost) }}</strong></div>
             <div class="request-detail-metric"><div class="request-detail-metric__icon request-detail-metric__icon--blue"><Clock3 class="h-5 w-5" aria-hidden="true" /></div><span>{{ t(store.settings.locale, 'sessions.duration') }}</span><strong>{{ formatDuration(request.durationMs) }}</strong></div>
             <div class="request-detail-metric"><div class="request-detail-metric__icon request-detail-metric__icon--green"><Database class="h-5 w-5" aria-hidden="true" /></div><span>{{ t(store.settings.locale, 'statistics.cacheHitRate') }}</span><strong>{{ cacheHitRate }}</strong></div>
           </div>
@@ -131,10 +126,10 @@ onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
             <div class="request-detail-section__title"><div class="request-detail-section__title-icon request-detail-section__title-icon--blue"><FileText class="h-5 w-5" aria-hidden="true" /></div><h3>{{ t(store.settings.locale, 'sessions.requestTokenBreakdown') }}</h3></div>
             <div class="request-detail-table mt-4">
               <div class="request-detail-table__head"><span>{{ t(store.settings.locale, 'common.type') }}</span><span>{{ t(store.settings.locale, 'common.quantity') }}</span></div>
-              <div class="request-detail-table__row"><div class="request-detail-table__label"><span class="request-detail-token-icon request-detail-token-icon--blue"><ArrowDownToLine class="h-4 w-4" aria-hidden="true" /></span><strong>{{ t(store.settings.locale, 'sessions.input') }}</strong></div><span class="request-detail-table__value">{{ displayRequestTokens(request, request.inputTokens) }} <small>{{ t(store.settings.locale, 'common.token') }}</small></span></div>
-              <div class="request-detail-table__row"><div class="request-detail-table__label"><span class="request-detail-token-icon request-detail-token-icon--green"><ArrowUpFromLine class="h-4 w-4" aria-hidden="true" /></span><strong>{{ t(store.settings.locale, 'sessions.output') }}</strong></div><span class="request-detail-table__value">{{ displayRequestTokens(request, request.outputTokens) }} <small>{{ t(store.settings.locale, 'common.token') }}</small></span></div>
-              <div class="request-detail-table__row"><div class="request-detail-table__label"><span class="request-detail-token-icon request-detail-token-icon--slate"><Database class="h-4 w-4" aria-hidden="true" /></span><strong>{{ t(store.settings.locale, 'statistics.cacheCreate') }}</strong></div><span class="request-detail-table__value">{{ displayRequestTokens(request, request.cacheCreateTokens) }} <small>{{ t(store.settings.locale, 'common.token') }}</small></span></div>
-              <div class="request-detail-table__row"><div class="request-detail-table__label"><span class="request-detail-token-icon request-detail-token-icon--violet"><Database class="h-4 w-4" aria-hidden="true" /></span><strong>{{ t(store.settings.locale, 'statistics.cacheRead') }}</strong></div><span class="request-detail-table__value">{{ displayRequestTokens(request, request.cacheReadTokens) }} <small>{{ t(store.settings.locale, 'common.token') }}</small></span></div>
+              <div class="request-detail-table__row"><div class="request-detail-table__label"><span class="request-detail-token-icon request-detail-token-icon--blue"><ArrowDownToLine class="h-4 w-4" aria-hidden="true" /></span><strong>{{ t(store.settings.locale, 'sessions.input') }}</strong></div><span class="request-detail-table__value">{{ formatTokens(request.inputTokens) }} <small>{{ t(store.settings.locale, 'common.token') }}</small></span></div>
+              <div class="request-detail-table__row"><div class="request-detail-table__label"><span class="request-detail-token-icon request-detail-token-icon--green"><ArrowUpFromLine class="h-4 w-4" aria-hidden="true" /></span><strong>{{ t(store.settings.locale, 'sessions.output') }}</strong></div><span class="request-detail-table__value">{{ formatTokens(request.outputTokens) }} <small>{{ t(store.settings.locale, 'common.token') }}</small></span></div>
+              <div class="request-detail-table__row"><div class="request-detail-table__label"><span class="request-detail-token-icon request-detail-token-icon--slate"><Database class="h-4 w-4" aria-hidden="true" /></span><strong>{{ t(store.settings.locale, 'statistics.cacheCreate') }}</strong></div><span class="request-detail-table__value">{{ formatTokens(request.cacheCreateTokens) }} <small>{{ t(store.settings.locale, 'common.token') }}</small></span></div>
+              <div class="request-detail-table__row"><div class="request-detail-table__label"><span class="request-detail-token-icon request-detail-token-icon--violet"><Database class="h-4 w-4" aria-hidden="true" /></span><strong>{{ t(store.settings.locale, 'statistics.cacheRead') }}</strong></div><span class="request-detail-table__value">{{ formatTokens(request.cacheReadTokens) }} <small>{{ t(store.settings.locale, 'common.token') }}</small></span></div>
             </div>
             <p class="request-detail-note"><Info class="h-4 w-4 shrink-0" aria-hidden="true" />{{ t(store.settings.locale, 'sessions.requestCacheHitHint') }}</p>
           </section>

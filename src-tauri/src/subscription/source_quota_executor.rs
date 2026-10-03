@@ -94,7 +94,7 @@ fn build_new_api_quota(
         max_value: Some(total),
         currency: Some("USD".to_string()),
         limit_reached: Some(remaining <= 0.0),
-        ..Default::default()
+        utilization_available: None,
     };
 
     make_quota(
@@ -142,7 +142,7 @@ fn build_generic_balance_quota(
         max_value,
         currency: Some(unit),
         limit_reached: Some(!is_valid || remaining <= 0.0),
-        ..Default::default()
+        utilization_available: None,
     };
 
     make_quota(

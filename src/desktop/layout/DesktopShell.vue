@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import CursorUsageNotice from '../../components/CursorUsageNotice.vue'
 import DesktopSidebar from './DesktopSidebar.vue'
 import DesktopPageHeader from './DesktopPageHeader.vue'
 </script>
@@ -15,9 +14,8 @@ import DesktopPageHeader from './DesktopPageHeader.vue'
       <!-- 单一主滚动区：页面内避免嵌套滚动（设计文档 4.6） -->
       <!-- h-full 透传高度，让表格型页面可撑满视口做表体内部滚动 -->
       <main class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div class="mx-auto flex h-full w-full max-w-[1440px] flex-col px-6 py-6">
-          <CursorUsageNotice class="shrink-0" />
-          <div class="min-h-0 flex-1"><slot /></div>
+        <div class="mx-auto h-full w-full max-w-[1440px] px-6 py-6">
+          <slot />
         </div>
       </main>
     </div>

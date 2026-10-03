@@ -189,7 +189,6 @@ impl ProxyDatabase {
                 let avg_rate = row.get::<_, Option<f64>>(15)?.unwrap_or(0.0);
 
                 Ok(SessionStats {
-                    provenance: None,
                     session_id: row.get(0)?,
                     tool: row.get::<_, String>(2)?,
                     total_requests: row.get::<_, i64>(1)? as u64,
@@ -298,7 +297,6 @@ impl ProxyDatabase {
                     let avg_rate = row.get::<_, Option<f64>>(15)?.unwrap_or(0.0);
 
                     Ok(SessionStats {
-                        provenance: None,
                         session_id: row.get(0)?,
                         tool: row.get::<_, String>(2)?,
                         total_requests: row.get::<_, i64>(1)? as u64,

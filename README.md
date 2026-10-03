@@ -23,7 +23,7 @@ Local history provides the baseline. Optional proxy capture adds live performanc
 
 - **A full desktop workspace** with eight pages, detailed request tables, session/project navigation, and analytics drill-down.
 - **Deep activity for Claude Code and Codex** with event timelines, tool calls, supported agent relationships, opt-in full-text search, and export.
-- **More data sources**: Pi Agent local scanning and multi-provider proxy capture, DeepSeek Harness local scanning, cc-switch log import, and Cursor usage CSV import.
+- **More data sources**: Pi Agent local scanning and multi-provider proxy capture, DeepSeek Harness local scanning, and cc-switch log import.
 - **Clearer attribution and presentation**: passive official OAuth attribution, refined quota cards, and a redesigned share editor with light and dark poster themes.
 
 See the [bilingual changelog](CHANGELOG.md) for fixes and release details.
@@ -80,7 +80,6 @@ Support varies by capability; local usage does not imply proxy takeover or an of
 | Qoder CLI / IDE / IDE CN / Work / Work CN | Yes | — | — |
 | DeepSeek Harness | Yes; configurable session root | — | — |
 | Reasonix | — | Yes; global configuration | — |
-| Cursor IDE | Local metadata + imported usage CSV | — | Disabled pending account validation |
 
 Configured third-party relay sources can query quota or balance using supported query profiles. cc-switch request logs can be imported read-only, without taking over cc-switch's configuration. Deep activity currently has dedicated adapters for Claude Code and Codex.
 
@@ -120,6 +119,8 @@ Create a profile, save its upstream credential, and connect a client using the p
 
 Profiles use public HTTPS upstreams. The gateway preserves the selected protocol and streaming responses, records supported usage and runtime metrics, and provides upstream model discovery and availability probes. Each profile has one saved upstream credential and one local client key; credentials can be replaced and local keys revoked/regenerated. Manual gateway routing and tool configuration takeover are separate controls.
 
+Client labels are caller metadata only; a label such as `Cursor` is a generic gateway example and does not enable a built-in Cursor integration.
+
 ### Sharing and Settings
 
 - Create a usage poster with light/dark theme presets, a custom display name, and optional statistics, trends, and model sections; copy an image or export PNG/JPEG.
@@ -134,7 +135,7 @@ Profiles use public HTTPS upstreams. The gateway preserves the selected protocol
 2. Click the menu bar icon. Supported local histories are discovered from their tool-specific locations. Open **Settings** to inspect scan paths; DeepSeek Harness can use a custom session root.
 3. Choose a time window and use the source/tool filters to narrow the view. Open the desktop window from the panel's toolbar for full analytics and request exploration.
 4. If you need TTFT, HTTP status, or live source attribution, configure optional proxy capture or a gateway profile. Quota cards require the corresponding detected credentials or a configured relay query.
-5. For Cursor, use **Settings → Cursor** to preview an exported usage CSV before importing it. For deep activity, enable the desired indexing level in desktop **Settings**.
+5. For deep activity, enable the desired indexing level in desktop **Settings**.
 
 Some features appear only when their credentials or data exist. Windows-specific WSL passive scanning is available in settings, but it does not imply the same release support as macOS.
 
@@ -145,7 +146,6 @@ Some features appear only when their credentials or data exist. Windows-specific
 | Local files / SQLite | Historical usage, sessions, and project associations | Coverage depends on the tool's retained records and supported schema |
 | Optional local proxy / gateway | Live request observations, performance, and source attribution | Tool takeover changes supported tool configuration; manual gateway clients use explicit endpoints |
 | cc-switch logs | Historical request observations | Imported read-only and reconciled with other observations |
-| Cursor CSV | Account usage events and service-metered values | Event counts are not HTTP request counts; account scope can include other devices |
 
 The backend merges and deduplicates observations where matching evidence is available. Missing status, performance, cost, or attribution stays unavailable rather than becoming an invented measurement. Estimated token cost uses configured model prices and is not a provider invoice or subscription charge; cache and reasoning token handling follows each reader's source semantics.
 
@@ -162,15 +162,7 @@ UsageMeter keeps its working data under `~/.usagemeter/`:
 
 Proxy statistics do not store prompt/response bodies or authorization headers. Session views may display titles or prompt snippets from local histories; opt-in activity modes may read or retain redacted content and full-text indexes. Review session text, project paths, source names, and account labels before sharing a screenshot or activity export.
 
-Gateway credentials are kept in local UsageMeter configuration; legacy Keychain-backed credentials are migrated when readable, otherwise the app asks for replacement. Quota queries contact the corresponding provider; update, price, exchange-rate, and connectivity operations also use the network. Optional WebDAV sync encrypts synchronized data end to end; session text is separately configurable, and Cursor usage is excluded from synchronization.
-
-### Cursor data boundaries
-
-Open **Settings → Cursor** to import an exported usage CSV. Preview validates the entire file's token and cache-column totals before import; importing the same file into the same namespace is idempotent. Use one namespace per account, and revoke overlapping CSV batches before replacing them. CSV dates describe observed events, not a guarantee of complete historical coverage.
-
-Cursor tokens and metered usage value come from account billing events. These may include other devices or cloud agents; usage-event counts are not HTTP request counts, and metered value is separate from charged amounts. Missing cost, token buckets, status and performance remain unknown. Local `state.vscdb` and workspace databases supply only conversation IDs, dates and exact project associations; text length never becomes a token estimate. Events without conversation IDs appear as account-date buckets and do not increase real project session counts.
-
-The private dashboard API, pagination and quota provider are implemented behind a disabled compatibility gate. No account network requests are made until real-account validation permits enabling this gate and the user opts in. Cursor credentials are read in memory only, never copied into UsageMeter settings or exported. Cursor usage is excluded from WebDAV snapshots and outbox records. Cursor CLI, team-admin API, deep activity and proxy takeover are outside this integration.
+Gateway credentials are kept in local UsageMeter configuration; legacy Keychain-backed credentials are migrated when readable, otherwise the app asks for replacement. Quota queries contact the corresponding provider; update, price, exchange-rate, and connectivity operations also use the network. Optional WebDAV sync encrypts synchronized data end to end; session text is separately configurable.
 
 ## Development
 

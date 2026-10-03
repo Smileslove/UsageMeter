@@ -228,21 +228,19 @@ export async function prepareExitAction(context: MonitorDomainContext) {
 
 export async function runProviderQuotaAction(
   context: MonitorDomainContext,
-  provider: 'gpt' | 'claude' | 'gemini' | 'copilot' | 'cursor',
+  provider: 'gpt' | 'claude' | 'gemini' | 'copilot',
   force: boolean
 ) {
   const setLoading = (loading: boolean) => {
     if (provider === 'gpt') context.subscriptionLoading = loading
     else if (provider === 'claude') context.claudeLoading = loading
     else if (provider === 'gemini') context.geminiQuotaLoading = loading
-    else if (provider === 'cursor') context.cursorQuotaLoading = loading
     else context.copilotQuotaLoading = loading
   }
   const setResult = (result: SubscriptionQueryResult) => {
     if (provider === 'gpt') context.subscriptionQuota = result
     else if (provider === 'claude') context.claudeQuota = result
     else if (provider === 'gemini') context.geminiQuota = result
-    else if (provider === 'cursor') context.cursorQuota = result
     else context.copilotQuota = result
   }
   await runSubscriptionQuotaQuery(

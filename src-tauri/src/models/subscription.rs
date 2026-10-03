@@ -26,11 +26,9 @@ pub struct QuotaTier {
     pub kind: QuotaKind,
     /// Usage percentage (0-100)；余额型可为 0
     pub utilization: f64,
-    /// None preserves legacy behavior; false suppresses an invented capacity gauge.
+    /// Whether the provider supplied a meaningful utilization value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub utilization_available: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub used_value: Option<f64>,
     /// Reset time in ISO 8601 format
     pub resets_at: Option<String>,
     /// 余额型：剩余额度/余额

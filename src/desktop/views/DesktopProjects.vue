@@ -24,10 +24,7 @@ const locale = computed(() => store.settings.locale)
 const {
   formatTime,
   formatTokens,
-  displayProjectCost,
-  projectUsageVisible,
-  projectToolUsageVisible,
-  displayTokens,
+  formatCost,
   requestToolLabel,
   sessionUsageVisible,
   displaySessionTitle,
@@ -235,9 +232,9 @@ onUnmounted(() => {
               <span class="mt-1 flex items-center gap-2 text-xs text-[var(--theme-text-secondary)]">
                 <span class="font-mono">{{ project.sessionCount ?? 0 }} {{ t(locale, 'desktop.sessions.projectSessions') }}</span>
                 <span class="text-[var(--theme-text-quaternary)]">·</span>
-                <span class="font-mono">{{ displayTokens(projectTotalTokens(project), projectUsageVisible(project)) }}</span>
+                <span class="font-mono">{{ formatTokens(projectTotalTokens(project)) }}</span>
                 <span class="text-[var(--theme-text-quaternary)]">·</span>
-                <span class="font-mono text-[var(--theme-chart-cost)]">{{ displayProjectCost(project) }}</span>
+                <span class="font-mono text-[var(--theme-chart-cost)]">{{ formatCost(project.totalCost) }}</span>
               </span>
             </span>
           </button>
@@ -270,11 +267,11 @@ onUnmounted(() => {
             </div>
             <div class="rounded-lg border p-3" style="background: var(--theme-surface-gradient)">
               <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.columnTokens') }}</div>
-              <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ displayTokens(projectTotalTokens(selectedProject), projectUsageVisible(selectedProject)) }}</div>
+              <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-text-primary)]">{{ formatTokens(projectTotalTokens(selectedProject)) }}</div>
             </div>
             <div class="rounded-lg border p-3" style="background: var(--theme-surface-gradient)">
               <div class="text-xs text-[var(--theme-text-tertiary)]">{{ t(locale, 'desktop.sessions.columnCost') }}</div>
-              <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-chart-cost)]">{{ displayProjectCost(selectedProject) }}</div>
+              <div class="mt-0.5 font-mono text-[15px] font-semibold text-[var(--theme-chart-cost)]">{{ formatCost(selectedProject.totalCost) }}</div>
             </div>
           </div>
 
@@ -302,8 +299,8 @@ onUnmounted(() => {
                     </span>
                   </td>
                   <td class="whitespace-nowrap px-3 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ tool.requestCount ?? 0 }}</td>
-                  <td class="whitespace-nowrap px-3 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ displayTokens((tool.totalInputTokens || 0) + (tool.totalOutputTokens || 0) + (tool.totalCacheCreateTokens || 0) + (tool.totalCacheReadTokens || 0), projectToolUsageVisible(tool)) }}</td>
-                  <td class="whitespace-nowrap px-3 py-1.5 text-right font-mono text-[var(--theme-chart-cost)]">{{ displayProjectCost(tool) }}</td>
+                  <td class="whitespace-nowrap px-3 py-1.5 text-right font-mono text-[var(--theme-text-primary)]">{{ formatTokens((tool.totalInputTokens || 0) + (tool.totalOutputTokens || 0) + (tool.totalCacheCreateTokens || 0) + (tool.totalCacheReadTokens || 0)) }}</td>
+                  <td class="whitespace-nowrap px-3 py-1.5 text-right font-mono text-[var(--theme-chart-cost)]">{{ formatCost(tool.totalCost) }}</td>
                   <td class="whitespace-nowrap px-3 py-1.5 text-right text-[var(--theme-text-tertiary)]">{{ formatTime(tool.lastActive) }}</td>
                 </tr>
               </tbody>

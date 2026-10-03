@@ -190,7 +190,6 @@ fn build_single_session_data(
             request_key,
             explicit_estimated_cost: snapshot.explicit_cost,
             source_file_present: Some(true),
-            provenance: None,
         });
     }
 

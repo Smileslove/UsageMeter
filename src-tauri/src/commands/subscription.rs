@@ -43,9 +43,6 @@ pub async fn get_subscription_quota(
     provider: String,
     state: State<'_, SubscriptionState>,
 ) -> Result<SubscriptionQueryResult, String> {
-    if provider == "cursor" {
-        return Ok(crate::subscription::cursor::query(false).await);
-    }
     // Check cache first
     if let Some(cached) = state.get_cached(&provider).await {
         persist_first_party_oauth_plan(&cached).await;
@@ -72,9 +69,6 @@ pub async fn refresh_subscription_quota(
     provider: String,
     state: State<'_, SubscriptionState>,
 ) -> Result<SubscriptionQueryResult, String> {
-    if provider == "cursor" {
-        return Ok(crate::subscription::cursor::query(true).await);
-    }
     // Clear cache first
     state.clear_cache(&provider).await;
 

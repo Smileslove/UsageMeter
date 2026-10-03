@@ -657,7 +657,6 @@ fn parse_copilot_store_session(session: &SessionFile) -> (SessionMeta, Vec<Local
             request_key: None,
             explicit_estimated_cost: None,
             source_file_present: None,
-            provenance: None,
         });
     }
 
@@ -904,7 +903,6 @@ fn build_shutdown_summary_request(
         request_key: None,
         explicit_estimated_cost: None,
         source_file_present: None,
-        provenance: None,
     }
 }
 
@@ -931,7 +929,6 @@ fn build_requests_from_assistant_events(
             request_key: event.interaction_id.clone(),
             explicit_estimated_cost: None,
             source_file_present: None,
-            provenance: None,
         })
         .collect()
 }

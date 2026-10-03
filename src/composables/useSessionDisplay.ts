@@ -186,25 +186,21 @@ export function useSessionDisplay(store: ReturnType<typeof useMonitorStore>) {
     (covered || 0) > 0 || (uncovered || 0) > 0 || usageFullyCovered === false
   )
   const sessionUsageVisible = (session: SessionStats) => (
-    session.provenance?.usageBasis !== 'metadata_only' && session.provenance?.usageComplete !== false && (session.tool !== 'reasonix' || hasReasonixCoverageData(session.coveredRequests, session.uncoveredRequests, session.usageFullyCovered))
+    session.tool !== 'reasonix' || hasReasonixCoverageData(session.coveredRequests, session.uncoveredRequests, session.usageFullyCovered)
   )
   const projectUsageVisible = (project: ProjectStats) => (
-    project.usageKnown !== false && (!project.toolBreakdown?.some(tool => tool.tool === 'reasonix')
-    || hasReasonixCoverageData(project.coveredRequests, project.uncoveredRequests, project.usageFullyCovered))
+    !project.toolBreakdown?.some(tool => tool.tool === 'reasonix')
+    || hasReasonixCoverageData(project.coveredRequests, project.uncoveredRequests, project.usageFullyCovered)
   )
   const projectToolUsageVisible = (tool: ProjectToolStats) => (
-    tool.usageKnown !== false && (tool.tool !== 'reasonix'
-    || hasReasonixCoverageData(tool.coveredRequests, tool.uncoveredRequests, tool.usageFullyCovered))
+    tool.tool !== 'reasonix'
+    || hasReasonixCoverageData(tool.coveredRequests, tool.uncoveredRequests, tool.usageFullyCovered)
   )
   const sessionHasPartialCoverage = (session: SessionStats) => (
     session.tool === 'reasonix' && uncoveredRequests(session.uncoveredRequests) > 0
   )
   const displayTokens = (value: number, visible: boolean) => (visible ? formatTokens(value) : '—')
   const displayCost = (value: number | undefined, visible: boolean) => (visible ? formatCost(value) : '—')
-  const displaySessionCost = (session: SessionStats) => session.provenance?.usageBasis === 'metadata_only' || session.provenance?.costBasis === 'unknown' ? '—' : displayCost(session.estimatedCost, session.tool !== 'reasonix' || sessionUsageVisible(session))
-  const displayRequestCost = (request: RequestRecord) => request.provenance?.costBasis === 'unknown' ? '—' : formatCost(request.estimatedCost)
-  const displayRequestTokens = (request: RequestRecord, value: number) => request.provenance?.usageComplete === false ? '—' : formatTokens(value)
-  const displayProjectCost = (project: ProjectStats | ProjectToolStats) => project.costComplete === false && !project.totalCost ? '—' : formatCost(project.totalCost)
   const displayRequestValue = (value: number) => formatRequestCount(value)
   const displaySessionCacheHitRate = (session: SessionStats) => (
     sessionUsageVisible(session) ? sessionCacheHitRate(session) : '—'
@@ -237,8 +233,6 @@ export function useSessionDisplay(store: ReturnType<typeof useMonitorStore>) {
   )
 
   const displaySessionTitle = (session: SessionStats) => {
-    if (session.provenance?.sessionKind === 'account_bucket') return t(store.settings.locale, 'cursor.accountBucket')
-    if (session.provenance?.usageBasis === 'metadata_only') return session.projectName?.trim() || t(store.settings.locale, 'cursor.metadataOnly')
     const sessionName = session.sessionName?.trim()
     if (session.topic?.trim()) return session.topic
     if (sessionName && !uuidLikePattern.test(sessionName)) return sessionName
@@ -350,8 +344,6 @@ export function useSessionDisplay(store: ReturnType<typeof useMonitorStore>) {
     formatTime,
     formatTokens,
     formatCost,
-    displayProjectCost,
-    displayRequestTokens,
     formatDuration,
     requestModelLabel,
     sessionModelLabel,
@@ -378,8 +370,6 @@ export function useSessionDisplay(store: ReturnType<typeof useMonitorStore>) {
     sessionHasPartialCoverage,
     displayTokens,
     displayCost,
-    displayRequestCost,
-    displaySessionCost,
     displayRequestValue,
     displaySessionCacheHitRate,
     displaySessionPrimaryLabel,

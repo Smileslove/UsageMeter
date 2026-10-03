@@ -34,16 +34,6 @@ pub(super) fn build_metadata_only_session_stats(
         .explicit_estimated_cost
         .filter(|cost| cost.is_finite() && *cost >= 0.0);
     crate::proxy::SessionStats {
-        provenance: (meta.tool == "cursor").then(|| crate::session::UsageProvenance {
-            source_timestamp_ms: meta.end_time.saturating_mul(1000),
-            data_scope: "local_metadata".into(),
-            usage_basis: "metadata_only".into(),
-            cost_basis: "unknown".into(),
-            usage_complete: false,
-            session_kind: "metadata_only".into(),
-            count_basis: "unknown".into(),
-            charged_amount_usd: None,
-        }),
         session_id: meta.session_id.clone(),
         tool: meta.tool.clone(),
         total_requests: meta.message_count,

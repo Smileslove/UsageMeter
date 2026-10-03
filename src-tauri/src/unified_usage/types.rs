@@ -299,7 +299,6 @@ pub struct MergedRequestFact {
     pub attribution_source_id: Option<String>,
     pub attribution_method: AttributionMethod,
     pub reconciliation: ReconciliationMetadata,
-    pub provenance: Option<crate::session::UsageProvenance>,
 }
 
 impl MergedRequestFact {
@@ -1288,11 +1287,7 @@ impl MergedRequestFact {
             request_base_url: None,
             tool: record.tool.clone(),
             timestamp_sec: record.timestamp,
-            timestamp_ms: record
-                .provenance
-                .as_ref()
-                .map(|e| e.source_timestamp_ms)
-                .unwrap_or_else(|| record.timestamp.saturating_mul(1000)),
+            timestamp_ms: record.timestamp.saturating_mul(1000),
             model: normalize_model_bucket(&record.tool, &record.model),
             input_tokens: record.input_tokens,
             output_tokens: record.output_tokens,
@@ -1300,18 +1295,11 @@ impl MergedRequestFact {
             cache_read_tokens: record.cache_read_tokens,
             total_tokens: record.total_tokens,
             request_count: record.request_count,
-            estimated_cost: record
-                .explicit_estimated_cost
-                .unwrap_or_else(|| if record.tool == "cursor" { 0.0 } else { cost })
-                .max(0.0),
+            estimated_cost: record.explicit_estimated_cost.unwrap_or(cost).max(0.0),
             estimated: meta.map(|m| m.estimated).unwrap_or(false),
             coverage_origin: CoverageOrigin::LocalOnly,
             // Local transcript requests are treated as successful; no proxy performance fields available.
-            status_code: if record.tool == "cursor" {
-                None
-            } else {
-                Some(200)
-            },
+            status_code: Some(200),
             duration_ms: None,
             output_tokens_per_second: None,
             ttft_ms: None,
@@ -1320,7 +1308,6 @@ impl MergedRequestFact {
             attribution_source_id: None,
             attribution_method: AttributionMethod::Unattributed,
             reconciliation: ReconciliationMetadata::local(local_key),
-            provenance: record.provenance.clone(),
         }
     }
 
@@ -1374,7 +1361,6 @@ impl MergedRequestFact {
             attribution_source_id: None,
             attribution_method: AttributionMethod::Unattributed,
             reconciliation: ReconciliationMetadata::proxy(record),
-            provenance: None,
         }
     }
 
@@ -1492,7 +1478,6 @@ impl MergedRequestFact {
             ),
             attribution_source_id: None,
             attribution_method: AttributionMethod::Unattributed,
-            provenance: local.provenance.clone(),
             reconciliation: ReconciliationMetadata::exact(
                 proxy,
                 canonical_request_key_for_local(local),
