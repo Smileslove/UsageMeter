@@ -1,23 +1,26 @@
-// Shareable color themes. Each drives the poster's accent (TOKEN label, brand mark,
-// trend bars, footer) while the body stays on the light "治愈系" base.
+// Each poster palette defines its own surface, type, and chart colors.
 export interface ShareTheme {
   id: string
   labelKey: string
+  appearance: 'dark' | 'light'
   swatch: string
-  accent: string
-  accentDeep: string
-  grad1: string
-  grad2: string
-  orbA: string
-  orbB: string
+  background: string
+  foreground: string
+  muted: string
+  ink: string
 }
 
 export const SHARE_THEMES: ShareTheme[] = [
-  { id: 'emerald', labelKey: 'statistics.shareThemeEmerald', swatch: '#10b981', accent: '#10b981', accentDeep: '#0f766e', grad1: '#34d399', grad2: '#10b981', orbA: 'rgba(20, 184, 166, 0.45)', orbB: 'rgba(45, 212, 191, 0.22)' },
-  { id: 'violet', labelKey: 'statistics.shareThemeViolet', swatch: '#7c3aed', accent: '#7c3aed', accentDeep: '#5b21b6', grad1: '#a78bfa', grad2: '#7c3aed', orbA: 'rgba(124, 58, 237, 0.4)', orbB: 'rgba(167, 139, 250, 0.22)' },
-  { id: 'sky', labelKey: 'statistics.shareThemeSky', swatch: '#0ea5e9', accent: '#0284c7', accentDeep: '#075985', grad1: '#38bdf8', grad2: '#0284c7', orbA: 'rgba(14, 165, 233, 0.4)', orbB: 'rgba(56, 189, 248, 0.22)' },
-  { id: 'amber', labelKey: 'statistics.shareThemeAmber', swatch: '#f59e0b', accent: '#d97706', accentDeep: '#b45309', grad1: '#fbbf24', grad2: '#f59e0b', orbA: 'rgba(245, 158, 11, 0.4)', orbB: 'rgba(251, 191, 36, 0.22)' },
-  { id: 'rose', labelKey: 'statistics.shareThemeRose', swatch: '#f43f5e', accent: '#e11d48', accentDeep: '#9f1239', grad1: '#fb7185', grad2: '#e11d48', orbA: 'rgba(244, 63, 94, 0.38)', orbB: 'rgba(251, 113, 133, 0.2)' }
+  { id: 'emerald', labelKey: 'statistics.shareThemeEmerald', appearance: 'dark', swatch: '#24483e', background: '#183c34', foreground: '#f3efdf', muted: '#b9cebb', ink: '#b9cebb' },
+  { id: 'violet', labelKey: 'statistics.shareThemeViolet', appearance: 'dark', swatch: '#8b80ad', background: '#383047', foreground: '#f3efdf', muted: '#c9bddb', ink: '#c9bddb' },
+  { id: 'sky', labelKey: 'statistics.shareThemeSky', appearance: 'dark', swatch: '#718da2', background: '#263c4d', foreground: '#f3efdf', muted: '#b8cfdf', ink: '#b8cfdf' },
+  { id: 'amber', labelKey: 'statistics.shareThemeAmber', appearance: 'dark', swatch: '#b69a5c', background: '#493d28', foreground: '#f3efdf', muted: '#dfcfa5', ink: '#dfcfa5' },
+  { id: 'rose', labelKey: 'statistics.shareThemeRose', appearance: 'dark', swatch: '#b57481', background: '#4a2f38', foreground: '#f3efdf', muted: '#dfbfc7', ink: '#dfbfc7' },
+  { id: 'ivory', labelKey: 'statistics.shareThemeIvory', appearance: 'light', swatch: '#eeeadb', background: '#f6f4eb', foreground: '#2e3d32', muted: '#5c6c5c', ink: '#70866a' },
+  { id: 'lavender', labelKey: 'statistics.shareThemeLavender', appearance: 'light', swatch: '#e9e1f0', background: '#f3eff8', foreground: '#3b3148', muted: '#6c607b', ink: '#8a74a2' },
+  { id: 'mist', labelKey: 'statistics.shareThemeMist', appearance: 'light', swatch: '#dce8f0', background: '#edf3f7', foreground: '#293e50', muted: '#5d7181', ink: '#678aa3' },
+  { id: 'sand', labelKey: 'statistics.shareThemeSand', appearance: 'light', swatch: '#f2e3c8', background: '#faf3e6', foreground: '#493c29', muted: '#796447', ink: '#a88446' },
+  { id: 'blush', labelKey: 'statistics.shareThemeBlush', appearance: 'light', swatch: '#f0dce1', background: '#f8eef0', foreground: '#4c333a', muted: '#815e69', ink: '#b17c8a' }
 ]
 
 export function shareThemeById(id: string): ShareTheme {

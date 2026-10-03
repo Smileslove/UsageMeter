@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { toBlob, toPng } from 'html-to-image'
-import { Check, Copy, Download, Loader2, Sparkles, X } from 'lucide-vue-next'
+import { toBlob, toJpeg, toPng } from 'html-to-image'
+import { Check, Copy, Download, Loader2, X } from 'lucide-vue-next'
 import { sourceLabel, t } from './i18n'
 import { useMonitorStore } from './stores/monitor'
 import {
@@ -19,6 +19,7 @@ import ShareUsageCard from './components/statistics/ShareUsageCard.vue'
 import { SHARE_THEMES } from './components/statistics/shareThemes'
 import { formatToolDisplayName } from './utils/toolDisplay'
 import { getStatisticsSummary } from './api/usageApi'
+import { applyResolvedTheme } from './theme'
 
 type SharePreset = Exclude<StatisticsRangePreset, 'custom'> | '1y'
 
@@ -26,36 +27,64 @@ const store = useMonitorStore()
 
 const preset = ref<SharePreset>('today')
 const displayName = ref('')
+const includeStats = ref(true)
+const includeTrend = ref(true)
+const includeModels = ref(true)
+const exportFormat = ref<'png' | 'jpeg'>('png')
 const themeId = ref<string>(SHARE_THEMES[0].id)
 const summary = ref<StatisticsSummary | null>(null)
 const loading = ref(false)
 const exporting = ref(false)
-const status = ref<'idle' | 'copied' | 'copyFailed' | 'saveFailed' | 'exportFailed'>('idle')
+const status = ref<'idle' | 'copied' | 'copyFailed' | 'saveFailed' | 'exportFailed' | 'loadFailed'>('idle')
 const captureRef = ref<HTMLElement | null>(null)
 const viewportWidth = ref(typeof window === 'undefined' ? 1180 : window.innerWidth)
 const viewportHeight = ref(typeof window === 'undefined' ? 760 : window.innerHeight)
+let mediaQuery: MediaQueryList | null = null
+let fetchId = 0
 let fetchTimer: ReturnType<typeof setTimeout> | null = null
 
 const cardWidth = 1200
 const cardHeight = 1760
 const previewScale = computed(() => {
-  const panelWidth = 350
-  const shellPadding = 24
-  const previewPadding = 52
-  const previewHeaderHeight = 74
-  const availableWidth = Math.max(280, viewportWidth.value - panelWidth - shellPadding - previewPadding)
-  const availableHeight = Math.max(360, viewportHeight.value - shellPadding - previewPadding - previewHeaderHeight)
-  return Math.max(0.23, Math.min(0.34, availableWidth / cardWidth, availableHeight / cardHeight))
+  const panelWidth = viewportWidth.value <= 1100 ? 300 : 340
+  const availableWidth = Math.max(160, viewportWidth.value - panelWidth - 64)
+  const availableHeight = Math.max(200, viewportHeight.value - 200)
+  return Math.min(0.65, availableWidth / cardWidth, availableHeight / cardHeight)
 })
 
 const locale = computed<AppLocale>(() => store.settings.locale)
 const dayBoundaryHour = computed(() => store.settings.dayBoundaryMode === 'night_owl' ? 4 : 0)
-const themes = SHARE_THEMES
 const activeTheme = computed(() => SHARE_THEMES.find(theme => theme.id === themeId.value) ?? SHARE_THEMES[0])
+const themes = computed(() => SHARE_THEMES.filter(theme => theme.appearance === activeTheme.value.appearance))
+
+function selectThemeAppearance(appearance: 'dark' | 'light') {
+  if (activeTheme.value.appearance === appearance) return
+  themeId.value = SHARE_THEMES.find(theme => theme.appearance === appearance)?.id ?? SHARE_THEMES[0].id
+}
+
 const panelThemeVars = computed(() => ({
-  '--share-grad-1': activeTheme.value.grad1,
-  '--share-grad-2': activeTheme.value.grad2,
-  '--share-accent': activeTheme.value.accent
+  '--share-selection': activeTheme.value.appearance === 'light' ? activeTheme.value.foreground : activeTheme.value.background,
+  '--share-selection-ink': activeTheme.value.appearance === 'light' ? activeTheme.value.background : activeTheme.value.ink
+}))
+const contentOptions = [
+  { key: 'statistics.shareIncludeStats', value: includeStats },
+  { key: 'statistics.shareIncludeTrend', value: includeTrend },
+  { key: 'statistics.shareIncludeModels', value: includeModels }
+]
+const posterProps = computed(() => ({
+  locale: locale.value,
+  summary: summary.value,
+  currency: store.settings.currency,
+  rangeLabel: rangeLabel.value,
+  scopeLabel: scopeLabel.value,
+  generatedAtLabel: generatedAtLabel.value,
+  displayName: displayName.value,
+  theme: themeId.value,
+  visual: visualMode.value,
+  calendarBounds: calendarBounds.value,
+  includeStats: includeStats.value,
+  includeTrend: includeTrend.value,
+  includeModels: includeModels.value
 }))
 
 const rangeOptions: Array<{ value: SharePreset; key: string }> = [
@@ -124,7 +153,7 @@ const calendarBounds = computed<{ start: number; end: number } | null>(() => {
   const now = new Date()
   if (preset.value === 'current_month') {
     const start = businessDayStartFromLabel(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`)
-    const end = businessDayStartFromLabel(`${now.getFullYear()}-${String(now.getMonth() + 2).padStart(2, '0')}-01`)
+    const end = addDays(businessDayStartFromLabel(`${now.getFullYear()}-${String(now.getMonth() + 2).padStart(2, '0')}-01`), -1)
     return { start: Math.floor(start.getTime() / 1000), end: Math.floor(end.getTime() / 1000) }
   }
   return { start: range.value.start, end: range.value.end }
@@ -188,6 +217,7 @@ const scopeLabel = computed(() => {
 })
 
 const statusLabel = computed(() => {
+  if (status.value === 'loadFailed') return t(locale.value, 'statistics.shareLoadFailed')
   if (status.value === 'copied') return t(locale.value, 'statistics.shareCopied')
   if (status.value === 'copyFailed') return t(locale.value, 'statistics.shareCopyFailed')
   if (status.value === 'saveFailed') return t(locale.value, 'statistics.shareSaveFailed')
@@ -196,21 +226,32 @@ const statusLabel = computed(() => {
 })
 
 async function fetchSummary() {
+  const id = ++fetchId
   loading.value = true
+  status.value = 'idle'
   try {
-    summary.value = await getStatisticsSummary({
+    const result = await getStatisticsSummary({
       startEpoch: range.value.start,
       endEpoch: range.value.end,
       timezone: store.settings.timezone,
       bucket: bucket.value,
       metric: 'tokens'
     }, store.settings)
+    if (id === fetchId) summary.value = result
+  } catch {
+    if (id === fetchId) {
+      summary.value = null
+      status.value = 'loadFailed'
+    }
   } finally {
-    loading.value = false
+    if (id === fetchId) loading.value = false
   }
 }
 
 function scheduleFetchSummary() {
+  fetchId += 1
+  loading.value = true
+  status.value = 'idle'
   if (fetchTimer) clearTimeout(fetchTimer)
   fetchTimer = setTimeout(() => {
     fetchTimer = null
@@ -234,7 +275,7 @@ async function waitForPaint() {
   await new Promise(resolve => requestAnimationFrame(() => resolve(null)))
 }
 
-async function renderBlob(): Promise<Blob> {
+async function renderBlob(format: 'png' | 'jpeg' = 'png'): Promise<Blob> {
   await nextTick()
   await waitForPaint()
   const node = captureRef.value?.querySelector('.share-card') as HTMLElement | null
@@ -243,12 +284,19 @@ async function renderBlob(): Promise<Blob> {
   const options = {
     pixelRatio: 2,
     cacheBust: true,
+    backgroundColor: activeTheme.value.background,
+    quality: 0.95,
     width: cardWidth,
     height: cardHeight,
     style: {
       width: `${cardWidth}px`,
       height: `${cardHeight}px`
     }
+  }
+
+  if (format === 'jpeg') {
+    const response = await fetch(await toJpeg(node, options))
+    return response.blob()
   }
 
   try {
@@ -263,9 +311,9 @@ async function renderBlob(): Promise<Blob> {
   return response.blob()
 }
 
-function downloadFileName(): string {
+function downloadFileName(format: 'png' | 'jpeg'): string {
   const date = new Date().toISOString().slice(0, 10)
-  return `usagemeter-share-${date}.png`
+  return `usagemeter-share-${date}.${format === 'jpeg' ? 'jpg' : 'png'}`
 }
 
 async function copyImage() {
@@ -290,12 +338,13 @@ async function saveImage() {
   exporting.value = true
   status.value = 'idle'
   try {
-    const blob = await renderBlob()
+    const format = exportFormat.value
+    const blob = await renderBlob(format)
     const url = URL.createObjectURL(blob)
     try {
       const anchor = document.createElement('a')
       anchor.href = url
-      anchor.download = downloadFileName()
+      anchor.download = downloadFileName(format)
       anchor.click()
     } finally {
       URL.revokeObjectURL(url)
@@ -312,47 +361,51 @@ async function closeWindow() {
 }
 
 watch([preset], scheduleFetchSummary)
+watch(() => store.settings.theme, applyResolvedTheme, { deep: true })
+
+function handleSystemThemeChange() {
+  if (store.settings.theme.appearance === 'system') applyResolvedTheme(store.settings.theme)
+}
 
 onMounted(async () => {
   updateViewportSize()
   window.addEventListener('resize', updateViewportSize)
+  mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+  mediaQuery.addEventListener('change', handleSystemThemeChange)
   await store.loadSettings()
+  applyResolvedTheme(store.settings.theme)
   await fetchSummary()
 })
 
 onUnmounted(() => {
   window.removeEventListener('resize', updateViewportSize)
+  mediaQuery?.removeEventListener('change', handleSystemThemeChange)
+  fetchId += 1
   if (fetchTimer) clearTimeout(fetchTimer)
 })
 </script>
 
 <template>
-  <main class="share-window">
+  <main class="share-window" :style="panelThemeVars">
+    <header class="share-window__header" data-tauri-drag-region>
+      <div data-tauri-drag-region>
+        <h1 data-tauri-drag-region>{{ t(locale, 'statistics.shareTitle') }}</h1>
+        <p data-tauri-drag-region>{{ t(locale, 'statistics.shareEditorHint') }}</p>
+      </div>
+      <button type="button" class="share-window__close" :aria-label="t(locale, 'common.close')" @click="closeWindow">
+        <X class="h-4 w-4" />
+      </button>
+    </header>
+
     <div class="share-window__chrome">
       <div ref="captureRef" class="share-window__capture" aria-hidden="true">
-        <ShareUsageCard
-          :locale="locale"
-          :summary="summary"
-          :currency="store.settings.currency"
-          :range-label="rangeLabel"
-          :scope-label="scopeLabel"
-          :generated-at-label="generatedAtLabel"
-          :display-name="displayName"
-          :theme="themeId"
-          :visual="visualMode"
-          :calendar-bounds="calendarBounds"
-          :include-trend="true"
-          :include-models="true"
-        />
+        <ShareUsageCard v-bind="posterProps" />
       </div>
 
-      <section class="share-window__preview">
+      <section class="share-window__preview" :aria-label="t(locale, 'statistics.sharePreview')" :aria-busy="loading">
         <div class="share-window__preview-head">
-          <div>
-            <span>{{ t(locale, 'statistics.sharePreview') }}</span>
-            <strong>{{ displayName || scopeLabel }}</strong>
-          </div>
-          <p>{{ t(locale, 'statistics.sharePosterHint') }}</p>
+          <span>{{ t(locale, 'statistics.sharePreview') }}</span>
+          <span class="share-window__scope" :title="scopeLabel">{{ scopeLabel }}</span>
         </div>
         <div
           class="share-window__preview-frame"
@@ -362,90 +415,116 @@ onUnmounted(() => {
             class="share-window__card-scale"
             :style="{ width: `${cardWidth}px`, height: `${cardHeight}px`, transform: `scale(${previewScale})` }"
           >
-            <ShareUsageCard
-              :locale="locale"
-              :summary="summary"
-              :currency="store.settings.currency"
-              :range-label="rangeLabel"
-              :scope-label="scopeLabel"
-              :generated-at-label="generatedAtLabel"
-              :display-name="displayName"
-              :theme="themeId"
-              :visual="visualMode"
-              :calendar-bounds="calendarBounds"
-              :include-trend="true"
-              :include-models="true"
-            />
+            <ShareUsageCard v-bind="posterProps" />
           </div>
           <div v-if="loading" class="share-window__loading">
-            <Loader2 class="h-6 w-6 animate-spin" />
+            <Loader2 class="h-6 w-6 animate-spin" :aria-label="t(locale, 'statistics.sharePreparing')" />
           </div>
         </div>
+        <span class="share-window__preview-scale">{{ t(locale, 'statistics.sharePreviewScale', { percent: Math.round(previewScale * 100) }) }}</span>
       </section>
 
-      <aside class="share-window__panel" :style="panelThemeVars">
-        <button type="button" class="share-window__close" @click="closeWindow">
-          <X class="h-5 w-5" />
-        </button>
+      <aside class="share-window__panel">
+        <div class="share-window__settings">
+          <div class="share-window__title-block">
+            <h2>{{ t(locale, 'statistics.shareSettings') }}</h2>
+            <p>{{ t(locale, 'statistics.shareSettingsHint') }}</p>
+          </div>
 
-        <div class="share-window__title-block">
-          <span><Sparkles class="h-4 w-4" />{{ t(locale, 'app.name') }}</span>
-          <h1>{{ t(locale, 'statistics.shareTitle') }}</h1>
-          <p>{{ t(locale, 'statistics.shareSubtitle') }}</p>
+          <fieldset :disabled="exporting" class="share-window__fields">
+            <section class="share-window__group">
+              <label for="share-display-name">{{ t(locale, 'statistics.shareDisplayName') }}</label>
+              <input id="share-display-name" v-model="displayName" type="text" maxlength="80" :placeholder="t(locale, 'statistics.shareDisplayNamePlaceholder')" />
+            </section>
+
+            <section class="share-window__group" role="group" :aria-label="t(locale, 'statistics.shareTimeRange')">
+              <h3>{{ t(locale, 'statistics.shareTimeRange') }}</h3>
+              <div class="share-window__range-grid">
+                <button
+                  v-for="item in rangeOptions"
+                  :key="item.value"
+                  type="button"
+                  :aria-pressed="preset === item.value"
+                  :class="{ 'share-window__choice--active': preset === item.value }"
+                  @click="preset = item.value"
+                >
+                  {{ t(locale, item.key) }}
+                </button>
+              </div>
+            </section>
+
+            <section class="share-window__group" role="group" :aria-label="t(locale, 'statistics.shareTheme')">
+              <div class="share-window__theme-head">
+                <h3>{{ t(locale, 'statistics.shareTheme') }}</h3>
+                <div class="share-window__theme-appearances">
+                  <button
+                    v-for="appearance in (['dark', 'light'] as const)"
+                    :key="appearance"
+                    type="button"
+                    :aria-pressed="activeTheme.appearance === appearance"
+                    :class="{ 'share-window__choice--active': activeTheme.appearance === appearance }"
+                    @click="selectThemeAppearance(appearance)"
+                  >{{ t(locale, appearance === 'dark' ? 'statistics.shareThemeDark' : 'statistics.shareThemeLight') }}</button>
+                </div>
+              </div>
+              <div class="share-window__themes">
+                <button
+                  v-for="theme in themes"
+                  :key="theme.id"
+                  type="button"
+                  class="share-window__swatch"
+                  :class="{ 'share-window__swatch--active': themeId === theme.id }"
+                  :style="{ '--swatch': theme.swatch }"
+                  :title="t(locale, theme.labelKey)"
+                  :aria-label="t(locale, theme.labelKey)"
+                  :aria-pressed="themeId === theme.id"
+                  @click="themeId = theme.id"
+                >
+                  <span></span>
+                </button>
+              </div>
+            </section>
+
+            <section class="share-window__group share-window__group--ruled">
+              <h3>{{ t(locale, 'statistics.shareContent') }}</h3>
+              <label v-for="item in contentOptions" :key="item.key" class="share-window__toggle-row">
+                <span>{{ t(locale, item.key) }}</span>
+                <input v-model="item.value.value" type="checkbox" role="switch" />
+                <span class="share-window__toggle" aria-hidden="true"></span>
+              </label>
+            </section>
+
+            <section class="share-window__group share-window__group--ruled" role="group" :aria-label="t(locale, 'statistics.shareExportFormat')">
+              <h3>{{ t(locale, 'statistics.shareExportFormat') }}</h3>
+              <div class="share-window__format-grid">
+                <button
+                  v-for="format in (['png', 'jpeg'] as const)"
+                  :key="format"
+                  type="button"
+                  :aria-pressed="exportFormat === format"
+                  :class="{ 'share-window__choice--active': exportFormat === format }"
+                  @click="exportFormat = format"
+                >{{ t(locale, format === 'png' ? 'statistics.shareFormatPng' : 'statistics.shareFormatJpeg') }}</button>
+              </div>
+            </section>
+          </fieldset>
         </div>
 
-        <section class="share-window__group">
-          <label>{{ t(locale, 'statistics.shareDisplayName') }}</label>
-          <input v-model="displayName" type="text" :placeholder="t(locale, 'statistics.shareDisplayNamePlaceholder')" />
-        </section>
-
-        <section class="share-window__group">
-          <label>{{ t(locale, 'statistics.shareTimeRange') }}</label>
-          <div class="share-window__range-grid">
-            <button
-              v-for="item in rangeOptions"
-              :key="item.value"
-              type="button"
-              :class="{ 'share-window__choice--active': preset === item.value }"
-              @click="preset = item.value"
-            >
-              {{ t(locale, item.key) }}
-            </button>
-          </div>
-        </section>
-
-        <section class="share-window__group">
-          <label>{{ t(locale, 'statistics.shareTheme') }}</label>
-          <div class="share-window__themes">
-            <button
-              v-for="theme in themes"
-              :key="theme.id"
-              type="button"
-              class="share-window__swatch"
-              :class="{ 'share-window__swatch--active': themeId === theme.id }"
-              :style="{ '--swatch': theme.swatch }"
-              :title="t(locale, theme.labelKey)"
-              :aria-label="t(locale, theme.labelKey)"
-              @click="themeId = theme.id"
-            >
-              <Check v-if="themeId === theme.id" class="h-4 w-4" />
-            </button>
-          </div>
-        </section>
-
-        <section class="share-window__actions">
-          <label>{{ t(locale, 'statistics.shareActions') }}</label>
-          <button type="button" class="share-window__primary" :disabled="exporting || loading" @click="copyImage">
-            <Copy class="h-5 w-5" />
-            <span>{{ t(locale, 'statistics.shareCopyImage') }}</span>
-          </button>
-          <button type="button" :disabled="exporting || loading" @click="saveImage">
-            <Download class="h-5 w-5" />
+        <section class="share-window__actions" :aria-label="t(locale, 'statistics.shareActions')">
+          <span class="share-window__export-detail">{{ t(locale, 'statistics.shareExportQuality') }}</span>
+          <button type="button" class="share-window__primary" :disabled="exporting || loading || !summary" @click="saveImage">
+            <Loader2 v-if="exporting" class="h-4 w-4 animate-spin" />
+            <Download v-else class="h-4 w-4" />
             <span>{{ t(locale, 'statistics.shareSaveImage') }}</span>
           </button>
-          <p :class="{ 'share-window__status--ok': status === 'copied' }">
-            <Check v-if="status === 'copied'" class="h-4 w-4" />
+          <button type="button" :disabled="exporting || loading || !summary" @click="copyImage">
+            <Copy class="h-4 w-4" />
+            <span>{{ t(locale, 'statistics.shareCopyImage') }}</span>
+          </button>
+          <p v-if="exporting || statusLabel" role="status" :class="{ 'share-window__status--ok': status === 'copied', 'share-window__status--neutral': exporting }">
+            <Check v-if="status === 'copied'" class="h-4 w-4 shrink-0" />
             <span>{{ exporting ? t(locale, 'statistics.sharePreparing') : statusLabel }}</span>
+            <button v-if="status === 'loadFailed'" type="button" class="share-window__retry" @click="fetchSummary">{{ t(locale, 'desktop.activity.retry') }}</button>
           </p>
         </section>
       </aside>
@@ -455,111 +534,136 @@ onUnmounted(() => {
 
 <style scoped>
 .share-window {
-  display: grid;
-  grid-template-columns: 1fr;
+  --share-workspace: #f3f1ec;
+  --share-surface: #fbfaf7;
+  --share-text: #292e2b;
+  --share-muted: #70756e;
+  --share-border: #dedfd8;
+  --share-hover: #eeeee7;
+  --share-selected-bg: #e5eae2;
+  --share-selected-text: #24483e;
+  display: flex;
+  flex-direction: column;
   height: 100vh;
-  padding: 12px;
   overflow: hidden;
-  color: rgba(255, 255, 255, 0.9);
-  background:
-    radial-gradient(circle at 20% 16%, rgba(16, 185, 129, 0.16), transparent 26%),
-    radial-gradient(circle at 74% 14%, rgba(99, 102, 241, 0.16), transparent 24%),
-    linear-gradient(145deg, rgba(8, 12, 16, 0.95), rgba(16, 18, 22, 0.94));
+  color: var(--share-text);
+  background: var(--share-workspace);
+}
+
+:global(.dark .share-window) {
+  --share-workspace: #202522;
+  --share-surface: #272d29;
+  --share-text: #eeeee6;
+  --share-muted: #b3baaf;
+  --share-border: #414a43;
+  --share-hover: #343d35;
+  --share-selected-bg: #3d4b40;
+  --share-selected-text: #e5eadc;
+}
+
+.share-window__header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  height: 88px;
+  padding: 26px 30px 12px;
+  border-bottom: 1px solid var(--share-border);
+  background: var(--share-surface);
+}
+
+.share-window h1,
+.share-window h2,
+.share-window h3,
+.share-window p {
+  margin: 0;
+}
+
+.share-window h1 {
+  font-size: 22px;
+  line-height: 1.2;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+.share-window__header p,
+.share-window__title-block p {
+  margin-top: 5px;
+  color: var(--share-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.share-window__close {
+  display: grid;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--share-muted);
+}
+
+.share-window__close:hover {
+  color: var(--share-text);
+  background: var(--share-hover);
 }
 
 .share-window__chrome {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 350px;
-  height: calc(100vh - 24px);
+  grid-template-columns: minmax(0, 1fr) 340px;
+  flex: 1;
   min-height: 0;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.13);
-  border-radius: 24px;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.035)),
-    rgba(9, 10, 12, 0.8);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.16),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.05),
-    0 24px 84px rgba(0, 0, 0, 0.42);
-  backdrop-filter: blur(28px) saturate(1.15);
 }
 
 .share-window__preview {
-  position: relative;
   display: grid;
-  grid-template-rows: auto 1fr;
-  gap: 12px;
+  grid-template-rows: 20px minmax(0, 1fr) 24px;
+  place-items: center;
+  gap: 14px;
   min-width: 0;
   min-height: 0;
-  place-items: center;
-  padding: 20px 26px;
-  overflow: hidden;
-  background:
-    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    radial-gradient(circle at 44% 34%, rgba(16, 185, 129, 0.2), transparent 34%),
-    radial-gradient(circle at 76% 70%, rgba(79, 70, 229, 0.18), transparent 30%),
-    rgba(5, 7, 9, 0.74);
-  background-size: 38px 38px, 38px 38px, auto, auto, auto;
+  padding: 20px 32px;
 }
 
 .share-window__preview-head {
   display: flex;
-  width: min(100%, 560px);
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 22px;
-  justify-self: center;
-  align-self: end;
+  gap: 20px;
+  width: 100%;
+  color: var(--share-muted);
+  font-size: 11px;
 }
 
-.share-window__preview-head span,
-.share-window__actions > label {
-  display: block;
-  color: rgba(255, 255, 255, 0.46);
-  font-size: 12px;
-  font-weight: 760;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.share-window__preview-head strong {
-  display: block;
+.share-window__scope {
   overflow: hidden;
-  max-width: 310px;
-  margin-top: 6px;
-  color: rgba(255, 255, 255, 0.92);
-  font-size: 18px;
-  line-height: 1.1;
-  font-weight: 820;
+  max-width: 65%;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.share-window__preview-head p {
-  max-width: 210px;
-  margin: 0;
-  color: rgba(255, 255, 255, 0.48);
-  font-size: 12px;
-  line-height: 1.45;
-  font-weight: 650;
-  text-align: right;
-}
-
 .share-window__preview-frame {
   position: relative;
-  align-self: start;
   overflow: hidden;
-  border-radius: 20px;
-  box-shadow:
-    0 36px 100px rgba(0, 0, 0, 0.56),
-    0 0 0 1px rgba(255, 255, 255, 0.1),
-    0 0 0 10px rgba(255, 255, 255, 0.025);
+  border-radius: 4px;
+  box-shadow: 0 12px 28px rgb(22 36 26 / 16%), 0 2px 6px rgb(22 36 26 / 8%);
 }
 
 .share-window__card-scale {
   transform-origin: top left;
+}
+
+.share-window__preview-scale {
+  padding: 4px 12px;
+  border: 1px solid var(--share-border);
+  border-radius: 20px;
+  color: var(--share-muted);
+  background: var(--share-surface);
+  font-size: 10px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
 }
 
 .share-window__loading {
@@ -567,286 +671,311 @@ onUnmounted(() => {
   inset: 0;
   display: grid;
   place-items: center;
-  color: rgba(255, 255, 255, 0.75);
-  background: rgba(0, 0, 0, 0.28);
+  color: #f3efdf;
+  background: rgb(15 35 27 / 45%);
 }
 
 .share-window__panel {
-  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  min-width: 0;
   min-height: 0;
+  border-left: 1px solid var(--share-border);
+  background: var(--share-surface);
+}
+
+.share-window__settings {
+  min-height: 0;
+  flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 60px 24px 24px;
-  border-left: 1px solid rgba(255, 255, 255, 0.1);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 30%),
-    rgba(12, 13, 15, 0.72);
-  backdrop-filter: blur(18px);
-}
-
-.share-window__panel::-webkit-scrollbar {
-  width: 0;
-  height: 0;
-}
-
-.share-window__close {
-  position: absolute;
-  top: 20px;
-  right: 22px;
-  display: grid;
-  width: 34px;
-  height: 34px;
-  place-items: center;
-  border-radius: 999px;
-  color: rgba(255, 255, 255, 0.52);
-  background: rgba(255, 255, 255, 0.04);
-  transition: background 0.16s ease, color 0.16s ease;
-}
-
-.share-window__close:hover {
-  color: rgba(255, 255, 255, 0.9);
-  background: rgba(255, 255, 255, 0.08);
+  padding: 20px 26px;
+  scrollbar-width: thin;
 }
 
 .share-window__title-block {
-  padding-bottom: 2px;
+  margin-bottom: 20px;
 }
 
-.share-window__title-block > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 10px;
-  color: rgba(255, 255, 255, 0.38);
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
+.share-window h2 {
+  font-size: 17px;
+  font-weight: 550;
+  letter-spacing: 0.025em;
 }
 
-.share-window h1 {
+.share-window__fields {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
   margin: 0;
-  color: rgba(255, 255, 255, 0.94);
-  font-size: 31px;
-  line-height: 1.1;
-  font-weight: 820;
-}
-
-.share-window p {
-  margin: 7px 0 0;
-  color: rgba(255, 255, 255, 0.52);
-  font-size: 13px;
-  line-height: 1.5;
-  font-weight: 600;
+  padding: 0;
+  border: 0;
 }
 
 .share-window__group {
   display: grid;
   gap: 10px;
-  padding: 13px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 18px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.025)),
-    rgba(255, 255, 255, 0.02);
+  min-width: 0;
 }
 
-.share-window__group > label {
-  color: rgba(255, 255, 255, 0.54);
+.share-window__group h3,
+.share-window__group > label:not(.share-window__toggle-row) {
   font-size: 12px;
-  font-weight: 760;
-  letter-spacing: 0.02em;
+  font-weight: 500;
 }
 
-.share-window input[type="text"] {
-  height: 42px;
-  min-width: 0;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 14px;
-  padding: 0 14px;
-  color: rgba(255, 255, 255, 0.92);
-  background: rgba(0, 0, 0, 0.16);
-  font-size: 14px;
-  font-weight: 650;
-  outline: none;
+.share-window__group--ruled {
+  padding-top: 16px;
+  border-top: 1px solid var(--share-border);
 }
 
-.share-window input[type="text"]:focus {
-  border-color: rgba(255, 255, 255, 0.32);
+.share-window input[type='text'] {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--share-border);
+  border-radius: 5px;
+  color: var(--share-text);
+  background: transparent;
+  font-size: 12px;
 }
 
-.share-window__range-grid {
+.share-window input::placeholder {
+  color: var(--share-muted);
+}
+
+.share-window__range-grid,
+.share-window__format-grid {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.share-window__format-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
 }
 
-.share-window__range-grid button {
-  position: relative;
+.share-window__range-grid button,
+.share-window__format-grid button {
   min-width: 0;
-  height: 42px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 12px;
-  color: rgba(255, 255, 255, 0.62);
-  background: rgba(255, 255, 255, 0.035);
-  font-size: 13px;
-  font-weight: 720;
-  letter-spacing: 0.01em;
-  cursor: pointer;
-  transition:
-    background 0.2s cubic-bezier(0.4, 0, 0.2, 1),
-    border-color 0.2s ease,
-    color 0.2s ease,
-    transform 0.12s ease;
+  min-height: 34px;
+  padding: 6px 4px;
+  border: 1px solid var(--share-border);
+  border-radius: 5px;
+  color: var(--share-text);
+  background: transparent;
+  font-size: 12px;
+  line-height: 1.3;
 }
 
-.share-window__range-grid button:hover {
-  color: rgba(255, 255, 255, 0.92);
-  border-color: rgba(255, 255, 255, 0.16);
-  background: rgba(255, 255, 255, 0.07);
+.share-window__range-grid button:hover,
+.share-window__format-grid button:hover {
+  background: var(--share-hover);
 }
 
-.share-window__range-grid button:active {
-  transform: scale(0.97);
+.share-window button.share-window__choice--active {
+  border-color: var(--share-muted);
+  color: var(--share-selected-text);
+  background: var(--share-selected-bg);
 }
 
-.share-window__choice--active {
-  border-color: transparent !important;
-  color: #06231b !important;
-  background: linear-gradient(135deg, var(--share-grad-1, #34d399), var(--share-grad-2, #10b981)) !important;
-  box-shadow:
-    0 6px 18px rgba(16, 185, 129, 0.28),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3);
-}
-
-.share-window__choice--active:hover {
-  color: #06231b !important;
-  background: linear-gradient(135deg, var(--share-grad-1, #34d399), var(--share-grad-2, #10b981)) !important;
-}
-
-/* Theme color picker: round swatches with a soft active ring. */
-.share-window__themes {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  padding: 2px 0;
-}
-
-.share-window__swatch {
-  position: relative;
-  display: grid;
-  width: 38px;
-  height: 38px;
-  place-items: center;
-  border: none;
-  border-radius: 999px;
-  color: #ffffff;
-  background: var(--swatch);
-  cursor: pointer;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.3),
-    0 4px 12px rgba(0, 0, 0, 0.3);
-  transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.18s ease;
-}
-
-.share-window__swatch::after {
-  content: '';
-  position: absolute;
-  inset: -5px;
-  border-radius: 999px;
-  border: 2px solid var(--swatch);
-  opacity: 0;
-  transform: scale(0.85);
-  transition: opacity 0.18s ease, transform 0.18s ease;
-}
-
-.share-window__swatch:hover {
-  transform: translateY(-2px) scale(1.06);
-}
-
-.share-window__swatch--active {
-  transform: scale(1.04);
-}
-
-.share-window__swatch--active::after {
-  opacity: 0.7;
-  transform: scale(1);
-}
-
-.share-window__actions {
-  margin-top: 2px;
-  padding-top: 18px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
-  display: grid;
-  gap: 9px;
-}
-
-.share-window__actions button {
+.share-window__theme-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-width: 0;
-  height: 44px;
-  padding: 0 16px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 13px;
-  color: rgba(255, 255, 255, 0.82);
-  background: rgba(255, 255, 255, 0.045);
-  font-size: 13px;
-  font-weight: 740;
+  gap: 12px;
+}
+
+.share-window__theme-appearances {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--share-border);
+  border-radius: 5px;
+}
+
+.share-window__theme-appearances button {
+  padding: 2px 8px;
+  border-radius: 3px;
+  color: var(--share-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.share-window__themes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: -4px;
+}
+
+.share-window__swatch {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 50%;
+}
+
+.share-window__swatch span {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
+}
+
+.share-window__swatch--active {
+  border-color: var(--share-text);
+}
+
+.share-window__swatch:hover {
+  background: var(--share-hover);
+}
+
+.share-window__toggle-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 24px;
   cursor: pointer;
-  transition:
-    background 0.2s ease,
-    border-color 0.2s ease,
-    color 0.2s ease,
-    transform 0.12s ease;
+  font-size: 12px;
 }
 
-.share-window__actions button:hover {
-  color: rgba(255, 255, 255, 0.95);
-  border-color: rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.09);
+.share-window__toggle-row input {
+  position: absolute;
+  right: 0;
+  width: 32px;
+  height: 28px;
+  opacity: 0;
 }
 
-.share-window__actions button:active {
-  transform: scale(0.98);
+.share-window__toggle {
+  display: flex;
+  align-items: center;
+  width: 32px;
+  height: 18px;
+  padding: 2px;
+  border-radius: 20px;
+  background: var(--share-border);
+  transition: background 160ms ease;
 }
 
-.share-window__actions button:disabled {
-  cursor: not-allowed;
-  opacity: 0.52;
+.share-window__toggle::after {
+  content: '';
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fbfaf7;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 12%);
+  transition: transform 160ms ease;
 }
 
-.share-window__actions .share-window__primary {
-  color: #06231b;
+.share-window__toggle-row input:checked + .share-window__toggle {
+  background: var(--share-selection);
+}
+
+:global(.dark .share-window__toggle-row input:checked + .share-window__toggle) {
+  background: var(--share-selection-ink);
+}
+
+:global(.dark .share-window__toggle-row input:checked + .share-window__toggle::after) {
+  background: var(--share-surface);
+}
+
+.share-window__toggle-row input:checked + .share-window__toggle::after {
+  transform: translateX(14px);
+}
+
+.share-window__toggle-row input:focus-visible + .share-window__toggle {
+  outline: 2px solid var(--share-text);
+  outline-offset: 3px;
+}
+
+.share-window__actions {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 16px 26px 20px;
+  border-top: 1px solid var(--share-border);
+}
+
+.share-window__export-detail {
+  margin-bottom: 2px;
+  color: var(--share-muted);
+  font-size: 10px;
+}
+
+.share-window__actions > button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--share-border);
+  border-radius: 5px;
+  color: var(--share-text);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.share-window__actions > button:hover {
+  background: var(--share-hover);
+}
+
+.share-window__actions > .share-window__primary {
   border-color: transparent;
-  background: linear-gradient(135deg, var(--share-grad-1, #34d399), var(--share-grad-2, #10b981));
-  box-shadow: 0 8px 22px rgba(16, 185, 129, 0.26);
+  color: #f3efdf;
+  background: var(--share-selection);
 }
 
-.share-window__actions .share-window__primary:hover {
-  color: #06231b;
-  border-color: transparent;
-  filter: brightness(1.05);
-  background: linear-gradient(135deg, var(--share-grad-1, #34d399), var(--share-grad-2, #10b981));
+.share-window__actions > .share-window__primary:hover {
+  filter: brightness(1.12);
+  background: var(--share-selection);
 }
 
 .share-window__actions p {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 20px;
-  color: #fb7185;
-  font-size: 12px;
-  font-weight: 700;
+  color: var(--theme-status-danger-fg);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
-.share-window__status--ok {
-  color: #34d399 !important;
+.share-window__actions p.share-window__status--ok {
+  color: var(--theme-status-success-fg);
+}
+
+.share-window__actions p.share-window__status--neutral {
+  color: var(--share-muted);
+}
+
+.share-window__retry {
+  margin-left: auto;
+  flex-shrink: 0;
+  text-decoration: underline;
+}
+
+.share-window button {
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease;
+}
+
+.share-window button:focus-visible,
+.share-window input[type='text']:focus-visible {
+  outline: 2px solid var(--share-text);
+  outline-offset: 3px;
+}
+
+.share-window button:disabled,
+.share-window__fields:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .share-window__capture {
@@ -860,5 +989,39 @@ onUnmounted(() => {
   clip: rect(0, 0, 0, 0);
   opacity: 0;
   pointer-events: none;
+}
+
+@media (max-width: 1100px) {
+  .share-window__chrome { grid-template-columns: minmax(0, 1fr) 300px; }
+  .share-window__settings { padding: 20px; }
+  .share-window__fields { gap: 18px; }
+  .share-window__title-block { margin-bottom: 20px; }
+  .share-window__actions { padding-inline: 20px; }
+}
+
+@media (max-height: 780px) {
+  .share-window__settings { padding: 12px 20px; }
+  .share-window__title-block { margin-bottom: 12px; }
+  .share-window__title-block p { margin-top: 2px; font-size: 11px; }
+  .share-window__fields { gap: 8px; }
+  .share-window__group { gap: 6px; }
+  .share-window__title-block h2 { line-height: 1.2; }
+  .share-window__title-block p { line-height: 1.3; }
+  .share-window__group h3,
+  .share-window__group > label:not(.share-window__toggle-row) { font-size: 11px; line-height: 1.3; }
+  .share-window input[type='text'] { height: 32px; }
+  .share-window__swatch { width: 32px; height: 32px; }
+  .share-window__swatch span { width: 24px; height: 24px; }
+  .share-window__group--ruled { padding-top: 8px; }
+  .share-window__range-grid button,
+  .share-window__format-grid button { min-height: 28px; padding-block: 4px; font-size: 11px; }
+  .share-window__range-grid { gap: 4px; }
+  .share-window__toggle-row { min-height: 24px; }
+  .share-window__actions { padding: 12px 20px; gap: 6px; }
+  .share-window__actions > button { height: 32px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .share-window *, .share-window *::after { transition: none; animation: none; }
 }
 </style>
