@@ -2,7 +2,7 @@
 
 <div align="center">
   <img src="UsageMeter.svg" alt="UsageMeter Logo" width="128" height="128">
-  <p><strong>A lightweight menu bar app for observing AI coding tool usage, quotas, runtime metrics, and cost</strong></p>
+  <p><strong>AI coding usage, quotas, and performance — from the menu bar to a full desktop workspace</strong></p>
 
   <p>
     <img src="https://img.shields.io/badge/platform-macOS-lightgrey" alt="Platform">
@@ -15,27 +15,154 @@
   </p>
 </div>
 
-UsageMeter is a local-first tray app built for people who use AI coding tools every day and want one place to see requests, tokens, cache usage, runtime quality, source/provider attribution, quota pressure, sessions, projects, and estimated cost.
+UsageMeter is a local-first macOS app for understanding how your AI coding tools use tokens, requests, cache, and money. Check recent usage and quota pressure from the menu bar, then open the desktop workspace to investigate a trend, a project, a session, or an individual request.
 
-It is designed around a compact menu bar workflow on macOS: no Dock icon, fast popup panel, low interruption, and immediate visibility into how your coding agents are consuming plans and APIs.
+Local history provides the baseline. Optional proxy capture adds live performance and source attribution, and the Rust backend reconciles both into one set of statistics. You can start with local scanning without configuring an API gateway or taking over a tool.
 
-## Current Scope
+## What's New in v0.12.0
 
-- `macOS-first` desktop app built with Vue 3 + TypeScript + Tauri 2
-- `5-panel UI`: Overview, Statistics, Sessions, Gateway, Settings
-- `Local-first pipeline` with optional proxy capture and merged analytics
+- **A full desktop workspace** with eight pages, detailed request tables, session/project navigation, and analytics drill-down.
+- **Deep activity for Claude Code and Codex** with event timelines, tool calls, supported agent relationships, opt-in full-text search, and export.
+- **More data sources**: Pi Agent local scanning and multi-provider proxy capture, DeepSeek Harness local scanning, cc-switch log import, and Cursor usage CSV import.
+- **Clearer attribution and presentation**: passive official OAuth attribution, refined quota cards, and a redesigned share editor with light and dark poster themes.
 
-## Supported Tool Coverage
+See the [bilingual changelog](CHANGELOG.md) for fixes and release details.
 
-| Capability | Current Coverage |
+## Screenshots
+
+These screenshots use synthetic demo data in the current UI, with no real accounts, sessions, project paths, or credentials. The activity screenshot shows the opt-in full-text mode.The quick-panel screenshot is in Simplified Chinese; the other screenshots are in English.
+
+![Desktop overview](assets/screenshots/en-US/desktop-overview.png)
+
+<details>
+<summary>View the quick panel, analytics, requests, sessions, projects, activity, and sharing</summary>
+
+| Quick panel (Simplified Chinese) | Share editor and poster |
+| :---: | :---: |
+| ![Quick panel (Simplified Chinese)](assets/screenshots/zh-CN/quick-overview.png) | ![Share editor and poster](assets/screenshots/en-US/share-editor.png) |
+
+| Analytics · dark theme | Request explorer |
+| :---: | :---: |
+| ![Analytics · dark theme](assets/screenshots/en-US/desktop-analytics.png) | ![Request explorer](assets/screenshots/en-US/desktop-requests.png) |
+
+| Sessions | Projects |
+| :---: | :---: |
+| ![Sessions](assets/screenshots/en-US/desktop-sessions.png) | ![Projects](assets/screenshots/en-US/desktop-projects.png) |
+
+![Deep activity](assets/screenshots/en-US/desktop-activity.png)
+
+</details>
+
+## Menu Bar and Desktop Workspace
+
+| Surface | Pages | Typical workflow |
+| --- | --- | --- |
+| Menu bar quick panel | Overview, Statistics, Sessions, Gateway, Settings | Check recent consumption or remaining quota without leaving your editor |
+| Desktop workspace | Overview, Analytics, Sessions, Projects, Requests, Activity, Gateway, Settings | Compare periods, inspect records, follow session activity, or manage routing |
+| Share window | Poster preview and export controls | Choose a period, scope, theme, and which summary sections to include |
+
+The quick panel is `420 × 560`, hides when it loses focus, and runs without a Dock icon. Opening the desktop window adds a Dock entry for normal window switching. The tray remains available, and desktop data refreshes automatically and when the window is reopened or activated through the Dock.
+
+## Supported Tools and Data Sources
+
+Support varies by capability; local usage does not imply proxy takeover or an official quota endpoint.
+
+| Tool | Local history | Proxy takeover / capture | Official account quota |
+| --- | --- | --- | --- |
+| Claude Code | Yes | Yes; cc-switch coexistence protection | Claude OAuth |
+| Codex CLI | Yes | Yes; cc-switch coexistence protection | ChatGPT OAuth |
+| Gemini CLI | Yes | Yes; environment-based configuration | Google OAuth |
+| OpenCode | Yes; JSON/SQLite schema compatibility | Yes; global configuration routes | — |
+| Pi Agent | Yes | Yes; multi-provider `models.json` routes | — |
+| OpenClaw | Yes | — | — |
+| Hermes Agent | Yes | — | — |
+| GitHub Copilot CLI | Yes | — | GitHub Copilot |
+| Qoder CLI / IDE / IDE CN / Work / Work CN | Yes | — | — |
+| DeepSeek Harness | Yes; configurable session root | — | — |
+| Reasonix | — | Yes; global configuration | — |
+| Cursor IDE | Local metadata + imported usage CSV | — | Disabled pending account validation |
+
+Configured third-party relay sources can query quota or balance using supported query profiles. cc-switch request logs can be imported read-only, without taking over cc-switch's configuration. Deep activity currently has dedicated adapters for Claude Code and Codex.
+
+## What You Can Inspect
+
+### Usage and Quotas
+
+- Requests, input/output tokens, cache writes/reads, estimated cost, and rankings by source, tool, and model.
+- Overview windows for **5 hours, 24 hours, today, 7 days, 30 days, and the current month**; when a window has no data, the app can show an available fallback window with an explicit notice.
+- Official quota windows, relay balances, and local consumption-rate signals. Local burn-rate projections describe recent activity; they are separate from provider-enforced limits.
+- Passive attribution of supported official OAuth usage and manual attribution controls for requests, sessions, or time ranges.
+
+### Analytics, Projects, and Requests
+
+- Trend, composition, activity, and performance views; custom ranges, previous-period comparison, and model/project filters in desktop analytics.
+- Monthly calendars and yearly heatmaps, with requests, tokens, or cost as the selected metric.
+- Request pagination, search, status/coverage/performance filters, sorting, and configurable columns.
+- Session and project summaries, request detail drawers, and links between requests and their sessions. Clicking a trend bucket narrows the request explorer to that period.
+- Time to first token (TTFT), request duration, output-token rate, and HTTP status where the underlying records supply them.
+
+### Deep Activity
+
+The desktop **Activity** page follows Claude Code and Codex sessions through messages, tool invocations/results, and supported agent relationships. It links activity to request records where evidence exists, and supports session search, cross-session search, and activity export.
+
+Deep indexing is **off by default**. In desktop **Settings**, choose structured metadata, local full-text indexing, or on-demand reading. Full-text search requires the full-text setting; content retention defaults to 90 days, and stored activity content can be purged. Availability and agent relationships depend on the adapter and original records.
+
+### Local API Gateway
+
+Create a profile, save its upstream credential, and connect a client using the profile's loopback endpoint and generated `umg_...` client key. The gateway supports:
+
+| Protocol | Native API |
 | --- | --- |
-| Local history scanning | Claude Code, Codex CLI, OpenClaw, OpenCode, Qoder CLI / IDE / IDE CN / Work / Work CN, Gemini CLI, GitHub Copilot CLI, Hermes Agent, Pi Agent |
-| Proxy takeover and request capture | Claude Code, Codex, OpenCode global config routes, Reasonix global config, Gemini CLI env-based config, Pi Agent multi-provider `models.json` routes; cc-switch takeover safeguards and read-only proxy-log import |
-| Local API gateway | OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Gemini GenerateContent; one stored upstream credential and one generated local client key per profile |
-| Source/provider attribution | API sources detected from proxy traffic, manual source naming, source merge/delete/key-note management, source-level filtering |
-| Official or account quota queries | Codex ChatGPT OAuth, Claude, Gemini CLI, GitHub Copilot |
-| Relay/provider quota queries | Configured third-party relay sources with profile-based quota or balance querying |
-| Cursor IDE | Read-only local conversation/project metadata and preview/import/revoke of dashboard usage CSV files. Private account sync and quota code is gated until real-account contract validation is completed. |
+| OpenAI Chat Completions | `/v1/chat/completions` |
+| OpenAI Responses | `/v1/responses` |
+| Anthropic Messages | `/v1/messages` |
+| Gemini GenerateContent | GenerateContent and streaming GenerateContent |
+
+Profiles use public HTTPS upstreams. The gateway preserves the selected protocol and streaming responses, records supported usage and runtime metrics, and provides upstream model discovery and availability probes. Each profile has one saved upstream credential and one local client key; credentials can be replaced and local keys revoked/regenerated. Manual gateway routing and tool configuration takeover are separate controls.
+
+### Sharing and Settings
+
+- Create a usage poster with light/dark theme presets, a custom display name, and optional statistics, trends, and model sections; copy an image or export PNG/JPEG.
+- Manage model prices, custom pricing, historical price backfill, display currency, and exchange rates.
+- Choose English, Simplified Chinese, or Traditional Chinese; switch appearance/palette and `K/M/B` or `万/亿` units.
+- Configure refresh interval, statistical day boundaries, launch at login, update checks, and an outbound HTTP/HTTPS/SOCKS5 proxy.
+- Inspect scan paths and compatibility status, rebuild local caches, clean orphaned facts, and manage optional encrypted WebDAV synchronization.
+
+## Getting Started
+
+1. Download a build from [Releases](https://github.com/smileslove/UsageMeter/releases), install it, and open UsageMeter. The supported release experience is macOS-first; macOS 11 or later is required.
+2. Click the menu bar icon. Supported local histories are discovered from their tool-specific locations. Open **Settings** to inspect scan paths; DeepSeek Harness can use a custom session root.
+3. Choose a time window and use the source/tool filters to narrow the view. Open the desktop window from the panel's toolbar for full analytics and request exploration.
+4. If you need TTFT, HTTP status, or live source attribution, configure optional proxy capture or a gateway profile. Quota cards require the corresponding detected credentials or a configured relay query.
+5. For Cursor, use **Settings → Cursor** to preview an exported usage CSV before importing it. For deep activity, enable the desired indexing level in desktop **Settings**.
+
+Some features appear only when their credentials or data exist. Windows-specific WSL passive scanning is available in settings, but it does not imply the same release support as macOS.
+
+## Data, Accuracy, and Privacy
+
+| Input | What it contributes | Important boundary |
+| --- | --- | --- |
+| Local files / SQLite | Historical usage, sessions, and project associations | Coverage depends on the tool's retained records and supported schema |
+| Optional local proxy / gateway | Live request observations, performance, and source attribution | Tool takeover changes supported tool configuration; manual gateway clients use explicit endpoints |
+| cc-switch logs | Historical request observations | Imported read-only and reconciled with other observations |
+| Cursor CSV | Account usage events and service-metered values | Event counts are not HTTP request counts; account scope can include other devices |
+
+The backend merges and deduplicates observations where matching evidence is available. Missing status, performance, cost, or attribution stays unavailable rather than becoming an invented measurement. Estimated token cost uses configured model prices and is not a provider invoice or subscription charge; cache and reasoning token handling follows each reader's source semantics.
+
+### Local Storage and Optional Network Access
+
+UsageMeter keeps its working data under `~/.usagemeter/`:
+
+| File | Purpose |
+| --- | --- |
+| `settings.json` | Stable preferences |
+| `app_config.db` | Sources, tools, gateway configuration, and runtime configuration |
+| `proxy_data.db` | Proxy request facts |
+| `local_usage.db` | Normalized local usage, sessions, merged facts, and activity indexes |
+
+Proxy statistics do not store prompt/response bodies or authorization headers. Session views may display titles or prompt snippets from local histories; opt-in activity modes may read or retain redacted content and full-text indexes. Review session text, project paths, source names, and account labels before sharing a screenshot or activity export.
+
+Gateway credentials are kept in local UsageMeter configuration; legacy Keychain-backed credentials are migrated when readable, otherwise the app asks for replacement. Quota queries contact the corresponding provider; update, price, exchange-rate, and connectivity operations also use the network. Optional WebDAV sync encrypts synchronized data end to end; session text is separately configurable, and Cursor usage is excluded from synchronization.
 
 ### Cursor data boundaries
 
@@ -45,107 +172,9 @@ Cursor tokens and metered usage value come from account billing events. These ma
 
 The private dashboard API, pagination and quota provider are implemented behind a disabled compatibility gate. No account network requests are made until real-account validation permits enabling this gate and the user opts in. Cursor credentials are read in memory only, never copied into UsageMeter settings or exported. Cursor usage is excluded from WebDAV snapshots and outbox records. Cursor CLI, team-admin API, deep activity and proxy takeover are outside this integration.
 
-## What It Can Do
-
-### Overview
-
-- Track request count, tokens, cache tokens, and estimated cost in one compact summary card set
-- Switch overview windows across `5h`, `24h`, `today`, `7d`, `30d`, and `current month`
-- Show response-time and average token-rate signals when proxy runtime data exists
-- Rank usage by `source`, `tool`, and `model` for the active window
-- Surface a quota survival card that combines official quotas, relay balances, local burn rate, and recent usage baseline
-
-### Statistics
-
-- Explore rolling and calendar-based analytics for requests, tokens, cost, and model usage
-- Use monthly and yearly activity views with contribution-style heatmaps
-- Switch between built-in ranges and precise custom ranges
-- Filter by tool and API source without leaving the main panel
-- Export a styled share poster with theme presets, clipboard copy, and PNG download
-
-### Sessions
-
-- Browse recent sessions across supported tools
-- Inspect recent proxy request records with runtime metadata
-- View project-level aggregation across sessions
-- Drill into session details, tokens, cost, models, and request performance
-
-### API Gateway
-
-- Create profiles for public HTTPS upstreams using OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, or Gemini GenerateContent
-- Connect clients through a profile-specific loopback endpoint and generated `umg_...` key while UsageMeter applies the stored upstream credential
-- Keep streaming responses streaming while recording supported usage, runtime, and source-attribution data
-- Manage manual client routing separately from tool takeover controls
-- Replace the single upstream credential or revoke and regenerate the single local client key for each profile
-- Recover legacy macOS Keychain-backed profiles when possible, with explicit replacement prompts on devices that cannot read the old credential
-
-### Settings and Operations
-
-- Enable or disable local proxy capture
-- Manage tool takeover status and conflict recovery for supported tool configs
-- Inspect local scan paths and OpenCode schema compatibility
-- Rebuild local cache or purge orphaned local facts
-- Manage model pricing, custom pricing, and historical pricing backfill
-- Manage exchange rates and display currency
-- Configure app-wide outbound network proxy with connectivity tests for GitHub, Anthropic, and OpenAI
-- Configure encrypted WebDAV sync with device management and password rotation
-- Toggle language, refresh interval, day-boundary mode, auto-start, and auto-update checks
-- Configure WSL passive scan settings for Windows-oriented data discovery work
-- Choose international (`K/M/B`) or Chinese (`万/亿`) number display units
-- Inspect cc-switch coexistence status, reclaim a yielded takeover, and safely clean stale local proxy endpoints when cc-switch is stopped
-
-## Data Pipeline
-
-UsageMeter combines two collection paths:
-
-| Mode | What it does | Best for |
-| --- | --- | --- |
-| Local scan | Reads supported local history files or SQLite data and stores normalized usage snapshots in a local SQLite cache | Historical usage, sessions, projects, quota windows, cost analysis |
-| Local proxy | Captures live request traffic and runtime metadata through an optional local proxy | TTFT, duration, token rate, status codes, provider/source attribution |
-
-The app merges both paths into a unified view where possible, so you can keep local history as the baseline and add runtime-only metrics when proxy mode is enabled.
-
-The API gateway shares the local listener and sends supported native-protocol traffic through the same runtime and attribution pipeline without converting request protocols.
-
-## Local Storage
-
-- Stable user preferences remain in a compact local settings file
-- Configurable entity collections and proxy runtime documents are stored in `app_config.db`
-- Normalized local usage, session facts, and synchronization state remain in the local usage SQLite database
-- Gateway credentials stay in local UsageMeter configuration; legacy macOS Keychain references are migrated or surfaced for manual recovery
-
-## Screenshots
-
-|     ![Overview Panel](assets/overview.png)     | ![Activity Heatmap](assets/activity-heatmap.png) | ![Time Window Statistics](assets/time-window-statistics.png) |
-| :--------------------------------------------: | :----------------------------------------------: | :----------------------------------------------------------: |
-|                _Overview Panel_                |                _Activity Heatmap_                |                   _Time Window Statistics_                   |
-| ![Model Usage](assets/model-usage-display.png) |  ![Recent Sessions](assets/recent-sessions.png)  |     ![Project Statistics](assets/project-statistics.png)     |
-|                 _Model Usage_                  |                _Recent Sessions_                 |                     _Project Statistics_                     |
-
-## Installation
-
-Download the latest build from the [Releases](https://github.com/smileslove/UsageMeter/releases) page.
-
-### Runtime Requirements
-
-- macOS 11 or later
-- At least one supported AI coding tool if you want live local or proxy data
-
-### Notes
-
-- The product is currently optimized for the macOS menu bar experience
-- Some Windows-oriented settings already exist, such as WSL scan support, but the shipping experience remains macOS-first
-- Some features only appear when the related tool credentials or local data are detected
-
 ## Development
 
-### Prerequisites
-
-- Node.js `>= 24`
-- npm `>= 10`
-- Rust toolchain `1.94` with `clippy` and `rustfmt`
-
-### Run Locally
+Prerequisites: Node.js `>=24`, npm `>=10`, Rust `1.94`, `clippy`, and `rustfmt`.
 
 ```bash
 git clone https://github.com/smileslove/UsageMeter.git
@@ -154,51 +183,35 @@ npm install
 npm run dev:tauri
 ```
 
-### Build
-
 ```bash
-npm run build:tauri
+npm run build:tauri  # Build the desktop app
+npm run lint         # TypeScript, Rust formatting, Clippy, and cargo check
+npm test             # Frontend tests
+cargo test --manifest-path src-tauri/Cargo.toml  # Rust tests
+npm run audit        # Dependency audit
 ```
 
-### Validation
-
-```bash
-npm run lint
-```
-
-This runs:
-
-- `vue-tsc --noEmit`
-- `cargo fmt -- --check`
-- `cargo clippy -- -D warnings`
-- `cargo check`
-
-## Project Structure
+The browser-only `npm run dev` starts the frontend; scanning, database access, and proxy operations require the Tauri backend. Development uses a separate Tauri app identifier.
 
 ```text
-UsageMeter/
-├── src/                    # Vue frontend
-│   ├── components/         # Reusable UI components
-│   ├── views/              # Overview / Statistics / Sessions / Gateway / Settings
-│   ├── stores/             # Pinia state
-│   ├── i18n/               # Localization
-│   └── utils/              # Formatting and UI helpers
-├── src-tauri/              # Tauri backend
-│   └── src/
-│       ├── app_config.rs   # Configurable entity storage and runtime documents
-│       ├── commands/       # Tauri command surface
-│       ├── gateway/        # Local API gateway domain, audit, and rate limiting
-│       ├── session/        # Local readers for supported tools
-│       ├── proxy/          # Proxy capture, takeover, routing
-│       ├── local_usage/    # Local usage SQLite cache
-│       ├── unified_usage/  # Merged local + proxy analytics
-│       ├── subscription/   # Quota and balance query logic
-│       ├── sync/           # WebDAV encrypted sync
-│       └── net/            # Shared HTTP client and network proxy support
-├── assets/                 # README screenshots and media
-└── doc/                    # Product and architecture documents
+src/
+├── api/                 # Thin Tauri invoke wrappers
+├── apps/, desktop/      # Desktop shell, pages, and navigation
+├── views/, components/  # Quick panel and shared components
+├── stores/              # Settings, queries, and view state
+├── i18n/                # zh-CN, zh-TW, en-US
+└── utils/, composables/ # Formatting and reusable UI logic
+src-tauri/src/
+├── commands/            # Frontend/backend contracts
+├── session/, activity/  # Local readers and opt-in event indexes
+├── proxy/, gateway/     # Capture, takeover, routing, and local API gateway
+├── local_usage/         # SQLite facts, migrations, and materialization
+├── unified_usage/       # Reconciliation, attribution, and aggregation
+├── subscription/        # Provider quotas and relay balances
+└── sync/, net/          # Encrypted WebDAV sync and shared HTTP clients
+assets/                  # README screenshots
 ```
 
 ## License
 
-MIT
+[MIT](LICENSE)

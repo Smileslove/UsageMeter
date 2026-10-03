@@ -2,7 +2,7 @@
 
 <div align="center">
   <img src="UsageMeter.svg" alt="UsageMeter Logo" width="128" height="128">
-  <p><strong>一款用于观察 AI 编程工具用量、额度、运行时指标与费用的轻量菜单栏应用</strong></p>
+  <p><strong>从菜单栏到桌面工作区，集中查看 AI 编程用量、额度与性能</strong></p>
 
   <p>
     <img src="https://img.shields.io/badge/platform-macOS-lightgrey" alt="Platform">
@@ -15,27 +15,154 @@
   </p>
 </div>
 
-UsageMeter 是一款面向 AI 编程工具重度用户的本地优先托盘应用，用来集中查看请求数、Token、缓存 Token、响应质量、来源归因、额度压力、会话、项目以及费用估算。
+UsageMeter 是一款 macOS 本地优先应用，用来了解 AI 编程工具消耗了多少 Token、请求、缓存与费用。日常从菜单栏查看近期用量和额度压力，需要追查某次峰值、项目、会话或请求时，再打开完整桌面工作区。
 
-它围绕 macOS 菜单栏工作流设计：没有 Dock 图标，面板打开即看，尽量低打扰，但能把日常 AI 编程消耗的关键指标持续暴露出来。
+本地历史提供统计基线，可选代理采集补充实时性能与来源归因，Rust 后端统一对账与聚合。只查看本地用量时，可以直接使用扫描功能，无需先配置网关或接管工具。
 
-## 当前定位
+## v0.12.0 新变化
 
-- `macOS 优先` 的桌面应用，技术栈为 Vue 3 + TypeScript + Tauri 2
-- `五面板结构`：概览、统计、会话、网关、设置
-- `本地优先`，可选代理增强，并在统一统计层合并展示
+- **完整桌面工作区**：八个一级页面，请求明细表格、会话/项目跳转与分析下钻。
+- **Claude Code 与 Codex 深度活动**：事件时间线、工具调用、受支持的代理关系，以及需主动启用的全文搜索和导出。
+- **更多数据来源**：Pi Agent 本地扫描与多 Provider 代理采集、DeepSeek Harness 本地扫描、cc-switch 日志导入、Cursor 用量 CSV 导入。
+- **归因与展示改进**：官方 OAuth 被动归因、紧凑额度卡片，以及支持浅色/深色海报主题的全新分享编辑面板。
 
-## 当前支持范围
+具体修复与发布内容见[双语更新记录](CHANGELOG.md)。
 
-| 能力 | 当前覆盖范围 |
+## 截图
+
+以下截图由当前界面使用虚构演示数据生成，不包含真实账户、会话、项目路径或凭据。深度活动图展示主动启用全文档位后的界面。 快速面板图为中文，其余截图为对应语言。
+
+![桌面概览](assets/screenshots/zh-CN/desktop-overview.png)
+
+<details>
+<summary>查看快速面板、分析、请求、会话、项目、活动与分享截图</summary>
+
+| 快速面板 | 分享面板与海报 |
+| :---: | :---: |
+| ![快速面板](assets/screenshots/zh-CN/quick-overview.png) | ![分享面板与海报](assets/screenshots/zh-CN/share-editor.png) |
+
+| 分析 · 深色主题 | 请求明细 |
+| :---: | :---: |
+| ![分析 · 深色主题](assets/screenshots/zh-CN/desktop-analytics.png) | ![请求明细](assets/screenshots/zh-CN/desktop-requests.png) |
+
+| 会话列表 | 项目统计 |
+| :---: | :---: |
+| ![会话列表](assets/screenshots/zh-CN/desktop-sessions.png) | ![项目统计](assets/screenshots/zh-CN/desktop-projects.png) |
+
+![深度活动](assets/screenshots/zh-CN/desktop-activity.png)
+
+</details>
+
+## 菜单栏与桌面工作区
+
+| 界面 | 页面 | 适用场景 |
+| --- | --- | --- |
+| 菜单栏快速面板 | 概览、统计、会话、网关、设置 | 在编辑器旁快速查看近期消耗与剩余额度 |
+| 桌面主窗口 | 概览、分析、会话、项目、请求、活动、网关、设置 | 对比时间段、检查请求、追踪会话活动与管理路由 |
+| 分享窗口 | 海报预览与导出控制 | 选择时间范围、筛选范围、主题与展示内容 |
+
+快速面板尺寸为 `420 × 560`，失焦自动隐藏，托盘运行时不显示 Dock 图标。打开桌面主窗口后会显示 Dock 入口，便于正常切换窗口；托盘继续可用。主窗口会自动刷新，重新打开或通过 Dock 激活时也会更新数据。
+
+## 工具与数据来源
+
+各工具的能力分别实现；支持本地统计不代表同时支持代理接管或官方额度查询。
+
+| 工具 | 本地历史 | 代理接管 / 采集 | 官方账户额度 |
+| --- | --- | --- | --- |
+| Claude Code | 支持 | 支持；保留 cc-switch 共存保护 | Claude OAuth |
+| Codex CLI | 支持 | 支持；保留 cc-switch 共存保护 | ChatGPT OAuth |
+| Gemini CLI | 支持 | 支持；基于环境变量配置 | Google OAuth |
+| OpenCode | 支持；兼容 JSON/SQLite schema | 支持；全局配置路由 | — |
+| Pi Agent | 支持 | 支持；多 Provider `models.json` 路由 | — |
+| OpenClaw | 支持 | — | — |
+| Hermes Agent | 支持 | — | — |
+| GitHub Copilot CLI | 支持 | — | GitHub Copilot |
+| Qoder CLI / IDE / IDE CN / Work / Work CN | 支持 | — | — |
+| DeepSeek Harness | 支持；可配置会话根目录 | — | — |
+| Reasonix | — | 支持；全局配置 | — |
+| Cursor IDE | 本地元数据 + 导入的用量 CSV | — | 真实账户验证完成前关闭 |
+
+已配置的第三方中转来源可使用受支持的查询配置获取额度或余额。cc-switch 请求日志支持只读导入，无需接管其配置。深度活动目前提供 Claude Code 和 Codex 的独立适配器。
+
+## 可以查看什么
+
+### 用量与额度
+
+- 请求数、输入/输出 Token、缓存写入/读取、费用估算，以及来源、工具、模型排行。
+- 概览支持**最近 5 小时、24 小时、今日、7 天、30 天和本月**；选定窗口暂无数据时，可回退到有数据的窗口并明确提示。
+- 官方额度窗口、第三方余额与本地消耗速率。基于近期活动的燃烧速率预测与供应商实际限额分开呈现。
+- 受支持工具的官方 OAuth 被动归因，以及请求、会话和时间范围的手动归因控制。
+
+### 分析、项目与请求
+
+- 趋势、构成、活跃度和性能四种视图；桌面分析支持自定义范围、上一周期对比及模型/项目筛选。
+- 月度日历与年度热力图，可切换请求数、Token 或费用指标。
+- 请求分页、搜索、状态/覆盖来源/性能筛选、排序与自定义表格列。
+- 会话和项目汇总、请求详情抽屉及请求与所属会话之间的跳转；点击趋势时间桶可查看对应时间段的请求。
+- 原始记录提供时，展示首 Token 延迟（TTFT）、请求耗时、输出 Token 速率与 HTTP 状态。
+
+### 深度活动
+
+桌面**活动**页可查看 Claude Code 与 Codex 会话中的消息、工具调用/结果和受支持的代理关系，有证据时将活动关联到请求记录，并提供会话内搜索、跨会话搜索与活动导出。
+
+深度索引**默认关闭**。在桌面**设置**中选择结构化元数据、本地全文索引或按需读取；全文搜索需要启用全文档位。正文默认保留 90 天，可清理已存储的活动正文。实际可用内容与代理关系取决于适配器和原始记录。
+
+### 本地 API 网关
+
+创建配置并保存上游凭据后，使用配置专属回环地址和自动生成的 `umg_...` 客户端 Key 接入。支持以下原生协议：
+
+| 协议 | 原生 API |
 | --- | --- |
-| 本地历史扫描 | Claude Code、Codex CLI、OpenClaw、OpenCode、Qoder CLI / IDE / IDE CN / Work / Work CN、Gemini CLI、GitHub Copilot CLI、Hermes Agent、Pi Agent |
-| 代理接管与请求采集 | Claude Code、Codex、OpenCode 全局配置路由、Reasonix 全局配置、Gemini CLI 基于环境变量的配置、Pi Agent 多 Provider `models.json` 路由；提供 cc-switch 接管礼让与代理日志只读导入 |
-| 本地 API 网关 | 支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、Gemini GenerateContent；每个配置保存一个上游凭据，并生成一个本地客户端 Key |
-| 来源 / 供应商归因 | 代理流量自动识别来源，支持来源命名、合并、删除、Key 前缀备注、来源级过滤 |
-| 官方或账号额度查询 | Codex ChatGPT OAuth、Claude、Gemini CLI、GitHub Copilot |
-| 第三方中转额度查询 | 已配置中转来源的 profile 化额度 / 余额查询 |
-| Cursor IDE | 只读本地会话/项目元数据，预览、导入和撤销网页用量 CSV；账户同步与额度代码在真实账户接口验证完成前保持不可用。 |
+| OpenAI Chat Completions | `/v1/chat/completions` |
+| OpenAI Responses | `/v1/responses` |
+| Anthropic Messages | `/v1/messages` |
+| Gemini GenerateContent | GenerateContent 及其流式接口 |
+
+网关使用公开 HTTPS 上游，保留所选协议及流式响应，记录可获得的用量与运行时指标，并支持上游模型发现和可用性探测。每个配置保存一个上游凭据和一个本地客户端 Key，支持替换凭据及撤销/重新生成本地 Key。手动网关接入与工具配置接管分别管理。
+
+### 分享与设置
+
+- 生成用量海报，选择浅色/深色主题、自定义展示名称、统计/趋势/模型内容，复制图片或导出 PNG/JPEG。
+- 管理模型价格、自定义定价、历史价格回填、展示货币与汇率。
+- 切换简体中文、繁体中文或英文，选择外观/色板及 `K/M/B` 或 `万/亿` 数值单位。
+- 配置刷新间隔、统计日边界、开机启动、更新检查与应用出站 HTTP/HTTPS/SOCKS5 代理。
+- 检查扫描路径和兼容状态、重建本地缓存、清理孤儿事实，以及管理可选的加密 WebDAV 同步。
+
+## 快速开始
+
+1. 从 [Releases](https://github.com/smileslove/UsageMeter/releases) 下载构建版本，安装并启动。当前正式体验以 macOS 为主，要求 macOS 11 或更高版本。
+2. 点击菜单栏图标。应用从工具专属路径发现受支持的本地历史；可在**设置**查看扫描路径，DeepSeek Harness 支持自定义会话根目录。
+3. 选择时间窗口，通过来源/工具筛选收窄范围。从面板工具栏打开桌面主窗口，查看完整分析与请求明细。
+4. 需要 TTFT、HTTP 状态或实时来源归因时，配置可选代理采集或网关。额度卡片需要检测到相应凭据，或配置中转查询。
+5. Cursor 使用**设置 → Cursor** 预览并导入网页导出的用量 CSV；深度活动需在桌面**设置**选择索引档位。
+
+部分功能只在检测到相应凭据或数据后出现。设置中提供 Windows 场景的 WSL 被动扫描，但不代表其发版支持与 macOS 完全一致。
+
+## 数据口径与隐私
+
+| 输入 | 提供的维度 | 边界 |
+| --- | --- | --- |
+| 本地文件 / SQLite | 历史用量、会话与项目关联 | 覆盖范围取决于工具保留的记录及受支持的 schema |
+| 可选代理 / 网关 | 实时请求观测、性能与来源归因 | 工具接管会修改受支持工具配置；手动网关客户端使用明确端点 |
+| cc-switch 日志 | 历史请求观测 | 只读导入，与其他观测统一对账 |
+| Cursor CSV | 账户用量事件与服务计量价值 | 事件数不等于 HTTP 请求数；账户范围可能包含其他设备 |
+
+后端在有匹配证据时合并与去重。缺失的状态、性能、金额或归因保持未知，不生成虚构测量值。Token 费用估算使用配置的模型价格，不等同于供应商账单或订阅扣款；缓存与推理 Token 按各读取器的数据语义处理。
+
+### 本地存储与可选网络访问
+
+UsageMeter 将工作数据保存在 `~/.usagemeter/`：
+
+| 文件 | 用途 |
+| --- | --- |
+| `settings.json` | 稳定偏好 |
+| `app_config.db` | 来源、工具、网关及运行配置 |
+| `proxy_data.db` | 代理请求事实 |
+| `local_usage.db` | 规范化本地用量、会话、合并事实与活动索引 |
+
+代理统计不保存 prompt/响应正文或 Authorization header。会话界面可能展示本地历史中的标题或 prompt 摘要；主动启用的活动档位可能读取或保存脱敏正文与全文索引。分享截图或活动导出前，请检查会话文本、项目路径、来源名称与账户标签。
+
+网关凭据保存在本地 UsageMeter 配置中，旧版 Keychain 凭据可读时尝试迁移，否则提示替换。额度查询会访问对应供应商；更新、模型价格、汇率与连通性操作也会联网。可选 WebDAV 同步使用端到端加密，会话文本有独立配置，Cursor 用量不参与同步。
 
 ### Cursor 数据边界
 
@@ -45,107 +172,9 @@ Cursor 的 Token 和服务计量价值来自账户账务事件，可能包含其
 
 私有网页接口、完整分页和额度查询已经实现，但兼容开关保持关闭。完成真实账户验证并由用户启用前，不发出账户网络请求。凭据只在内存中读取，不复制到 UsageMeter 设置或导出内容；Cursor 用量不进入 WebDAV 快照与待同步队列。首版不包含 Cursor CLI、团队 Admin API、深度活动或代理接管。
 
-## 已实现能力
-
-### 概览面板
-
-- 在紧凑卡片中同时展示请求数、Token、缓存 Token 和费用估算
-- 支持 `5h`、`24h`、`today`、`7d`、`30d`、`current month` 六种概览窗口
-- 在存在代理运行时数据时展示响应耗时与平均生成速率
-- 按 `来源`、`工具`、`模型` 三个维度展示当前窗口的归因排行
-- 提供额度生存卡，将官方额度、第三方余额、本地燃烧速率和近期基线结合展示
-
-### 统计面板
-
-- 分析请求数、Token、费用、模型使用趋势
-- 提供月度 / 年度活跃视图和贡献图风格热力图
-- 支持预设时间范围与精确自定义范围
-- 支持按工具和 API 来源过滤统计结果
-- 支持生成分享海报，可复制到剪贴板或导出 PNG
-
-### 会话面板
-
-- 浏览多工具最近会话
-- 查看代理请求记录与运行时指标
-- 查看项目级聚合统计
-- 下钻到会话详情，查看 Token、费用、模型与请求性能
-
-### API 网关
-
-- 为公开 HTTPS 上游创建配置，支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Gemini GenerateContent
-- 使用配置专属的本地回环地址与自动生成的 `umg_...` Key 接入客户端，由 UsageMeter 注入已保存的上游凭据
-- 保持响应全链路流式传输，同时记录受支持的用量、运行时指标与来源归因
-- 将手动客户端路由与工具配置接管分开管理
-- 每个配置使用单一上游凭据和单一本地客户端 Key，支持替换上游凭据或撤销后重新生成本地 Key
-- 尽可能恢复旧版 macOS Keychain 配置；当前设备无法读取旧凭据时会明确提示手动替换
-
-### 设置与运维
-
-- 开关本地代理采集
-- 管理受支持工具配置的接管状态与冲突恢复
-- 查看本地扫描路径与 OpenCode schema 兼容状态
-- 重建本地缓存，或清理孤儿本地事实
-- 管理模型价格、自定义价格与历史价格回填
-- 管理汇率与展示货币
-- 配置应用级出站网络代理，并对 GitHub、Anthropic、OpenAI 做连通性测试
-- 配置 WebDAV 端到端加密同步、设备管理与同步密码轮换
-- 配置语言、刷新间隔、统计日边界、开机启动、自动检查更新
-- 提供面向 Windows 场景的 WSL 被动扫描设置
-- 选择国际单位（`K/M/B`）或中文单位（`万/亿`）显示数值
-- 查看 cc-switch 共存状态、夺回已礼让的接管配置，并在 cc-switch 停止后安全清理残留的本地代理地址
-
-## 数据链路
-
-UsageMeter 当前有两条采集路径：
-
-| 模式 | 作用 | 更适合 |
-| --- | --- | --- |
-| 本地扫描 | 读取受支持工具的本地历史文件或 SQLite 数据，并落到本地 SQLite 规范化缓存 | 历史用量、会话、项目、额度窗口、费用分析 |
-| 本地代理 | 通过可选本地代理捕获实时请求与运行时元数据 | TTFT、请求耗时、Token 速率、状态码、来源归因 |
-
-应用会尽量把两条链路合并到统一视图中：本地历史负责打底，代理模式负责补足运行时维度。
-
-API 网关复用同一本地监听器，将受支持的原生协议流量接入现有运行时与来源归因链路，不转换请求协议。
-
-## 本地存储
-
-- 稳定用户偏好保留在精简的本地设置文件中
-- 可配置实体集合与代理运行文档存储在 `app_config.db`
-- 规范化本地用量、会话事实与同步状态继续存储在本地用量 SQLite 数据库中
-- 网关凭据保存在 UsageMeter 本地配置中；旧版 macOS Keychain 引用会尝试迁移，无法迁移时提示手动恢复
-
-## 截图
-
-|      ![概览面板](assets/overview.png)       | ![活跃度热力图](assets/activity-heatmap.png) | ![时间范围统计](assets/time-window-statistics.png) |
-| :-----------------------------------------: | :------------------------------------------: | :------------------------------------------------: |
-|                 _概览面板_                  |                _活跃度热力图_                |                   _时间范围统计_                   |
-| ![模型调用](assets/model-usage-display.png) |   ![最近会话](assets/recent-sessions.png)    |     ![项目统计](assets/project-statistics.png)     |
-|                 _模型调用_                  |                  _最近会话_                  |                     _项目统计_                     |
-
-## 安装
-
-从 [Releases](https://github.com/smileslove/UsageMeter/releases) 页面下载最新构建版本。
-
-### 运行要求
-
-- macOS 11 或更高版本
-- 如果希望看到真实本地或代理数据，至少安装一种已支持的 AI 编程工具
-
-### 说明
-
-- 当前发版体验以 macOS 菜单栏应用为核心
-- 目前已经存在部分面向 Windows 的设置能力，例如 WSL 扫描，但正式体验仍然是 macOS 优先
-- 某些卡片或功能只有在检测到对应工具凭据或本地数据时才会出现
-
 ## 开发
 
-### 环境要求
-
-- Node.js `>= 24`
-- npm `>= 10`
-- Rust `1.94`，并安装 `clippy`、`rustfmt`
-
-### 本地运行
+环境要求：Node.js `>=24`、npm `>=10`、Rust `1.94`，并安装 `clippy` 和 `rustfmt`。
 
 ```bash
 git clone https://github.com/smileslove/UsageMeter.git
@@ -154,51 +183,35 @@ npm install
 npm run dev:tauri
 ```
 
-### 构建
-
 ```bash
-npm run build:tauri
+npm run build:tauri  # 构建桌面应用
+npm run lint         # TypeScript、Rust 格式、Clippy 与 cargo check
+npm test             # 前端测试
+cargo test --manifest-path src-tauri/Cargo.toml  # Rust 测试
+npm run audit        # 依赖审计
 ```
 
-### 校验
-
-```bash
-npm run lint
-```
-
-该命令会执行：
-
-- `vue-tsc --noEmit`
-- `cargo fmt -- --check`
-- `cargo clippy -- -D warnings`
-- `cargo check`
-
-## 项目结构
+`npm run dev` 仅启动浏览器前端；扫描、数据库访问与代理功能需要 Tauri 后端。开发模式使用独立的 Tauri 应用标识。
 
 ```text
-UsageMeter/
-├── src/                    # Vue 前端
-│   ├── components/         # 可复用 UI 组件
-│   ├── views/              # 概览 / 统计 / 会话 / 网关 / 设置
-│   ├── stores/             # Pinia 状态
-│   ├── i18n/               # 国际化
-│   └── utils/              # 格式化与界面辅助函数
-├── src-tauri/              # Tauri 后端
-│   └── src/
-│       ├── app_config.rs   # 可配置实体存储与运行文档
-│       ├── commands/       # Tauri 命令入口
-│       ├── gateway/        # 本地 API 网关领域逻辑、审计与速率限制
-│       ├── session/        # 各工具本地读取器
-│       ├── proxy/          # 代理采集、接管、路由
-│       ├── local_usage/    # 本地用量 SQLite 缓存
-│       ├── unified_usage/  # 本地 + 代理统一统计层
-│       ├── subscription/   # 额度与余额查询逻辑
-│       ├── sync/           # WebDAV 加密同步
-│       └── net/            # 共享 HTTP 客户端与网络代理支持
-├── assets/                 # README 截图等资源
-└── doc/                    # 产品与架构设计文档
+src/
+├── api/                 # Tauri invoke 薄封装
+├── apps/, desktop/      # 桌面壳、页面与导航
+├── views/, components/  # 快速面板与共享组件
+├── stores/              # 设置、查询与视图状态
+├── i18n/                # zh-CN、zh-TW、en-US
+└── utils/, composables/ # 格式化与复用界面逻辑
+src-tauri/src/
+├── commands/            # 前后端契约
+├── session/, activity/  # 本地读取器与可选事件索引
+├── proxy/, gateway/     # 采集、接管、路由与本地 API 网关
+├── local_usage/         # SQLite 事实、迁移与物化
+├── unified_usage/       # 对账、归因与聚合
+├── subscription/        # 供应商额度与中转余额
+└── sync/, net/          # 加密 WebDAV 同步与共享 HTTP 客户端
+assets/                  # README 截图
 ```
 
 ## License
 
-MIT
+[MIT](LICENSE)

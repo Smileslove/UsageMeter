@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.12.0] - 2026-10-03
+
+### Added
+
+- **Desktop Workspace**: Added a separate main window with Overview, Analytics, Sessions, Projects, Requests, Activity, Gateway, and Settings; tray shortcuts and deep links open the relevant page, session, or request.
+- **Desktop Analytics**: Added trend comparison, model/project filters, contribution breakdowns, activity calendars, performance analysis, and time-bucket drill-down into requests.
+- **Request Explorer**: Added backend pagination, search, filtering, sorting, configurable columns, detail drawers, and navigation between requests and sessions.
+- **Deep Activity**: Added Claude Code and Codex event timelines, tool-call inspection, supported agent relationships, session and cross-session full-text search, paginated content, and exports, with opt-in indexing levels, retention, and content cleanup.
+- **Tool Coverage**: Added Pi Agent local usage and multi-provider proxy takeover, and read-only DeepSeek Harness local session usage with a configurable session root.
+- **Cursor CSV Import**: Added read-only local conversation/project metadata and usage CSV preview, idempotent import, and batch revocation. Private account synchronization and quota queries remain disabled pending real-account contract validation.
+- **cc-switch History**: Added read-only import of cc-switch request logs alongside the existing takeover coexistence safeguards.
+
+### Changed
+
+- **Source Attribution**: Added passive official OAuth attribution for Codex, Claude Code, and Gemini CLI, improved Codex third-party API attribution, and added manual request/session/time-range attribution controls.
+- **Window Lifecycle**: The tray stays off the Dock; opening the desktop window exposes a Dock icon. The desktop window refreshes automatically and refreshes again when reopened or activated through the Dock.
+- **Sharing & Layout**: Reworked the share editor and poster, added light themes and PNG/JPEG export options, and refined quota cards, navigation, session details, and request drawers.
+
+### Fixed
+
+- **Usage Reconciliation**: Fixed duplicate counting across local history, proxy capture, and imported observations.
+- **Local Readers**: Corrected schema handling and token/cache accounting for Claude Code, Codex, OpenCode, Gemini CLI, OpenClaw, Hermes Agent, GitHub Copilot CLI, Qoder, Pi Agent, and DeepSeek Harness.
+- **Pricing & Performance**: Corrected request cost calculation, price-matching boundaries, token generation-rate statistics, Codex quota status handling, and duplicate `/v1` segments in Codex upstream URLs.
+- **Activity Privacy & Integrity**: Fixed path redaction, indexing privacy gates, agent grouping, tool statuses, stale derived records, content cursor boundaries, and export error handling.
+- **Navigation & Refresh**: Fixed desktop deep-link races, blank-page failures, time-range switching, tray fallback-window handling, and stale loading or navigation state.
+
+---
+
+### 新增
+
+- **桌面工作区**：新增独立主窗口，包含概览、分析、会话、项目、请求、活动、网关和设置；支持从托盘快捷入口或深链打开对应页面、会话与请求。
+- **桌面分析**：新增趋势对比、模型/项目筛选、构成分析、活跃日历、性能分析，以及从时间桶下钻到请求的能力。
+- **请求浏览**：新增后端分页、搜索、筛选、排序、列配置、详情抽屉及请求与会话之间的跳转。
+- **深度活动**：新增 Claude Code 与 Codex 事件时间线、工具调用查看、受支持的代理关系、会话内与跨会话全文搜索、正文分页与导出，并提供需主动启用的索引档位、保留期限及正文清理。
+- **工具覆盖**：新增 Pi Agent 本地用量与多 Provider 代理接管，以及只读 DeepSeek Harness 本地会话用量和可配置的会话根目录。
+- **Cursor CSV 导入**：新增只读本地会话/项目元数据、用量 CSV 预览、幂等导入与批次撤销；私有账户同步与额度查询在真实账户接口验证完成前保持关闭。
+- **cc-switch 历史数据**：在现有接管共存保护之外，新增 cc-switch 请求日志只读导入。
+
+### 变更
+
+- **来源归因**：新增 Codex、Claude Code 与 Gemini CLI 官方 OAuth 被动归因，完善 Codex 第三方 API 归因，并提供请求、会话与时间范围的手动归因控制。
+- **窗口生命周期**：托盘运行时不显示 Dock 图标，打开桌面主窗口时显示；主窗口支持自动刷新，重新打开或通过 Dock 激活时再次刷新。
+- **分享与布局**：重做分享编辑面板和海报，新增浅色主题与 PNG/JPEG 导出选项，并优化额度卡片、导航、会话详情与请求抽屉。
+
+### 修复
+
+- **用量对账**：修复本地历史、代理采集与导入观测之间的重复统计。
+- **本地读取器**：修复 Claude Code、Codex、OpenCode、Gemini CLI、OpenClaw、Hermes Agent、GitHub Copilot CLI、Qoder、Pi Agent 与 DeepSeek Harness 的 schema 兼容及 Token/缓存统计。
+- **定价与性能**：修复请求金额计算、价格匹配边界、Token 生成速率、Codex 额度状态及 Codex 上游 URL 重复 `/v1` 的问题。
+- **活动隐私与完整性**：修复路径脱敏、索引隐私门控、代理分组、工具状态、残留派生记录、正文游标边界及导出错误处理。
+- **导航与刷新**：修复桌面深链竞态、空白页、时间范围切换、托盘窗口回退及加载或导航状态未及时更新的问题。
+
+---
+
 ## [0.11.3] - 2026-08-13
 
 ### Added
@@ -1011,6 +1065,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.12.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.12.0
 [0.11.3]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.3
 [0.11.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.2
 [0.11.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.1
