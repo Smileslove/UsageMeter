@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Activity } from 'lucide-vue-next'
+import { Activity, RefreshCw } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { t } from '../../i18n'
 import LobeIcon from '../LobeIcon.vue'
-import { formatCost, formatTokenValue, formatUsedTotal as formatUsedTotalPair } from '../../utils/format'
+import { resolveToolLobeIcon } from '../../iconConfig'
+import { formatCost, formatCountdownSeconds, formatRate, formatTokenValue, formatUsedTotal as formatUsedTotalPair } from '../../utils/format'
 import type { QuotaTier, SubscriptionQuota } from '../../types'
 
 const store = useMonitorStore()
@@ -50,7 +51,7 @@ const hasContent = computed(() =>
 const BLOCK_SECONDS = 5 * 3600
 const timeElapsedPct = computed<number>(() => {
   if (!block.value) return 0
-  const elapsed = BLOCK_SECONDS - Math.max(0, block.value.remainingSeconds)
+  const elapsed = block.value.elapsedSeconds
   return Math.min(100, Math.max(0, (elapsed / BLOCK_SECONDS) * 100))
 })
 
@@ -85,28 +86,19 @@ const blockUsedText = computed(() =>
 )
 
 function formatDurationFromSeconds(seconds: number): string {
-  if (seconds <= 0) return t(locale.value, 'subscription.resetNow')
-  const mins = Math.floor(seconds / 60)
-  const hours = Math.floor(mins / 60)
-  const days = Math.floor(hours / 24)
-  const dayUnit = t(locale.value, 'subscription.unitDayShort')
-  const hourUnit = t(locale.value, 'subscription.unitHourShort')
-  const minuteUnit = t(locale.value, 'subscription.unitMinuteShort')
-  if (days > 0) {
-    const remainHours = hours % 24
-    return remainHours > 0 ? `${days}${dayUnit}${remainHours}${hourUnit}` : `${days}${dayUnit}`
-  }
-  if (hours > 0) {
-    const remainMins = mins % 60
-    return remainMins > 0 ? `${hours}${hourUnit}${remainMins}${minuteUnit}` : `${hours}${hourUnit}`
-  }
-  return `${mins}${minuteUnit}`
+  return formatCountdownSeconds(
+    seconds,
+    t(locale.value, 'subscription.unitDayShort'),
+    t(locale.value, 'subscription.unitHourShort'),
+    t(locale.value, 'subscription.unitMinuteShort')
+  )
 }
 
 function formatResetFromIso(resetsAt?: string): string {
   if (!resetsAt) return '--'
   const diffMs = new Date(resetsAt).getTime() - Date.now()
-  return formatDurationFromSeconds(Math.floor(diffMs / 1000))
+  if (!Number.isFinite(diffMs)) return '--'
+  return diffMs <= 0 ? t(locale.value, 'subscription.resetNow') : formatDurationFromSeconds(Math.floor(diffMs / 1000))
 }
 
 function primaryWindowTierOf(q: SubscriptionQuota): QuotaTier | undefined {
@@ -118,15 +110,14 @@ function balanceTierOf(q: SubscriptionQuota): QuotaTier | undefined {
   return q.tiers.find(tt => tt.kind === 'balance')
 }
 
-function remainingPercent(tier?: QuotaTier): number {
-  if (!tier || tier.limitReached) return 0
-  return Math.max(0, Math.min(100, 100 - tier.utilization))
-}
-
-function remainingPercentText(tier?: QuotaTier): string {
-  if (!tier) return '--'
-  if (tier.limitReached) return t(locale.value, 'desktop.overview.limitStatusExhausted')
-  return t(locale.value, 'survival.remainingPercent', { value: Math.round(remainingPercent(tier)) })
+function remainingPercent(tier?: QuotaTier): number | null {
+  if (!tier) return null
+  if (tier.limitReached) return 0
+  if (tier.utilizationAvailable === false) return null
+  if (tier.maxValue != null && tier.maxValue > 0 && tier.remainingValue != null) {
+    return Math.max(0, Math.min(100, tier.remainingValue / tier.maxValue * 100))
+  }
+  return Number.isFinite(tier.utilization) ? Math.max(0, Math.min(100, 100 - tier.utilization)) : null
 }
 
 function formatBalanceTier(tier: QuotaTier): string {
@@ -150,7 +141,6 @@ type CompactQuotaCard = {
   icon: string
   toneClass: string
   badge?: string
-  summaryBadge?: string
   rows: CompactQuotaRow[]
   loading: boolean
   refresh: () => Promise<void>
@@ -160,6 +150,7 @@ type CompactQuotaRow = {
   key: string
   metric: string
   sublabel: string
+  metricLabelKey: string
   detailText?: string
   resetText?: string
   barPercent: number | null
@@ -201,12 +192,14 @@ function tierLabel(name: string): string {
 }
 
 function officialTierRow(tier: QuotaTier): CompactQuotaRow {
+  const percent = remainingPercent(tier)
   return {
     key: tier.name,
-    metric: remainingPercentText(tier),
+    metric: tier.limitReached ? t(locale.value, 'desktop.overview.limitStatusExhausted') : percent == null ? '--' : `${Math.round(percent)}%`,
+    metricLabelKey: 'survival.remaining',
     sublabel: tierLabel(tier.name),
-    resetText: t(locale.value, 'survival.resetIn', { time: formatResetFromIso(tier.resetsAt) }),
-    barPercent: remainingPercent(tier),
+    resetText: formatResetFromIso(tier.resetsAt),
+    barPercent: percent,
   }
 }
 
@@ -222,16 +215,16 @@ const officialRows = computed(() => {
       icon: 'githubcopilot',
       toneClass: 'tone-cyan',
       badge,
-      summaryBadge: t(locale.value, 'copilot.quota.premium'),
       rows: [{
         key: 'copilot_premium',
         metric: formatUsedTotal(copilotTier),
+        metricLabelKey: 'survival.used',
         sublabel: t(locale.value, 'copilot.quota.premium'),
         detailText: usedPercentText(copilotTier),
-        resetText: t(locale.value, 'survival.resetIn', { time: formatResetFromIso(copilotTier.resetsAt) }),
+        resetText: formatResetFromIso(copilotTier.resetsAt),
         barPercent: copilotTier.maxValue && copilotTier.remainingValue != null
           ? Math.max(0, Math.min(100, ((copilotTier.maxValue - copilotTier.remainingValue) / copilotTier.maxValue) * 100))
-          : 100,
+          : null,
       }],
       loading: store.copilotQuotaLoading,
       refresh: async () => { await store.refreshCopilotQuota() },
@@ -266,11 +259,12 @@ const officialRows = computed(() => {
 
   if (cursorQuota.value) {
     rows.push({ key: 'cursor', label: t(locale.value, 'cursor.title'), icon: 'cursor', toneClass: 'tone-sky',
-      rows: cursorQuota.value.tiers.map(tier => ({ key: tier.name, sublabel: t(locale.value, `cursor.${tier.name}`),
+      rows: cursorQuota.value.tiers.map(tier => ({ ...officialTierRow(tier), sublabel: t(locale.value, `cursor.${tier.name}`),
+        metricLabelKey: tier.currency === 'USD' && tier.usedValue != null ? 'survival.used' : 'survival.remaining',
         metric: tier.currency === 'USD' && tier.usedValue != null
           ? t(locale.value, 'cursor.spent', { value: formatCost(tier.usedValue, store.settings.currency) })
-          : remainingPercentText(tier),
-        resetText: tier.resetsAt ? t(locale.value, 'survival.resetIn', { time: formatResetFromIso(tier.resetsAt) }) : undefined,
+          : officialTierRow(tier).metric,
+        resetText: tier.resetsAt ? formatResetFromIso(tier.resetsAt) : undefined,
         barPercent: tier.utilizationAvailable === false ? null : remainingPercent(tier) })),
       loading: store.cursorQuotaLoading, refresh: async () => { await store.fetchCursorQuota(true) } })
   }
@@ -303,17 +297,21 @@ const sourceRows = computed(() =>
   configuredSourceQuotas.value.map((q, index) => {
     const windowTier = primaryWindowTierOf(q)
     const balanceTier = balanceTierOf(q)
+    const windowRow = windowTier ? officialTierRow(windowTier) : null
     return {
       key: `${q.sourceTool ?? ''}:${q.tool}:${index}`,
       toneClass: 'tone-emerald',
       label: toolLabelOf(q),
+      icon: resolveToolLobeIcon(q.sourceTool === 'claude-code' ? 'claude_code' : q.sourceTool),
       caption: sourceCaptionOf(q),
       isBalance: !!balanceTier,
-      metric: balanceTier ? formatBalanceTier(balanceTier) : remainingPercentText(windowTier),
+      metric: balanceTier ? formatBalanceTier(balanceTier) : windowRow?.metric ?? '--',
+      metricLabelKey: balanceTier ? 'survival.walletMetric' : 'survival.remaining',
+      windowLabel: windowRow?.sublabel ?? '',
       footer: windowTier?.resetsAt
-        ? t(locale.value, 'survival.resetIn', { time: formatResetFromIso(windowTier.resetsAt) })
+        ? formatResetFromIso(windowTier.resetsAt)
         : undefined,
-      barPercent: windowTier ? remainingPercent(windowTier) : null,
+      barPercent: windowRow?.barPercent ?? null,
       loading: store.configuredSourceLoading,
       refresh: async () => { await store.forceFetchConfiguredSourceQuotas() },
     }
@@ -343,106 +341,112 @@ function sourceCaptionOf(q: SubscriptionQuota): string {
 </script>
 
 <template>
-  <div
-    v-if="hasContent"
-    class="metric-card metric-card-survival group !bg-white border-cyan-200/90 dark:!bg-[#1C1C1E] dark:border-cyan-500/15"
-  >
+  <section v-if="hasContent" class="metric-card metric-card-survival" :aria-label="t(locale, 'survival.title')">
     <div class="flex items-stretch">
-      <div class="metric-rail text-cyan-600 dark:text-cyan-300">
-        <div class="metric-rail-icon text-cyan-500 dark:text-cyan-300">
-          <Activity class="h-3.5 w-3.5 shrink-0" />
-        </div>
+      <div class="metric-rail">
+        <Activity :size="18" aria-hidden="true" />
         <p class="writing-vertical metric-rail-title">{{ t(locale, 'survival.title') }}</p>
       </div>
 
       <div class="metric-body">
         <div class="limit-stack">
-          <div class="quota-strip quota-strip-local tone-cyan">
+          <div class="quota-strip quota-strip-local tone-emerald">
             <div class="quota-strip-head">
               <div class="quota-row-title">
-                <span class="compact-dot bg-cyan-400/85 dark:bg-cyan-300/70" />
+                <span class="compact-dot quota-local-dot" aria-hidden="true" />
                 <span class="compact-title">{{ t(locale, 'survival.localWindow5h') }}</span>
-                <span class="compact-subtle">{{ localStateText }}</span>
+                <span class="compact-badge" :class="{ 'compact-badge-neutral': !block }">{{ localStateText }}</span>
               </div>
-              <span class="quota-strip-metric quota-strip-metric-inline">{{ localStatusText }}</span>
+              <span v-if="block" class="quota-local-countdown" :title="t(locale, 'survival.remainingDuration')">{{ formatDurationFromSeconds(block.remainingSeconds) }}</span>
             </div>
-
-            <div class="quota-strip-official-body">
-              <div v-if="block" class="compact-progress quota-strip-progress quota-strip-progress-official">
-                <div
-                  class="compact-progress-fill"
-                  :style="{ width: `${timeElapsedPct}%` }"
-                />
+            <div v-if="block" class="quota-local-overview">
+              <div
+                class="compact-progress quota-strip-progress"
+                role="progressbar"
+                :aria-label="t(locale, 'survival.timeProgress')"
+                :aria-valuenow="timeElapsedPct"
+                :aria-valuemin="0"
+                :aria-valuemax="100"
+              >
+                <div class="compact-progress-fill" :style="{ width: `${timeElapsedPct}%` }" />
               </div>
-              <div class="quota-strip-official-meta quota-strip-local-meta">
-                <span v-if="block" class="quota-strip-caption quota-strip-caption-strong">{{ t(locale, 'survival.used') }} {{ blockUsedText }}</span>
-                <span v-if="showBurn" class="quota-strip-caption quota-strip-caption-muted">{{ burnText }}</span>
-                <span v-if="relativeText" class="quota-strip-caption quota-strip-caption-muted">{{ relativeText }}</span>
-                <span v-if="!block && avgPaceText" class="quota-strip-caption quota-strip-caption-muted">{{ avgPaceText }}</span>
-              </div>
+              <dl class="quota-local-stats">
+                <div :title="t(locale, 'survival.timeProgress')">
+                  <dt>{{ t(locale, 'survival.timeProgress') }}</dt>
+                  <dd>{{ formatRate(timeElapsedPct) }}%</dd>
+                </div>
+                <div :title="t(locale, 'survival.usedDuration')">
+                  <dt>{{ t(locale, 'survival.usedDuration') }}</dt>
+                  <dd>{{ formatDurationFromSeconds(block.elapsedSeconds) }} / {{ formatDurationFromSeconds(BLOCK_SECONDS) }}</dd>
+                </div>
+                <div class="sr-only" :title="t(locale, 'survival.remainingDuration')">
+                  <dt>{{ t(locale, 'survival.remainingDuration') }}</dt>
+                  <dd>{{ formatDurationFromSeconds(block.remainingSeconds) }}</dd>
+                </div>
+                <div class="sr-only">
+                  <dt>{{ t(locale, 'survival.baselineRange') }}</dt>
+                  <dd>{{ baseline ? t(locale, 'survival.last7Days') : '--' }}</dd>
+                </div>
+              </dl>
+            </div>
+            <p v-else class="quota-local-idle">{{ localStatusText }}</p>
+            <div v-if="block || showBurn || relativeText" class="quota-local-context">
+              <span v-if="block">{{ t(locale, 'survival.usedTokens', { value: blockUsedText }) }}</span>
+              <span v-if="showBurn">{{ burnText }}</span>
+              <span v-if="relativeText" :title="relativeText">{{ t(locale, 'survival.relativeToAvgCompact', { x: baseline?.relativeToBaseline?.toFixed(1) ?? '--' }) }}</span>
             </div>
           </div>
 
-          <div
-            v-for="row in officialRows"
-            :key="row.key"
-            :class="['quota-strip', row.toneClass, { 'quota-strip-multi': row.rows.length > 1 }]"
-          >
-            <div class="quota-strip-head">
+          <div v-for="row in officialRows" :key="row.key" :class="['quota-strip', row.toneClass, { 'quota-strip-codex': row.key === 'codex' }]">
+            <div class="quota-strip-head quota-strip-head-official">
               <div class="quota-row-title quota-row-title-official">
-                <LobeIcon :slug="row.icon" :size="14" />
-                <span class="compact-title quota-title-text">{{ row.label }}</span>
-                <span v-if="row.summaryBadge" class="compact-badge compact-badge-neutral">{{ row.summaryBadge }}</span>
-                <span v-if="row.badge" class="compact-badge">{{ row.badge }}</span>
+                <span class="quota-provider-icon"><LobeIcon :slug="row.icon" :size="16" :class="{ 'dark:invert': row.icon === 'githubcopilot' || row.icon === 'cursor' }" /></span>
+                <span class="compact-title quota-title-text" :title="row.label">{{ row.label }}</span>
+                <span v-if="row.badge" class="compact-badge" :title="row.badge">{{ row.badge }}</span>
+                <button
+                  class="compact-refresh"
+                  :disabled="row.loading"
+                  :title="t(locale, 'subscription.refresh')"
+                  :aria-label="t(locale, 'subscription.refresh')"
+                  :aria-busy="row.loading"
+                  @click="row.refresh"
+                >
+                  <RefreshCw :size="13" :class="{ 'animate-spin': row.loading }" aria-hidden="true" />
+                </button>
               </div>
-              <button
-                class="compact-refresh quota-strip-refresh"
-                :disabled="row.loading"
-                :title="t(locale, 'subscription.refresh')"
-                :aria-label="t(locale, 'subscription.refresh')"
-                @click="row.refresh"
-              >
-                <svg class="w-3 h-3 text-gray-400" :class="{ 'animate-spin': row.loading }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-              </button>
+              <span class="quota-column-label">{{ t(locale, row.rows[0]?.metricLabelKey ?? 'survival.remaining') }}</span>
+              <span class="quota-column-label">{{ t(locale, 'survival.resetTime') }}</span>
             </div>
-
             <div class="quota-strip-tier-list">
               <div
                 v-for="tierRow in row.rows"
                 :key="`${row.key}:${tierRow.key}`"
-                :class="[
-                  'quota-strip-official-body',
-                  {
-                    'quota-strip-official-body-tiered': row.rows.length > 1,
-                    'quota-strip-tier-row': row.rows.length > 1,
-                  }
-                ]"
+                class="quota-strip-tier-row"
+                :class="{ 'tone-violet': tierRow.key.startsWith('seven_day'), 'quota-tier-wide-metric': tierRow.metric.length > 6 }"
               >
-                <div v-if="tierRow.barPercent != null" class="compact-progress quota-strip-progress quota-strip-progress-official">
-                  <div class="compact-progress-fill" :style="{ width: `${tierRow.barPercent}%` }" />
+                <div class="quota-window-progress">
+                  <span class="quota-window-label" :title="tierRow.sublabel">{{ tierRow.sublabel }}</span>
+                  <div
+                    v-if="tierRow.barPercent != null"
+                    class="compact-progress"
+                    role="progressbar"
+                    :aria-label="`${row.label} · ${tierRow.sublabel} · ${t(locale, tierRow.metricLabelKey)}`"
+                    :aria-valuenow="tierRow.barPercent"
+                    :aria-valuemin="0"
+                    :aria-valuemax="100"
+                  >
+                    <div class="compact-progress-fill" :style="{ width: `${tierRow.barPercent}%` }" />
+                  </div>
                 </div>
-                <div
-                  :class="[
-                    'quota-strip-official-meta',
-                    {
-                      'quota-strip-official-meta-copilot': row.key === 'copilot',
-                      'quota-strip-official-meta-tiered': row.rows.length > 1,
-                    }
-                  ]"
-                >
-                  <span
-                    v-if="tierRow.detailText"
-                    :class="['quota-strip-caption', row.key === 'copilot' ? 'quota-strip-caption-emphasis' : 'quota-strip-caption-muted']"
-                  >{{ tierRow.detailText }}</span>
-                  <span
-                    v-if="row.rows.length > 1 || !row.summaryBadge"
-                    class="quota-strip-caption quota-strip-caption-strong quota-strip-caption-label quota-strip-caption-tier-label"
-                  >{{ tierRow.sublabel }}</span>
-                  <span :class="['quota-strip-metric', 'quota-strip-metric-inline', { 'quota-strip-metric-tiered': row.rows.length > 1 }]">{{ tierRow.metric }}</span>
-                  <span v-if="tierRow.resetText" class="quota-strip-caption quota-strip-caption-muted">{{ tierRow.resetText }}</span>
-                </div>
+                <dl class="quota-stat quota-stat-emphasis" :title="tierRow.detailText || t(locale, tierRow.metricLabelKey)">
+                  <dt class="sr-only">{{ t(locale, tierRow.metricLabelKey) }}</dt>
+                  <dd>{{ tierRow.metric }}</dd>
+                  <dd v-if="tierRow.detailText" class="sr-only quota-stat-detail">{{ tierRow.detailText }}</dd>
+                </dl>
+                <dl v-if="tierRow.resetText" class="quota-stat" :title="t(locale, 'survival.resetTime')">
+                  <dt class="sr-only">{{ t(locale, 'survival.resetTime') }}</dt>
+                  <dd>{{ tierRow.resetText }}</dd>
+                </dl>
               </div>
             </div>
           </div>
@@ -453,105 +457,92 @@ function sourceCaptionOf(q: SubscriptionQuota): string {
             :class="['quota-strip', 'quota-strip-source', row.toneClass, { 'quota-strip-balance': row.isBalance }]"
           >
             <div class="quota-strip-head">
-              <div class="quota-row-title quota-row-title-source">
-                <span class="compact-dot quota-row-dot" />
-                <span class="compact-title quota-title-text">{{ row.label }}</span>
-                <span class="quota-inline-caption quota-inline-caption-source">{{ row.caption }}</span>
+              <div class="quota-row-title quota-row-title-official">
+                <span v-if="row.icon" class="quota-provider-icon">
+                  <LobeIcon :slug="row.icon" :size="16" :class="{ 'dark:invert': ['opencode', 'cursor', 'githubcopilot', 'hermesagent'].includes(row.icon) }" />
+                </span>
+                <span v-else class="compact-dot quota-row-dot" aria-hidden="true" />
+                <span class="compact-title" :title="row.label">{{ row.label }}</span>
               </div>
-              <div class="quota-strip-trailing">
-                <span
-                  class="quota-strip-metric quota-strip-metric-source"
-                  :class="{ 'compact-metric-balance': row.isBalance }"
-                >{{ row.metric }}</span>
-                <button
-                  class="compact-refresh quota-strip-refresh"
-                  :disabled="row.loading"
-                  :title="t(locale, 'subscription.refresh')"
-                  :aria-label="t(locale, 'subscription.refresh')"
-                  @click="row.refresh"
-                >
-                  <svg class="w-3 h-3 text-gray-400" :class="{ 'animate-spin': row.loading }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                </button>
-              </div>
+              <button
+                class="compact-refresh"
+                :disabled="row.loading"
+                :title="t(locale, 'subscription.refresh')"
+                :aria-label="t(locale, 'subscription.refresh')"
+                :aria-busy="row.loading"
+                @click="row.refresh"
+              >
+                <RefreshCw :size="15" :class="{ 'animate-spin': row.loading }" aria-hidden="true" />
+              </button>
             </div>
-
-            <div v-if="!row.isBalance && row.barPercent != null" class="quota-strip-official-body">
-              <div class="compact-progress quota-strip-progress quota-strip-progress-official">
-                <div class="compact-progress-fill" :style="{ width: `${row.barPercent}%` }" />
+            <p v-if="row.caption" class="quota-source-caption" :title="row.caption">{{ row.caption }}</p>
+            <div class="quota-strip-tier-row" :class="{ 'quota-tier-wide-metric': !row.isBalance && row.metric.length > 6 }">
+              <div v-if="!row.isBalance" class="quota-window-progress">
+                <span class="quota-window-label" :title="row.windowLabel">{{ row.windowLabel }}</span>
+                <div
+                  v-if="row.barPercent != null"
+                  class="compact-progress"
+                  role="progressbar"
+                  :aria-label="`${row.label} · ${t(locale, 'survival.remaining')}`"
+                  :aria-valuenow="row.barPercent"
+                  :aria-valuemin="0"
+                  :aria-valuemax="100"
+                >
+                  <div class="compact-progress-fill" :style="{ width: `${row.barPercent}%` }" />
+                </div>
               </div>
-              <div v-if="row.footer" class="quota-strip-official-meta">
-                <span class="quota-strip-caption quota-strip-caption-muted">{{ row.footer }}</span>
-              </div>
+              <dl class="quota-stat quota-stat-emphasis" :title="t(locale, row.metricLabelKey)">
+                <dt class="sr-only">{{ t(locale, row.metricLabelKey) }}</dt>
+                <dd>{{ row.metric }}</dd>
+              </dl>
+              <dl v-if="row.footer && !row.isBalance" class="quota-stat" :title="t(locale, 'survival.resetTime')">
+                <dt class="sr-only">{{ t(locale, 'survival.resetTime') }}</dt>
+                <dd>{{ row.footer }}</dd>
+              </dl>
             </div>
           </div>
         </div>
       </div>
     </div>
-  </div>
+  </section>
 </template>
 
 <style scoped>
 .metric-card {
-  --metric-separator-soft: color-mix(in srgb, var(--theme-chart-requests) 18%, transparent);
-  --metric-separator-strong: color-mix(in srgb, var(--theme-chart-requests) 34%, transparent);
+  --quota-warm-accent: color-mix(in srgb, var(--theme-chart-series-1) 55%, var(--theme-chart-cost));
   min-width: 0;
   overflow: hidden;
-  min-height: 0 !important;
   border-radius: 1rem;
-  border-width: 1px;
+  border: 1px solid var(--theme-border-default);
   background: var(--theme-surface-gradient);
-  border-color: var(--theme-border-default);
   box-shadow: var(--theme-shadow-inline);
 }
 
 .metric-rail {
   position: relative;
+  color: var(--quota-warm-accent);
   display: flex;
-  width: 2.5rem;
+  width: 2rem;
   flex-shrink: 0;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 0.375rem;
-  padding: 0.5rem 0.25rem;
+  padding: 0.375rem 0.25rem;
 }
 
 .metric-rail::after {
   position: absolute;
-  top: 0.75rem;
-  bottom: 0.75rem;
-  right: 0;
+  inset: 0.75rem 0 0.75rem auto;
   width: 1px;
   content: '';
-  background: linear-gradient(to bottom, transparent, var(--metric-separator-strong) 12%, var(--metric-separator-strong) 88%, transparent);
-}
-
-.metric-rail-icon {
-  display: flex;
-  width: 1.125rem;
-  height: 1.125rem;
-  align-items: center;
-  justify-content: center;
-  transform: translateY(-0.1875rem);
+  background: linear-gradient(to bottom, transparent, var(--theme-border-strong) 12%, var(--theme-border-strong) 88%, transparent);
 }
 
 .metric-rail-title {
-  display: block;
-  flex-shrink: 0;
-  overflow: visible;
   font-size: 12px;
   font-weight: 700;
-  line-height: 1.08;
-  transform: translateY(-0.1875rem);
   white-space: nowrap;
-}
-
-.metric-body {
-  min-width: 0;
-  flex: 1 1 0%;
-  padding: 0.375rem 0.5rem 0.25rem;
 }
 
 .writing-vertical {
@@ -559,120 +550,39 @@ function sourceCaptionOf(q: SubscriptionQuota): string {
   text-orientation: upright;
 }
 
+.metric-body {
+  min-width: 0;
+  flex: 1 1 0%;
+  padding: 0.25rem;
+}
+
 .limit-stack {
   display: flex;
   flex-direction: column;
-  gap: 0.3125rem;
-}
-
-.compact-dot {
-  width: 0.45rem;
-  height: 0.45rem;
-  border-radius: 999px;
-  flex-shrink: 0;
-}
-
-.compact-title {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--theme-text-primary);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.compact-subtle {
-  font-size: 10px;
-  font-weight: 500;
-  line-height: 1.2;
-  color: var(--theme-text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.compact-metric-balance {
-  color: #34c99a;
-}
-
-.compact-badge {
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--theme-chart-requests) 22%, transparent);
-  background: color-mix(in srgb, var(--theme-chart-requests) 10%, transparent);
-  padding: 0.0625rem 0.375rem;
-  font-size: 9px;
-  font-weight: 600;
-  color: var(--theme-chart-requests);
-}
-
-.compact-badge-neutral {
-  border-color: color-mix(in srgb, var(--theme-text-primary) 14%, transparent);
-  background: color-mix(in srgb, var(--theme-text-primary) 6%, transparent);
-  color: var(--theme-text-secondary);
-}
-
-.compact-progress {
-  margin-top: 0.375rem;
-  height: 0.375rem;
-  width: 100%;
-  overflow: hidden;
-  border-radius: 999px;
-  background: var(--compact-progress-track, color-mix(in srgb, var(--theme-text-primary) 10%, transparent));
-}
-
-.compact-progress-fill {
-  height: 100%;
-  border-radius: 999px;
-  transition: width 180ms ease;
-}
-
-.compact-refresh {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 0.375rem;
-  padding: 0.125rem;
-  transition: background-color 0.15s ease;
-}
-
-.compact-refresh:hover {
-  background: color-mix(in srgb, var(--theme-text-primary) 8%, transparent);
-}
-
-.quota-strip {
-  --compact-accent: var(--theme-chart-requests);
-  --compact-accent-soft: color-mix(in srgb, var(--compact-accent) 12%, transparent);
-  --compact-accent-border: color-mix(in srgb, var(--compact-accent) 22%, transparent);
-  --compact-progress-track: color-mix(in srgb, var(--compact-accent) 16%, transparent);
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  border-radius: 0.875rem;
-  border: 1px solid color-mix(in srgb, var(--theme-text-primary) 8%, transparent);
-  background: color-mix(in srgb, var(--theme-text-primary) 3%, transparent);
-  padding: 0.4375rem 0.5rem;
-}
-
-.quota-strip-multi {
-  padding: 0.40625rem 0.5rem;
-}
-
-.quota-strip-head {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-
-.quota-strip-trailing {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
   gap: 0.25rem;
 }
 
+.quota-strip {
+  --compact-accent: var(--theme-chart-tokens);
+  --compact-accent-text: var(--theme-status-info-fg);
+  min-width: 0;
+  border-radius: 0.875rem;
+  border: 1px solid color-mix(in srgb, var(--compact-accent) 18%, var(--theme-border-default));
+  background: linear-gradient(115deg, var(--theme-bg-surface), color-mix(in srgb, var(--compact-accent) 7%, var(--theme-bg-surface)));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--theme-text-inverse) 18%, transparent);
+  padding: 0.1875rem 0.5rem;
+}
+
+.quota-strip-local {
+  border-color: color-mix(in srgb, var(--quota-warm-accent) 20%, var(--theme-border-default));
+  background: linear-gradient(115deg, color-mix(in srgb, var(--quota-warm-accent) 3%, var(--theme-bg-surface)), color-mix(in srgb, var(--theme-chart-series-3) 5%, var(--theme-bg-surface)));
+}
+
+.quota-local-dot {
+  background: var(--quota-warm-accent);
+}
+
+.quota-strip-head,
 .quota-row-title {
   display: flex;
   min-width: 0;
@@ -680,216 +590,365 @@ function sourceCaptionOf(q: SubscriptionQuota): string {
   gap: 0.375rem;
 }
 
-.quota-row-title-source {
-  gap: 0.3125rem;
+.quota-strip-head {
+  min-height: 1.25rem;
+  justify-content: space-between;
 }
 
 .quota-row-title-official {
   flex: 1 1 auto;
+  flex-wrap: nowrap;
+}
+
+.compact-title {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--theme-text-primary);
+  overflow-wrap: anywhere;
 }
 
 .quota-title-text {
   flex: 1 1 auto;
 }
 
-.quota-inline-caption {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 10px;
-  font-weight: 500;
-  line-height: 1.2;
-  color: var(--theme-text-tertiary);
+.compact-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  flex-shrink: 0;
 }
 
-.quota-inline-caption-source {
-  font-size: 10.5px;
+.quota-row-dot {
+  background: var(--compact-accent);
+}
+
+.quota-provider-icon {
+  display: grid;
+  width: 1.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 0.5rem;
+  background: var(--theme-bg-elevated);
+}
+
+.compact-badge {
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--compact-accent) 12%, transparent);
+  padding: 0.125rem 0.375rem;
+  font-size: 9px;
+  line-height: 1.4;
   font-weight: 600;
-  color: color-mix(in srgb, var(--compact-accent) 82%, var(--theme-text-secondary) 18%);
+  color: var(--compact-accent-text);
 }
 
-.quota-strip-refresh {
+.compact-badge-neutral {
+  background: color-mix(in srgb, var(--theme-text-primary) 6%, transparent);
+  color: var(--theme-text-secondary);
+}
+
+.compact-progress {
+  margin-top: 0;
+  height: 0.375rem;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--compact-accent) 15%, var(--theme-bg-surface-muted));
+}
+
+.compact-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--compact-accent), color-mix(in srgb, var(--compact-accent) 75%, var(--theme-chart-series-5)));
+}
+
+.quota-local-countdown {
   flex-shrink: 0;
-}
-
-.quota-strip-metric {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 14px;
-  font-weight: 800;
-  line-height: 1.1;
-  color: var(--theme-text-primary);
+  line-height: 1.2;
+  font-weight: 750;
   font-variant-numeric: tabular-nums;
-  flex-shrink: 0;
+  color: var(--theme-text-primary);
 }
 
-.quota-strip-metric-inline {
-  font-size: 12px;
-  font-weight: 750;
-  letter-spacing: -0.01em;
+.quota-local-overview {
+  margin-top: 0.25rem;
 }
 
-.quota-strip-metric-source {
-  font-size: 12px;
-  font-weight: 750;
+.quota-local-overview > .compact-progress {
+  height: 0.375rem;
 }
 
-.quota-strip-balance .quota-strip-metric-source {
-  font-size: 15px;
-}
-
-.quota-strip-official-body {
+.quota-local-stats,
+.quota-local-stats > div:not(.sr-only) {
   display: flex;
-  min-width: 0;
-  align-items: center;
+  align-items: baseline;
+  gap: 0.25rem;
+}
+
+.quota-local-stats {
+  justify-content: space-between;
   gap: 0.375rem;
   margin-top: 0.25rem;
 }
 
-.quota-strip-official-body-tiered {
-  margin-top: 0;
+.quota-local-stats > div:nth-child(2) {
+  border-left: 1px solid var(--theme-border-default);
+  padding-left: 0.5rem;
 }
 
-.quota-strip-tier-list {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 0.125rem;
-  margin-top: 0.1875rem;
+.quota-local-stats dt {
+  font-size: 10px;
+  color: var(--theme-text-secondary);
 }
 
-.quota-strip-official-meta {
-  display: flex;
-  min-width: 0;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 0.375rem;
+.quota-local-stats dd,
+.quota-stat dd {
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-primary);
   white-space: nowrap;
 }
 
-.quota-strip-official-meta-copilot {
-  flex: 0 0 auto;
-  min-width: 0;
-  justify-content: flex-end;
-  gap: 0.3125rem;
+.quota-local-stats dd {
+  font-size: 12px;
+  line-height: 1.25;
 }
 
-.quota-strip-official-meta-tiered {
-  flex: 1 1 0;
-  gap: 0.1875rem;
-}
-
-.quota-strip-local-meta {
-  flex: 1 1 0;
-}
-
-.quota-strip-progress-official {
-  flex: 0 0 42%;
-  min-width: 0;
-  width: auto;
-  margin-top: 0;
-}
-
-.quota-strip-caption {
-  min-width: 0;
+.quota-row-title-official .compact-badge {
+  max-width: 35%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.quota-local-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.125rem 0.5rem;
+  margin-top: 0.1875rem;
   font-size: 10px;
-  font-weight: 500;
-  line-height: 1.2;
+  line-height: 1.4;
   color: var(--theme-text-secondary);
 }
 
-.quota-strip-caption-strong {
-  color: var(--theme-text-primary);
-  font-weight: 700;
-}
-
-.quota-strip-caption-label {
+.quota-local-idle {
+  margin-top: 0.375rem;
+  font-size: 11px;
   color: var(--theme-text-secondary);
-  font-weight: 600;
 }
 
-.quota-strip-caption-tier-label {
-  font-size: 10px;
-}
-
-.quota-strip-caption-emphasis {
-  color: color-mix(in srgb, var(--compact-accent) 86%, var(--theme-text-secondary) 14%);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-.quota-strip-caption-muted {
-  color: var(--theme-text-tertiary);
-}
-
-.quota-strip-progress {
-  margin-top: 0.3125rem;
+.quota-strip-tier-list {
+  margin-top: 0.125rem;
 }
 
 .quota-strip-tier-row {
-  padding-top: 0.1875rem;
-  border-top: 1px solid color-mix(in srgb, var(--theme-text-primary) 6%, transparent);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 3.5rem 3.5rem;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.125rem 0;
 }
 
-.quota-strip-tier-row:first-child {
-  padding-top: 0;
-  border-top: 0;
+.quota-strip-tier-row + .quota-strip-tier-row {
+  border-top: 1px solid color-mix(in srgb, var(--compact-accent) 12%, var(--theme-border-default));
 }
 
-.quota-strip-tier-row .quota-strip-caption-tier-label {
+.quota-strip-tier-row:last-child {
+  padding-bottom: 0.125rem;
+}
+
+.quota-window-progress,
+.quota-strip-codex .quota-window-label {
+  flex: 0 0 3rem;
+}
+
+.quota-stat {
+  min-width: 0;
+}
+
+.quota-window-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.quota-window-progress > .compact-progress {
+  min-width: 1rem;
+  flex: 1 1 0%;
+}
+
+.quota-window-label {
+  display: block;
+  min-width: 0;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
   font-weight: 600;
+  line-height: 1.4;
+  color: var(--theme-text-primary);
+  overflow-wrap: anywhere;
 }
 
-.quota-strip-metric-tiered {
-  font-size: 10px;
-  font-weight: 700;
+.quota-stat {
+  border-left: 1px solid var(--theme-border-default);
+  padding-left: 0.375rem;
+  text-align: center;
+}
+
+.quota-stat-emphasis dd {
+  color: var(--compact-accent-text);
+  font-size: 13px;
   line-height: 1.2;
+  font-weight: 700;
 }
 
-.quota-row-dot {
-  background: color-mix(in srgb, var(--compact-accent) 72%, white 28%);
+.quota-tier-wide-metric {
+  grid-template-columns: minmax(0, 1fr) minmax(3.5rem, max-content) 3.5rem;
 }
 
-.quota-strip .compact-progress-fill {
-  background: var(--compact-accent);
+.quota-tier-wide-metric .quota-stat-emphasis dd {
+  font-size: 11px;
 }
 
-.quota-strip .compact-badge {
-  border-color: var(--compact-accent-border);
-  background: var(--compact-accent-soft);
-  color: var(--compact-accent);
+.quota-strip-head-official {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 3.5rem 3.5rem;
+  gap: 0.25rem;
 }
 
-.tone-cyan {
-  --compact-accent: var(--theme-chart-requests);
+.quota-strip-head-official .compact-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 1.25;
 }
 
-.tone-sky {
-  --compact-accent: var(--theme-chart-tokens);
+.quota-column-label {
+  font-size: 9px;
+  line-height: 1.25;
+  text-align: center;
+  color: var(--theme-text-secondary);
+}
+
+.quota-source-caption {
+  margin-top: 0.1875rem;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--theme-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.quota-strip-balance {
+  border-radius: 0.5rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr) auto 1.25rem;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.quota-strip-balance .quota-strip-head {
+  display: contents;
+}
+
+.quota-strip-balance .quota-row-title {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.quota-strip-balance .compact-title,
+.quota-strip-balance .quota-source-caption {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quota-strip-balance .quota-source-caption {
+  grid-column: 2;
+  grid-row: 1;
+  margin-top: 0;
+}
+
+.quota-strip-balance .quota-strip-tier-row {
+  display: block;
+  grid-column: 3;
+  grid-row: 1;
+  padding: 0;
+}
+
+.quota-strip-balance .quota-stat {
+  border: 0;
+  padding-left: 0;
+  text-align: right;
+}
+
+.quota-strip-balance .quota-provider-icon {
+  border-radius: 0.25rem;
+}
+
+.quota-strip-balance .compact-refresh {
+  grid-column: 4;
+  grid-row: 1;
+}
+
+.compact-refresh {
+  display: inline-flex;
+  width: 1.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.5rem;
+  color: var(--theme-text-secondary);
+  cursor: pointer;
+  transition: background-color 150ms ease;
+}
+
+.compact-refresh:hover:not(:disabled) {
+  background: var(--theme-bg-hover);
+}
+
+.compact-refresh:focus-visible {
+  outline: 2px solid var(--theme-accent-primary);
+  outline-offset: 2px;
+}
+
+.compact-refresh:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .tone-violet {
-  --compact-accent: var(--theme-chart-series-3);
+  --compact-accent: color-mix(in srgb, var(--theme-chart-series-6) 70%, var(--theme-chart-series-3));
+  --compact-accent-text: color-mix(in srgb, var(--compact-accent) 65%, var(--theme-text-primary));
 }
 
 .tone-amber {
   --compact-accent: var(--theme-chart-cost);
+  --compact-accent-text: var(--theme-status-warning-fg);
 }
 
+.tone-cyan,
 .tone-emerald {
-  --compact-accent: #34c99a;
+  --compact-accent: var(--theme-chart-requests);
+  --compact-accent-text: var(--theme-status-success-fg);
 }
 
-@media (max-width: 420px) {
-  .quota-strip-metric {
-    font-size: 13px;
+@media (prefers-reduced-motion: reduce) {
+  .compact-refresh {
+    transition: none;
   }
 
-  .quota-strip-metric-inline {
-    font-size: 11.5px;
+  .compact-refresh .animate-spin {
+    animation: none;
   }
 }
 </style>
