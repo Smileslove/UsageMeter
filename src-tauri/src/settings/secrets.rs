@@ -6,6 +6,8 @@ use std::collections::HashMap;
 #[cfg(any(not(target_os = "macos"), test))]
 use std::fs;
 #[cfg(any(not(target_os = "macos"), test))]
+use std::io::Write;
+#[cfg(any(not(target_os = "macos"), test))]
 use std::path::PathBuf;
 
 #[cfg(any(not(target_os = "macos"), test))]
@@ -38,16 +40,29 @@ fn write(values: &HashMap<String, String>) -> Result<(), String> {
     let raw =
         serde_json::to_string(values).map_err(|e| format!("ERR_SERIALIZE_SETTINGS_SECRETS:{e}"))?;
     let temp = path.with_extension("json.tmp");
-    fs::write(&temp, raw).map_err(|e| format!("ERR_WRITE_SETTINGS_SECRETS:{e}"))?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temp)
+        .map_err(|e| format!("ERR_WRITE_SETTINGS_SECRETS:{e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&temp, fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("ERR_SET_SETTINGS_SECRET_PERMISSIONS:{e}"))?;
+    }
+    file.write_all(raw.as_bytes())
+        .map_err(|e| format!("ERR_WRITE_SETTINGS_SECRETS:{e}"))?;
+    drop(file);
     fs::rename(&temp, &path).map_err(|e| {
         let _ = fs::remove_file(&temp);
         format!("ERR_RENAME_SETTINGS_SECRETS:{e}")
     })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-    }
     Ok(())
 }
 
@@ -392,6 +407,16 @@ mod tests {
 
             let previous = AppSettings::default();
             persist_settings(&mut settings, &previous)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = fs::metadata(path()?)
+                    .map_err(|error| error.to_string())?
+                    .permissions()
+                    .mode()
+                    & 0o777;
+                assert_eq!(mode, 0o600);
+            }
             assert!(settings.sync.password.is_empty());
             assert!(settings.sync.sync_password.is_empty());
             assert!(settings.network_proxy.password.is_none());

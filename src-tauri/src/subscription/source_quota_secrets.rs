@@ -128,20 +128,60 @@ fn write_file_store(
     path: &std::path::Path,
     secrets: &HashMap<String, String>,
 ) -> Result<(), String> {
+    #[cfg(unix)]
+    return write_file_store_atomically(path, secrets);
+
+    #[cfg(not(unix))]
+    {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create source quota secret dir: {e}"))?;
+        }
+        let content = serde_json::to_string_pretty(secrets)
+            .map_err(|e| format!("Failed to serialize source quota secret store: {e}"))?;
+        std::fs::write(path, content)
+            .map_err(|e| format!("Failed to write source quota secret store: {e}"))
+    }
+}
+
+#[cfg(all(unix, any(not(target_os = "macos"), test)))]
+fn write_file_store_atomically(
+    path: &std::path::Path,
+    secrets: &HashMap<String, String>,
+) -> Result<(), String> {
+    use std::io::Write;
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create source quota secret dir: {e}"))?;
     }
     let content = serde_json::to_string_pretty(secrets)
         .map_err(|e| format!("Failed to serialize source quota secret store: {e}"))?;
-    std::fs::write(path, content)
+    let temp = path.with_extension("json.tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temp)
         .map_err(|e| format!("Failed to write source quota secret store: {e}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let permissions = std::fs::Permissions::from_mode(0o600);
-        let _ = std::fs::set_permissions(path, permissions);
+        std::fs::set_permissions(&temp, permissions)
+            .map_err(|e| format!("Failed to set source quota secret permissions: {e}"))?;
     }
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("Failed to write source quota secret store: {e}"))?;
+    drop(file);
+    std::fs::rename(&temp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        format!("Failed to replace source quota secret store: {e}")
+    })?;
     Ok(())
 }
 
@@ -331,6 +371,15 @@ mod tests {
             .insert("__quota_api_key".to_string(), "sk-secret".to_string());
         let previous = AppSettings::default();
         persist_settings(&mut settings, &previous).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = file_store_path().unwrap();
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         let binding = settings.source_aware.sources[0]
             .quota_query
             .as_ref()

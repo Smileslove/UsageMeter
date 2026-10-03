@@ -25,8 +25,12 @@ mod tool_catalog;
 mod unified_usage;
 mod utils;
 
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+#[cfg(target_os = "macos")]
+use tauri::menu::Menu;
+use tauri::menu::MenuItem;
+use tauri::tray::TrayIconBuilder;
+#[cfg(any(target_os = "macos", windows))]
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::{Emitter, Manager};
 use tauri::{PhysicalPosition, PhysicalSize, Position, Rect, Size, WindowEvent};
 
@@ -48,9 +52,13 @@ fn show_main_window(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
             make_window_rounded(&window);
         }
 
+        #[cfg(not(target_os = "linux"))]
         let _ = window.set_always_on_top(true);
 
-        if let Some(rect) = tray_rect {
+        #[cfg(target_os = "linux")]
+        let _ = window.set_always_on_top(std::env::var_os("WAYLAND_DISPLAY").is_none());
+
+        if let Some(rect) = tray_rect.as_ref() {
             let rect_position = match rect.position {
                 Position::Physical(position) => position,
                 Position::Logical(position) => {
@@ -125,6 +133,21 @@ fn show_main_window(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
                 x.round() as i32,
                 y.round() as i32,
             )));
+        }
+
+        #[cfg(target_os = "linux")]
+        if tray_rect.is_none() {
+            if let Ok(Some(monitor)) = app.primary_monitor() {
+                let work_area = monitor.work_area();
+                let size = window
+                    .outer_size()
+                    .unwrap_or_else(|_| PhysicalSize::new(420, 560));
+                let x = work_area.position.x
+                    + ((work_area.size.width as i32 - size.width as i32) / 2).max(0);
+                let y = work_area.position.y
+                    + ((work_area.size.height as i32 - size.height as i32) / 2).max(0);
+                let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
+            }
         }
 
         let _ = window.show();
@@ -459,7 +482,6 @@ pub fn run() {
                         .ok_or("ERR_MISSING_DEFAULT_APP_ICON")?
                         .clone(),
                 )
-                .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         show_main_window(app, None);
@@ -472,7 +494,11 @@ pub fn run() {
                         let _ = app.emit("app-quit-requested", ());
                     }
                     _ => {}
-                })
+                });
+
+            #[cfg(any(target_os = "macos", windows))]
+            let tray_builder = tray_builder
+                .show_menu_on_left_click(false)
                 .on_tray_icon_event(move |tray, event| {
                     #[cfg(target_os = "macos")]
                     if let TrayIconEvent::Click {

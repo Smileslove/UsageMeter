@@ -61,7 +61,7 @@ These screenshots use synthetic demo data in the current UI, with no real accoun
 | Desktop workspace | Overview, Analytics, Sessions, Projects, Requests, Activity, Gateway, Settings | Compare periods, inspect records, follow session activity, or manage routing |
 | Share window | Poster preview and export controls | Choose a period, scope, theme, and which summary sections to include |
 
-The quick panel is `420 × 560`, hides when it loses focus, and runs without a Dock icon. Opening the desktop window adds a Dock entry for normal window switching. The tray remains available, and desktop data refreshes automatically and when the window is reopened or activated through the Dock.
+The quick panel is `420 × 560`, hides when it loses focus, and runs without a Dock icon. Opening the desktop window adds a Dock entry for normal window switching. Linux uses a GTK/AppIndicator tray; its current backend does not emit tray click events, so open the quick panel from the tray context menu. The panel opens centered on Linux, and Wayland window managers control stacking. The tray remains available, and desktop data refreshes automatically and when the window is reopened or activated through the Dock or taskbar.
 
 ## Supported Tools and Data Sources
 
