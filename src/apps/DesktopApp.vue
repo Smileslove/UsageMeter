@@ -38,6 +38,7 @@ watch(
 const handleHashChange = () => nav.syncFromHash()
 
 let unlistenNavigation: UnlistenFn | null = null
+let unlistenRefresh: UnlistenFn | null = null
 
 function applyNavigationTarget(target: DesktopNavigationTarget) {
   nav.applyNavigationTarget(target)
@@ -57,6 +58,15 @@ onMounted(async () => {
   }
   // 桌面窗口有独立的 WebView 和 Pinia store，需要自行启动用量轮询。
   store.startAutoRefresh()
+
+  // Dock 点击和已存在窗口的重新打开，复用手动刷新的用量与会话更新。
+  try {
+    unlistenRefresh = await listen('desktop-refresh', () => {
+      void store.refreshUsageAndSessionViews()
+    })
+  } catch (error) {
+    console.error('[DesktopApp] Failed to listen for desktop refresh:', error)
+  }
   await nextTick()
   applyResolvedTheme(store.settings.theme)
 
@@ -86,6 +96,9 @@ onMounted(async () => {
 
 onUnmounted(() => {
   store.stopAutoRefresh()
+  if (unlistenRefresh) {
+    unlistenRefresh()
+  }
   if (mediaQuery) {
     mediaQuery.removeEventListener('change', handleSystemThemeChange)
   }

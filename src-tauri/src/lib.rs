@@ -708,6 +708,14 @@ pub fn run() {
             activity::commands_search::search_session_activity,
             activity::commands_search::search_activity_global,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, _event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event {
+                if let Err(error) = commands::open_desktop_window(_app.clone(), None) {
+                    eprintln!("[UsageMeter] Failed to reopen desktop window: {error}");
+                }
+            }
+        });
 }

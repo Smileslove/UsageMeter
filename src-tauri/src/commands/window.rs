@@ -155,8 +155,8 @@ fn restore_menu_bar_mode_if_desktop_hidden(app: &tauri::AppHandle) {
 
 /// 打开或聚焦桌面主窗口（单例，label 固定为 "desktop"）。
 ///
-/// - 已存在：show -> unminimize -> set_focus，并向窗口 emit `desktop-navigation`
-///   （payload 为 target，可能为 None 表示仅聚焦）；WebView 可能仍在加载（监听
+/// - 已存在：show -> unminimize -> set_focus，并向窗口 emit `desktop-refresh`；
+///   有 target 时同时 emit `desktop-navigation`；WebView 可能仍在加载（监听
 ///   未注册）导致事件丢失，因此 target 为 Some 时同时写入 pending 通道；
 /// - 不存在：按规格新建；若传入 target 则暂存为 pending，供前端 mount 后取走。
 #[tauri::command]
@@ -179,6 +179,7 @@ pub fn open_desktop_window(
         }
         let _ = window.unminimize();
         let _ = window.set_focus();
+        let _ = window.emit("desktop-refresh", ());
         if let Some(target) = target {
             // WebView 可能仍在加载（前端监听未注册），仅 emit 会丢事件；与新建
             // 分支一致同时写入 pending 通道，前端两个通道都会拿到，属幂等。
