@@ -39,6 +39,30 @@ const handleHashChange = () => nav.syncFromHash()
 
 let unlistenNavigation: UnlistenFn | null = null
 let unlistenRefresh: UnlistenFn | null = null
+let refreshReady = false
+let refreshPending = false
+
+async function flushPendingRefresh() {
+  if (!refreshReady || !refreshPending || store.loading) {
+    return
+  }
+  refreshPending = false
+  await store.refreshUsageAndSessionViews()
+}
+
+function requestWindowRefresh() {
+  refreshPending = true
+  void flushPendingRefresh()
+}
+
+watch(
+  () => store.loading,
+  loading => {
+    if (!loading) {
+      void flushPendingRefresh()
+    }
+  }
+)
 
 function applyNavigationTarget(target: DesktopNavigationTarget) {
   nav.applyNavigationTarget(target)
@@ -49,6 +73,16 @@ onMounted(async () => {
   window.addEventListener('hashchange', handleHashChange)
   nav.syncFromHash()
 
+  // 先注册刷新事件，再初始化数据。初始化包含扫描和额度查询，若顺序相反，
+  // 用户在启动阶段打开桌面窗口时发出的刷新事件会被丢弃。
+  try {
+    unlistenRefresh = await listen('desktop-refresh', () => {
+      requestWindowRefresh()
+    })
+  } catch (error) {
+    console.error('[DesktopApp] Failed to listen for desktop refresh:', error)
+  }
+
   // 初始化 monitor store（参考 App.vue；跨 WebView 各自初始化，后端操作幂等）
   try {
     await store.initialize()
@@ -56,17 +90,11 @@ onMounted(async () => {
     // 初始化失败不阻塞 UI：数据区显示空态，导航与页面骨架仍可操作
     console.error('[DesktopApp] store.initialize 失败（导航与骨架仍可用）:', error)
   }
+  refreshReady = true
+  await flushPendingRefresh()
   // 桌面窗口有独立的 WebView 和 Pinia store，需要自行启动用量轮询。
   store.startAutoRefresh()
 
-  // Dock 点击和已存在窗口的重新打开，复用手动刷新的用量与会话更新。
-  try {
-    unlistenRefresh = await listen('desktop-refresh', () => {
-      void store.refreshUsageAndSessionViews()
-    })
-  } catch (error) {
-    console.error('[DesktopApp] Failed to listen for desktop refresh:', error)
-  }
   await nextTick()
   applyResolvedTheme(store.settings.theme)
 

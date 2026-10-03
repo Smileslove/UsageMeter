@@ -197,6 +197,7 @@ async function resolveTakeoverConflict(action: 'force_reclaim' | 'pause' | 'disa
 
 // 退出事件监听器
 let unlistenQuit: UnlistenFn | null = null
+let unlistenRefresh: UnlistenFn | null = null
 let unlistenSourceDetected: UnlistenFn | null = null
 let unlistenConfigChanged: UnlistenFn | null = null
 let unlistenTakeoverConflict: UnlistenFn | null = null
@@ -205,9 +206,50 @@ let unlistenExternalManagerReleased: UnlistenFn | null = null
 let unlistenCcswitchCleaned: UnlistenFn | null = null
 let unlistenUpdateAvailable: UnlistenFn | null = null
 let unlistenUpdateProgress: UnlistenFn | null = null
+let refreshReady = false
+let refreshPending = false
+
+async function flushPendingRefresh() {
+  if (!refreshReady || !refreshPending || store.loading) {
+    return
+  }
+  refreshPending = false
+  await store.refreshUsageAndSessionViews()
+}
+
+function requestWindowRefresh() {
+  refreshPending = true
+  void flushPendingRefresh()
+}
+
+watch(
+  () => store.loading,
+  loading => {
+    if (!loading) {
+      void flushPendingRefresh()
+    }
+  }
+)
 
 onMounted(async () => {
+  // 先注册窗口事件，再初始化数据。初始化包含扫描和额度查询，若顺序相反，
+  // 用户在启动阶段点击托盘图标时发出的刷新事件会被丢弃。
+  unlistenQuit = await listen('app-quit-requested', async () => {
+    try {
+      await quitApplication(store)
+    } catch (error) {
+      console.error('[App] Failed to quit app from tray event:', error)
+    }
+  })
+
+  // 托盘图标重新打开快速面板时，刷新当前用量和会话数据。
+  unlistenRefresh = await listen('app-refresh', () => {
+    requestWindowRefresh()
+  })
+
   await store.initialize()
+  refreshReady = true
+  await flushPendingRefresh()
   store.startAutoRefresh()
 
   await nextTick()
@@ -216,15 +258,6 @@ onMounted(async () => {
   // 监听系统主题变化
   mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
   mediaQuery.addEventListener('change', handleSystemThemeChange)
-
-  // 监听退出请求事件
-  unlistenQuit = await listen('app-quit-requested', async () => {
-    try {
-      await quitApplication(store)
-    } catch (error) {
-      console.error('[App] Failed to quit app from tray event:', error)
-    }
-  })
 
   // 监听新来源检测事件
   unlistenSourceDetected = await listen('source_detected', async () => {
@@ -295,6 +328,7 @@ onUnmounted(() => {
     mediaQuery.removeEventListener('change', handleSystemThemeChange)
   }
   if (unlistenQuit) unlistenQuit()
+  if (unlistenRefresh) unlistenRefresh()
   if (unlistenSourceDetected) unlistenSourceDetected()
   if (unlistenConfigChanged) unlistenConfigChanged()
   if (unlistenTakeoverConflict) unlistenTakeoverConflict()

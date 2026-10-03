@@ -57,4 +57,21 @@ describe('desktop window refresh', () => {
     expect(unlistenRefresh).toHaveBeenCalledOnce()
     expect(store.stopAutoRefresh).toHaveBeenCalledOnce()
   })
+
+  it('registers the refresh listener before initialization can block startup', async () => {
+    const order: string[] = []
+    store.initialize.mockImplementationOnce(async () => {
+      order.push('initialize')
+    })
+    listenMock.mockImplementationOnce(async (event: string) => {
+      if (event === 'desktop-refresh') order.push('listen')
+      return unlistenRefresh
+    })
+
+    const wrapper = shallowMount(DesktopApp)
+    await flushPromises()
+
+    expect(order).toEqual(['listen', 'initialize'])
+    wrapper.unmount()
+  })
 })

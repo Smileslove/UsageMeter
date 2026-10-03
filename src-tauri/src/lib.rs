@@ -130,6 +130,7 @@ fn show_main_window(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        let _ = window.emit("app-refresh", ());
     }
 }
 
