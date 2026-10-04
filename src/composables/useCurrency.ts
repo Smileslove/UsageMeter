@@ -10,14 +10,17 @@ export function useCurrency() {
     return formatCostUtil(value, currency.value)
   }
 
+  function exchangeRateFor(code: string): number {
+    const rate = currency.value.exchangeRates[code]
+    return Number.isFinite(rate) && rate > 0 ? rate : 1.0
+  }
+
   function convertToUSD(amount: number, fromCurrency: string): number {
-    const rate = currency.value.exchangeRates[fromCurrency] ?? 1.0
-    return amount / rate
+    return amount / exchangeRateFor(fromCurrency)
   }
 
   function fromUSD(amount: number): number {
-    const rate = currency.value.exchangeRates[currency.value.displayCurrency] ?? 1.0
-    return amount * rate
+    return amount * exchangeRateFor(currency.value.displayCurrency)
   }
 
   return { currency, formatCost, convertToUSD, fromUSD }

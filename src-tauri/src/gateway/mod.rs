@@ -12,7 +12,7 @@ use crate::models::{
     GatewayUpstreamKey, GatewayUpstreamModel,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rand::{rngs::OsRng, RngCore};
+use rand::{rngs::OsRng, Rng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -547,13 +547,63 @@ pub fn select_upstream_key_excluding<'a>(
     profile: &'a GatewayProfile,
     excluded_key_ids: &[String],
 ) -> Option<&'a GatewayUpstreamKey> {
-    // A profile represents one third-party endpoint and one credential. Keep
-    // selecting deterministically for compatibility with older settings that
-    // may still contain more than one key; new writes reject that state.
-    profile
+    let mut candidates: Vec<&GatewayUpstreamKey> = profile
         .upstream_keys
         .iter()
-        .find(|key| key.enabled && !excluded_key_ids.iter().any(|id| id == &key.id))
+        .filter(|key| {
+            key.enabled
+                && !excluded_key_ids.iter().any(|id| id == &key.id)
+                && upstream_key_available(&profile.id, &key.id)
+        })
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+
+    match profile.dispatch_strategy {
+        GatewayDispatchStrategy::PriorityFailover => {
+            candidates.sort_by_key(|key| key.priority);
+            candidates.into_iter().next()
+        }
+        GatewayDispatchStrategy::RoundRobin => {
+            let mut cursors = ROUND_ROBIN_CURSORS.lock().ok()?;
+            let cursor = cursors.entry(profile.id.clone()).or_default();
+            let selected = candidates[(*cursor as usize) % candidates.len()];
+            *cursor = cursor.wrapping_add(1);
+            Some(selected)
+        }
+        GatewayDispatchStrategy::Random => {
+            let index = OsRng.gen_range(0..candidates.len());
+            candidates.into_iter().nth(index)
+        }
+        GatewayDispatchStrategy::Weighted => {
+            let total_weight: u64 = candidates
+                .iter()
+                .map(|key| u64::from(key.weight.max(1)))
+                .sum();
+            let mut draw = OsRng.next_u64() % total_weight;
+            candidates.into_iter().find(|key| {
+                let weight = u64::from(key.weight.max(1));
+                if draw < weight {
+                    true
+                } else {
+                    draw -= weight;
+                    false
+                }
+            })
+        }
+    }
+}
+
+fn upstream_key_available(profile_id: &str, key_id: &str) -> bool {
+    let Ok(health) = KEY_HEALTH.lock() else {
+        return true;
+    };
+    health
+        .get(&format!("{profile_id}:{key_id}"))
+        .and_then(|entry| entry.cooling_until)
+        .map(|until| until <= Instant::now())
+        .unwrap_or(true)
 }
 
 pub fn upstream_secret_ref(profile_id: &str, key_id: &str) -> String {
@@ -1110,7 +1160,7 @@ mod tests {
         report_upstream_outcome(&profile.id, key_id, UpstreamOutcome::InvalidCredentials);
         assert!(select_upstream_key(&profile).is_some());
         report_upstream_outcome(&profile.id, key_id, UpstreamOutcome::InvalidCredentials);
-        assert!(select_upstream_key(&profile).is_some());
+        assert!(select_upstream_key(&profile).is_none());
         clear_profile_runtime_state(&profile.id);
     }
 
@@ -1122,12 +1172,12 @@ mod tests {
         report_upstream_outcome(&profile.id, key_id, UpstreamOutcome::ServerError);
         assert!(select_upstream_key(&profile).is_some());
         report_upstream_outcome(&profile.id, key_id, UpstreamOutcome::ServerError);
-        assert!(select_upstream_key(&profile).is_some());
+        assert!(select_upstream_key(&profile).is_none());
         clear_profile_runtime_state(&profile.id);
     }
 
     #[test]
-    fn legacy_multiple_keys_use_the_first_enabled_key() {
+    fn priority_failover_selects_the_lowest_priority_key_first() {
         let mut profile = create_profile(input("https://8.8.8.8")).unwrap();
         profile.dispatch_strategy = GatewayDispatchStrategy::PriorityFailover;
         profile.upstream_keys = vec![
@@ -1150,7 +1200,25 @@ mod tests {
                 secret_ref: "b".to_string(),
             },
         ];
-        assert_eq!(select_upstream_key(&profile).unwrap().id, "a");
+        assert_eq!(select_upstream_key(&profile).unwrap().id, "b");
+    }
+
+    #[test]
+    fn selection_skips_keys_in_cooldown() {
+        let mut profile = health_test_profile("gateway-health-selection", "key-a");
+        profile.dispatch_strategy = GatewayDispatchStrategy::PriorityFailover;
+        profile.upstream_keys.push(GatewayUpstreamKey {
+            id: "key-b".to_string(),
+            remark: String::new(),
+            enabled: true,
+            weight: 1,
+            priority: 1,
+            secret: "backup-secret".to_string(),
+            secret_ref: upstream_secret_ref(&profile.id, "key-b"),
+        });
+        report_upstream_outcome(&profile.id, "key-a", UpstreamOutcome::PaymentRequired);
+        assert_eq!(select_upstream_key(&profile).unwrap().id, "key-b");
+        clear_profile_runtime_state(&profile.id);
     }
 
     #[test]

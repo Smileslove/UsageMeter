@@ -3,9 +3,9 @@ use super::super::forwarder::RequestForwarder;
 use super::super::gemini_api::is_gemini_endpoint;
 use super::super::pi_config::{PiConfigManager, PiProviderApi, PiSourceRegistry};
 use super::super::request_common::{
-    apply_request_identity, build_request_base_url, collect_body, get_gemini_forwarder,
-    get_openai_forwarder, json_error_response, resolve_registry_source_handle,
-    resolve_target_base_url, ClientRoute, HandlerResult,
+    apply_request_identity, build_request_base_url, collect_body, extract_bearer_token,
+    get_gemini_forwarder, get_openai_forwarder, json_error_response,
+    resolve_registry_source_handle, resolve_target_base_url, ClientRoute, HandlerResult,
 };
 use super::super::response_bridge::{
     forward_claude_passthrough, forward_claude_with_usage, forward_codex_passthrough,
@@ -47,15 +47,8 @@ fn bearer_token(headers: &hyper::HeaderMap) -> Option<String> {
     headers
         .get(hyper::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| {
-            let mut parts = value.split_whitespace();
-            let scheme = parts.next()?;
-            let token = parts.next()?;
-            if !scheme.eq_ignore_ascii_case("bearer") || parts.next().is_some() {
-                return None;
-            }
-            Some(token.to_string())
-        })
+        .and_then(extract_bearer_token)
+        .map(str::to_string)
 }
 
 pub(crate) async fn handle_pi_request(

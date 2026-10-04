@@ -66,10 +66,8 @@ pub fn get_pricing(model: &str, pricings: &[ModelPricingConfig], match_mode: &st
             // 如果有缓存写入价格则使用，否则为 0（未配置不计费）
             cache_write_5m: pricing.cache_write_price.unwrap_or(0.0),
             cache_write_1h: pricing.cache_write_price.unwrap_or(0.0),
-            // 如果有缓存读取价格则使用，否则估算
-            cache_read: pricing
-                .cache_read_price
-                .unwrap_or(pricing.input_price * 0.1),
+            // 缺失缓存读取价格表示未知，不擅自按输入价格推算。
+            cache_read: pricing.cache_read_price.unwrap_or(0.0),
         };
     }
 
@@ -441,5 +439,21 @@ mod tests {
         );
         // 无价格配置 = $0 费用
         assert!((cost - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn missing_cache_read_price_is_not_guessed() {
+        let pricings = vec![ModelPricingConfig {
+            model_id: "model".to_string(),
+            display_name: None,
+            input_price: 10.0,
+            output_price: 0.0,
+            cache_write_price: None,
+            cache_read_price: None,
+            source: "api".to_string(),
+            last_updated: 0,
+        }];
+        let cost = estimate_session_cost(0, 0, 0, 1_000_000, "model", &pricings, "exact");
+        assert_eq!(cost, 0.0);
     }
 }

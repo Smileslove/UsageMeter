@@ -16,11 +16,26 @@ fn strip_query(path: &str) -> &str {
 
 pub(super) fn is_gemini_generate_path(path: &str) -> bool {
     let path = strip_query(path);
-    path.contains(":generateContent") || path.contains(":streamGenerateContent")
+    let Some(models) = path.strip_prefix("/v1beta/models/") else {
+        return false;
+    };
+    let Some((model, action)) = models.rsplit_once(':') else {
+        return false;
+    };
+    !model.is_empty()
+        && !model.contains('/')
+        && matches!(action, "generateContent" | "streamGenerateContent")
 }
 
 pub(super) fn is_gemini_streaming_path(path: &str) -> bool {
-    strip_query(path).contains(":streamGenerateContent")
+    let path = strip_query(path);
+    let Some(models) = path.strip_prefix("/v1beta/models/") else {
+        return false;
+    };
+    let Some((model, action)) = models.rsplit_once(':') else {
+        return false;
+    };
+    !model.is_empty() && !model.contains('/') && action == "streamGenerateContent"
 }
 
 pub(super) fn is_gemini_endpoint(path: &str, method: &Method) -> bool {
@@ -64,6 +79,12 @@ mod tests {
         ));
         assert!(!is_gemini_generate_path(
             "/v1beta/models/gemini-2.5-pro:countTokens"
+        ));
+        assert!(!is_gemini_generate_path(
+            "/v1beta/models/gemini-2.5-pro:generateContentExtra"
+        ));
+        assert!(!is_gemini_generate_path(
+            "/proxy/v1beta/models/gemini-2.5-pro:generateContent"
         ));
         assert!(!is_gemini_generate_path("/v1beta/models"));
     }

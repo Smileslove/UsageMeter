@@ -581,7 +581,14 @@ fn is_hop_by_hop_response_header(name: &str) -> bool {
 
 fn gemini_endpoint_url(target_base_url: &str, path: &str) -> String {
     let base = target_base_url.trim_end_matches('/');
-    let raw_path = path.trim_start_matches('/');
+    let mut raw_path = path.trim_start_matches('/');
+    if reqwest::Url::parse(base)
+        .ok()
+        .is_some_and(|url| url.path().trim_end_matches('/').ends_with("/v1beta"))
+        && (raw_path == "v1beta" || raw_path.starts_with("v1beta/"))
+    {
+        raw_path = raw_path.strip_prefix("v1beta/").unwrap_or("");
+    }
     format!("{}/{}", base, raw_path)
 }
 
@@ -790,6 +797,13 @@ mod tests {
         assert_eq!(
             gemini_endpoint_url(
                 "https://generativelanguage.googleapis.com",
+                "/v1beta/models/gemini-2.5-pro:generateContent"
+            ),
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+        );
+        assert_eq!(
+            gemini_endpoint_url(
+                "https://generativelanguage.googleapis.com/v1beta",
                 "/v1beta/models/gemini-2.5-pro:generateContent"
             ),
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"

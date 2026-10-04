@@ -3,6 +3,7 @@
 use crate::models::ModelPricingConfig;
 use crate::net::HttpClientFactory;
 use crate::proxy::ProxyDatabase;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// 模型价格数据库实例（独立于代理）
@@ -27,6 +28,58 @@ fn get_pricing_db() -> Result<Arc<std::sync::Mutex<Option<ProxyDatabase>>>, Stri
 pub struct ModelPricingSearchResult {
     pub pricings: Vec<ModelPricingConfig>,
     pub total: i64,
+}
+
+fn parse_model_date(value: Option<&str>, fallback: i64) -> i64 {
+    let Some(value) = value else { return fallback };
+    let normalized = match value.len() {
+        7 => format!("{value}-01"),
+        4 => format!("{value}-01-01"),
+        _ => value.to_string(),
+    };
+    chrono::NaiveDate::parse_from_str(&normalized, "%Y-%m-%d")
+        .ok()
+        .map(|date| date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp())
+        .unwrap_or_else(|| {
+            eprintln!(
+                "[ModelPricing] Failed to parse last_updated '{}', using current time",
+                value
+            );
+            fallback
+        })
+}
+
+fn select_unambiguous_pricings(
+    candidates: HashMap<String, Vec<ModelPricingConfig>>,
+) -> Vec<ModelPricingConfig> {
+    let mut selected = Vec::new();
+    for (model_id, mut variants) in candidates {
+        variants.sort_by(|a, b| {
+            a.last_updated
+                .cmp(&b.last_updated)
+                .then_with(|| a.display_name.cmp(&b.display_name))
+        });
+        let Some(first) = variants.first() else {
+            continue;
+        };
+        let same_price = variants.iter().all(|item| {
+            item.input_price.to_bits() == first.input_price.to_bits()
+                && item.output_price.to_bits() == first.output_price.to_bits()
+                && item.cache_read_price.map(f64::to_bits)
+                    == first.cache_read_price.map(f64::to_bits)
+                && item.cache_write_price.map(f64::to_bits)
+                    == first.cache_write_price.map(f64::to_bits)
+        });
+        if same_price {
+            selected.push(variants.pop().unwrap());
+        } else {
+            eprintln!(
+                "[ModelPricing] Skipping ambiguous model '{}' with provider-specific prices",
+                model_id
+            );
+        }
+    }
+    selected
 }
 
 /// 从 models.dev API 同步模型价格到数据库
@@ -72,14 +125,18 @@ pub async fn sync_model_pricing_from_api() -> Result<usize, String> {
 
     #[derive(Debug, serde::Deserialize)]
     struct ModelsDevCost {
-        #[serde(default)]
-        input: f64,
-        #[serde(default)]
-        output: f64,
+        input: Option<f64>,
+        output: Option<f64>,
         #[serde(default)]
         cache_read: Option<f64>,
         #[serde(default)]
         cache_write: Option<f64>,
+        #[serde(default)]
+        tiers: Option<serde_json::Value>,
+        #[serde(default)]
+        context_over_200k: Option<serde_json::Value>,
+        #[serde(default)]
+        reasoning: Option<f64>,
     }
 
     let data: ModelsDevResponse = response
@@ -88,14 +145,26 @@ pub async fn sync_model_pricing_from_api() -> Result<usize, String> {
         .map_err(|e| format!("Failed to parse JSON response: {}", e))?;
 
     let now = chrono::Utc::now().timestamp();
-    let mut pricings_map: std::collections::HashMap<String, ModelPricingConfig> =
-        std::collections::HashMap::new();
+    let mut candidates: HashMap<String, Vec<ModelPricingConfig>> = HashMap::new();
 
-    // 遍历所有厂商和模型，按 model_id 去重，保留 last_updated 最新的
+    // 收集所有厂商变体；只有价格完全一致时才合并，避免跨厂商套错价格。
     for (_provider_id, provider) in data.providers {
         for (model_key, model) in provider.models {
             if let Some(cost) = model.cost {
-                if cost.input > 0.0 && cost.output > 0.0 {
+                if cost.tiers.is_some()
+                    || cost.context_over_200k.is_some()
+                    || cost.reasoning.is_some()
+                {
+                    eprintln!(
+                        "[ModelPricing] Skipping model '{}' with unsupported tiered pricing",
+                        model.id.as_str()
+                    );
+                    continue;
+                }
+                if let (Some(input), Some(output)) = (cost.input, cost.output) {
+                    if !input.is_finite() || !output.is_finite() || input < 0.0 || output < 0.0 {
+                        continue;
+                    }
                     let model_id = if model.id.is_empty() {
                         model_key
                     } else {
@@ -103,43 +172,27 @@ pub async fn sync_model_pricing_from_api() -> Result<usize, String> {
                     };
 
                     // 解析模型的 last_updated 日期作为时间戳
-                    let model_last_updated = model.last_updated
-                        .and_then(|date_str| {
-                            chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
-                                .ok()
-                                .map(|d| d.and_hms_opt(0, 0, 0).unwrap_or_default().and_utc().timestamp())
-                        })
-                        .unwrap_or_else(|| {
-                            eprintln!("[ModelPricing] Failed to parse last_updated for model '{}', using current time", model_id);
-                            now
-                        });
+                    let model_last_updated = parse_model_date(model.last_updated.as_deref(), now);
 
                     let new_pricing = ModelPricingConfig {
                         model_id: model_id.clone(),
                         display_name: model.name,
-                        input_price: cost.input,
-                        output_price: cost.output,
+                        input_price: input,
+                        output_price: output,
                         cache_write_price: cost.cache_write,
                         cache_read_price: cost.cache_read,
                         source: "api".to_string(),
                         last_updated: model_last_updated,
                     };
 
-                    // 如果已存在，比较 last_updated，保留更新的
-                    if let Some(existing) = pricings_map.get(&model_id) {
-                        if model_last_updated > existing.last_updated {
-                            pricings_map.insert(model_id, new_pricing);
-                        }
-                    } else {
-                        pricings_map.insert(model_id, new_pricing);
-                    }
+                    candidates.entry(model_id).or_default().push(new_pricing);
                 }
             }
         }
     }
 
     // 转换为向量并按模型 ID 排序
-    let mut pricings: Vec<ModelPricingConfig> = pricings_map.into_values().collect();
+    let mut pricings = select_unambiguous_pricings(candidates);
     pricings.sort_by(|a, b| a.model_id.cmp(&b.model_id));
 
     // 3. 存入数据库（使用 tauri async_runtime spawn_blocking 避免阻塞异步运行时）
@@ -150,7 +203,7 @@ pub async fn sync_model_pricing_from_api() -> Result<usize, String> {
         if let Some(database) = db_guard.as_ref() {
             // 确保表存在
             database.create_model_pricing_table()?;
-            database.upsert_model_pricings(&pricings)
+            database.replace_api_model_pricings(&pricings)
         } else {
             Err("Database not available".to_string())
         }
@@ -394,4 +447,55 @@ pub async fn apply_pricing_to_records(
     };
 
     db.apply_pricing_to_records(&pricing, &filter).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_model_date, select_unambiguous_pricings};
+    use crate::models::ModelPricingConfig;
+    use std::collections::HashMap;
+
+    fn pricing(model_id: &str, input: f64, output: f64, updated: i64) -> ModelPricingConfig {
+        ModelPricingConfig {
+            model_id: model_id.to_string(),
+            display_name: None,
+            input_price: input,
+            output_price: output,
+            cache_read_price: None,
+            cache_write_price: None,
+            source: "api".to_string(),
+            last_updated: updated,
+        }
+    }
+
+    #[test]
+    fn parses_month_and_day_dates() {
+        assert!(parse_model_date(Some("2026-01"), 0) > 0);
+        assert!(parse_model_date(Some("2026-01-02"), 0) > parse_model_date(Some("2026-01"), 0));
+        assert_eq!(parse_model_date(Some("bad"), 42), 42);
+    }
+
+    #[test]
+    fn skips_provider_price_conflicts_but_keeps_equal_variants() {
+        let mut candidates = HashMap::new();
+        candidates.insert(
+            "ambiguous".to_string(),
+            vec![
+                pricing("ambiguous", 1.0, 2.0, 10),
+                pricing("ambiguous", 3.0, 4.0, 20),
+            ],
+        );
+        candidates.insert(
+            "stable".to_string(),
+            vec![
+                pricing("stable", 1.0, 2.0, 10),
+                pricing("stable", 1.0, 2.0, 20),
+            ],
+        );
+
+        let selected = select_unambiguous_pricings(candidates);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].model_id, "stable");
+        assert_eq!(selected[0].last_updated, 20);
+    }
 }

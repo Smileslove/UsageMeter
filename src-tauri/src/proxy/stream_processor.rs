@@ -137,6 +137,22 @@ impl SseUsageCollector {
     }
 }
 
+struct SseUsageFinishGuard(SseUsageCollector);
+
+impl Drop for SseUsageFinishGuard {
+    fn drop(&mut self) {
+        if self.0.inner.finished.load(Ordering::SeqCst) {
+            return;
+        }
+        let collector = self.0.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                collector.finish(false).await;
+            });
+        }
+    }
+}
+
 /// 从收集的 SSE 事件中解析使用量数据
 ///
 /// ## SSE 事件顺序与数据语义
@@ -270,6 +286,7 @@ pub fn create_passthrough_stream(
     streaming_idle_timeout: Option<Duration>,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send + Sync {
     stream! {
+        let _finish_guard = SseUsageFinishGuard(collector.clone());
         let mut reader = SseEventReader::new();
         let mut stream = std::pin::pin!(stream);
         let mut completed_normally = false;
