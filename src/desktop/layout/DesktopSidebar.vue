@@ -79,7 +79,7 @@ onUnmounted(() => {
     style="background: var(--theme-bg-sidebar)"
   >
     <!-- 品牌区（顶部为 macOS traffic lights 留出安全区） -->
-    <div class="flex shrink-0 items-center px-3 pb-4 pt-8">
+    <div data-tauri-drag-region class="flex shrink-0 items-center px-3 pb-4 pt-8 [&_*]:pointer-events-none">
       <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style="background: var(--theme-accent-soft)">
         <span class="relative flex h-2.5 w-2.5 items-center justify-center">
           <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>

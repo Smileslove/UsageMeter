@@ -64,15 +64,16 @@ async function handleOpenShareWindow() {
 
 <template>
   <header
+    data-tauri-drag-region
     class="flex h-16 shrink-0 items-center justify-between gap-4 border-b border-[var(--theme-border-subtle)] px-6"
     style="background: color-mix(in srgb, var(--theme-bg-chrome) 90%, var(--theme-bg-app) 10%)"
   >
     <!-- 左侧：页面标题 + 可选副信息 -->
-    <div class="flex min-w-0 flex-col justify-center">
-      <h1 class="truncate text-[20px] font-semibold leading-7 tracking-normal text-[var(--theme-text-primary)]">
+    <div data-tauri-drag-region class="flex min-w-0 flex-col justify-center">
+      <h1 data-tauri-drag-region class="truncate text-[20px] font-semibold leading-7 tracking-normal text-[var(--theme-text-primary)]">
         {{ pageTitle }}
       </h1>
-      <p v-if="showFilterSummary" class="truncate text-xs text-[var(--theme-text-tertiary)]">
+      <p v-if="showFilterSummary" data-tauri-drag-region class="truncate text-xs text-[var(--theme-text-tertiary)]">
         {{ filterSummary }}
       </p>
     </div>
