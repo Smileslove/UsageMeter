@@ -422,46 +422,46 @@ onUnmounted(() => {
           <div class="request-card__metrics mt-2 border-t border-gray-100 pt-1.5 text-[10px] dark:border-white/5">
             <div class="request-card__metric">
               <svg class="h-3 w-3 shrink-0 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-              <span class="request-card__metric-label">{{ t(store.settings.locale, 'sessions.cost') }}</span>
-              <span class="request-card__metric-value text-[var(--theme-chart-cost)]">{{ formatCost(request.estimatedCost) }}</span>
+              <span class="request-card__metric-label" :title="t(store.settings.locale, 'sessions.cost')">{{ t(store.settings.locale, 'sessions.cost') }}</span>
+              <span class="request-card__metric-value text-[var(--theme-chart-cost)]" :title="formatCost(request.estimatedCost)">{{ formatCost(request.estimatedCost) }}</span>
             </div>
             <div class="request-card__metric">
               <svg class="h-3 w-3 shrink-0 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 3v7h7M4 14l6 7 3-7h7" /></svg>
-              <span class="request-card__metric-label">{{ t(store.settings.locale, 'subscription.avgRateShort') }}</span>
-              <span class="request-card__metric-value">{{ request.outputTokensPerSecond != null ? `${request.outputTokensPerSecond.toFixed(1)} t/s` : '—' }}</span>
+              <span class="request-card__metric-label" :title="t(store.settings.locale, 'common.avgRate')">{{ t(store.settings.locale, 'common.avgRate') }}</span>
+              <span class="request-card__metric-value" :title="request.outputTokensPerSecond != null ? `${request.outputTokensPerSecond.toFixed(1)} t/s` : '—'">{{ request.outputTokensPerSecond != null ? `${request.outputTokensPerSecond.toFixed(1)} t/s` : '—' }}</span>
             </div>
             <div class="request-card__metric">
               <svg class="h-3 w-3 shrink-0 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-              <span class="request-card__metric-label">{{ t(store.settings.locale, 'sessions.firstToken') }}</span>
-              <span class="request-card__metric-value">{{ request.ttftMs != null ? formatDuration(request.ttftMs) : '—' }}</span>
+              <span class="request-card__metric-label" :title="t(store.settings.locale, 'sessions.firstToken')">{{ t(store.settings.locale, 'sessions.firstToken') }}</span>
+              <span class="request-card__metric-value" :title="request.ttftMs != null ? formatDuration(request.ttftMs) : '—'">{{ request.ttftMs != null ? formatDuration(request.ttftMs) : '—' }}</span>
             </div>
             <div class="request-card__metric">
               <svg class="h-3 w-3 shrink-0 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 2m5-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-              <span class="request-card__metric-label">{{ t(store.settings.locale, 'sessions.duration') }}</span>
-              <span class="request-card__metric-value">{{ requestHasProxyPerformance(request) ? formatDuration(request.durationMs) : '—' }}</span>
+              <span class="request-card__metric-label" :title="t(store.settings.locale, 'sessions.duration')">{{ t(store.settings.locale, 'sessions.duration') }}</span>
+              <span class="request-card__metric-value" :title="requestHasProxyPerformance(request) ? formatDuration(request.durationMs) : '—'">{{ requestHasProxyPerformance(request) ? formatDuration(request.durationMs) : '—' }}</span>
             </div>
           </div>
 
           <div class="request-card__metrics mt-1 text-[10px]">
             <div class="request-card__metric">
               <svg class="h-3 w-3 shrink-0 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M4 12h16M4 17h16" /></svg>
-              <span class="request-card__metric-label">{{ t(store.settings.locale, 'common.totalTokens') }}</span>
-              <span class="request-card__metric-value">{{ formatTokens(request.totalTokens) }}</span>
+              <span class="request-card__metric-label" :title="t(store.settings.locale, 'common.totalTokens')">{{ t(store.settings.locale, 'common.totalTokens') }}</span>
+              <span class="request-card__metric-value" :title="formatTokens(request.totalTokens)">{{ formatTokens(request.totalTokens) }}</span>
             </div>
             <div class="request-card__metric">
               <svg class="h-3 w-3 shrink-0 text-violet-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
-              <span class="request-card__metric-label">{{ t(store.settings.locale, 'statistics.cache') }}</span>
-              <span class="request-card__metric-value">{{ formatTokens(requestCacheTokens(request)) }}</span>
+              <span class="request-card__metric-label" :title="t(store.settings.locale, 'statistics.cache')">{{ t(store.settings.locale, 'statistics.cache') }}</span>
+              <span class="request-card__metric-value" :title="formatTokens(requestCacheTokens(request))">{{ formatTokens(requestCacheTokens(request)) }}</span>
             </div>
             <div class="request-card__metric">
               <svg class="h-3 w-3 shrink-0 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
-              <span class="request-card__metric-label">{{ t(store.settings.locale, 'sessions.input') }}</span>
-              <span class="request-card__metric-value">{{ formatTokens(request.inputTokens) }}</span>
+              <span class="request-card__metric-label" :title="t(store.settings.locale, 'sessions.input')">{{ t(store.settings.locale, 'sessions.input') }}</span>
+              <span class="request-card__metric-value" :title="formatTokens(request.inputTokens)">{{ formatTokens(request.inputTokens) }}</span>
             </div>
             <div class="request-card__metric">
               <svg class="h-3 w-3 shrink-0 text-sky-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
-              <span class="request-card__metric-label">{{ t(store.settings.locale, 'sessions.output') }}</span>
-              <span class="request-card__metric-value">{{ formatTokens(request.outputTokens) }}</span>
+              <span class="request-card__metric-label" :title="t(store.settings.locale, 'sessions.output')">{{ t(store.settings.locale, 'sessions.output') }}</span>
+              <span class="request-card__metric-value" :title="formatTokens(request.outputTokens)">{{ formatTokens(request.outputTokens) }}</span>
             </div>
           </div>
         </button>
@@ -668,13 +668,13 @@ onUnmounted(() => {
 
 .session-card__metrics {
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  column-gap: 8px;
-  row-gap: 6px;
+  column-gap: 4px;
 }
 
 .session-card__metric {
   display: grid;
-  grid-template-columns: 20px minmax(0, 1fr);
+  grid-template-columns: 14px minmax(0, 1fr);
+  column-gap: 3px;
   min-width: 0;
   overflow: hidden;
   align-items: center;
@@ -682,11 +682,13 @@ onUnmounted(() => {
 
 .session-card__metric > svg {
   grid-row: span 2;
+  width: 14px;
+  height: 14px;
 }
 
 .session-card__metric:not(:first-child) {
   border-left: 1px solid var(--theme-border-subtle);
-  padding-left: 8px;
+  padding-left: 4px;
 }
 
 .session-card__metric > span {
@@ -694,50 +696,55 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  margin-left: 0;
+  line-height: 1.3;
+}
+
+.session-card__metric > span:first-of-type {
+  font-size: 9px;
+}
+
+.session-card__metric > span:last-of-type {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
 }
 
 .request-card__metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  column-gap: 8px;
-  row-gap: 6px;
+  column-gap: 4px;
 }
 
 .request-card__metric {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   white-space: nowrap;
 }
 
+.request-card__metric > svg {
+  width: 10px;
+  height: 10px;
+}
+
 .request-card__metric-label {
+  min-width: 0;
   overflow: hidden;
+  font-size: 9px;
   color: var(--theme-text-tertiary);
   text-overflow: ellipsis;
 }
 
 .request-card__metric-value {
+  min-width: 0;
+  flex-shrink: 0;
+  max-width: calc(100% - 14px);
   overflow: hidden;
   color: var(--theme-text-primary);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-weight: 600;
   text-overflow: ellipsis;
-}
-
-@media (max-width: 560px) {
-  .session-card__metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .session-card__metric:nth-child(2n + 1) {
-    border-left: 0;
-    padding-left: 0;
-  }
-
-  .request-card__metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 </style>
