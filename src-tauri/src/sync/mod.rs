@@ -5,7 +5,7 @@ use crate::local_usage::{
 use crate::models::SyncSettings;
 use crate::net::HttpClientFactory;
 use base64::Engine;
-use reqwest::header::RETRY_AFTER;
+use reqwest::header::{ETAG, IF_MATCH, IF_NONE_MATCH, RETRY_AFTER};
 use reqwest::{Client, Method, RequestBuilder, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -175,6 +175,11 @@ enum SyncKeyringState {
     Missing,
 }
 
+enum SharedSettingsPutResult {
+    Stored,
+    Conflict,
+}
+
 impl SyncKeyringState {
     fn keyring(&self) -> Option<&SyncKeyring> {
         match self {
@@ -268,7 +273,14 @@ pub fn spawn_background_sync_loop() {
             tokio::time::sleep(adjusted_sleep).await;
 
             if auto_sync_active {
-                let _ = run_auto_sync_once(settings, true).await;
+                // The settings captured before the sleep may have been changed while
+                // the task was waiting. Re-read them before doing network work so a
+                // disabled or reconfigured sync does not run one stale cycle.
+                if let Ok(latest_settings) = crate::settings::load_settings_blocking() {
+                    if latest_settings.sync.enabled && latest_settings.sync.auto_sync {
+                        let _ = run_auto_sync_once(latest_settings.sync, true).await;
+                    }
+                }
             }
         }
     });
@@ -301,8 +313,15 @@ async fn run_auto_sync_once(
             }
         }
     }
-    let _ = sync_now_inner(settings, credentials).await;
-    Ok(())
+    match sync_now_inner(settings, credentials).await {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if err != "ERR_SYNC_DISABLED" {
+                persist_failure(&err);
+            }
+            Err(err)
+        }
+    }
 }
 
 pub async fn rotate_sync_password(
@@ -483,6 +502,7 @@ async fn sync_now_inner(
                 .map(|manifest| manifest.snapshot_count)
                 .unwrap_or(0),
         };
+        let mut snapshot_created = false;
         if should_create_snapshot(&manifest) {
             create_and_store_snapshot(
                 &client,
@@ -493,9 +513,16 @@ async fn sync_now_inner(
                 dek_version,
             )
             .await?;
-            prune_old_sync_artifacts(&client, &manifest).await?;
+            snapshot_created = true;
         }
         store_manifest(&client, &device_id, &manifest).await?;
+        if snapshot_created {
+            // The manifest is the commit point. Retain old artifacts if cleanup
+            // fails so readers can still recover through the published snapshot.
+            if let Err(err) = prune_old_sync_artifacts(&client, &manifest).await {
+                eprintln!("[UsageMeter] WebDAV sync artifact cleanup deferred: {err}");
+            }
+        }
     }
 
     if let Some(keyring) = keyring_state.keyring() {
@@ -565,6 +592,7 @@ async fn import_remote_packages(
 ) -> Result<u64, String> {
     let db = ensure_local_usage_synced()?;
     let mut imported_requests = 0_u64;
+    let mut failures = Vec::new();
     let devices = client.list_dirs(client.device_dir()).await?;
 
     for device_id in devices {
@@ -580,15 +608,27 @@ async fn import_remote_packages(
             Ok(request_count) => imported_requests += request_count,
             Err(ref err) if err == "ERR_SYNC_BATCH_PRUNED_RETRY" => {
                 // 批次已被远端清理，重置游标为 0，下次同步将从快照重建
-                let _ = db.upsert_import_cursor(
+                let _ = db.reset_import_cursor(
                     &device_id,
                     Some(&manifest.instance_id),
-                    0,
                     "retry",
                     Some(err),
                 );
+                failures.push(format!("{device_id}: {err}"));
                 eprintln!(
                     "[UsageMeter] WebDAV sync device {} batches pruned, cursor reset to 0 for snapshot recovery",
+                    device_id
+                );
+            }
+            Err(ref err) if err == "ERR_SYNC_DEVICE_ID_CONFLICT" => {
+                // Keep the previous cursor and imported facts intact. A reused
+                // device ID must be explicitly removed by the user before the
+                // new instance can be imported, otherwise old data could be
+                // silently mixed with a different device generation.
+                db.upsert_webdav_sync_state(&format!("failed:{}:manifest", device_id), err)?;
+                failures.push(format!("{device_id}: {err}"));
+                eprintln!(
+                    "[UsageMeter] WebDAV sync device {} instance changed; refusing to mix device generations",
                     device_id
                 );
             }
@@ -605,11 +645,16 @@ async fn import_remote_packages(
                     "[UsageMeter] Skipped WebDAV sync device {} via manifest: {}",
                     device_id, err
                 );
+                failures.push(format!("{device_id}: {err}"));
             }
         }
     }
 
-    Ok(imported_requests)
+    if failures.is_empty() {
+        Ok(imported_requests)
+    } else {
+        Err(format!("ERR_SYNC_PARTIAL: {}", failures.join("; ")))
+    }
 }
 
 async fn import_device_batches(
@@ -620,7 +665,12 @@ async fn import_device_batches(
 ) -> Result<u64, String> {
     let db = ensure_local_usage_synced()?;
     let mut imported_requests = 0_u64;
-    let mut cursor = db.get_import_cursor(&manifest.device_id)?;
+    let (mut cursor, known_instance_id) = db.get_import_cursor_state(&manifest.device_id)?;
+    if let Some(known_instance_id) = known_instance_id {
+        if known_instance_id != manifest.instance_id {
+            return Err("ERR_SYNC_DEVICE_ID_CONFLICT".to_string());
+        }
+    }
     // Fast-forward via snapshot whenever cursor lags behind it, not only on first import:
     // pruning removes batches older than (snapshot_seq - BATCH_RETENTION_AFTER_SNAPSHOT),
     // so a stale consumer's missing batches must be recovered through the snapshot.
@@ -899,6 +949,20 @@ async fn sync_shared_settings(
     _instance_id: &str,
     credentials: &WebDavCredentials,
 ) -> Result<(), String> {
+    for _ in 0..3 {
+        match sync_shared_settings_once(client, device_id, credentials).await? {
+            SharedSettingsPutResult::Stored => return Ok(()),
+            SharedSettingsPutResult::Conflict => continue,
+        }
+    }
+    Err("ERR_SYNC_SHARED_SETTINGS_CONFLICT".to_string())
+}
+
+async fn sync_shared_settings_once(
+    client: &WebDavClient,
+    device_id: &str,
+    credentials: &WebDavCredentials,
+) -> Result<SharedSettingsPutResult, String> {
     let mut app_settings = crate::settings::load_settings_blocking()?;
     let db = ensure_local_usage_synced()?;
     let now = chrono::Utc::now().timestamp();
@@ -922,7 +986,9 @@ async fn sync_shared_settings(
         })
         .collect();
 
-    let remote_document = load_shared_settings_document(client, credentials).await?;
+    let remote_state = load_shared_settings_document(client, credentials).await?;
+    let remote_document = remote_state.as_ref().map(|(document, _)| document.clone());
+    let remote_etag = remote_state.as_ref().and_then(|(_, etag)| etag.as_deref());
 
     // --- 拉取阶段：逐字段比较时间戳，取较新的值 ---
     if let Some(document) = remote_document.as_ref() {
@@ -987,14 +1053,24 @@ async fn sync_shared_settings(
             for &field in SHARED_SETTING_FIELDS {
                 if local_payload.field_value(field) != document.payload.field_value(field) {
                     // 本地值与远端不同（且经过拉取阶段仍未被覆盖）：标记为本地最新
-                    local_field_timestamps.insert(field.to_string(), now);
+                    let local_ts = local_field_timestamps.get(field).copied().unwrap_or(0);
+                    let remote_ts = document.field_timestamps.get(field).copied().unwrap_or(0);
+                    // Unix seconds are too coarse for two devices syncing in
+                    // the same second. Advance beyond both sides so a retry
+                    // has a strict ordering and the merge converges.
+                    let next_ts = now
+                        .max(local_ts.saturating_add(1))
+                        .max(remote_ts.saturating_add(1));
+                    local_field_timestamps.insert(field.to_string(), next_ts);
                 }
             }
         }
         None => {
             // 远端没有文档：所有字段都视为本地最新
             for &field in SHARED_SETTING_FIELDS {
-                local_field_timestamps.insert(field.to_string(), now);
+                let local_ts = local_field_timestamps.get(field).copied().unwrap_or(0);
+                local_field_timestamps
+                    .insert(field.to_string(), now.max(local_ts.saturating_add(1)));
             }
         }
     }
@@ -1026,7 +1102,30 @@ async fn sync_shared_settings(
             payload: local_payload,
             field_timestamps: local_field_timestamps.clone(),
         };
-        store_shared_settings_document(client, &document, &dek, keyring.dek_version).await?;
+        let put_result = store_shared_settings_document(
+            client,
+            &document,
+            &dek,
+            keyring.dek_version,
+            remote_etag,
+            remote_document.is_none(),
+        )
+        .await?;
+        if matches!(put_result, SharedSettingsPutResult::Conflict) {
+            return Ok(SharedSettingsPutResult::Conflict);
+        }
+        if remote_etag.is_none() {
+            // Some WebDAV servers omit ETag. Verify the write and retry if a
+            // concurrent writer won the race while the request was in flight.
+            if let Some((latest, _)) = load_shared_settings_document(client, credentials).await? {
+                if latest.version != document.version
+                    || latest.updated_by_device_id != document.updated_by_device_id
+                    || !shared_settings_payload_matches(&latest.payload, &document.payload)
+                {
+                    return Ok(SharedSettingsPutResult::Conflict);
+                }
+            }
+        }
         // 持久化本地字段时间戳
         for (field, ts) in &local_field_timestamps {
             db.upsert_webdav_sync_state(&format!("shared_field_ts:{}", field), &ts.to_string())?;
@@ -1034,7 +1133,7 @@ async fn sync_shared_settings(
         db.upsert_webdav_sync_state("shared_settings_version", &version.to_string())?;
     }
 
-    Ok(())
+    Ok(SharedSettingsPutResult::Stored)
 }
 
 /// 将远端文档中单个字段的值应用到本地设置
@@ -1050,7 +1149,10 @@ fn apply_shared_settings_field(
         "day_boundary_mode" => settings.day_boundary_mode = payload.day_boundary_mode.clone(),
         "theme" => settings.theme = payload.theme.clone(),
         "model_pricing" => settings.model_pricing = payload.model_pricing.clone(),
-        "source_aware" => settings.source_aware = payload.source_aware.clone(),
+        "source_aware" => {
+            settings.source_aware =
+                merge_source_aware_settings(&settings.source_aware, &payload.source_aware)
+        }
         "currency" => settings.currency = payload.currency.clone(),
         _ => {}
     }
@@ -1064,9 +1166,45 @@ fn extract_shared_settings_payload(settings: &crate::models::AppSettings) -> Sha
         day_boundary_mode: settings.day_boundary_mode.clone(),
         theme: settings.theme.clone(),
         model_pricing: settings.model_pricing.clone(),
-        source_aware: settings.source_aware.clone(),
+        source_aware: sanitize_source_aware_settings(&settings.source_aware),
         currency: settings.currency.clone(),
     }
+}
+
+/// Shared settings must never contain credentials hydrated from the local
+/// keychain. Keep those values local when applying a remote document too.
+fn sanitize_source_aware_settings(
+    source_aware: &crate::models::SourceAwareSettings,
+) -> crate::models::SourceAwareSettings {
+    let mut sanitized = source_aware.clone();
+    for source in &mut sanitized.sources {
+        if let Some(binding) = &mut source.quota_query {
+            binding.manual_api_key = None;
+            binding.manual_access_token = None;
+        }
+    }
+    sanitized
+}
+
+fn merge_source_aware_settings(
+    local: &crate::models::SourceAwareSettings,
+    remote: &crate::models::SourceAwareSettings,
+) -> crate::models::SourceAwareSettings {
+    let mut merged = remote.clone();
+    for source in &mut merged.sources {
+        let Some(local_source) = local.sources.iter().find(|item| item.id == source.id) else {
+            continue;
+        };
+        let Some(remote_binding) = source.quota_query.as_mut() else {
+            continue;
+        };
+        let Some(local_binding) = local_source.quota_query.as_ref() else {
+            continue;
+        };
+        remote_binding.manual_api_key = local_binding.manual_api_key.clone();
+        remote_binding.manual_access_token = local_binding.manual_access_token.clone();
+    }
+    merged
 }
 
 fn shared_settings_payload_matches(
@@ -1079,8 +1217,8 @@ fn shared_settings_payload_matches(
 async fn load_shared_settings_document(
     client: &WebDavClient,
     credentials: &WebDavCredentials,
-) -> Result<Option<SharedSettingsDocument>, String> {
-    let Some(bytes) = client.get_optional(SHARED_SETTINGS_FILE).await? else {
+) -> Result<Option<(SharedSettingsDocument, Option<String>)>, String> {
+    let Some((bytes, etag)) = client.get_optional_with_etag(SHARED_SETTINGS_FILE).await? else {
         return Ok(None);
     };
     let encrypted: EncryptedPackage = serde_json::from_slice(&bytes)
@@ -1088,7 +1226,7 @@ async fn load_shared_settings_document(
     let keyring_state = load_or_create_keyring(client, &credentials.sync_password).await?;
     let document: SharedSettingsDocument =
         decrypt_typed_package(&encrypted, &credentials.sync_password, &keyring_state)?;
-    Ok(Some(document))
+    Ok(Some((document, etag)))
 }
 
 async fn store_shared_settings_document(
@@ -1096,11 +1234,15 @@ async fn store_shared_settings_document(
     document: &SharedSettingsDocument,
     dek: &[u8; KEY_LEN],
     dek_version: u32,
-) -> Result<(), String> {
+    etag: Option<&str>,
+    require_absent: bool,
+) -> Result<SharedSettingsPutResult, String> {
     client.mkcol(SHARED_DIR).await?;
     client.mkcol(SHARED_SETTINGS_DIR).await?;
     let plaintext = serde_json::to_vec(document)
         .map_err(|e| format!("Failed to serialize shared settings document: {}", e))?;
+    let plaintext = zstd::stream::encode_all(plaintext.as_slice(), 3)
+        .map_err(|e| format!("Failed to compress shared settings document: {}", e))?;
     let nonce = make_nonce()?;
     let payload = encrypt_bytes(&plaintext, dek, b"shared_settings", &nonce)?;
     let encrypted = EncryptedPackage {
@@ -1110,17 +1252,25 @@ async fn store_shared_settings_document(
         device_id: "shared_settings".to_string(),
         dek_version,
         export_seq: document.version,
+        compression: Some("zstd".to_string()),
         nonce: BASE64.encode(nonce),
         payload: BASE64.encode(payload),
     };
     let bytes = serde_json::to_vec(&encrypted)
         .map_err(|e| format!("Failed to serialize encrypted shared settings: {}", e))?;
-    client.put(SHARED_SETTINGS_FILE, bytes).await
+    client
+        .put_conditional(SHARED_SETTINGS_FILE, bytes, etag, require_absent)
+        .await
 }
 
 fn persist_failure(err: &str) {
     if let Ok(db) = ensure_local_usage_synced() {
-        let _ = db.upsert_webdav_sync_state("last_status", "failed");
+        let status = if err.starts_with("ERR_SYNC_PARTIAL") {
+            "partial"
+        } else {
+            "failed"
+        };
+        let _ = db.upsert_webdav_sync_state("last_status", status);
         let _ = db.upsert_webdav_sync_state("last_error", err);
     }
 }
@@ -1296,6 +1446,33 @@ impl WebDavClient {
         }
     }
 
+    async fn put_conditional(
+        &self,
+        path: &str,
+        bytes: Vec<u8>,
+        etag: Option<&str>,
+        require_absent: bool,
+    ) -> Result<SharedSettingsPutResult, String> {
+        let mut builder = self
+            .client
+            .put(self.url(path))
+            .basic_auth(&self.username, Some(&self.password))
+            .body(bytes);
+        if let Some(etag) = etag {
+            builder = builder.header(IF_MATCH, etag);
+        } else if require_absent {
+            builder = builder.header(IF_NONE_MATCH, "*");
+        }
+        let response = self.send_with_retry(builder).await?;
+        if response.status().is_success() {
+            Ok(SharedSettingsPutResult::Stored)
+        } else if response.status() == StatusCode::PRECONDITION_FAILED {
+            Ok(SharedSettingsPutResult::Conflict)
+        } else {
+            Err(format!("ERR_WEBDAV_PUT_FAILED: {}", response.status()))
+        }
+    }
+
     async fn delete(&self, path: &str) -> Result<(), String> {
         let builder = self
             .client
@@ -1328,6 +1505,16 @@ impl WebDavClient {
     }
 
     async fn get_optional(&self, path: &str) -> Result<Option<Vec<u8>>, String> {
+        Ok(self
+            .get_optional_with_etag(path)
+            .await?
+            .map(|(bytes, _)| bytes))
+    }
+
+    async fn get_optional_with_etag(
+        &self,
+        path: &str,
+    ) -> Result<Option<(Vec<u8>, Option<String>)>, String> {
         let builder = self
             .client
             .get(self.url(path))
@@ -1340,10 +1527,15 @@ impl WebDavClient {
         if !status.is_success() {
             return Err(format!("ERR_WEBDAV_GET_FAILED: {}", status));
         }
+        let etag = response
+            .headers()
+            .get(ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         response
             .bytes()
             .await
-            .map(|bytes| Some(bytes.to_vec()))
+            .map(|bytes| Some((bytes.to_vec(), etag)))
             .map_err(|e| format!("ERR_WEBDAV_READ_FAILED: {}", e))
     }
 
@@ -1734,5 +1926,49 @@ fn hex_value(byte: u8) -> Option<u8> {
         b'a'..=b'f' => Some(byte - b'a' + 10),
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{
+        ApiSource, SourceAwareSettings, SourceCredentialStrategy, SourceQueryProfileId,
+        SourceQuotaBindingConfig,
+    };
+
+    #[test]
+    fn shared_source_payload_strips_and_restores_local_credentials() {
+        let local = SourceAwareSettings {
+            sources: vec![ApiSource {
+                id: "source-1".to_string(),
+                display_name: None,
+                base_url: None,
+                api_key_prefixes: Vec::new(),
+                api_key_notes: Default::default(),
+                color: "#000".to_string(),
+                icon: None,
+                auto_detected: false,
+                quota_query: Some(SourceQuotaBindingConfig {
+                    enabled: true,
+                    query_profile_id: SourceQueryProfileId::GenericBalanceV1Usage,
+                    credential_strategy: SourceCredentialStrategy::ManualApiKey,
+                    manual_api_key: Some("local-secret".to_string()),
+                    manual_access_token: None,
+                    manual_user_id: Some("user-1".to_string()),
+                }),
+                first_seen_ms: 0,
+                last_seen_ms: 0,
+            }],
+            active_source_filter: None,
+        };
+        let sanitized = sanitize_source_aware_settings(&local);
+        let binding = sanitized.sources[0].quota_query.as_ref().unwrap();
+        assert!(binding.manual_api_key.is_none());
+
+        let merged = merge_source_aware_settings(&local, &sanitized);
+        let binding = merged.sources[0].quota_query.as_ref().unwrap();
+        assert_eq!(binding.manual_api_key.as_deref(), Some("local-secret"));
+        assert_eq!(binding.manual_user_id.as_deref(), Some("user-1"));
     }
 }

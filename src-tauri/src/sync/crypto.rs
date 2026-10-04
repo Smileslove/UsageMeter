@@ -20,6 +20,8 @@ pub(super) struct EncryptedPackage {
     #[serde(default)]
     pub(super) dek_version: u32,
     pub(super) export_seq: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) compression: Option<String>,
     pub(super) nonce: String,
     pub(super) payload: String,
 }
@@ -147,6 +149,8 @@ pub(super) fn encrypt_batch_package(
 ) -> Result<EncryptedPackage, String> {
     let plaintext = serde_json::to_vec(package)
         .map_err(|e| format!("Failed to serialize sync batch package: {}", e))?;
+    let plaintext = zstd::stream::encode_all(plaintext.as_slice(), 3)
+        .map_err(|e| format!("Failed to compress sync batch package: {}", e))?;
     let nonce = make_nonce()?;
     let payload = encrypt_bytes(&plaintext, dek, package.device_id.as_bytes(), &nonce)?;
 
@@ -157,6 +161,7 @@ pub(super) fn encrypt_batch_package(
         device_id: package.device_id.clone(),
         dek_version,
         export_seq: package.batch_seq,
+        compression: Some("zstd".to_string()),
         nonce: BASE64.encode(nonce),
         payload: BASE64.encode(payload),
     })
@@ -169,6 +174,8 @@ pub(super) fn encrypt_snapshot_package(
 ) -> Result<EncryptedPackage, String> {
     let plaintext = serde_json::to_vec(package)
         .map_err(|e| format!("Failed to serialize sync snapshot package: {}", e))?;
+    let plaintext = zstd::stream::encode_all(plaintext.as_slice(), 3)
+        .map_err(|e| format!("Failed to compress sync snapshot package: {}", e))?;
     let nonce = make_nonce()?;
     let payload = encrypt_bytes(&plaintext, dek, package.device_id.as_bytes(), &nonce)?;
 
@@ -179,6 +186,7 @@ pub(super) fn encrypt_snapshot_package(
         device_id: package.device_id.clone(),
         dek_version,
         export_seq: package.covered_until_batch_seq,
+        compression: Some("zstd".to_string()),
         nonce: BASE64.encode(nonce),
         payload: BASE64.encode(payload),
     })
@@ -209,6 +217,12 @@ pub(super) fn decrypt_typed_package<T: DeserializeOwned>(
         .decode(&encrypted.payload)
         .map_err(|e| format!("Failed to decode sync payload: {}", e))?;
     let plaintext = decrypt_bytes(cipher, &dek, &encrypted.device_id, &nonce)?;
+    let plaintext = match encrypted.compression.as_deref() {
+        Some("zstd") => zstd::stream::decode_all(plaintext.as_slice())
+            .map_err(|e| format!("Failed to decompress sync package: {}", e))?,
+        Some(_) => return Err("ERR_SYNC_COMPRESSION_UNSUPPORTED".to_string()),
+        None => plaintext,
+    };
     serde_json::from_slice(&plaintext)
         .map_err(|e| format!("Failed to parse typed sync package: {}", e))
 }
@@ -293,4 +307,36 @@ fn decrypt_bytes(
         )
         .map_err(|_| "ERR_SYNC_DECRYPT_FAILED".to_string())?;
     Ok(plaintext.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compressed_batch_round_trips_through_encryption() {
+        let package = UsageBatchPackage {
+            schema_version: BATCH_SCHEMA_VERSION,
+            package_type: "usage_batch".to_string(),
+            device_id: "device-a".to_string(),
+            instance_id: "instance-a".to_string(),
+            batch_seq: 1,
+            prev_batch_seq: 0,
+            exported_at: 1,
+            request_events: Vec::new(),
+            session_events: Vec::new(),
+        };
+        let dek = [7_u8; KEY_LEN];
+        let encrypted = encrypt_batch_package(&package, &dek, 1).unwrap();
+        assert_eq!(encrypted.compression.as_deref(), Some("zstd"));
+        let keyring = wrap_new_keyring("sync-password", dek, 1).unwrap();
+        let restored: UsageBatchPackage = decrypt_typed_package(
+            &encrypted,
+            "sync-password",
+            &SyncKeyringState::Ready(keyring),
+        )
+        .unwrap();
+        assert_eq!(restored.device_id, package.device_id);
+        assert_eq!(restored.batch_seq, package.batch_seq);
+    }
 }
