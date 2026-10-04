@@ -343,7 +343,10 @@ pub struct SessionStats {
     /// 工作目录
     #[serde(default)]
     pub cwd: Option<String>,
-    /// 项目名称（从 cwd 提取）
+    /// 与项目统计一致的分组键；原始工作目录独立保留。
+    #[serde(default)]
+    pub project_key: Option<String>,
+    /// 项目名称（工作树使用主项目名称）
     #[serde(default)]
     pub project_name: Option<String>,
     /// 项目归属状态：project / global / unknown

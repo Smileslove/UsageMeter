@@ -17,6 +17,7 @@ mod maintenance;
 mod materialized;
 mod migrations;
 mod outbox;
+mod project;
 mod queries;
 mod remote_sync;
 mod scanner_sync;

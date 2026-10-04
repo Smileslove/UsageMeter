@@ -1273,7 +1273,7 @@ pub(crate) fn matches_source_filter(fact: &MergedRequestFact, filter: &SourceFil
 impl MergedRequestFact {
     pub fn from_local(record: &LocalRequestRecord, meta: Option<&SessionMeta>, cost: f64) -> Self {
         let project_name = meta.and_then(|m| m.project_name.clone());
-        let project_path = meta.and_then(|m| m.cwd.clone());
+        let project_path = meta.and_then(|m| m.project_path.clone().or_else(|| m.cwd.clone()));
         let local_key = canonical_request_key_for_local(record);
 
         Self {
@@ -1313,7 +1313,7 @@ impl MergedRequestFact {
 
     pub fn from_proxy(record: &UsageRecord, meta: Option<&SessionMeta>) -> Self {
         let project_name = meta.and_then(|m| m.project_name.clone());
-        let project_path = meta.and_then(|m| m.cwd.clone());
+        let project_path = meta.and_then(|m| m.project_path.clone().or_else(|| m.cwd.clone()));
         let source_label = derive_source_label(
             record.api_key_prefix.as_deref(),
             record.request_base_url.as_deref(),
@@ -1390,7 +1390,7 @@ impl MergedRequestFact {
         fallback_cost: f64,
     ) -> Self {
         let project_name = meta.and_then(|m| m.project_name.clone());
-        let project_path = meta.and_then(|m| m.cwd.clone());
+        let project_path = meta.and_then(|m| m.project_path.clone().or_else(|| m.cwd.clone()));
 
         let session_id = if !local.session_id.trim().is_empty() {
             local.session_id.clone()

@@ -66,7 +66,7 @@ const projectSearchQuery = ref('')
 
 // —— 项目视图（master-detail） ——
 const selectedProjectKey = ref<string | null>(null)
-const projectKeyOf = (project: ProjectStats) => project.projectKey || project.projectPath || project.name
+const projectKeyOf = (project: ProjectStats) => project.projectKey || project.projectPath || `name::${project.name}`
 
 const projectList = computed(() => {
   const sorted = [...store.projectStats].sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0))
@@ -110,7 +110,8 @@ const sessionsOfProject = computed(() => {
   return filteredSessions.value.filter(session => {
     if (project.projectIdentity === 'global') return session.projectIdentity === 'global'
     if (project.projectIdentity === 'unknown') return session.projectIdentity === 'unknown'
-    return !!session.projectName && session.projectName === project.name
+    const key = session.projectKey || session.cwd || (session.projectName ? `name::${session.projectName}` : null)
+    return key === projectKeyOf(project)
   })
 })
 

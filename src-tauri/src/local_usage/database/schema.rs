@@ -16,6 +16,20 @@ impl LocalUsageDatabase {
                 state_value TEXT NOT NULL,
                 updated_at INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS local_project_paths (
+                cwd TEXT PRIMARY KEY,
+                common_dir TEXT NOT NULL,
+                project_path TEXT NOT NULL,
+                project_name TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS local_session_projects (
+                session_id TEXT PRIMARY KEY,
+                common_dir TEXT NOT NULL,
+                project_path TEXT NOT NULL,
+                project_name TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_local_session_projects_common
+                ON local_session_projects(common_dir);
             "#,
         )
         .map_err(|e| format!("Failed to create local usage sync state table: {}", e))?;
@@ -202,6 +216,8 @@ impl LocalUsageDatabase {
                 ON unified_daily_materialized_facts(local_date, tool);
             CREATE INDEX IF NOT EXISTS idx_unified_daily_materialized_facts_date_session
                 ON unified_daily_materialized_facts(local_date, session_id);
+            CREATE INDEX IF NOT EXISTS idx_unified_daily_materialized_facts_session_date
+                ON unified_daily_materialized_facts(session_id, local_date);
 
             CREATE TABLE IF NOT EXISTS unified_daily_materialization_state (
                 local_date TEXT PRIMARY KEY,
@@ -365,6 +381,7 @@ impl LocalUsageDatabase {
             );
             CREATE INDEX IF NOT EXISTS idx_local_sessions_tool
                 ON local_sessions(tool);
+            CREATE INDEX IF NOT EXISTS idx_local_sessions_cwd ON local_sessions(cwd);
             CREATE INDEX IF NOT EXISTS idx_local_sessions_project_key
                 ON local_sessions(project_key);
             CREATE INDEX IF NOT EXISTS idx_local_sessions_end_time

@@ -320,6 +320,7 @@ impl ProxyDatabase {
                 covered_requests: row.get::<_, i64>(0)? as u64,
                 uncovered_requests: 0,
                 cwd: None,
+                project_key: None,
                 project_name: None,
                 project_identity: None,
                 topic: None,

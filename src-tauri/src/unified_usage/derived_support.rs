@@ -32,7 +32,8 @@ pub(super) fn session_project_identity(
 
 pub(super) fn project_descriptor_for_session(meta: &SessionMeta) -> ProjectDescriptor {
     let project_name = non_empty_owned(meta.project_name.as_deref());
-    let project_path = non_empty_owned(meta.cwd.as_deref());
+    let project_path = non_empty_owned(meta.project_path.as_deref())
+        .or_else(|| non_empty_owned(meta.cwd.as_deref()));
 
     if let Some(path) = project_path {
         return ProjectDescriptor {
@@ -105,6 +106,34 @@ fn non_empty_owned(value: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_session_and_request_use_the_same_canonical_project() {
+        let meta = SessionMeta {
+            session_id: "worktree-session".to_string(),
+            cwd: Some("/agents/worktrees/feature".to_string()),
+            project_path: Some("/code/repo".to_string()),
+            project_name: Some("repo".to_string()),
+            ..Default::default()
+        };
+        let session = project_descriptor_for_session(&meta);
+        let record = crate::session::LocalRequestRecord {
+            session_id: meta.session_id.clone(),
+            ..Default::default()
+        };
+        let fact = MergedRequestFact::from_local(&record, Some(&meta), 0.0);
+        let request = project_descriptor_for_fact(&fact);
+        assert_eq!(session.key, "/code/repo");
+        assert_eq!(session.key, request.key);
+        assert_eq!(session.path, request.path);
+        let stats = super::super::aggregation_support::build_metadata_only_session_stats(
+            &meta,
+            &crate::models::CurrencySettings::default(),
+            0,
+        );
+        assert_eq!(stats.project_key.as_deref(), Some("/code/repo"));
+        assert_eq!(stats.cwd.as_deref(), Some("/agents/worktrees/feature"));
+    }
 
     #[test]
     fn project_identity_ignores_blank_metadata() {

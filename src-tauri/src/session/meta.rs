@@ -71,7 +71,10 @@ pub struct SessionMeta {
     pub tool: String,
     /// 工作目录（从 JSONL cwd 字段提取）
     pub cwd: Option<String>,
-    /// 项目名称（从 cwd 提取，路径最后部分）
+    /// 规范项目路径；Git 工作树指向主工作区，原始 cwd 保持不变。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
+    /// 项目名称（Git 归属解析后为主工作区名称，其他来源从 cwd 提取）
     pub project_name: Option<String>,
     /// 会话主题（首条用户消息，截断至 50 字符）
     pub topic: Option<String>,

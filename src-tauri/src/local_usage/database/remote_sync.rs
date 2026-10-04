@@ -662,6 +662,7 @@ impl LocalUsageDatabase {
                 session_id: row.get(0)?,
                 tool: row.get(1)?,
                 cwd: project_key.clone(),
+                project_path: None,
                 project_name: row.get(3)?,
                 topic: None,
                 last_prompt: None,

@@ -21,6 +21,428 @@ fn temp_db() -> (tempfile::TempDir, LocalUsageDatabase) {
     (tmpdir, db)
 }
 
+fn git_worktree_fixture(main: &std::path::Path, linked: &std::path::Path) {
+    fs::create_dir(main).unwrap();
+    let git = |args: &[&str]| {
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(main)
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success())
+    };
+    git(&["init"]);
+    git(&[
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "init",
+    ]);
+    git(&["worktree", "add", "--detach", linked.to_str().unwrap()]);
+}
+
+fn insert_project_session(db: &LocalUsageDatabase, id: &str, cwd: &std::path::Path) {
+    db.conn.lock().unwrap().execute(
+        "INSERT INTO local_sessions (session_id, tool, cwd, project_name, project_key, updated_at, primary_file_path)
+         VALUES (?1, 'claude_code', ?2, 'linked', ?2, 1, '/transcript')",
+        params![id, cwd.to_str().unwrap()],
+    ).unwrap();
+}
+
+#[test]
+fn project_path_reuse_keeps_old_sessions_in_their_original_repository() {
+    let (tmp, db) = temp_db();
+    let a = tmp.path().join("a");
+    let b = tmp.path().join("b");
+    let linked = tmp.path().join("linked");
+    git_worktree_fixture(&a, &linked);
+    insert_project_session(&db, "old-session", &linked);
+    insert_request_fact(&db, "old-session", "old-message", "/old", true, 1);
+    let mut settings = crate::models::AppSettings::default();
+    settings.sync.enabled = true;
+    db.refresh_project_paths(&settings).unwrap();
+    let a = fs::canonicalize(a).unwrap();
+    // Emulate a v36 database, which only had cwd mappings, and upgrade before reuse.
+    {
+        let conn = db.conn.lock().unwrap();
+        conn.execute("DELETE FROM local_session_projects", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE local_sync_state SET state_value = '36' WHERE state_key = 'schema_version'",
+            [],
+        )
+        .unwrap();
+    }
+    drop(db);
+    let db = LocalUsageDatabase::new_with_path(&tmp.path().join("local_usage.db")).unwrap();
+    fs::remove_dir_all(&linked).unwrap();
+    git_worktree_fixture(&b, &linked);
+    insert_project_session(&db, "new-session", &linked);
+    insert_request_fact(&db, "new-session", "new-message", "/new", true, 2);
+    db.refresh_project_paths(&settings).unwrap();
+    let b = fs::canonicalize(b).unwrap();
+    let sessions = db.get_all_sessions(&ToolFilter::All).unwrap();
+    assert_eq!(
+        sessions
+            .iter()
+            .find(|s| s.session_id == "old-session")
+            .unwrap()
+            .project_path
+            .as_deref(),
+        a.to_str()
+    );
+    assert_eq!(
+        sessions
+            .iter()
+            .find(|s| s.session_id == "new-session")
+            .unwrap()
+            .project_path
+            .as_deref(),
+        b.to_str()
+    );
+    let mut old = sessions
+        .iter()
+        .find(|s| s.session_id == "old-session")
+        .unwrap()
+        .clone();
+    old.project_path = None;
+    old.project_name = Some("linked".to_string());
+    let requests = db
+        .get_request_records_in_range(0, i64::MAX, &ToolFilter::All)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.session_id == "old-session")
+        .collect();
+    db.sync_dirty_sessions(
+        vec![DirtySessionSync {
+            session_id: old.session_id.clone(),
+            tool: old.tool.clone(),
+            file_path: old.file_path.clone(),
+            file_role: "session_group".to_string(),
+            file_size: 0,
+            last_modified: 2,
+            fingerprint: "reused-path".to_string(),
+            meta: old,
+            requests,
+            project_key: linked.to_str().unwrap().to_string(),
+        }],
+        vec![],
+    )
+    .unwrap();
+    db.refresh_project_paths(&settings).unwrap();
+    let export = db.get_sync_export_data().unwrap();
+    assert_eq!(
+        export
+            .sessions
+            .iter()
+            .find(|s| s.session_id == "old-session")
+            .unwrap()
+            .project_key
+            .as_deref(),
+        a.to_str()
+    );
+    assert_eq!(
+        export
+            .requests
+            .iter()
+            .find(|s| s.session_id == "old-session")
+            .unwrap()
+            .project_key
+            .as_deref(),
+        a.to_str()
+    );
+    assert_eq!(
+        export.requests.iter().map(|r| r.total_tokens).sum::<u64>(),
+        60
+    );
+}
+
+#[test]
+fn project_backfill_invalidates_runtime_cache_for_new_metadata_only_session() {
+    let (tmp, db) = temp_db();
+    let main = tmp.path().join("main");
+    let linked = tmp.path().join("linked");
+    git_worktree_fixture(&main, &linked);
+    let settings = crate::models::AppSettings::default();
+    insert_project_session(&db, "first", &linked);
+    db.refresh_project_paths(&settings).unwrap();
+    insert_project_session(&db, "second", &linked);
+    let before = db.get_merge_cache_signature().unwrap();
+    db.refresh_project_paths(&settings).unwrap();
+    let after = db.get_merge_cache_signature().unwrap();
+    assert!(after.merge_cache_generation > before.merge_cache_generation);
+    db.refresh_project_paths(&settings).unwrap();
+    assert_eq!(after, db.get_merge_cache_signature().unwrap());
+}
+
+#[test]
+fn project_backfill_invalidates_proxy_only_history() {
+    assert_proxy_project_cache_invalidated(false);
+}
+
+#[test]
+fn project_backfill_invalidates_evicted_proxy_only_history() {
+    assert_proxy_project_cache_invalidated(true);
+}
+
+fn assert_proxy_project_cache_invalidated(evicted: bool) {
+    let (tmp, db) = temp_db();
+    let main = tmp.path().join("main");
+    let linked = tmp.path().join("linked");
+    git_worktree_fixture(&main, &linked);
+    insert_project_session(&db, "proxy-session", &linked);
+    let meta = db.get_all_sessions(&ToolFilter::All).unwrap().remove(0);
+    let record = crate::proxy::UsageRecord {
+        timestamp: 1_779_811_200_000,
+        message_id: "proxy-message".to_string(),
+        session_id: Some("proxy-session".to_string()),
+        input_tokens: 10,
+        output_tokens: 20,
+        total_tokens: 30,
+        client_tool: "claude_code".to_string(),
+        ..Default::default()
+    };
+    let old = MergedRequestFact::from_proxy(&record, Some(&meta));
+    let date = "2026-05-26";
+    let state = UnifiedDayMaterializationState {
+        local_date: date.to_string(),
+        day_boundary_mode: "standard".to_string(),
+        fact_count: 1,
+        local_request_count: 0,
+        local_max_sync_version: 0,
+        local_max_timestamp: 0,
+        remote_request_count: 0,
+        remote_max_export_seq: 0,
+        remote_max_timestamp: 0,
+        proxy_record_count: 1,
+        proxy_all_record_count: 1,
+        proxy_max_timestamp_ms: record.timestamp,
+        proxy_max_updated_at: 1,
+        max_fact_timestamp_ms: record.timestamp,
+        pricing_fingerprint: 0,
+        is_finalized: true,
+        finalized_at: Some(1),
+        materialized_at: 1,
+    };
+    db.replace_unified_day_materialization(
+        date,
+        &[(old.canonical_request_key.clone(), old)],
+        &state,
+    )
+    .unwrap();
+    if evicted {
+        assert_eq!(db.evict_materialized_facts_before("2026-05-27").unwrap(), 1);
+        assert!(db
+            .get_unified_day_materialization_state(date)
+            .unwrap()
+            .is_some());
+    }
+    assert_eq!(db.count_local_request_facts().unwrap(), 0);
+    db.refresh_project_paths(&crate::models::AppSettings::default())
+        .unwrap();
+    assert!(db
+        .get_unified_day_materialization_state(date)
+        .unwrap()
+        .is_none());
+    assert!(db
+        .get_unified_facts_for_dates(&[date.to_string()], &ToolFilter::All)
+        .unwrap()
+        .is_empty());
+    let meta = db.get_all_sessions(&ToolFilter::All).unwrap().remove(0);
+    let rebuilt = MergedRequestFact::from_proxy(&record, Some(&meta));
+    assert_eq!(
+        rebuilt.project_path.as_deref(),
+        fs::canonicalize(main).unwrap().to_str()
+    );
+    assert_eq!(rebuilt.total_tokens, 30);
+}
+
+#[test]
+fn worktree_project_backfill_preserves_usage_and_survives_deleted_worktree() {
+    let (tmp, db) = temp_db();
+    let main = tmp.path().join("main-project");
+    let worktree = tmp.path().join("feature");
+    fs::create_dir(&main).unwrap();
+    let git = |args: &[&str]| {
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&main)
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success());
+    };
+    git(&["init"]);
+    git(&[
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "init",
+    ]);
+    git(&["worktree", "add", "--detach", worktree.to_str().unwrap()]);
+    let main = fs::canonicalize(main).unwrap();
+    let worktree = fs::canonicalize(worktree).unwrap();
+    {
+        let conn = db.conn.lock().unwrap();
+        for (id, cwd) in [("main-session", &main), ("worktree-session", &worktree)] {
+            conn.execute(
+                "INSERT INTO local_sessions (session_id, tool, project_key, cwd, project_name,
+                    request_count, total_input_tokens, total_output_tokens, total_tokens, updated_at, primary_file_path)
+                 VALUES (?1, 'claude_code', 'old', ?2, 'old', 1, 10, 20, 30, 1, '/transcript')",
+                params![id, cwd.to_str().unwrap()],
+            ).unwrap();
+        }
+    }
+    insert_request_fact(&db, "main-session", "m1", "/transcript/main", true, 1);
+    insert_request_fact(
+        &db,
+        "worktree-session",
+        "m2",
+        "/transcript/worktree",
+        true,
+        2,
+    );
+    let mut settings = crate::models::AppSettings::default();
+    settings.sync.enabled = true;
+    let before = db.get_merge_cache_signature().unwrap();
+    db.refresh_project_paths(&settings).unwrap();
+    let after = db.get_merge_cache_signature().unwrap();
+    assert_ne!(before, after);
+    assert!(
+        after.unified_materialization_invalidation_version
+            > before.unified_materialization_invalidation_version
+    );
+    let sessions = db.get_all_sessions(&ToolFilter::All).unwrap();
+    assert_eq!(sessions.len(), 2);
+    for session in &sessions {
+        assert_eq!(session.project_path.as_deref(), main.to_str());
+        assert_eq!(session.project_name.as_deref(), Some("main-project"));
+        assert_eq!(session.total_input_tokens, 10);
+        assert_eq!(session.total_output_tokens, 20);
+        let record = crate::session::LocalRequestRecord {
+            session_id: session.session_id.clone(),
+            ..Default::default()
+        };
+        let fact = MergedRequestFact::from_local(&record, Some(session), 0.0);
+        assert_eq!(fact.project_path.as_deref(), main.to_str());
+    }
+    assert_eq!(
+        sessions
+            .iter()
+            .find(|s| s.session_id == "worktree-session")
+            .unwrap()
+            .cwd
+            .as_deref(),
+        worktree.to_str()
+    );
+    let export = db.get_sync_export_data().unwrap();
+    assert_eq!(export.requests.len(), 2);
+    assert_eq!(
+        export.requests.iter().map(|r| r.total_tokens).sum::<u64>(),
+        60
+    );
+    assert!(export
+        .sessions
+        .iter()
+        .all(|s| s.project_key.as_deref() == main.to_str()));
+    assert!(export
+        .requests
+        .iter()
+        .all(|r| r.project_key.as_deref() == main.to_str()));
+    {
+        let conn = db.conn.lock().unwrap();
+        for table in ["sync_outbox_session_events", "sync_outbox_request_events"] {
+            let mut stmt = conn
+                .prepare(&format!("SELECT payload_json FROM {table}"))
+                .unwrap();
+            let payloads: Vec<String> = stmt
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert_eq!(payloads.len(), 2);
+            for payload in payloads {
+                let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+                assert_eq!(json["projectKey"].as_str(), main.to_str());
+            }
+        }
+    }
+    // Unchanged history does not bump the generation on every scan.
+    db.refresh_project_paths(&settings).unwrap();
+    assert_eq!(after, db.get_merge_cache_signature().unwrap());
+    let mut reparsed = sessions
+        .iter()
+        .find(|s| s.session_id == "worktree-session")
+        .unwrap()
+        .clone();
+    reparsed.project_name = Some("feature".to_string());
+    reparsed.project_path = None;
+    let requests = db
+        .get_request_records_in_range(0, i64::MAX, &ToolFilter::All)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.session_id == reparsed.session_id)
+        .collect();
+    db.sync_dirty_sessions(
+        vec![DirtySessionSync {
+            session_id: reparsed.session_id.clone(),
+            tool: reparsed.tool.clone(),
+            file_path: reparsed.file_path.clone(),
+            file_role: "session_group".to_string(),
+            file_size: 0,
+            last_modified: 1,
+            fingerprint: "reparsed".to_string(),
+            meta: reparsed,
+            requests,
+            project_key: "feature".to_string(),
+        }],
+        vec![],
+    )
+    .unwrap();
+    // A known mapping is applied inside the ingest transaction, before the final refresh.
+    assert!(db
+        .get_sync_export_data()
+        .unwrap()
+        .sessions
+        .iter()
+        .all(|s| s.project_key.as_deref() == main.to_str()));
+    let ingested = db.get_merge_cache_signature().unwrap();
+    db.refresh_project_paths(&settings).unwrap();
+    assert_eq!(ingested, db.get_merge_cache_signature().unwrap());
+    fs::remove_dir_all(&worktree).unwrap();
+    // Reparsed transcripts may reset the stored key/name; the saved association still applies.
+    db.conn.lock().unwrap().execute("UPDATE local_sessions SET project_key = 'old', project_name = 'feature' WHERE session_id = 'worktree-session'", []).unwrap();
+    db.refresh_project_paths(&settings).unwrap();
+    let sessions = db.get_all_sessions(&ToolFilter::All).unwrap();
+    assert!(sessions
+        .iter()
+        .all(|s| s.project_path.as_deref() == main.to_str()));
+    assert!(sessions
+        .iter()
+        .all(|s| s.project_name.as_deref() == Some("main-project")));
+    // Reusing the path as a non-Git directory must not change historical session identity.
+    fs::create_dir(&worktree).unwrap();
+    db.refresh_project_paths(&settings).unwrap();
+    let sessions = db.get_all_sessions(&ToolFilter::All).unwrap();
+    let session = sessions
+        .iter()
+        .find(|s| s.session_id == "worktree-session")
+        .unwrap();
+    assert_eq!(session.project_path.as_deref(), main.to_str());
+    assert_eq!(session.project_name.as_deref(), Some("main-project"));
+}
+
 fn insert_request_fact(
     db: &LocalUsageDatabase,
     session_id: &str,
@@ -897,7 +1319,7 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
             |row| row.get(0),
         )
         .expect("read schema version");
-    assert_eq!(schema_version, "35");
+    assert_eq!(schema_version, "37");
     for table in ["local_sessions", "remote_sessions"] {
         let columns: Vec<String> = conn
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -1133,7 +1555,7 @@ fn v35_migration_clears_stale_unified_materialization() {
         )
         .expect("count materialized facts");
 
-    assert_eq!(schema_version, "35");
+    assert_eq!(schema_version, "37");
     assert_eq!(materialized_count, 0);
 }
 
@@ -3015,7 +3437,7 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
             .get_local_sync_state("schema_version")
             .unwrap()
             .as_deref(),
-        Some("35")
+        Some("37")
     );
     assert!(
         reopened

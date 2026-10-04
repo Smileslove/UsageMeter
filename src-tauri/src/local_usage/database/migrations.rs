@@ -20,7 +20,7 @@ impl LocalUsageDatabase {
 
     pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 35 {
+        if schema_version >= 37 {
             return Ok(());
         }
         let mut cleared_runtime_caches = false;
@@ -1170,6 +1170,31 @@ impl LocalUsageDatabase {
             .map_err(|e| format!("Failed to update v35 schema version: {e}"))?;
             tx.commit()
                 .map_err(|e| format!("Failed to commit v35 schema migration: {e}"))?;
+            cleared_runtime_caches = true;
+        }
+
+        if schema_version < 36 {
+            conn.execute(
+                "UPDATE local_sync_state SET state_value = '36', updated_at = ?1 WHERE state_key = 'schema_version'",
+                [chrono::Utc::now().timestamp()],
+            ).map_err(|e| format!("Failed to update v36 schema version: {e}"))?;
+        }
+
+        if schema_version < 37 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|e| format!("Failed to start v37 migration: {e}"))?;
+            // Preserve the last known v36 attribution before cwd starts acting only as
+            // a discovery cache. Already-lost historical identities cannot be inferred.
+            tx.execute_batch(
+                "INSERT OR IGNORE INTO local_session_projects (session_id, common_dir, project_path, project_name)
+                 SELECT s.session_id, p.common_dir, p.project_path, p.project_name
+                 FROM local_sessions s JOIN local_project_paths p ON p.cwd = s.cwd;",
+            ).map_err(|e| format!("Failed to preserve session projects: {e}"))?;
+            Self::clear_unified_materialization_tx(&tx, chrono::Utc::now().timestamp())?;
+            Self::upsert_sync_state(&tx, "schema_version", "37", chrono::Utc::now().timestamp())?;
+            tx.commit()
+                .map_err(|e| format!("Failed to commit v37 migration: {e}"))?;
             cleared_runtime_caches = true;
         }
 

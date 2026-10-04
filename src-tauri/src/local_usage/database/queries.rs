@@ -127,7 +127,8 @@ impl LocalUsageDatabase {
                         total_output_tokens, total_cache_create_tokens, total_cache_read_tokens,
                         request_count, start_time, end_time, source_kind, model_list_json,
                         total_reasoning_tokens, total_elapsed_ms, explicit_cost,
-                        explicit_cost_currency, usage_sources_json, estimated
+                        explicit_cost_currency, usage_sources_json, estimated,
+                        (SELECT p.project_path FROM local_session_projects p WHERE p.session_id = local_sessions.session_id)
                  FROM local_sessions";
         let mapper = |row: &rusqlite::Row<'_>| {
             let model_list_json: String = row.get(19)?;
@@ -136,6 +137,7 @@ impl LocalUsageDatabase {
                 session_id: row.get(0)?,
                 tool: row.get(1)?,
                 cwd: row.get(2)?,
+                project_path: row.get(26)?,
                 project_name: row.get(3)?,
                 topic: row.get(4)?,
                 last_prompt: row.get(5)?,

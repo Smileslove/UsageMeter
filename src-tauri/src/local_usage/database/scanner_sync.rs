@@ -34,8 +34,7 @@ type RemovedFact = (
 
 impl LocalUsageDatabase {
     /// 收集该会话中"仍在场"（`source_file_present != 0`）的请求事实所覆盖的历史业务日期。
-    /// 只用于会话整体消失时的软删路径：即将被软删翻转的行才会真正改变历史日数据，
-    /// 已软删过的行不应再次触发历史日失效。
+    /// 用于会话软删或项目归属回填；已软删的行不应再次触发历史日失效。
     pub(super) fn collect_history_dates_for_session_tx(
         tx: &rusqlite::Transaction<'_>,
         session_id: &str,
@@ -321,6 +320,8 @@ impl LocalUsageDatabase {
                 .map_err(|e| format!("Failed to commit OpenCode DB sync state: {}", e))?;
         }
         log_sync_stage("persist_opencode_state", stage_started, state_count);
+
+        self.refresh_project_paths(&crate::settings::load_settings_blocking().unwrap_or_default())?;
 
         // Passive attribution is read-only and shares the existing scanner cadence. A missing
         // or unsupported tool configuration must never block local usage ingestion.
@@ -670,10 +671,25 @@ impl LocalUsageDatabase {
                 file_size,
                 last_modified,
                 fingerprint,
-                meta,
+                mut meta,
                 requests,
-                project_key,
+                mut project_key,
             } = dirty_session;
+
+            // Session identity survives cwd reuse and transcript reparsing. A path cache
+            // alone is not historical evidence for a newly discovered session.
+            let project: Option<(String, String)> = tx
+                    .query_row(
+                        "SELECT project_path, project_name FROM local_session_projects WHERE session_id = ?1",
+                        [&session_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(|e| format!("Failed to read saved project path: {e}"))?;
+            if let Some((path, name)) = project {
+                project_key = path;
+                meta.project_name = Some(name);
+            }
 
             tx.execute(
                 "DELETE FROM local_session_tombstones WHERE session_id = ?1",

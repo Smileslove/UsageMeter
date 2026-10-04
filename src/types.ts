@@ -651,7 +651,8 @@ export interface SessionStats {
   uncoveredRequests?: number
   // JSONL 元信息（Phase 4 添加）
   cwd?: string
-  projectName?: string  // 项目名称（从 cwd 提取）
+  projectKey?: string | null // 与项目统计一致的归属键，cwd 保留实际工作路径
+  projectName?: string  // 项目名称（工作树归入主项目）
   projectIdentity?: 'project' | 'global' | 'unknown'
   topic?: string        // 首个有意义用户消息
   lastPrompt?: string

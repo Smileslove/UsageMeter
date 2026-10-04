@@ -55,6 +55,7 @@ pub(super) fn build_metadata_only_session_stats(
         covered_requests: 0,
         uncovered_requests: meta.message_count,
         cwd: meta.cwd.clone(),
+        project_key: Some(project_descriptor_for_session(meta).key),
         project_name: meta.project_name.clone(),
         project_identity: Some(
             session_project_identity(meta.project_name.as_deref(), meta.cwd.as_deref()).to_string(),

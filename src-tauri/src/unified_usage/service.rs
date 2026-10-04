@@ -1584,6 +1584,7 @@ fn build_fact_backed_session_stats(
         // 不再叠加 reasonix 会话级未归属请求。
         uncovered_requests: local_only_requests,
         cwd: meta.and_then(|m| m.cwd.clone()),
+        project_key: meta.map(|m| super::derived_support::project_descriptor_for_session(m).key),
         project_name: meta.and_then(|m| m.project_name.clone()),
         project_identity: Some(
             meta.map(|m| {
