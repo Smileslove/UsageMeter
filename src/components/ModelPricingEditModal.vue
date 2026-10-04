@@ -39,6 +39,8 @@ const outputPrice = ref(0)
 const cacheReadPrice = ref<number | undefined>(undefined)
 const cacheWritePrice = ref<number | undefined>(undefined)
 
+const displayPrice = (price: number): number => parseFloat(price.toFixed(6))
+
 // 是否编辑模式
 const isEdit = ref(false)
 
@@ -50,19 +52,19 @@ watch(() => [props.pricing, props.copySource], ([pricing, copySource]) => {
     modelId.value = pricing.modelId
     displayName.value = pricing.displayName || ''
     const r = exchangeRateFor(inputCurrency.value)
-    inputPrice.value = parseFloat((pricing.inputPrice * r).toFixed(4))
-    outputPrice.value = parseFloat((pricing.outputPrice * r).toFixed(4))
-    cacheReadPrice.value = pricing.cacheReadPrice != null ? parseFloat((pricing.cacheReadPrice * r).toFixed(4)) : undefined
-    cacheWritePrice.value = pricing.cacheWritePrice != null ? parseFloat((pricing.cacheWritePrice * r).toFixed(4)) : undefined
+    inputPrice.value = displayPrice(pricing.inputPrice * r)
+    outputPrice.value = displayPrice(pricing.outputPrice * r)
+    cacheReadPrice.value = pricing.cacheReadPrice != null ? displayPrice(pricing.cacheReadPrice * r) : undefined
+    cacheWritePrice.value = pricing.cacheWritePrice != null ? displayPrice(pricing.cacheWritePrice * r) : undefined
   } else if (copySource) {
     isEdit.value = false
     modelId.value = copySource.modelId
     displayName.value = copySource.displayName || ''
     const r = exchangeRateFor(inputCurrency.value)
-    inputPrice.value = parseFloat((copySource.inputPrice * r).toFixed(4))
-    outputPrice.value = parseFloat((copySource.outputPrice * r).toFixed(4))
-    cacheReadPrice.value = copySource.cacheReadPrice != null ? parseFloat((copySource.cacheReadPrice * r).toFixed(4)) : undefined
-    cacheWritePrice.value = copySource.cacheWritePrice != null ? parseFloat((copySource.cacheWritePrice * r).toFixed(4)) : undefined
+    inputPrice.value = displayPrice(copySource.inputPrice * r)
+    outputPrice.value = displayPrice(copySource.outputPrice * r)
+    cacheReadPrice.value = copySource.cacheReadPrice != null ? displayPrice(copySource.cacheReadPrice * r) : undefined
+    cacheWritePrice.value = copySource.cacheWritePrice != null ? displayPrice(copySource.cacheWritePrice * r) : undefined
   } else {
     isEdit.value = false
     modelId.value = ''
@@ -79,10 +81,10 @@ watch(inputCurrency, (newCurrency) => {
   const source = props.pricing || props.copySource
   if (!source) return
   const r = exchangeRateFor(newCurrency)
-  inputPrice.value = parseFloat((source.inputPrice * r).toFixed(4))
-  outputPrice.value = parseFloat((source.outputPrice * r).toFixed(4))
-  cacheReadPrice.value = source.cacheReadPrice != null ? parseFloat((source.cacheReadPrice * r).toFixed(4)) : undefined
-  cacheWritePrice.value = source.cacheWritePrice != null ? parseFloat((source.cacheWritePrice * r).toFixed(4)) : undefined
+  inputPrice.value = displayPrice(source.inputPrice * r)
+  outputPrice.value = displayPrice(source.outputPrice * r)
+  cacheReadPrice.value = source.cacheReadPrice != null ? displayPrice(source.cacheReadPrice * r) : undefined
+  cacheWritePrice.value = source.cacheWritePrice != null ? displayPrice(source.cacheWritePrice * r) : undefined
 })
 
 // 保存（将输入币种价格转换为 USD 存储）
@@ -181,7 +183,7 @@ const isValid = () => {
             <input
               v-model.number="inputPrice"
               type="number"
-              step="0.01"
+              step="0.000001"
               min="0"
               placeholder="3.00"
               class="theme-input w-full rounded-lg px-2.5 py-1.5 pr-10 text-xs font-mono"
@@ -195,7 +197,7 @@ const isValid = () => {
             <input
               v-model.number="outputPrice"
               type="number"
-              step="0.01"
+              step="0.000001"
               min="0"
               placeholder="15.00"
               class="theme-input w-full rounded-lg px-2.5 py-1.5 pr-10 text-xs font-mono"
@@ -213,7 +215,7 @@ const isValid = () => {
             <input
               v-model.number="cacheReadPrice"
               type="number"
-              step="0.01"
+              step="0.000001"
               min="0"
               placeholder="0"
               class="theme-input w-full rounded-lg px-2.5 py-1.5 pr-10 text-xs font-mono"
@@ -227,7 +229,7 @@ const isValid = () => {
             <input
               v-model.number="cacheWritePrice"
               type="number"
-              step="0.01"
+              step="0.000001"
               min="0"
               placeholder="0"
               class="theme-input w-full rounded-lg px-2.5 py-1.5 pr-10 text-xs font-mono"
