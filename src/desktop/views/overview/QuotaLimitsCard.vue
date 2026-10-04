@@ -55,8 +55,8 @@ function resetLabel(row: LimitRow, locale: string): string {
 </script>
 
 <template>
-  <div class="rounded-lg border border-[var(--theme-border-default)] p-4" style="background: var(--theme-surface-gradient)">
-    <h3 class="mb-3 flex items-center gap-1.5 text-[15px] font-semibold text-[var(--theme-text-secondary)]">
+  <div class="overview-panel rounded-2xl border p-5" style="background: var(--theme-surface-gradient)">
+    <h3 class="mb-4 flex items-center gap-2 text-[15px] font-semibold text-[var(--theme-text-primary)]">
       <ShieldCheck :size="14" class="shrink-0" aria-hidden="true" />
       {{ t(locale, 'desktop.overview.limitTitle') }}
     </h3>
@@ -75,7 +75,7 @@ function resetLabel(row: LimitRow, locale: string): string {
         v-for="row in rows"
         :key="row.key"
         :class="[
-          'rounded-lg border border-[var(--theme-border-default)] p-3',
+          'rounded-xl border border-[var(--theme-border-default)] bg-[var(--theme-bg-surface-muted)] p-3.5',
           row.clickable ? 'cursor-pointer transition-colors duration-150 hover:bg-[var(--theme-bg-hover)]' : ''
         ]"
         :title="row.clickable ? t(locale, 'desktop.overview.limitOpenHint') : undefined"

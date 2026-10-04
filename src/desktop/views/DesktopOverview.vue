@@ -418,9 +418,9 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="flex flex-col gap-5">
+  <section class="desktop-overview flex flex-col gap-3">
     <!-- 页面顶部行：回退提示（如有）+ 页面内时间范围选择（窗口选择归属页面，不放全局顶栏） -->
-    <div class="flex items-center justify-between gap-3">
+    <div class="flex min-h-0 items-center justify-end gap-3">
       <div
         v-if="isWindowFallback"
         class="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-[var(--theme-border-default)] bg-[var(--theme-bg-surface)] px-3 py-2 text-xs text-[var(--theme-text-secondary)]"
@@ -431,10 +431,8 @@ onUnmounted(() => {
           {{ t(locale, 'desktop.overview.windowFallbackHint', { fallback: fallbackWindowName }) }}
         </span>
       </div>
-      <span v-else class="flex-1" aria-hidden="true" />
-
       <div
-        class="flex shrink-0 items-center rounded-lg border border-[var(--theme-border-default)] p-0.5"
+        class="desktop-overview__range flex shrink-0 items-center rounded-lg border p-0.5"
         role="group"
         :aria-label="t(locale, 'settings.summaryWindow')"
       >
@@ -442,12 +440,13 @@ onUnmounted(() => {
           v-for="item in RANGES"
           :key="item.value"
           type="button"
-          class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors duration-150"
+          class="rounded-md px-2 py-0.5 text-xs font-semibold leading-6 transition-colors duration-150"
           :class="
             analytics.overviewWindow === item.value
               ? 'bg-[var(--theme-accent-soft)] text-[var(--theme-accent-primary)]'
               : 'text-[var(--theme-text-tertiary)] hover:text-[var(--theme-text-primary)]'
           "
+          :aria-pressed="analytics.overviewWindow === item.value"
           @click="analytics.overviewWindow = item.value"
         >
           {{ windowNameLabel(locale, item.value) }}
@@ -498,15 +497,13 @@ onUnmounted(() => {
       <!-- KPI 条带：一条连续表面 6 个指标（设计 6.4），固定高度骨架保证布局不跳动 -->
       <KpiBand
         :kpis="kpis"
-        :active-metric="analytics.analyticsMetric"
         :locale="locale"
-        @select="analytics.analyticsMetric = $event"
       />
 
       <!-- 用量趋势 + 额度与生存 -->
       <div class="grid grid-cols-1 gap-5 xl:grid-cols-3">
         <!-- 用量趋势（约 2/3 宽） -->
-        <div class="rounded-lg border border-[var(--theme-border-default)] p-4 xl:col-span-2" style="background: var(--theme-surface-gradient)">
+        <div class="overview-panel rounded-2xl border p-5 xl:col-span-2" style="background: var(--theme-surface-gradient)">
           <div class="mb-3 flex items-center justify-between gap-2">
             <h3 class="flex items-center gap-1.5 text-[15px] font-semibold text-[var(--theme-text-secondary)]">
               <Activity :size="14" class="shrink-0" aria-hidden="true" />
@@ -591,3 +588,33 @@ onUnmounted(() => {
     </template>
   </section>
 </template>
+
+<style scoped>
+.desktop-overview :deep(.overview-panel) {
+  border-color: var(--theme-border-default);
+  box-shadow: 0 10px 30px color-mix(in srgb, var(--theme-text-primary) 5%, transparent);
+}
+
+.desktop-overview__range {
+  border-color: var(--theme-border-default);
+  background: color-mix(in srgb, var(--theme-bg-surface) 78%, transparent);
+  box-shadow: var(--theme-shadow-inline);
+}
+
+.desktop-overview__range button[aria-pressed='true'],
+.desktop-overview__range button:hover {
+  background: var(--theme-accent-soft);
+}
+
+@media (max-width: 700px) {
+  .desktop-overview__range {
+    width: 100%;
+    overflow-x: auto;
+    justify-content: space-between;
+  }
+
+  .desktop-overview__range button {
+    flex: 1 0 auto;
+  }
+}
+</style>

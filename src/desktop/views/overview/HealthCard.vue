@@ -31,8 +31,8 @@ defineProps({
 </script>
 
 <template>
-  <div class="rounded-lg border border-[var(--theme-border-default)] p-4" style="background: var(--theme-surface-gradient)">
-    <h3 class="mb-2 flex items-center gap-1.5 text-[15px] font-semibold text-[var(--theme-text-secondary)]">
+  <div class="overview-panel rounded-2xl border p-5" style="background: var(--theme-surface-gradient)">
+    <h3 class="mb-3 flex items-center gap-2 text-[15px] font-semibold text-[var(--theme-text-primary)]">
       <CircleHelp :size="14" class="shrink-0" aria-hidden="true" />
       {{ t(locale, 'desktop.overview.healthTitle') }}
     </h3>

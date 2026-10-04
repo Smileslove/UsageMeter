@@ -32,9 +32,9 @@ function sessionTitle(session: { sessionName?: string; topic?: string }): string
 </script>
 
 <template>
-  <div class="rounded-lg border border-[var(--theme-border-default)] p-4 xl:col-span-2" style="background: var(--theme-surface-gradient)">
+  <div class="overview-panel rounded-2xl border p-5 xl:col-span-2" style="background: var(--theme-surface-gradient)">
     <div class="mb-2 flex items-center justify-between gap-2">
-      <h3 class="flex items-center gap-1.5 text-[15px] font-semibold text-[var(--theme-text-secondary)]">
+      <h3 class="flex items-center gap-2 text-[15px] font-semibold text-[var(--theme-text-primary)]">
         <Clock :size="14" class="shrink-0" aria-hidden="true" />
         {{ t(locale, 'desktop.overview.sessionsTitle') }}
       </h3>

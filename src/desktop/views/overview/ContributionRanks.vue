@@ -71,11 +71,11 @@ function formatContributionPrimary(item: OverviewBreakdownItem): string {
     <section
       v-for="section in sections"
       :key="section.key"
-      class="rounded-lg border border-[var(--theme-border-default)] p-4"
+      class="overview-panel rounded-2xl border p-5"
       style="background: var(--theme-surface-gradient)"
     >
       <div class="mb-2 flex items-center justify-between gap-2">
-        <h3 class="flex items-center gap-1.5 text-[15px] font-semibold text-[var(--theme-text-secondary)]">
+        <h3 class="flex items-center gap-2 text-[15px] font-semibold text-[var(--theme-text-primary)]">
           <component :is="sectionIcon(section.key)" :size="14" class="shrink-0" aria-hidden="true" />
           {{ t(locale, section.titleKey) }}
         </h3>
@@ -93,7 +93,7 @@ function formatContributionPrimary(item: OverviewBreakdownItem): string {
           v-for="row in section.rows"
           :key="row.item.id"
           type="button"
-          class="flex flex-col gap-1 rounded-md px-1.5 py-2 text-left transition-colors duration-150 hover:bg-[var(--theme-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring-focus)]"
+          class="flex flex-col gap-1 rounded-xl px-2 py-2.5 text-left transition-colors duration-150 hover:bg-[var(--theme-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring-focus)]"
           :title="t(locale, 'desktop.overview.contributionOpenHint')"
           @click="emit('open', section.key, row.item)"
         >

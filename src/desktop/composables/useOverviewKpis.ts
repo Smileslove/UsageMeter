@@ -24,13 +24,11 @@ import {
 } from '../../utils/format'
 import type { StatisticsMetric, WindowRateSummary, WindowUsage } from '../../types'
 
-export interface SecondaryPart {
-  /** 可翻译片段的 i18n key（与 text 二选一）。 */
-  key?: string
-  /** 不可翻译的原始数据片段（格式化数值 / 分隔符等）。 */
-  text?: string
-  /** i18n 插值参数（仅当 key 存在时有效）。 */
-  params?: Record<string, string | number>
+export interface KpiDetail {
+  labelKey?: string
+  /** 币种代码等非自然语言标签。 */
+  label?: string
+  value: string
 }
 
 export interface KpiItem {
@@ -38,8 +36,7 @@ export interface KpiItem {
   icon: Component
   labelKey: string
   primary: string
-  /** 副标题结构化片段：组件层负责将 key 片段用 t() 渲染并与 text 片段以空格拼接。 */
-  secondaryParts: SecondaryPart[]
+  details: KpiDetail[]
   secondaryTitleKey?: string
   /** 点击后趋势切换到的主指标维度。 */
   metric: StatisticsMetric
@@ -73,15 +70,6 @@ export function useOverviewKpis(
     return (windowData.value!.successRequests / covered) * 100
   })
 
-  /** 缓存命中率：cacheRead / (cacheRead + cacheCreate)。 */
-  const cacheHitRate = computed(() => {
-    const d = windowData.value
-    if (!d) return null
-    const total = d.cacheReadTokens + d.cacheCreateTokens
-    if (total <= 0) return null
-    return (d.cacheReadTokens / total) * 100
-  })
-
   const kpis = computed<KpiItem[]>(() => {
     const d = windowData.value
     if (!d) return []
@@ -89,22 +77,20 @@ export function useOverviewKpis(
     const covered = coveredStatusRequests.value
     const speed = hasRateData.value ? rateSummary.value!.overall.avgTokensPerSecond : null
     const ttft = hasRateData.value ? rateSummary.value!.ttft.avgTtftMs : null
-    const statusParts: SecondaryPart[] = covered > 0
-      ? [
-          { key: 'desktop.overview.kpiSuccess' },
-          { text: formatRequestCount(d.successRequests) },
-          { text: '·' },
-          { key: 'desktop.overview.kpiFailed' },
-          { text: formatRequestCount(d.clientErrorRequests + d.serverErrorRequests) }
-        ]
-      : [{ text: '--' }]
+    const statusDetails: KpiDetail[] = [
+      { labelKey: 'desktop.overview.kpiSuccess', value: covered > 0 ? formatRequestCount(d.successRequests) : '--' },
+      { labelKey: 'desktop.overview.kpiFailed', value: covered > 0 ? formatRequestCount(d.clientErrorRequests + d.serverErrorRequests) : '--' }
+    ]
     return [
       {
         key: 'requests',
         icon: MessageSquare,
         labelKey: 'desktop.overview.kpiRequests',
         primary: formatRequestCount(d.requestUsed),
-        secondaryParts: statusParts,
+        details: [
+          { labelKey: 'statistics.localRequests', value: formatRequestCount(d.localRequestCount) },
+          { labelKey: 'statistics.proxyRequests', value: formatRequestCount(d.proxyRequestCount) }
+        ],
         metric: 'requests' as StatisticsMetric,
         coverageTag: false
       },
@@ -113,12 +99,9 @@ export function useOverviewKpis(
         icon: Sigma,
         labelKey: 'desktop.overview.kpiTokens',
         primary: formatTokenValue(d.tokenUsed),
-        secondaryParts: [
-          { key: 'desktop.overview.kpiInput' },
-          { text: pair.input },
-          { text: '·' },
-          { key: 'desktop.overview.kpiOutput' },
-          { text: pair.output }
+        details: [
+          { labelKey: 'desktop.overview.kpiInput', value: pair.input },
+          { labelKey: 'desktop.overview.kpiOutput', value: pair.output }
         ],
         metric: 'tokens' as StatisticsMetric,
         coverageTag: false
@@ -128,9 +111,9 @@ export function useOverviewKpis(
         icon: CircleDollarSign,
         labelKey: 'desktop.overview.kpiCost',
         primary: formatCost(d.cost, store.settings.currency),
-        secondaryParts: [
-          { text: 'USD' },
-          { text: d.cost.toFixed(4) }
+        details: [
+          { label: 'USD', value: d.cost.toFixed(4) },
+          { labelKey: 'common.requests', value: formatRequestCount(d.requestUsed) }
         ],
         secondaryTitleKey: 'desktop.overview.kpiUsdHint',
         metric: 'cost' as StatisticsMetric,
@@ -141,13 +124,10 @@ export function useOverviewKpis(
         icon: Database,
         labelKey: 'desktop.overview.kpiCache',
         primary: formatTokenValue(d.cacheReadTokens),
-        secondaryParts:
-          cacheHitRate.value == null
-            ? [{ text: '--' }]
-            : [
-                { text: `${formatRate(cacheHitRate.value)}%` },
-                { key: 'desktop.overview.kpiHitRate' }
-              ],
+        details: [
+          { labelKey: 'statistics.cacheCreateShort', value: formatTokenValue(d.cacheCreateTokens) },
+          { labelKey: 'statistics.cacheReadShort', value: formatTokenValue(d.cacheReadTokens) }
+        ],
         metric: 'tokens' as StatisticsMetric,
         coverageTag: false
       },
@@ -156,9 +136,7 @@ export function useOverviewKpis(
         icon: ShieldCheck,
         labelKey: 'desktop.overview.kpiSuccessRate',
         primary: successRate.value == null ? '--' : `${formatRate(successRate.value)}%`,
-        secondaryParts: successRate.value == null
-          ? [{ key: 'desktop.overview.kpiCoverageOnly' }]
-          : [{ key: 'desktop.overview.kpiCovered', params: { count: formatRequestCount(coveredStatusRequests.value) } }],
+        details: statusDetails,
         metric: 'requests' as StatisticsMetric,
         coverageTag: successRate.value == null
       },
@@ -167,12 +145,10 @@ export function useOverviewKpis(
         icon: Gauge,
         labelKey: 'desktop.overview.kpiAvgSpeed',
         primary: speed == null ? '--' : `${formatRate(speed)} t/s`,
-        secondaryParts: ttft == null
-          ? [{ key: 'desktop.overview.kpiCoverageOnly' }]
-          : [
-              { key: 'desktop.overview.kpiTtft' },
-              { text: formatDurationMs(ttft) }
-            ],
+        details: [
+          { labelKey: 'desktop.overview.kpiTtft', value: ttft == null ? '--' : formatDurationMs(ttft) },
+          { labelKey: 'common.covered', value: hasRateData.value ? formatRequestCount(rateSummary.value!.overall.requestCount) : '--' }
+        ],
         metric: 'requests' as StatisticsMetric,
         coverageTag: !hasRateData.value
       }
