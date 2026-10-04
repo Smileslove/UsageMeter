@@ -1445,6 +1445,35 @@ fn reenable_sync_requests_a_new_generation_snapshot() {
 }
 
 #[test]
+fn reset_import_cursor_can_move_back_after_pruned_batches() {
+    let (_tmp, db) = temp_db();
+    db.upsert_import_cursor("device-reset", Some("instance-1"), 42, "ready", None)
+        .unwrap();
+    assert_eq!(db.get_import_cursor("device-reset").unwrap(), 42);
+
+    db.reset_import_cursor(
+        "device-reset",
+        Some("instance-1"),
+        "retry",
+        Some("ERR_SYNC_BATCH_PRUNED_RETRY"),
+    )
+    .unwrap();
+    assert_eq!(db.get_import_cursor("device-reset").unwrap(), 0);
+}
+
+#[test]
+fn import_cursor_exposes_instance_id_for_conflict_detection() {
+    let (_tmp, db) = temp_db();
+    db.upsert_import_cursor("device-instance", Some("instance-1"), 7, "ready", None)
+        .unwrap();
+
+    assert_eq!(
+        db.get_import_cursor_state("device-instance").unwrap(),
+        (7, Some("instance-1".to_string()))
+    );
+}
+
+#[test]
 fn invalid_outbox_payload_is_quarantined_without_blocking_batch() {
     let (_tmp, db) = temp_db();
     {

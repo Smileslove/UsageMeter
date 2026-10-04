@@ -114,7 +114,7 @@ const saveSyncSettings = async () => {
     deviceId: localSyncDeviceId.value,
     intervalMinutes: Math.max(1, Number(localSyncIntervalMinutes.value) || 15),
     autoSync: localAutoSync.value,
-    includeSessionText: false
+    includeSessionText: store.settings.sync?.includeSessionText ?? false
   }
   await store.saveSettings()
   return true
@@ -166,6 +166,9 @@ const syncErrorMessage = (error: unknown) => {
   if (message.startsWith('ERR_SYNC_BATCH_SEQ_MISMATCH') || message.startsWith('ERR_SYNC_BATCH_CHAIN_BROKEN')) {
     return t(store.settings.locale, 'settings.syncBatchChainBroken')
   }
+  if (message.startsWith('ERR_SYNC_PARTIAL')) return t(store.settings.locale, 'settings.syncPartial')
+  if (message.startsWith('ERR_SYNC_COMPRESSION_UNSUPPORTED')) return t(store.settings.locale, 'settings.syncCompressionUnsupported')
+  if (message.startsWith('ERR_SYNC_SHARED_SETTINGS_CONFLICT')) return t(store.settings.locale, 'settings.syncSharedSettingsConflict')
   return message
 }
 
@@ -381,6 +384,7 @@ onUnmounted(() => {
               <span :class="[
                 'inline-block h-1.5 w-1.5 shrink-0 rounded-full',
                 syncStatus?.lastStatus === 'success' ? 'bg-green-500' :
+                syncStatus?.lastStatus === 'partial' ? 'bg-amber-500' :
                 syncStatus?.lastStatus === 'failed' ? 'bg-red-500' : 'bg-gray-300 dark:bg-neutral-600'
               ]"></span>
               <span>{{ t(store.settings.locale, 'settings.syncLast') }} {{ formatSyncTimestamp(syncStatus?.lastSyncAt) }}</span>
@@ -393,7 +397,7 @@ onUnmounted(() => {
             </template>
           </div>
           <div
-            v-if="syncStatus?.lastStatus === 'failed' && syncStatus?.lastError && !syncMessage"
+            v-if="(syncStatus?.lastStatus === 'failed' || syncStatus?.lastStatus === 'partial') && syncStatus?.lastError && !syncMessage"
             class="mt-1 truncate text-[10px] text-[var(--theme-status-danger-fg)]"
           >
             {{ syncErrorMessage(syncStatus.lastError) }}

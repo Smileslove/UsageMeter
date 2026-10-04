@@ -880,14 +880,22 @@ impl LocalUsageDatabase {
     }
 
     pub fn get_import_cursor(&self, device_id: &str) -> Result<i64, String> {
+        Ok(self.get_import_cursor_state(device_id)?.0)
+    }
+
+    pub fn get_import_cursor_state(
+        &self,
+        device_id: &str,
+    ) -> Result<(i64, Option<String>), String> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT last_imported_batch_seq FROM sync_device_cursors WHERE device_id = ?1",
+            "SELECT last_imported_batch_seq, last_seen_instance_id
+             FROM sync_device_cursors WHERE device_id = ?1",
             params![device_id],
-            |row| row.get::<_, i64>(0),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
         )
         .optional()
-        .map(|value| value.unwrap_or(0))
+        .map(|value| value.unwrap_or((0, None)))
         .map_err(|e| format!("Failed to read sync device cursor: {}", e))
     }
 
@@ -915,6 +923,35 @@ impl LocalUsageDatabase {
             params![device_id, batch_seq, instance_id, now, status, last_error],
         )
         .map_err(|e| format!("Failed to upsert sync device cursor: {}", e))?;
+        Ok(())
+    }
+
+    /// Reset a remote device cursor when its incremental batches were pruned
+    /// before this consumer could read the corresponding snapshot.
+    pub fn reset_import_cursor(
+        &self,
+        device_id: &str,
+        instance_id: Option<&str>,
+        status: &str,
+        last_error: Option<&str>,
+    ) -> Result<(), String> {
+        let now = chrono::Utc::now().timestamp();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sync_device_cursors (
+                device_id, last_imported_batch_seq, last_imported_snapshot_seq,
+                last_seen_instance_id, last_seen_at, last_status, last_error
+             ) VALUES (?1, 0, NULL, ?2, ?3, ?4, ?5)
+             ON CONFLICT(device_id) DO UPDATE SET
+                last_imported_batch_seq = 0,
+                last_imported_snapshot_seq = NULL,
+                last_seen_instance_id = COALESCE(excluded.last_seen_instance_id, sync_device_cursors.last_seen_instance_id),
+                last_seen_at = excluded.last_seen_at,
+                last_status = excluded.last_status,
+                last_error = excluded.last_error",
+            params![device_id, instance_id, now, status, last_error],
+        )
+        .map_err(|e| format!("Failed to reset sync device cursor: {}", e))?;
         Ok(())
     }
 }
