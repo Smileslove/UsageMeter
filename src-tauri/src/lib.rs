@@ -25,7 +25,6 @@ mod tool_catalog;
 mod unified_usage;
 mod utils;
 
-#[cfg(target_os = "macos")]
 use tauri::menu::Menu;
 use tauri::menu::MenuItem;
 use tauri::tray::TrayIconBuilder;
