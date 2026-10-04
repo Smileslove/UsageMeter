@@ -21,9 +21,7 @@ const {
   sessionModelLabel,
   requestStatusLabel,
   requestStatusClasses,
-  requestCoverageLabel,
   requestProjectLabel,
-  requestSourceLabel,
   requestToolLabel,
   requestCacheTokens,
   requestHasProxyPerformance,
@@ -262,7 +260,7 @@ onUnmounted(() => {
         {{ t(store.settings.locale, 'sessions.noData') }}
       </div>
 
-      <div v-for="session in store.sessions" :key="session.sessionId" class="bg-white dark:bg-[#1E2024] rounded-xl border border-gray-100 dark:border-white/5 px-2.5 py-2 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors cursor-pointer flex flex-col gap-1.5" @click="openSessionDetail(session)">
+      <button v-for="session in store.sessions" :key="session.sessionId" type="button" class="session-card w-full bg-white dark:bg-[#1E2024] rounded-xl border border-gray-100 dark:border-white/5 px-2.5 py-2 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors cursor-pointer flex flex-col gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50" @click="openSessionDetail(session)">
         <!-- 1. 顶部信息行 -->
         <div class="flex items-center justify-between w-full gap-2 min-w-0">
           <!-- 左侧：项目名 + 模型 -->
@@ -295,28 +293,31 @@ onUnmounted(() => {
         </div>
 
         <!-- 话题标题 -->
-        <p class="text-[12px] font-medium text-gray-800 dark:text-gray-200 line-clamp-1 leading-snug">
+        <div class="flex min-w-0 items-center gap-2">
+        <p class="min-w-0 flex-1 truncate text-[12px] font-semibold text-gray-800 dark:text-gray-200 leading-snug">
           {{ displaySessionTitle(session) }}
         </p>
-        <!-- 2. 底部数据行：单行横排 -->
-        <div class="flex items-center justify-between pt-1.5 border-t border-gray-100 dark:border-white/5 text-[10px]">
+        <svg class="h-3.5 w-3.5 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m9 5 7 7-7 7" /></svg>
+        </div>
+        <!-- 2. 底部数据行：四项均匀排列 -->
+        <div class="session-card__metrics grid items-center pt-1.5 border-t border-gray-100 dark:border-white/5 text-[10px]">
           <template v-if="sessionHasPartialCoverage(session)">
-            <div class="flex items-center gap-0.5">
+            <div class="session-card__metric flex items-center gap-0.5">
               <svg class="w-[10px] h-[10px] text-orange-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 12h16" /></svg>
               <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.localRecords') }}</span>
               <span class="text-gray-700 dark:text-gray-300 font-semibold ml-0.5">{{ displayRequestValue(localRequests(session)) }}</span>
             </div>
-            <div class="flex items-center gap-0.5">
+            <div class="session-card__metric flex items-center gap-0.5">
               <svg class="w-[10px] h-[10px] text-cyan-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>
               <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.proxyRecords') }}</span>
               <span class="text-gray-700 dark:text-gray-300 font-semibold ml-0.5">{{ displayRequestValue(coveredRequests(session.coveredRequests)) }}</span>
             </div>
-            <div class="flex items-center gap-0.5">
+            <div class="session-card__metric flex items-center gap-0.5">
               <svg class="w-[10px] h-[10px] text-violet-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
               <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.proxyTokens') }}</span>
               <span class="text-gray-700 dark:text-gray-300 font-semibold ml-0.5">{{ displayProxyTokenValue(session) }}</span>
             </div>
-            <div class="flex items-center gap-0.5">
+            <div class="session-card__metric flex items-center gap-0.5">
               <svg class="w-[10px] h-[10px] text-yellow-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
               <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.proxyRate') }}</span>
               <span class="text-gray-700 dark:text-gray-300 font-semibold ml-0.5">{{ displayProxyRateValue(session) }}</span>
@@ -324,31 +325,32 @@ onUnmounted(() => {
           </template>
           <template v-else>
           <!-- 总 Token -->
-          <div class="flex items-center gap-0.5">
+          <div class="session-card__metric flex items-center gap-0.5">
             <svg class="w-[10px] h-[10px] text-orange-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
             <span class="text-gray-400">{{ displaySessionPrimaryLabel(session) }}</span>
             <span class="text-gray-700 dark:text-gray-300 font-semibold ml-0.5">{{ displaySessionPrimaryValue(session) }}</span>
           </div>
           <!-- 缓存命中率 -->
-          <div class="flex items-center gap-0.5">
+          <div class="session-card__metric flex items-center gap-0.5">
             <svg class="w-[10px] h-[10px] text-violet-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
             <span class="text-gray-400">{{ t(store.settings.locale, 'statistics.cacheHitRate') }}</span>
             <span class="text-violet-500 dark:text-violet-400 font-semibold ml-0.5">{{ displaySessionCacheHitRate(session) }}</span>
           </div>
           <!-- 平均速率 -->
-          <div class="flex items-center gap-0.5">
+          <div class="session-card__metric flex items-center gap-0.5">
             <svg class="w-[10px] h-[10px] text-yellow-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
             <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.avgRate') }}</span>
             <span class="text-gray-700 dark:text-gray-300 font-semibold ml-0.5">{{ sessionUsageVisible(session) && session.avgOutputTokensPerSecond > 0 ? `${session.avgOutputTokensPerSecond.toFixed(1)}t/s` : '—' }}</span>
           </div>
           <!-- 费用 -->
-          <div class="flex items-center gap-0.5">
-            <svg class="w-[10px] h-[10px] text-[#00E5FF] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          <div class="session-card__metric flex items-center gap-0.5">
+            <svg class="w-[10px] h-[10px] text-orange-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+            <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.cost') }}</span>
             <span class="font-semibold text-[var(--theme-chart-cost)]">{{ displayCost(session.estimatedCost, sessionUsageVisible(session)) }}</span>
           </div>
           </template>
         </div>
-      </div>
+      </button>
 
       <!-- 加载更多指示器 -->
       <div v-if="loadingMore" class="flex justify-center py-4">
@@ -386,90 +388,80 @@ onUnmounted(() => {
           v-for="request in store.requestRecords"
           :key="request.requestKey"
           type="button"
-          class="w-full cursor-pointer rounded-xl border border-gray-100 bg-white px-2.5 py-2 text-left shadow-[0_2px_10px_rgba(0,0,0,0.02)] transition-colors hover:bg-gray-50 dark:border-white/5 dark:bg-[#1E2024] dark:hover:bg-white/5"
+          class="w-full cursor-pointer rounded-xl border border-gray-100 bg-white px-2.5 py-2 text-left shadow-[0_2px_10px_rgba(0,0,0,0.02)] transition-colors hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/50 dark:border-white/5 dark:bg-[#1E2024] dark:hover:bg-white/5"
           @click="openRequestDetail(request)"
         >
-          <div class="flex min-w-0 items-center justify-between gap-2">
-            <div class="flex min-w-0 items-center gap-1.5">
-              <span class="max-w-[128px] shrink-0 truncate rounded px-1.5 py-px text-[10px] font-semibold text-indigo-600 border border-indigo-100 bg-indigo-50 dark:border-indigo-500/30 dark:bg-indigo-500/20 dark:text-indigo-300">
-                {{ requestProjectLabel(request) }}
-              </span>
-              <div class="flex min-w-0 items-center gap-1 text-[10px] text-gray-400 dark:text-gray-500">
-                <LobeIcon
-                  v-if="getToolIcon(request.tool)"
-                  :slug="getToolIcon(request.tool) ?? 'claudecode'"
-                  :size="12"
-                  @error="() => {}"
-                />
-                <span v-else class="h-1.5 w-1.5 shrink-0 rounded-full bg-gray-400"></span>
-                <span class="truncate">{{ requestToolLabel(request.tool) }}</span>
-              </div>
+          <div class="flex min-w-0 items-center gap-2">
+            <span class="max-w-[128px] shrink-0 truncate rounded px-1.5 py-px text-[10px] font-semibold text-indigo-600 border border-indigo-100 bg-indigo-50 dark:border-indigo-500/30 dark:bg-indigo-500/20 dark:text-indigo-300">
+              {{ requestProjectLabel(request) }}
+            </span>
+            <div class="flex min-w-0 items-center gap-1 text-[10px] text-gray-400 dark:text-gray-500">
+              <LobeIcon
+                v-if="getToolIcon(request.tool)"
+                :slug="getToolIcon(request.tool) ?? 'claudecode'"
+                :size="12"
+                @error="() => {}"
+              />
+              <span v-else class="h-1.5 w-1.5 shrink-0 rounded-full bg-gray-400"></span>
+              <span class="truncate">{{ requestToolLabel(request.tool) }}</span>
             </div>
+            <p class="min-w-0 flex-1 truncate text-[12px] font-semibold leading-snug text-gray-800 dark:text-gray-200" :title="requestModelLabel(request)">
+              {{ requestModelLabel(request) }}
+            </p>
             <div class="flex shrink-0 items-center gap-1 text-[10px] text-gray-400 dark:text-gray-500">
-              <svg class="h-2.5 w-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg class="h-2.5 w-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <span>{{ formatTime(request.timestampSec) }}</span>
             </div>
+            <span class="request-card__status" :class="requestStatusClasses(request)">
+              {{ requestStatusLabel(request) }}
+            </span>
           </div>
 
-          <div class="mt-1.5 flex items-start justify-between gap-2">
-            <div class="min-w-0 flex-1">
-              <p class="truncate text-[12px] font-medium leading-snug text-gray-800 dark:text-gray-200" :title="requestModelLabel(request)">
-                {{ requestModelLabel(request) }}
-              </p>
-              <div class="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] text-gray-400 dark:text-gray-500">
-                <svg class="h-2.5 w-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <span class="truncate">{{ requestSourceLabel(request) }}</span>
-              </div>
+          <div class="request-card__metrics mt-2 border-t border-gray-100 pt-1.5 text-[10px] dark:border-white/5">
+            <div class="request-card__metric">
+              <svg class="h-3 w-3 shrink-0 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              <span class="request-card__metric-label">{{ t(store.settings.locale, 'sessions.cost') }}</span>
+              <span class="request-card__metric-value text-[var(--theme-chart-cost)]">{{ formatCost(request.estimatedCost) }}</span>
             </div>
-            <div class="flex shrink-0 flex-col items-end gap-1">
-              <span class="request-card__status" :class="requestStatusClasses(request)">
-                {{ requestStatusLabel(request) }}
-              </span>
-              <div class="flex items-center gap-2">
-                <span class="font-mono text-[10px] font-semibold text-gray-700 dark:text-gray-200">
-                  {{ formatTokens(request.totalTokens) }}
-                </span>
-                <span class="font-mono text-[10px] font-semibold text-[var(--theme-chart-cost)]">
-                  {{ formatCost(request.estimatedCost) }}
-                </span>
-              </div>
+            <div class="request-card__metric">
+              <svg class="h-3 w-3 shrink-0 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 3v7h7M4 14l6 7 3-7h7" /></svg>
+              <span class="request-card__metric-label">{{ t(store.settings.locale, 'subscription.avgRateShort') }}</span>
+              <span class="request-card__metric-value">{{ request.outputTokensPerSecond != null ? `${request.outputTokensPerSecond.toFixed(1)} t/s` : '—' }}</span>
+            </div>
+            <div class="request-card__metric">
+              <svg class="h-3 w-3 shrink-0 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              <span class="request-card__metric-label">{{ t(store.settings.locale, 'sessions.firstToken') }}</span>
+              <span class="request-card__metric-value">{{ request.ttftMs != null ? formatDuration(request.ttftMs) : '—' }}</span>
+            </div>
+            <div class="request-card__metric">
+              <svg class="h-3 w-3 shrink-0 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6l4 2m5-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              <span class="request-card__metric-label">{{ t(store.settings.locale, 'sessions.duration') }}</span>
+              <span class="request-card__metric-value">{{ requestHasProxyPerformance(request) ? formatDuration(request.durationMs) : '—' }}</span>
             </div>
           </div>
 
-          <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-gray-100 pt-1.5 text-[10px] dark:border-white/5">
-            <div class="flex items-center gap-0.5">
-              <svg class="h-[10px] w-[10px] shrink-0 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-              </svg>
-              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.input') }}</span>
-              <span class="font-mono font-semibold text-gray-700 dark:text-gray-300">{{ formatTokens(request.inputTokens) }}</span>
+          <div class="request-card__metrics mt-1 text-[10px]">
+            <div class="request-card__metric">
+              <svg class="h-3 w-3 shrink-0 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7h16M4 12h16M4 17h16" /></svg>
+              <span class="request-card__metric-label">{{ t(store.settings.locale, 'common.totalTokens') }}</span>
+              <span class="request-card__metric-value">{{ formatTokens(request.totalTokens) }}</span>
             </div>
-            <div class="flex items-center gap-0.5">
-              <svg class="h-[10px] w-[10px] shrink-0 text-sky-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-              </svg>
-              <span class="text-gray-400">{{ t(store.settings.locale, 'sessions.output') }}</span>
-              <span class="font-mono font-semibold text-gray-700 dark:text-gray-300">{{ formatTokens(request.outputTokens) }}</span>
+            <div class="request-card__metric">
+              <svg class="h-3 w-3 shrink-0 text-violet-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+              <span class="request-card__metric-label">{{ t(store.settings.locale, 'statistics.cache') }}</span>
+              <span class="request-card__metric-value">{{ formatTokens(requestCacheTokens(request)) }}</span>
             </div>
-            <div class="flex items-center gap-0.5">
-              <svg class="h-[10px] w-[10px] shrink-0 text-violet-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-              </svg>
-              <span class="text-gray-400">{{ t(store.settings.locale, 'statistics.cache') }}</span>
-              <span class="font-mono font-semibold text-gray-700 dark:text-gray-300">{{ formatTokens(requestCacheTokens(request)) }}</span>
+            <div class="request-card__metric">
+              <svg class="h-3 w-3 shrink-0 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+              <span class="request-card__metric-label">{{ t(store.settings.locale, 'sessions.input') }}</span>
+              <span class="request-card__metric-value">{{ formatTokens(request.inputTokens) }}</span>
             </div>
-            <div class="ml-auto flex items-center gap-0.5">
-              <svg class="h-[10px] w-[10px] shrink-0 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              <span class="text-gray-400">{{ requestHasProxyPerformance(request) ? t(store.settings.locale, 'sessions.duration') : t(store.settings.locale, 'sessions.requestCoverage') }}</span>
-              <span class="font-mono font-semibold text-gray-700 dark:text-gray-300">
-                {{ requestHasProxyPerformance(request) ? formatDuration(request.durationMs) : requestCoverageLabel(request.coverageOrigin) }}
-              </span>
+            <div class="request-card__metric">
+              <svg class="h-3 w-3 shrink-0 text-sky-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" /></svg>
+              <span class="request-card__metric-label">{{ t(store.settings.locale, 'sessions.output') }}</span>
+              <span class="request-card__metric-value">{{ formatTokens(request.outputTokens) }}</span>
             </div>
           </div>
         </button>
@@ -672,6 +664,80 @@ onUnmounted(() => {
   font-size: 9px;
   font-weight: 800;
   line-height: 1;
+}
+
+.session-card__metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  column-gap: 8px;
+  row-gap: 6px;
+}
+
+.session-card__metric {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  min-width: 0;
+  overflow: hidden;
+  align-items: center;
+}
+
+.session-card__metric > svg {
+  grid-row: span 2;
+}
+
+.session-card__metric:not(:first-child) {
+  border-left: 1px solid var(--theme-border-subtle);
+  padding-left: 8px;
+}
+
+.session-card__metric > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.request-card__metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  column-gap: 8px;
+  row-gap: 6px;
+}
+
+.request-card__metric {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.request-card__metric-label {
+  overflow: hidden;
+  color: var(--theme-text-tertiary);
+  text-overflow: ellipsis;
+}
+
+.request-card__metric-value {
+  overflow: hidden;
+  color: var(--theme-text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 560px) {
+  .session-card__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .session-card__metric:nth-child(2n + 1) {
+    border-left: 0;
+    padding-left: 0;
+  }
+
+  .request-card__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 </style>
