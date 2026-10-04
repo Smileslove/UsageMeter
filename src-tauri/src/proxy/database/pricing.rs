@@ -48,11 +48,15 @@ impl ProxyDatabase {
         for pricing in pricings {
             crate::models::validate_model_pricing(pricing)?;
         }
-        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let mut conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Failed to begin pricing transaction: {}", e))?;
         let mut count = 0;
 
         for pricing in pricings {
-            let result = conn.execute(
+            let changed = tx
+                .execute(
                 r#"
                 INSERT INTO model_pricing (model_id, display_name, input_price, output_price, cache_read_price, cache_write_price, source, last_updated)
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
@@ -76,12 +80,50 @@ impl ProxyDatabase {
                     pricing.source,
                     pricing.last_updated,
                 ],
-            );
-            if result.is_ok() {
-                count += 1;
-            }
+                )
+                .map_err(|e| format!("Failed to upsert model pricing '{}': {}", pricing.model_id, e))?;
+            count += changed;
         }
 
+        tx.commit()
+            .map_err(|e| format!("Failed to commit pricing transaction: {}", e))?;
+        Ok(count)
+    }
+
+    /// Replace the API snapshot atomically while preserving user-defined prices.
+    pub fn replace_api_model_pricings(
+        &self,
+        pricings: &[ModelPricingConfig],
+    ) -> Result<usize, String> {
+        for pricing in pricings {
+            crate::models::validate_model_pricing(pricing)?;
+        }
+        let mut conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("Failed to begin pricing transaction: {}", e))?;
+        tx.execute("DELETE FROM model_pricing WHERE source = 'api'", [])
+            .map_err(|e| format!("Failed to clear API pricing snapshot: {}", e))?;
+        let mut count = 0;
+        for pricing in pricings {
+            let changed = tx
+                .execute(
+                "INSERT INTO model_pricing (model_id, display_name, input_price, output_price, cache_read_price, cache_write_price, source, last_updated) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'api', ?7) ON CONFLICT(model_id) DO NOTHING",
+                rusqlite::params![
+                    pricing.model_id,
+                    pricing.display_name,
+                    pricing.input_price,
+                    pricing.output_price,
+                    pricing.cache_read_price,
+                    pricing.cache_write_price,
+                    pricing.last_updated,
+                ],
+                )
+                .map_err(|e| format!("Failed to insert API pricing: {}", e))?;
+            count += changed;
+        }
+        tx.commit()
+            .map_err(|e| format!("Failed to commit pricing transaction: {}", e))?;
         Ok(count)
     }
 
@@ -752,6 +794,36 @@ mod tests {
     fn insert_pricing(db: &ProxyDatabase, pricing: &ModelPricingConfig) {
         db.upsert_model_pricings(&[pricing.clone()])
             .expect("upsert pricing");
+    }
+
+    #[test]
+    fn replace_api_snapshot_removes_stale_rows_and_preserves_custom_rows() {
+        let (_tmp, db) = temp_db();
+        insert_pricing(&db, &pricing("stale", "api", 1.0, 2.0));
+        insert_pricing(&db, &pricing("custom", "custom", 3.0, 4.0));
+
+        let kept = pricing("kept", "api", 5.0, 6.0);
+        assert_eq!(
+            db.replace_api_model_pricings(&[kept])
+                .expect("replace snapshot"),
+            1
+        );
+
+        assert!(db.get_model_pricing("stale").expect("read stale").is_none());
+        assert_eq!(
+            db.get_model_pricing("custom")
+                .expect("read custom")
+                .unwrap()
+                .source,
+            "custom"
+        );
+        assert_eq!(
+            db.get_model_pricing("kept")
+                .expect("read kept")
+                .unwrap()
+                .input_price,
+            5.0
+        );
     }
 
     fn pricing(
