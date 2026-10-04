@@ -2,9 +2,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, shallowMount } from '@vue/test-utils'
 
-const { listenMock, unlistenRefresh, store, nav } = vi.hoisted(() => ({
+const { listenMock, unlistenRefresh, unlistenLocalUsageSynced, store, nav } = vi.hoisted(() => ({
   listenMock: vi.fn(),
   unlistenRefresh: vi.fn(),
+  unlistenLocalUsageSynced: vi.fn(),
   store: {
     settings: { theme: { appearance: 'system' } },
     initialize: vi.fn(),
@@ -33,7 +34,7 @@ describe('desktop window refresh', () => {
     store.initialize.mockResolvedValue(undefined)
     store.refreshUsageAndSessionViews.mockResolvedValue(undefined)
     listenMock.mockImplementation(async (event: string) =>
-      event === 'desktop-refresh' ? unlistenRefresh : vi.fn()
+      event === 'desktop-refresh' ? unlistenRefresh : event === 'local_usage_synced' ? unlistenLocalUsageSynced : vi.fn()
     )
   })
 
@@ -55,7 +56,21 @@ describe('desktop window refresh', () => {
 
     wrapper.unmount()
     expect(unlistenRefresh).toHaveBeenCalledOnce()
+    expect(unlistenLocalUsageSynced).toHaveBeenCalledOnce()
     expect(store.stopAutoRefresh).toHaveBeenCalledOnce()
+  })
+
+  it('refreshes after the background local usage scan completes', async () => {
+    const wrapper = shallowMount(DesktopApp)
+    await flushPromises()
+
+    const syncListener = listenMock.mock.calls.find(([event]) => event === 'local_usage_synced')?.[1]
+    expect(syncListener).toBeTypeOf('function')
+
+    syncListener({ payload: null })
+    await flushPromises()
+    expect(store.refreshUsageAndSessionViews).toHaveBeenCalledOnce()
+    wrapper.unmount()
   })
 
   it('registers the refresh listener before initialization can block startup', async () => {

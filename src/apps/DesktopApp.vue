@@ -39,6 +39,7 @@ const handleHashChange = () => nav.syncFromHash()
 
 let unlistenNavigation: UnlistenFn | null = null
 let unlistenRefresh: UnlistenFn | null = null
+let unlistenLocalUsageSynced: UnlistenFn | null = null
 let refreshReady = false
 let refreshPending = false
 
@@ -81,6 +82,14 @@ onMounted(async () => {
     })
   } catch (error) {
     console.error('[DesktopApp] Failed to listen for desktop refresh:', error)
+  }
+  try {
+    // 初次扫描在后台完成；完成后刷新快照，避免启动时只显示旧缓存或空数据。
+    unlistenLocalUsageSynced = await listen('local_usage_synced', () => {
+      requestWindowRefresh()
+    })
+  } catch (error) {
+    console.error('[DesktopApp] Failed to listen for local usage sync:', error)
   }
 
   // 初始化 monitor store（参考 App.vue；跨 WebView 各自初始化，后端操作幂等）
@@ -126,6 +135,9 @@ onUnmounted(() => {
   store.stopAutoRefresh()
   if (unlistenRefresh) {
     unlistenRefresh()
+  }
+  if (unlistenLocalUsageSynced) {
+    unlistenLocalUsageSynced()
   }
   if (mediaQuery) {
     mediaQuery.removeEventListener('change', handleSystemThemeChange)

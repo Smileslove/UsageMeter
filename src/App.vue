@@ -198,6 +198,7 @@ async function resolveTakeoverConflict(action: 'force_reclaim' | 'pause' | 'disa
 // 退出事件监听器
 let unlistenQuit: UnlistenFn | null = null
 let unlistenRefresh: UnlistenFn | null = null
+let unlistenLocalUsageSynced: UnlistenFn | null = null
 let unlistenSourceDetected: UnlistenFn | null = null
 let unlistenConfigChanged: UnlistenFn | null = null
 let unlistenTakeoverConflict: UnlistenFn | null = null
@@ -244,6 +245,10 @@ onMounted(async () => {
 
   // 托盘图标重新打开快速面板时，刷新当前用量和会话数据。
   unlistenRefresh = await listen('app-refresh', () => {
+    requestWindowRefresh()
+  })
+  // 初次扫描在后台完成；完成后刷新快照，避免启动时只显示旧缓存或空数据。
+  unlistenLocalUsageSynced = await listen('local_usage_synced', () => {
     requestWindowRefresh()
   })
 
@@ -329,6 +334,7 @@ onUnmounted(() => {
   }
   if (unlistenQuit) unlistenQuit()
   if (unlistenRefresh) unlistenRefresh()
+  if (unlistenLocalUsageSynced) unlistenLocalUsageSynced()
   if (unlistenSourceDetected) unlistenSourceDetected()
   if (unlistenConfigChanged) unlistenConfigChanged()
   if (unlistenTakeoverConflict) unlistenTakeoverConflict()

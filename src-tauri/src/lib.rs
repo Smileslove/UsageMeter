@@ -325,17 +325,6 @@ pub fn run() {
 
             {
                 tauri::async_runtime::spawn(async move {
-                    let _ = tauri::async_runtime::spawn_blocking(|| {
-                        if let Err(err) = crate::local_usage::ensure_local_usage_synced() {
-                            eprintln!("[UsageMeter] Failed to prewarm local usage database: {err}");
-                        }
-                    })
-                    .await;
-                });
-            }
-
-            {
-                tauri::async_runtime::spawn(async move {
                     if let Some(proxy_db) = crate::proxy::ProxyDatabase::get_global() {
                         if let Err(err) = proxy_db.backfill_unlocked_costs().await {
                             eprintln!("[UsageMeter] Failed to prewarm unlocked proxy costs: {err}");

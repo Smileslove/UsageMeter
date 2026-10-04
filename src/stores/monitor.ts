@@ -147,41 +147,39 @@ export const useMonitorStore = defineStore('monitor', {
       await this.loadSettings()
       await this.refreshUsage()
 
-      // 网关监听是基础服务，与 Claude/Codex 等工具的接管开关无关。
-      // 后端会先行启动；前端重复调用是幂等兜底，覆盖热重载等时序。
-      try {
-        await this.startProxyOnly(this.settings.proxy.port)
-      } catch (e) {
-        console.error('Failed to start local gateway listener:', e)
+      // 本地快照是首屏必需数据；网关和网络额度查询放到后台并发执行，
+      // 避免某个供应商超时把整个窗口卡在初始化阶段。
+      const runBackground = async (label: string, task: () => Promise<unknown>) => {
+        try {
+          await task()
+        } catch (error) {
+          console.error(`[monitor] ${label} failed during background initialization:`, error)
+        }
       }
 
-      // 检查是否有 ChatGPT OAuth 配置，如果有则查询订阅
-      await this.checkChatGptOAuth()
-      if (this.hasChatGptOAuth) {
-        await this.fetchSubscriptionQuota()
-      }
-
-      // 检查是否有 Claude OAuth 凭据，如果有则查询官方配额（限额生存 T1）
-      await this.checkClaudeOAuth()
-      if (this.hasClaudeOAuth) {
-        await this.fetchClaudeQuota()
-      }
-
-      // 第三方中转额度查询（已配置来源；静默降级）
-      await this.fetchSourceQuotaProfiles()
-      await this.forceFetchConfiguredSourceQuotas()
-      await this.fetchSourceQuotaBindingStates()
-
-      // 检查是否有 Gemini CLI OAuth 凭据，如果有则查询额度
-      await this.checkGeminiOAuth()
-      if (this.hasGeminiOAuth) {
-        await this.fetchGeminiQuota()
-      }
-
-      await this.refreshCopilotAuthStatus()
-      if (this.hasCopilotAuth) {
-        await this.fetchCopilotQuota()
-      }
+      void Promise.all([
+        runBackground('gateway startup', () => this.startProxyOnly(this.settings.proxy.port)),
+        runBackground('ChatGPT quota', async () => {
+          await this.checkChatGptOAuth()
+          if (this.hasChatGptOAuth) await this.fetchSubscriptionQuota()
+        }),
+        runBackground('Claude quota', async () => {
+          await this.checkClaudeOAuth()
+          if (this.hasClaudeOAuth) await this.fetchClaudeQuota()
+        }),
+        runBackground('source quota metadata', async () => {
+          await this.fetchSourceQuotaProfiles()
+          await this.fetchSourceQuotaBindingStates()
+        }),
+        runBackground('Gemini quota', async () => {
+          await this.checkGeminiOAuth()
+          if (this.hasGeminiOAuth) await this.fetchGeminiQuota()
+        }),
+        runBackground('Copilot quota', async () => {
+          await this.refreshCopilotAuthStatus()
+          if (this.hasCopilotAuth) await this.fetchCopilotQuota()
+        })
+      ])
     },
     async loadSettings() {
       try {
