@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.12.1] - 2026-10-04
+
+### Added
+
+- **Worktree Project Attribution**: Added project attribution for worktrees and improved recognition of historical project paths.
+- **Linux Release Support**: Added Linux CI and release workflows, with platform-specific secret storage support.
+
+### Changed
+
+- **Cursor Integration Removed**: Removed Cursor account synchronization, quota queries, local usage import, and related statistics.
+- **Settings and Sync**: Clarified settings and entity storage boundaries, and improved WebDAV incremental sync reliability.
+- **Session and Overview Layouts**: Refined recent request/session presentation and desktop overview metrics.
+
+### Fixed
+
+- **Proxy and Gateway Accounting**: Fixed usage recording, streaming response handling, and upstream failover behavior.
+- **Pricing and Currency**: Corrected external price synchronization, request cost calculations, exchange-rate conversion, and displayed precision.
+- **Startup and Refresh**: Improved startup data refresh and fixed refresh behavior when opening the tray panel.
+- **Local Readers and Window Behavior**: Improved supported agent session scanning and fixed desktop window dragging and client tool icons.
+
+---
+
+### 新增
+
+- **工作树项目归属**：新增工作树项目归属，并改进历史项目路径识别。
+- **Linux 发布支持**：新增 Linux CI 与发布流程，并补齐平台专用密钥存储支持。
+
+### 变更
+
+- **移除 Cursor 集成**：移除 Cursor 账户同步、额度查询、本地用量导入及相关统计。
+- **设置与同步**：明确设置和实体配置的存储边界，并提升 WebDAV 增量同步的可靠性。
+- **会话与概览布局**：优化最近请求/会话展示和桌面概览指标布局。
+
+### 修复
+
+- **代理与网关统计**：修复用量记录、流式响应处理及上游故障转移。
+- **定价与货币**：修复外部价格同步、请求费用计算、汇率换算和金额精度显示。
+- **启动与刷新**：优化启动数据刷新，并修复打开托盘面板时的刷新行为。
+- **本地读取器与窗口行为**：完善受支持 Agent 的会话扫描，并修复桌面窗口拖动和客户端工具图标。
+
+---
+
 ## [0.12.0] - 2026-10-03
 
 ### Added
@@ -1065,6 +1107,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.12.1]: https://github.com/smileslove/UsageMeter/releases/tag/v0.12.1
 [0.12.0]: https://github.com/smileslove/UsageMeter/releases/tag/v0.12.0
 [0.11.3]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.3
 [0.11.2]: https://github.com/smileslove/UsageMeter/releases/tag/v0.11.2

@@ -19,12 +19,12 @@ UsageMeter is a local-first macOS app for understanding how your AI coding tools
 
 Local history provides the baseline. Optional proxy capture adds live performance and source attribution, and the Rust backend reconciles both into one set of statistics. You can start with local scanning without configuring an API gateway or taking over a tool.
 
-## What's New in v0.12.0
+## What's New in v0.12.1
 
-- **A full desktop workspace** with eight pages, detailed request tables, session/project navigation, and analytics drill-down.
-- **Deep activity for Claude Code and Codex** with event timelines, tool calls, supported agent relationships, opt-in full-text search, and export.
-- **More data sources**: Pi Agent local scanning and multi-provider proxy capture, DeepSeek Harness local scanning, and cc-switch log import.
-- **Clearer attribution and presentation**: passive official OAuth attribution, refined quota cards, and a redesigned share editor with light and dark poster themes.
+- **Worktree project attribution** with improved recognition of historical project paths.
+- **Linux release support** with CI, publishing workflows, and platform-specific secret storage.
+- **More reliable proxy, gateway, WebDAV sync, pricing, and currency handling.**
+- **Cursor integration removed** from account sync, quota queries, local usage import, and related statistics.
 
 See the [bilingual changelog](CHANGELOG.md) for fixes and release details.
 
