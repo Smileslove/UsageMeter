@@ -14,9 +14,12 @@ use super::super::request_common::{
 };
 use super::super::types::{ProxyState, RequestContext};
 use crate::gateway::{
-    report_upstream_outcome, select_upstream_key, validate_profile, UpstreamOutcome,
+    report_upstream_outcome, select_upstream_key, select_upstream_key_excluding, validate_profile,
+    UpstreamOutcome,
 };
-use crate::models::{AppSettings, GatewayAuthMode, GatewayProfile, GatewayProtocol};
+use crate::models::{
+    AppSettings, GatewayAuthMode, GatewayDispatchStrategy, GatewayProfile, GatewayProtocol,
+};
 use bytes::{Buf, Bytes, BytesMut};
 use futures::TryStreamExt;
 use http_body_util::BodyDataStream;
@@ -465,12 +468,13 @@ fn is_upgrade_request(headers: &hyper::HeaderMap) -> bool {
 }
 
 fn bearer_token(value: Option<&HeaderValue>) -> Option<&str> {
-    value?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+    let mut parts = value?.to_str().ok()?.split_whitespace();
+    let scheme = parts.next()?;
+    let token = parts.next()?;
+    if !scheme.eq_ignore_ascii_case("bearer") || parts.next().is_some() {
+        return None;
+    }
+    Some(token)
 }
 
 fn query_key(raw_query: Option<&str>) -> Option<&str> {
@@ -1076,6 +1080,17 @@ pub(crate) async fn handle_gateway_request(
             Some(key) => key,
             None => return Ok(GatewayRouteError::UpstreamKeyUnavailable.response()),
         };
+        let upstream_key = if upstream_key.secret.trim().is_empty()
+            && route.profile.dispatch_strategy == GatewayDispatchStrategy::PriorityFailover
+        {
+            let excluded = vec![upstream_key.id.clone()];
+            match select_upstream_key_excluding(&route.profile, &excluded) {
+                Some(key) => key,
+                None => return Ok(GatewayRouteError::UpstreamKeyUnavailable.response()),
+            }
+        } else {
+            upstream_key
+        };
         let secret = upstream_key.secret.trim();
         if secret.is_empty() {
             return Ok(GatewayRouteError::UpstreamKeyUnavailable.response());
@@ -1086,6 +1101,9 @@ pub(crate) async fn handle_gateway_request(
         selected_upstream_key_id = Some(upstream_key.id.clone());
     }
     remove_client_label_header(&mut headers);
+    let mut base_headers = request_headers.clone();
+    remove_client_label_header(&mut base_headers);
+    strip_gateway_auth_headers(&mut base_headers);
 
     let request_start_time_ms = chrono::Utc::now().timestamp_millis();
     let request_start_instant = std::time::Instant::now();
@@ -1159,17 +1177,101 @@ pub(crate) async fn handle_gateway_request(
             }
             ValidatedBody::Streaming(incoming) => ForwardRequestBody::observed_stream(incoming),
         };
-        forward_gateway_attempt(
-            route.mode,
-            &forwarder,
-            state,
-            method.clone(),
-            &forward_path,
-            headers,
-            body,
-            context.clone(),
-        )
-        .await
+        if route.profile.auth_mode == GatewayAuthMode::ManagedKeys
+            && route.profile.dispatch_strategy == GatewayDispatchStrategy::PriorityFailover
+        {
+            match body {
+                ForwardRequestBody::Buffered(bytes) => {
+                    let mut tried = Vec::new();
+                    let mut last_attempt = None;
+                    let result = loop {
+                        let key = if tried.is_empty() {
+                            route.profile.upstream_keys.iter().find(|key| {
+                                Some(key.id.as_str()) == selected_upstream_key_id.as_deref()
+                            })
+                        } else {
+                            select_upstream_key_excluding(&route.profile, &tried)
+                        };
+                        let Some(key) = key else {
+                            break last_attempt.unwrap_or_else(|| {
+                                GatewayAttemptResult::TransportError(
+                                    "No healthy gateway upstream key is available".to_string(),
+                                )
+                            });
+                        };
+                        tried.push(key.id.clone());
+                        let mut attempt_headers = base_headers.clone();
+                        if key.secret.trim().is_empty() {
+                            let attempt = GatewayAttemptResult::Response {
+                                status_code: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                                headers: Vec::new(),
+                                body: full("Gateway upstream key is unavailable"),
+                                retryable_before_response: true,
+                            };
+                            report_upstream_outcome(&route.profile.id, &key.id, attempt.outcome());
+                            last_attempt = Some(attempt);
+                            continue;
+                        }
+                        if let Err(error) = inject_upstream_auth(
+                            &route.profile,
+                            &mut attempt_headers,
+                            key.secret.trim(),
+                        ) {
+                            let response = error.response();
+                            break GatewayAttemptResult::Response {
+                                status_code: response.status().as_u16(),
+                                headers: Vec::new(),
+                                body: response.into_body(),
+                                retryable_before_response: false,
+                            };
+                        }
+                        let attempt = forward_gateway_attempt(
+                            route.mode,
+                            &forwarder,
+                            state,
+                            method.clone(),
+                            &forward_path,
+                            attempt_headers,
+                            ForwardRequestBody::Buffered(bytes.clone()),
+                            context.clone(),
+                        )
+                        .await;
+                        let should_retry = attempt.should_failover();
+                        report_upstream_outcome(&route.profile.id, &key.id, attempt.outcome());
+                        if !should_retry {
+                            break attempt;
+                        }
+                        last_attempt = Some(attempt);
+                    };
+                    result
+                }
+                body => {
+                    forward_gateway_attempt(
+                        route.mode,
+                        &forwarder,
+                        state,
+                        method.clone(),
+                        &forward_path,
+                        headers,
+                        body,
+                        context.clone(),
+                    )
+                    .await
+                }
+            }
+        } else {
+            forward_gateway_attempt(
+                route.mode,
+                &forwarder,
+                state,
+                method.clone(),
+                &forward_path,
+                headers,
+                body,
+                context.clone(),
+            )
+            .await
+        }
     } else {
         let body = match body {
             ValidatedBody::Buffered(bytes) => ForwardRequestBody::Buffered(bytes).into_parts().0,
@@ -1191,7 +1293,11 @@ pub(crate) async fn handle_gateway_request(
         )
         .await
     };
-    if let Some(key_id) = selected_upstream_key_id.as_deref() {
+    if let Some(key_id) = selected_upstream_key_id.as_deref().filter(|_| {
+        !(route.profile.auth_mode == GatewayAuthMode::ManagedKeys
+            && route.profile.dispatch_strategy == GatewayDispatchStrategy::PriorityFailover
+            && route.mode.captures_usage())
+    }) {
         report_upstream_outcome(&route.profile.id, key_id, result.outcome());
     }
 
@@ -1435,6 +1541,14 @@ mod tests {
                 .as_deref(),
             Some("Claude Code")
         );
+    }
+
+    #[test]
+    fn gateway_bearer_scheme_is_case_insensitive_and_whitespace_tolerant() {
+        let value = HeaderValue::from_static("  bearer   local-key  ");
+        assert_eq!(bearer_token(Some(&value)), Some("local-key"));
+        let upper = HeaderValue::from_static("BEARER local-key");
+        assert_eq!(bearer_token(Some(&upper)), Some("local-key"));
     }
 
     #[test]

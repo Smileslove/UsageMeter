@@ -333,6 +333,31 @@ pub(crate) fn append_query(path: &str, query: Option<&str>) -> String {
     }
 }
 
+/// Extract a Bearer credential using the HTTP authentication scheme rules.
+/// The scheme is case-insensitive and surrounding whitespace is ignored.
+pub(crate) fn extract_bearer_token(value: &str) -> Option<&str> {
+    let mut parts = value.split_whitespace();
+    let scheme = parts.next()?;
+    let token = parts.next()?;
+    if !scheme.eq_ignore_ascii_case("bearer") || parts.next().is_some() || token.is_empty() {
+        return None;
+    }
+    Some(token)
+}
+
+/// OpenAI-compatible clients occasionally send the key without an auth
+/// scheme. Preserve that compatibility while normalizing real Bearer values.
+pub(crate) fn extract_bearer_or_raw_token(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.split_whitespace().count() == 1 {
+        return Some(trimmed);
+    }
+    extract_bearer_token(trimmed)
+}
+
 pub(crate) fn full<T: Into<bytes::Bytes>>(chunk: T) -> BoxBody {
     http_body_util::Full::new(chunk.into())
         .map_err(|never| match never {})

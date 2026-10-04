@@ -1,7 +1,8 @@
 use super::super::forwarder::RequestForwarder;
 use super::super::request_common::{
-    apply_request_identity, collect_body, json_error_response, resolve_registered_request_base_url,
-    resolve_route_source, resolve_target_base_url, ClientRoute, HandlerResult,
+    apply_request_identity, collect_body, extract_bearer_token, json_error_response,
+    resolve_registered_request_base_url, resolve_route_source, resolve_target_base_url,
+    ClientRoute, HandlerResult,
 };
 use super::super::response_bridge::{forward_claude_passthrough, forward_claude_with_usage};
 use super::super::source_registry::ProxySourceRegistry;
@@ -80,7 +81,8 @@ pub(crate) async fn handle_claude_request(
         target_base_url,
     );
 
-    let capture_usage = path == "/v1/messages" && method == Method::POST;
+    let capture_usage = method == Method::POST
+        && matches!(path.trim_start_matches('/'), "messages" | "v1/messages");
     if capture_usage {
         return forward_claude_with_usage(
             &forwarder,
@@ -120,16 +122,6 @@ fn extract_claude_auth_token(headers: &hyper::HeaderMap) -> Option<String> {
                 .and_then(extract_bearer_token)
                 .map(str::to_string)
         })
-}
-
-fn extract_bearer_token(value: &str) -> Option<&str> {
-    let mut parts = value.split_whitespace();
-    let scheme = parts.next()?;
-    let token = parts.next()?;
-    if !scheme.eq_ignore_ascii_case("bearer") || token.is_empty() || parts.next().is_some() {
-        return None;
-    }
-    Some(token)
 }
 
 #[cfg(test)]

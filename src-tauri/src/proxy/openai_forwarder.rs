@@ -13,7 +13,7 @@ use hyper::body::Frame;
 use hyper::{header, HeaderMap, Method};
 use reqwest::Client;
 use serde_json::Value;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -59,6 +59,41 @@ struct OpenAiUsage {
     reasoning_tokens: u64,
 }
 
+struct OpenAiStreamFinishGuard {
+    recorded: Arc<AtomicBool>,
+    usage_candidate: Arc<Mutex<Option<OpenAiUsage>>>,
+    first_token_time: Arc<Mutex<Option<Instant>>>,
+    collector: Arc<UsageCollector>,
+    context: RequestContext,
+    status_code: u16,
+}
+
+impl Drop for OpenAiStreamFinishGuard {
+    fn drop(&mut self) {
+        let Some(handle) = tokio::runtime::Handle::try_current().ok() else {
+            return;
+        };
+        let recorded = self.recorded.clone();
+        let usage_candidate = self.usage_candidate.clone();
+        let first_token_time = self.first_token_time.clone();
+        let collector = self.collector.clone();
+        let context = self.context.clone();
+        let status_code = self.status_code;
+        handle.spawn(async move {
+            finish_openai_stream_once(
+                recorded,
+                usage_candidate,
+                first_token_time,
+                collector,
+                context,
+                status_code,
+                false,
+            )
+            .await;
+        });
+    }
+}
+
 impl OpenAiForwarder {
     pub fn new(
         usage_collector: Arc<UsageCollector>,
@@ -97,7 +132,7 @@ impl OpenAiForwarder {
         &self,
         method: Method,
         path: &str,
-        headers: HeaderMap,
+        mut headers: HeaderMap,
         body: ForwardRequestBody,
         mut context: RequestContext,
     ) -> Result<OpenAiForwardResult, String> {
@@ -108,8 +143,8 @@ impl OpenAiForwarder {
         let url = openai_endpoint_url(&target_base_url, path);
 
         let (body, observation) = match body {
-            ForwardRequestBody::Buffered(body) => {
-                if let Ok(json) = serde_json::from_slice::<Value>(&body) {
+            ForwardRequestBody::Buffered(mut body) => {
+                if let Ok(mut json) = serde_json::from_slice::<Value>(&body) {
                     context.model = json
                         .get("model")
                         .and_then(|v| v.as_str())
@@ -118,6 +153,18 @@ impl OpenAiForwarder {
                         .get("stream")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
+
+                    // Chat Completions only reports usage in the final stream
+                    // chunk when include_usage is enabled. Add it while the
+                    // request is still buffered so the accounting path does
+                    // not depend on every client knowing this provider detail.
+                    if context.stream && is_chat_completions_path(path) {
+                        ensure_stream_usage_option(&mut json);
+                        if let Ok(encoded) = serde_json::to_vec(&json) {
+                            body = encoded.into();
+                            headers.remove(header::CONTENT_LENGTH);
+                        }
+                    }
                 }
                 (body.into(), None)
             }
@@ -299,12 +346,22 @@ impl OpenAiForwarder {
         let collector = self.usage_collector.clone();
         let usage_candidate = Arc::new(Mutex::new(None::<OpenAiUsage>));
         let first_token_time = Arc::new(Mutex::new(None::<Instant>));
+        let recorded = Arc::new(AtomicBool::new(false));
         let context_for_finish = context.clone();
+        let finish_guard = OpenAiStreamFinishGuard {
+            recorded: recorded.clone(),
+            usage_candidate: usage_candidate.clone(),
+            first_token_time: first_token_time.clone(),
+            collector: collector.clone(),
+            context: context.clone(),
+            status_code,
+        };
         let stream = response.bytes_stream();
         // 在 stream! 宏外复制超时配置，避免 &self 逃逸
         let idle_timeout = self.streaming_idle_timeout;
 
         let passthrough = stream! {
+            let _finish_guard = finish_guard;
             let mut reader = SseEventReader::new();
             let mut stream = std::pin::pin!(stream);
             let idle_timeout = idle_timeout;
@@ -382,27 +439,14 @@ impl OpenAiForwarder {
                 })
                 .await;
 
-            let usage = usage_candidate.lock().await.take();
-            let ttft_ms = first_token_time.lock().await.map(|instant| {
-                elapsed_millis(context_for_finish.start_time, instant)
-            });
-            let generation_duration = if completed_normally
-                && usage.as_ref().map(|usage| usage.output_tokens > 0).unwrap_or(false)
-            {
-                first_token_time
-                    .lock()
-                    .await
-                    .and_then(|first| Instant::now().checked_duration_since(first))
-            } else {
-                None
-            };
-            record_usage_with_collector_optional(
+            finish_openai_stream_once(
+                recorded,
+                usage_candidate,
+                first_token_time,
                 collector,
-                usage,
                 context_for_finish,
                 status_code,
-                ttft_ms,
-                generation_duration,
+                completed_normally,
             )
             .await;
         };
@@ -411,6 +455,47 @@ impl OpenAiForwarder {
             passthrough,
         )))
     }
+}
+
+async fn finish_openai_stream_once(
+    recorded: Arc<AtomicBool>,
+    usage_candidate: Arc<Mutex<Option<OpenAiUsage>>>,
+    first_token_time: Arc<Mutex<Option<Instant>>>,
+    collector: Arc<UsageCollector>,
+    context: RequestContext,
+    status_code: u16,
+    completed_normally: bool,
+) {
+    if recorded.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let usage = usage_candidate.lock().await.take();
+    let ttft_ms = first_token_time
+        .lock()
+        .await
+        .map(|instant| elapsed_millis(context.start_time, instant));
+    let generation_duration = if completed_normally
+        && usage
+            .as_ref()
+            .map(|usage| usage.output_tokens > 0)
+            .unwrap_or(false)
+    {
+        first_token_time
+            .lock()
+            .await
+            .and_then(|first| Instant::now().checked_duration_since(first))
+    } else {
+        None
+    };
+    record_usage_with_collector_optional(
+        collector,
+        usage,
+        context,
+        status_code,
+        ttft_ms,
+        generation_duration,
+    )
+    .await;
 }
 
 async fn record_usage_with_collector(
@@ -745,6 +830,28 @@ fn should_use_streaming_client(headers: &HeaderMap, request_stream_flag: bool) -
         .and_then(|value| value.to_str().ok())
         .map(|value| value.contains("text/event-stream"))
         .unwrap_or(false)
+}
+
+fn is_chat_completions_path(path: &str) -> bool {
+    matches!(
+        path.split('?').next().unwrap_or(path).trim_end_matches('/'),
+        "/chat/completions" | "/v1/chat/completions"
+    )
+}
+
+fn ensure_stream_usage_option(value: &mut Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let options = object
+        .entry("stream_options")
+        .or_insert_with(|| serde_json::json!({}));
+    if !options.is_object() {
+        *options = serde_json::json!({});
+    }
+    if let Some(options) = options.as_object_mut() {
+        options.insert("include_usage".to_string(), Value::Bool(true));
+    }
 }
 
 fn parse_openai_stream_usage_event(event: &Value) -> Option<OpenAiUsage> {
@@ -1429,6 +1536,24 @@ mod tests {
     fn does_not_require_streaming_client_for_plain_json_request() {
         let headers = HeaderMap::new();
         assert!(!should_use_streaming_client(&headers, false));
+    }
+
+    #[test]
+    fn stream_usage_option_is_enabled_for_chat_completions() {
+        let mut value = serde_json::json!({
+            "model": "gpt-4o",
+            "stream": true,
+            "stream_options": { "foo": "bar" }
+        });
+        assert!(is_chat_completions_path("/v1/chat/completions?x=1"));
+        ensure_stream_usage_option(&mut value);
+        assert_eq!(value["stream_options"]["include_usage"], true);
+        assert_eq!(value["stream_options"]["foo"], "bar");
+    }
+
+    #[test]
+    fn stream_usage_option_does_not_match_responses() {
+        assert!(!is_chat_completions_path("/v1/responses"));
     }
 
     #[test]

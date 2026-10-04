@@ -2,9 +2,9 @@ use super::super::codex_api::is_codex_endpoint;
 use super::super::forwarder::RequestForwarder;
 use super::super::reasonix_config::{ReasonixConfigManager, ReasonixSourceRegistry};
 use super::super::request_common::{
-    apply_request_identity, build_request_base_url, collect_body, get_openai_forwarder,
-    json_error_response, resolve_registry_source_handle, resolve_target_base_url, ClientRoute,
-    HandlerResult,
+    apply_request_identity, build_request_base_url, collect_body, extract_bearer_or_raw_token,
+    extract_bearer_token, get_openai_forwarder, json_error_response,
+    resolve_registry_source_handle, resolve_target_base_url, ClientRoute, HandlerResult,
 };
 use super::super::response_bridge::{
     forward_claude_passthrough, forward_claude_with_usage, forward_codex_passthrough,
@@ -170,12 +170,21 @@ fn extract_reasonix_auth_token(
         ReasonixProtocol::Anthropic => headers
             .get("x-api-key")
             .and_then(|value| value.to_str().ok())
-            .map(|value| value.to_string()),
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                headers
+                    .get(hyper::header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(extract_bearer_token)
+                    .map(str::to_string)
+            }),
         ReasonixProtocol::OpenAi => headers
             .get(hyper::header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty()),
+            .and_then(extract_bearer_or_raw_token)
+            .map(str::to_string),
     }
 }
 
@@ -215,7 +224,7 @@ mod tests {
         headers.insert("x-api-key", HeaderValue::from_static("sk-ant"));
         assert_eq!(
             extract_reasonix_auth_token(ReasonixProtocol::OpenAi, &headers).as_deref(),
-            Some("Bearer sk-deepseek")
+            Some("sk-deepseek")
         );
         assert_eq!(
             extract_reasonix_auth_token(ReasonixProtocol::Anthropic, &headers).as_deref(),

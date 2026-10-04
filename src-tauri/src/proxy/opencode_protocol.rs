@@ -1,4 +1,5 @@
 use super::codex_api::is_codex_endpoint;
+use super::request_common::{extract_bearer_or_raw_token, extract_bearer_token};
 use serde_json::Value;
 
 const OPENCODE_SESSION_DEBUG_ENV: &str = "USAGEMETER_DEBUG_OPENCODE_SESSION";
@@ -48,12 +49,20 @@ pub(super) fn extract_opencode_auth_token(
         OpenCodeProviderProtocol::Anthropic => headers
             .get("x-api-key")
             .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string()),
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                headers
+                    .get(hyper::header::AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(extract_bearer_token)
+                    .map(str::to_string)
+            }),
         _ => headers
             .get(hyper::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
+            .and_then(extract_bearer_or_raw_token)
+            .map(str::to_string)
             .or_else(|| {
                 headers
                     .get("x-api-key")
@@ -207,7 +216,7 @@ mod tests {
         headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer token-123"));
         assert_eq!(
             extract_opencode_auth_token(OpenCodeProviderProtocol::OpenAi, &headers).as_deref(),
-            Some("Bearer token-123")
+            Some("token-123")
         );
     }
 

@@ -1,9 +1,9 @@
 use super::super::codex_api::is_codex_endpoint;
 use super::super::codex_config::{CodexConfigManager, CodexSourceRegistry};
 use super::super::request_common::{
-    apply_request_identity, collect_body, get_openai_forwarder, json_error_response,
-    resolve_registered_request_base_url, resolve_registry_source_handle, resolve_target_base_url,
-    ClientRoute, HandlerResult,
+    apply_request_identity, collect_body, extract_bearer_or_raw_token, get_openai_forwarder,
+    json_error_response, resolve_registered_request_base_url, resolve_registry_source_handle,
+    resolve_target_base_url, ClientRoute, HandlerResult,
 };
 use super::super::response_bridge::{forward_codex_passthrough, forward_codex_with_usage};
 use super::super::types::{ProxyState, RequestContext};
@@ -27,7 +27,7 @@ pub(crate) async fn handle_codex_request(
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer ").or(Some(value)))
+        .and_then(extract_bearer_or_raw_token)
         .map(str::to_string);
 
     let (request_headers, body_bytes) = collect_body(req).await?;

@@ -13,8 +13,6 @@ pub(super) fn is_codex_api_path(path: &str) -> bool {
         || path == "responses"
         || path == "v1/responses/compact"
         || path == "responses/compact"
-        || path.starts_with("v1/responses/")
-        || path.starts_with("responses/")
 }
 
 pub(super) fn is_codex_endpoint(path: &str, method: &Method) -> bool {
@@ -29,7 +27,7 @@ mod tests {
     fn codex_endpoint_detection_uses_shared_path_classifier() {
         assert!(is_codex_api_path("/v1/responses"));
         assert!(is_codex_api_path("/v1/v1/responses"));
-        assert!(is_codex_api_path("/responses/resp_123"));
+        assert!(!is_codex_api_path("/responses/resp_123"));
         assert!(is_codex_endpoint("/v1/v1/chat/completions", &Method::POST));
         assert!(!is_codex_endpoint("/v1/responses", &Method::GET));
         assert!(!is_codex_api_path("/v1/models"));
