@@ -262,7 +262,7 @@ pub(crate) fn find_qoder_ide_db_for(app_dir: &str) -> Option<PathBuf> {
 fn qoder_app_data_dir(app_dir: &str) -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     {
-        return dirs::config_dir().map(|dir| dir.join(app_dir));
+        dirs::config_dir().map(|dir| dir.join(app_dir))
     }
 
     #[cfg(not(target_os = "linux"))]
