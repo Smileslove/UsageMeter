@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Activity, Boxes, CircleDollarSign, HelpCircle, Layers3, LayoutGrid } from 'lucide-vue-next'
+import { Activity, Boxes, CircleDollarSign, HelpCircle, Layers3, LayoutGrid, RefreshCw } from 'lucide-vue-next'
 import { useMonitorStore } from '../../stores/monitor'
 import { sourceLabel, t } from '../../i18n'
 import { formatCost, formatRequestCount, formatTokenValue } from '../../utils/format'
@@ -156,7 +156,7 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
 </script>
 
 <template>
-  <div class="overview-breakdown">
+  <div class="overview-breakdown" :aria-busy="store.overviewBreakdownLoading">
     <div class="flex items-center justify-between px-1">
       <div class="flex items-center gap-1.5">
         <Activity class="h-3.5 w-3.5 text-gray-400 dark:text-gray-500" />
@@ -164,6 +164,14 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
           {{ t(locale, 'overview.attribution') }}
         </h3>
       </div>
+      <span
+        v-if="store.overviewBreakdownLoading"
+        class="inline-flex items-center gap-1 text-[10px] font-medium text-[var(--theme-text-quaternary)]"
+        role="status"
+      >
+        <RefreshCw class="h-3 w-3 animate-spin" aria-hidden="true" />
+        {{ t(locale, 'common.syncing') }}
+      </span>
       <SegmentedControl
         :active-index="Math.max(0, sortOptions.findIndex(option => option.value === effectiveSortMetric))"
         :aria-label="t(locale, 'overview.sortBy')"
@@ -182,11 +190,26 @@ function sectionLimit(items: OverviewBreakdownItem[], max = 4): OverviewBreakdow
       </SegmentedControl>
     </div>
 
-    <div v-if="store.overviewBreakdownLoading && !breakdown" class="overview-empty dark:!border-white/10 dark:!bg-[#15161A] dark:!text-gray-500">
-      {{ t(locale, 'common.syncing') }}
+    <div v-if="store.overviewBreakdownLoading && !hasAnyItems" class="rank-card dark:!border-white/10 dark:!bg-[#15161A]" role="status">
+      <div class="rank-card-header dark:!text-gray-200">
+        <div class="h-3 w-20 animate-pulse rounded bg-[var(--theme-text-primary)]/10"></div>
+      </div>
+      <div v-for="i in 3" :key="i" class="rank-row dark:!border-white/10">
+        <div class="rank-icon animate-pulse dark:!bg-white/[0.08]"></div>
+        <div class="rank-main">
+          <div class="rank-line">
+            <div class="h-3 w-24 animate-pulse rounded bg-[var(--theme-text-primary)]/10"></div>
+            <div class="h-3 w-12 animate-pulse rounded bg-[var(--theme-text-primary)]/10"></div>
+          </div>
+          <div class="rank-meta">
+            <div class="h-4 w-16 animate-pulse rounded-full bg-[var(--theme-text-primary)]/10"></div>
+            <div class="h-4 w-20 animate-pulse rounded-full bg-[var(--theme-text-primary)]/10"></div>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <div v-else-if="!hasAnyItems" class="overview-empty dark:!border-white/10 dark:!bg-[#15161A] dark:!text-gray-500">
+    <div v-else-if="!store.overviewBreakdownLoading && !hasAnyItems" class="overview-empty dark:!border-white/10 dark:!bg-[#15161A] dark:!text-gray-500">
       {{ t(locale, 'overview.noBreakdown') }}
     </div>
 
