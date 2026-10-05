@@ -1319,7 +1319,7 @@ fn v21_migration_adds_reasonix_fields_without_deleting_sessions() {
             |row| row.get(0),
         )
         .expect("read schema version");
-    assert_eq!(schema_version, "37");
+    assert_eq!(schema_version, "38");
     for table in ["local_sessions", "remote_sessions"] {
         let columns: Vec<String> = conn
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -1555,7 +1555,7 @@ fn v35_migration_clears_stale_unified_materialization() {
         )
         .expect("count materialized facts");
 
-    assert_eq!(schema_version, "37");
+    assert_eq!(schema_version, "38");
     assert_eq!(materialized_count, 0);
 }
 
@@ -3437,7 +3437,7 @@ fn v20_migration_clears_pre_authoritative_materialization_and_runtime_caches() {
             .get_local_sync_state("schema_version")
             .unwrap()
             .as_deref(),
-        Some("37")
+        Some("38")
     );
     assert!(
         reopened
@@ -4420,4 +4420,55 @@ fn local_merge_cache_generation_tracks_only_source_tables_transactionally() {
         )
         .expect("count generation triggers");
     assert_eq!(trigger_count, 12);
+}
+
+#[test]
+fn deepseek_v38_migration_invalidates_only_harness_file_fingerprints() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("local_usage.db");
+    let database = LocalUsageDatabase::new_with_path(&path).unwrap();
+    {
+        let conn = database.conn.lock().unwrap();
+        conn.execute_batch(
+            "ALTER TABLE local_request_facts DROP COLUMN provider_evidence;
+             UPDATE local_sync_state SET state_value='37' WHERE state_key='schema_version';
+             INSERT INTO local_source_files (tool,session_id,file_path,file_role,fingerprint,file_size,mtime_epoch,last_scanned_at)
+             VALUES ('deepseek_harness','harness','/tmp/harness','session_group','old',0,0,0),
+                    ('codex','codex-session','/tmp/codex','session_group','keep',0,0,0);
+             INSERT INTO passive_attribution_overrides (request_key,source_id,updated_at_ms) VALUES ('harness-request','manual-source',1);"
+        ).unwrap();
+    }
+    drop(database);
+    let reopened = LocalUsageDatabase::new_with_path(&path).unwrap();
+    let conn = reopened.conn.lock().unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT fingerprint FROM local_source_files WHERE tool='deepseek_harness'",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        ""
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT fingerprint FROM local_source_files WHERE tool='codex'",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "keep"
+    );
+    assert_eq!(conn.query_row("SELECT source_id FROM passive_attribution_overrides WHERE request_key='harness-request'", [], |row| row.get::<_, String>(0)).unwrap(), "manual-source");
+    assert_eq!(
+        conn.query_row(
+            "SELECT state_value FROM local_sync_state WHERE state_key='schema_version'",
+            [],
+            |row| row.get::<_, String>(0)
+        )
+        .unwrap(),
+        "38"
+    );
+    conn.prepare("SELECT provider_evidence FROM local_request_facts")
+        .unwrap();
 }

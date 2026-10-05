@@ -6,7 +6,8 @@ impl ProxyDatabase {
         match source_filter {
             SourceFilter::All => (String::new(), vec![]),
             // OAuth-only attribution is inferred from local scanner facts, never proxy rows.
-            SourceFilter::OfficialOpenAiOAuth
+            SourceFilter::DeepSeekHarnessAccount
+            | SourceFilter::OfficialOpenAiOAuth
             | SourceFilter::OfficialGoogleGeminiOAuth
             | SourceFilter::OfficialAnthropicClaudeOAuth => ("AND 1 = 0".to_string(), vec![]),
             SourceFilter::Source {

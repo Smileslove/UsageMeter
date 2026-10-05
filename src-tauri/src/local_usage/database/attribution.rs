@@ -223,7 +223,147 @@ impl LocalUsageDatabase {
         let gemini_changed = self.observe_gemini_passive_attribution(settings, observed_at_ms)?;
         let opencode_changed =
             self.observe_opencode_passive_attribution(settings, observed_at_ms)?;
-        Ok(codex_changed || claude_changed || gemini_changed || opencode_changed)
+        let deepseek_changed = self.observe_deepseek_harness_passive_attribution(observed_at_ms)?;
+        Ok(codex_changed
+            || claude_changed
+            || gemini_changed
+            || opencode_changed
+            || deepseek_changed)
+    }
+
+    fn observe_deepseek_harness_passive_attribution(
+        &self,
+        observed_at_ms: i64,
+    ) -> Result<bool, String> {
+        let routes =
+            crate::session::deepseek_harness_attribution::read_api_key_routes().unwrap_or_default();
+        let mut observed = std::collections::HashSet::new();
+        let mut changed = false;
+        for route in routes {
+            let tool = route.evidence.scoped_tool();
+            let source_id = (|| -> Result<Option<String>, String> {
+                let mut current = crate::settings::load_settings_blocking()?;
+                let registration = crate::proxy::register_source_to_settings(
+                    &mut current,
+                    &route.api_key,
+                    &route.base_url,
+                );
+                if !registration.is_new {
+                    return Ok(source_id_for_config(
+                        &current,
+                        &route.base_url,
+                        &route.api_key,
+                    ));
+                }
+                // Full snapshots deliberately cannot overwrite source entities. Register against
+                // the latest settings under their write lock, preserving concurrent user edits.
+                crate::settings::update_settings_internal(|latest| {
+                    crate::proxy::register_source_to_settings(
+                        latest,
+                        &route.api_key,
+                        &route.base_url,
+                    );
+                    Ok(source_id_for_config(
+                        latest,
+                        &route.base_url,
+                        &route.api_key,
+                    ))
+                })
+                .map(|(source_id, _)| source_id)
+                .map_err(String::from)
+            })();
+            let Ok(source_id) = source_id else {
+                continue;
+            };
+            observed.insert(tool.clone());
+            let credential_id = credential_id(&route.api_key);
+            changed |= self.record_passive_attribution_snapshot(PassiveAttributionSnapshot {
+                tool: &tool,
+                provider_id: &route.evidence.provider_id,
+                base_url: &route.base_url,
+                auth_mode: "api_key",
+                credential_id: &credential_id,
+                source_id: source_id.as_deref(),
+                plan_type: None,
+                plan_is_confirmed: false,
+                observed_at_ms,
+            })?;
+        }
+        changed |= self.close_missing_deepseek_routes(&observed, observed_at_ms)?;
+        Ok(changed)
+    }
+
+    pub(crate) fn close_missing_deepseek_routes(
+        &self,
+        observed: &std::collections::HashSet<String>,
+        observed_at_ms: i64,
+    ) -> Result<bool, String> {
+        let previous: Vec<(String, String, String)> = {
+            let conn = self.conn.lock().unwrap_or_else(|error| error.into_inner());
+            let mut statement = conn.prepare(
+                "SELECT tool, provider_id, base_url FROM passive_attribution_intervals
+                 WHERE tool GLOB 'deepseek_harness::*' AND id IN
+                 (SELECT MAX(id) FROM passive_attribution_intervals GROUP BY tool) AND auth_mode = 'api_key'"
+            ).map_err(|_| "ERR_DEEPSEEK_ATTRIBUTION_QUERY")?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .map_err(|_| "ERR_DEEPSEEK_ATTRIBUTION_QUERY")?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|_| "ERR_DEEPSEEK_ATTRIBUTION_QUERY")?
+        };
+        let mut changed = false;
+        for (tool, provider_id, base_url) in previous {
+            if observed.contains(&tool) {
+                continue;
+            }
+            // Insert an ineligible observation so a later return cannot extend across the gap.
+            changed |= self.record_passive_attribution_snapshot(PassiveAttributionSnapshot {
+                tool: &tool,
+                provider_id: &provider_id,
+                base_url: &base_url,
+                auth_mode: "unavailable",
+                credential_id: "unavailable",
+                source_id: None,
+                plan_type: None,
+                plan_is_confirmed: false,
+                observed_at_ms,
+            })?;
+        }
+        Ok(changed)
+    }
+
+    pub(crate) fn local_provider_evidence(
+        &self,
+        request_keys: &[String],
+    ) -> Result<std::collections::HashMap<String, crate::session::LocalProviderEvidence>, String>
+    {
+        if request_keys.is_empty() {
+            return Ok(Default::default());
+        }
+        let conn = self.conn.lock().unwrap_or_else(|error| error.into_inner());
+        let mut statement = conn.prepare(
+            "SELECT provider_evidence FROM local_request_facts WHERE request_key = ?1 AND tool = 'deepseek_harness'"
+        ).map_err(|_| "ERR_DEEPSEEK_EVIDENCE_QUERY")?;
+        let mut evidence = std::collections::HashMap::new();
+        for key in request_keys {
+            let json: Option<String> = statement
+                .query_row([key], |row| row.get(0))
+                .optional()
+                .map_err(|_| "ERR_DEEPSEEK_EVIDENCE_QUERY")?
+                .flatten();
+            if let Some(value) = json.and_then(|value| {
+                serde_json::from_str::<crate::session::LocalProviderEvidence>(&value).ok()
+            }) {
+                if crate::session::deepseek_harness_attribution::valid_provider_id(
+                    &value.provider_id,
+                ) && value.scope.len() == 16
+                    && value.scope.bytes().all(|b| b.is_ascii_hexdigit())
+                {
+                    evidence.insert(key.clone(), value);
+                }
+            }
+        }
+        Ok(evidence)
     }
 
     fn observe_codex_passive_attribution(
@@ -553,6 +693,17 @@ impl LocalUsageDatabase {
         let tx = conn
             .unchecked_transaction()
             .map_err(|error| format!("Failed to start passive attribution transaction: {error}"))?;
+        if tool.starts_with("deepseek_harness::") {
+            let latest: Option<i64> = tx.query_row(
+                "SELECT MAX(confirmed_until_ms) FROM passive_attribution_intervals WHERE tool = ?1",
+                [tool], |row| row.get(0),
+            ).map_err(|_| "ERR_DEEPSEEK_ATTRIBUTION_QUERY")?;
+            // Watcher and scanner can finish in the reverse order of their observations.
+            // An older snapshot must not reopen a superseded route or bridge a change gap.
+            if latest.is_some_and(|latest| now < latest) {
+                return Ok(false);
+            }
+        }
         let previous = tx
             .query_row(
                 "SELECT id, config_digest, provider_id, base_url, auth_mode, credential_id,
@@ -861,6 +1012,62 @@ mod tests {
             plan_is_confirmed: false,
             observed_at_ms,
         }
+    }
+
+    #[test]
+    fn deepseek_late_snapshot_cannot_reopen_an_old_route() {
+        let (_directory, database) = temp_db();
+        let tool = "deepseek_harness::abcdef0123456789::relay";
+        for time in [1_000, 2_000] {
+            database
+                .record_passive_attribution_snapshot(snapshot(
+                    tool,
+                    "relay",
+                    "https://old.example/v1",
+                    "old-key-digest",
+                    Some("old"),
+                    time,
+                ))
+                .unwrap();
+        }
+        database
+            .record_passive_attribution_snapshot(snapshot(
+                tool,
+                "relay",
+                "https://new.example/v1",
+                "new-key-digest",
+                Some("new"),
+                3_000,
+            ))
+            .unwrap();
+        assert!(!database
+            .record_passive_attribution_snapshot(snapshot(
+                tool,
+                "relay",
+                "https://old.example/v1",
+                "old-key-digest",
+                Some("old"),
+                2_500
+            ))
+            .unwrap());
+        database
+            .record_passive_attribution_snapshot(snapshot(
+                tool,
+                "relay",
+                "https://new.example/v1",
+                "new-key-digest",
+                Some("new"),
+                4_000,
+            ))
+            .unwrap();
+        let intervals = database
+            .passive_attribution_intervals_for_range(0, 5_000)
+            .unwrap();
+        assert_eq!(intervals.len(), 2);
+        assert_eq!(intervals[0].confirmed_until_ms, 2_000);
+        assert_eq!(intervals[1].valid_from_ms, 3_000);
+        assert_eq!(intervals[1].confirmed_until_ms, 4_000);
+        assert_eq!(intervals[1].source_id.as_deref(), Some("new"));
     }
 
     #[test]

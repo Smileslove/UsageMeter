@@ -1,5 +1,6 @@
 import {
   GEMINI_OAUTH_PLAN_LABEL_PREFIX,
+  DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID,
   OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID,
   OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
   OFFICIAL_OPENAI_OAUTH_SOURCE_ID,
@@ -1281,6 +1282,7 @@ const messages = {
       requestCoverageMerged: '合并记录',
       requestAttribution: '归因方式',
       requestAttributionInferred: '配置推断',
+      requestAttributionProvider: '会话记录的账号 Provider',
       requestAttributionManual: '手动确认',
       requestAttributionUnattributed: '未归因',
       reconciliation: '跨来源对账',
@@ -1532,6 +1534,7 @@ const messages = {
       manage: 'API 来源',
       all: '全部',
       unknown: '未归因',
+      deepseekHarnessAccount: 'DeepSeek Harness 账号',
       officialAnthropic: '官方 Anthropic',
       anthropicOfficial: 'Anthropic 官方',
       openaiOfficial: 'OpenAI 官方',
@@ -2921,6 +2924,7 @@ const messages = {
       requestCoverageMerged: '合併記錄',
       requestAttribution: '歸因方式',
       requestAttributionInferred: '設定推斷',
+      requestAttributionProvider: '會話記錄的帳號 Provider',
       requestAttributionManual: '手動確認',
       requestAttributionUnattributed: '未歸因',
       reconciliation: '跨來源對帳',
@@ -3171,6 +3175,7 @@ const messages = {
       manage: 'API 來源',
       all: '全部',
       unknown: '未歸因',
+      deepseekHarnessAccount: 'DeepSeek Harness 帳號',
       officialAnthropic: '官方 Anthropic',
       anthropicOfficial: 'Anthropic 官方',
       openaiOfficial: 'OpenAI 官方',
@@ -4560,6 +4565,7 @@ const messages = {
       requestCoverageMerged: 'Merged record',
       requestAttribution: 'Attribution',
       requestAttributionInferred: 'Config inferred',
+      requestAttributionProvider: 'Account provider recorded in session',
       requestAttributionManual: 'Manual',
       requestAttributionUnattributed: 'Unattributed',
       reconciliation: 'Cross-source reconciliation',
@@ -4810,6 +4816,7 @@ const messages = {
       manage: 'API Sources',
       all: 'All',
       unknown: 'Unattributed',
+      deepseekHarnessAccount: 'DeepSeek Harness account',
       officialAnthropic: 'Anthropic Official',
       anthropicOfficial: 'Anthropic Official',
       openaiOfficial: 'OpenAI Official',
@@ -5094,6 +5101,7 @@ export function t(locale: string | undefined, key: string, params?: Record<strin
 }
 
 export function sourceLabel(locale: string | undefined, source: string | undefined): string {
+  if (source === DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID) return t(locale, 'sources.deepseekHarnessAccount')
   if (source === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return t(locale, 'sources.openaiOfficial')
   if (source === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) return t(locale, 'sources.googleOfficial')
   if (source === OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID) return t(locale, 'sources.anthropicOfficial')

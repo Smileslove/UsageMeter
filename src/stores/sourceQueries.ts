@@ -1,5 +1,9 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { SourceQuotaBindingConfig } from '../types'
+import type { ApiSource, SourceQuotaBindingConfig } from '../types'
+
+export function getApiSources(): Promise<ApiSource[]> {
+  return invoke('get_api_sources')
+}
 
 export function renameSource(sourceId: string, name: string): Promise<void> {
   return invoke('rename_api_source', { sourceId, name })

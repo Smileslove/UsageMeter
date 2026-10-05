@@ -547,6 +547,7 @@ impl LocalUsageDatabase {
         let mapper = |row: &rusqlite::Row<'_>| {
             let request_key: Option<String> = row.get(13)?;
             Ok(LocalRequestRecord {
+                provider_evidence: None,
                 session_id: row.get(0)?,
                 tool: row.get(1)?,
                 timestamp: row.get(2)?,

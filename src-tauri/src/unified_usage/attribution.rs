@@ -12,10 +12,12 @@ use std::collections::HashMap;
 fn matching_interval<'a>(
     intervals: &'a [PassiveAttributionInterval],
     fact: &MergedRequestFact,
+    scoped_tool: Option<&str>,
+    request_started_at_ms: Option<i64>,
 ) -> Option<&'a PassiveAttributionInterval> {
-    let timestamp_ms = fact.timestamp_ms.max(0);
+    let timestamp_ms = request_started_at_ms.unwrap_or(fact.timestamp_ms).max(0);
     let mut matches = intervals.iter().filter(|interval| {
-        interval.tool == fact.tool
+        interval.tool == scoped_tool.unwrap_or(&fact.tool)
             && matches!(
                 interval.auth_mode.as_str(),
                 "api_key" | "chatgpt_oauth" | "gemini_oauth" | "claude_oauth"
@@ -90,14 +92,32 @@ pub(crate) fn apply_passive_attribution(
         .into_iter()
         .map(|row| (row.request_key.clone(), row))
         .collect();
+    let evidence_keys: Vec<String> = facts
+        .iter()
+        .filter(|fact| {
+            fact.tool == "deepseek_harness" && fact.coverage_origin == CoverageOrigin::LocalOnly
+        })
+        .map(|fact| fact.canonical_request_key.clone())
+        .collect();
+    let provider_evidence = database.local_provider_evidence(&evidence_keys)?;
     let start_ms = facts
         .iter()
         .map(|fact| fact.timestamp_ms)
+        .chain(
+            provider_evidence
+                .values()
+                .filter_map(|evidence| evidence.request_started_at_ms),
+        )
         .min()
         .unwrap_or(0);
     let end_ms = facts
         .iter()
         .map(|fact| fact.timestamp_ms)
+        .chain(
+            provider_evidence
+                .values()
+                .filter_map(|evidence| evidence.request_started_at_ms),
+        )
         .max()
         .unwrap_or(0);
     let intervals = database.passive_attribution_intervals_for_range(start_ms, end_ms)?;
@@ -109,6 +129,7 @@ pub(crate) fn apply_passive_attribution(
             fact.attribution_source_id = None;
             fact.attribution_method = AttributionMethod::Unattributed;
             fact.source_label = None;
+            fact.request_base_url = None;
         }
         if let Some(override_row) = overrides.get(&fact.canonical_request_key) {
             apply_manual_override(fact, override_row, settings);
@@ -117,7 +138,30 @@ pub(crate) fn apply_passive_attribution(
         if fact.coverage_origin != CoverageOrigin::LocalOnly {
             continue;
         }
-        let Some(interval) = matching_interval(&intervals, fact) else {
+        let evidence = provider_evidence.get(&fact.canonical_request_key);
+        if fact.tool == "deepseek_harness" {
+            let Some(evidence) = evidence else {
+                continue;
+            };
+            if evidence.provider_id == "deepseek-account" {
+                fact.attribution_source_id =
+                    Some(crate::models::DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID.to_string());
+                fact.source_label = fact.attribution_source_id.clone();
+                fact.attribution_method = AttributionMethod::ProviderReported;
+                fact.request_base_url = None;
+                continue;
+            }
+            if evidence.request_started_at_ms.is_none() {
+                continue;
+            }
+        }
+        let scoped_tool = evidence.map(|evidence| evidence.scoped_tool());
+        let Some(interval) = matching_interval(
+            &intervals,
+            fact,
+            scoped_tool.as_deref(),
+            evidence.and_then(|evidence| evidence.request_started_at_ms),
+        ) else {
             continue;
         };
         let Some(source_id) = interval.source_id.as_deref() else {
@@ -146,6 +190,10 @@ pub(crate) fn apply_passive_attribution(
             .find(|source| source.id == source_id)
         {
             apply_source(fact, source, AttributionMethod::ConfigInferred);
+        } else if fact.tool == "deepseek_harness" {
+            // Harness sources are persisted atomically. Missing entities are not an
+            // authority for historical attribution; deletion must return them to unknown.
+            fact.request_base_url = None;
         } else {
             // A direct provider may have been auto-registered during this same refresh while
             // the caller still holds the previous settings snapshot. Keep the resolved source
@@ -218,6 +266,192 @@ mod tests {
             attribution_method: AttributionMethod::Unattributed,
             reconciliation: crate::unified_usage::ReconciliationMetadata::default(),
         }
+    }
+
+    fn harness_evidence(directory: &tempfile::TempDir, provider: &str, scope: &str, key: &str) {
+        let evidence = crate::session::LocalProviderEvidence {
+            scope: scope.into(),
+            provider_id: provider.into(),
+            request_started_at_ms: None,
+        };
+        let conn = rusqlite::Connection::open(directory.path().join("local_usage.db")).unwrap();
+        conn.execute(
+            "INSERT INTO local_request_facts (request_id,session_id,tool,timestamp,dedupe_key,request_key,created_at,provider_evidence)
+             VALUES (?1,'harness-session','deepseek_harness',1,?1,?1,1,?2)",
+            rusqlite::params![key, serde_json::to_string(&evidence).unwrap()],
+        ).unwrap();
+    }
+
+    fn set_harness_start(directory: &tempfile::TempDir, key: &str, time: i64) {
+        let conn = rusqlite::Connection::open(directory.path().join("local_usage.db")).unwrap();
+        conn.execute("UPDATE local_request_facts SET provider_evidence=json_set(provider_evidence,'$.requestStartedAtMs',?2) WHERE request_key=?1", rusqlite::params![key, time]).unwrap();
+    }
+
+    fn harness_fact(key: &str) -> MergedRequestFact {
+        let mut fact = local_fact();
+        fact.tool = "deepseek_harness".into();
+        fact.canonical_request_key = key.into();
+        fact
+    }
+
+    #[test]
+    fn deepseek_account_is_reported_without_inventing_an_official_url() {
+        let (_directory, database) = temp_db();
+        harness_evidence(
+            &_directory,
+            "deepseek-account",
+            "abcdef0123456789",
+            "account-request",
+        );
+        let mut facts = vec![
+            harness_fact("account-request"),
+            harness_fact("missing-evidence"),
+        ];
+        apply_passive_attribution(&database, &mut facts, &AppSettings::default()).unwrap();
+        assert_eq!(
+            facts[0].attribution_source_id.as_deref(),
+            Some(crate::models::DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID)
+        );
+        assert_eq!(
+            facts[0].attribution_method,
+            AttributionMethod::ProviderReported
+        );
+        assert_eq!(facts[0].request_base_url, None);
+        assert!(crate::unified_usage::matches_source_filter(
+            &facts[0],
+            &SourceFilter::DeepSeekHarnessAccount
+        ));
+        assert!(!crate::unified_usage::matches_source_filter(
+            &facts[0],
+            &SourceFilter::Unknown {
+                known_pairs: vec![]
+            }
+        ));
+        assert_eq!(facts[1].attribution_method, AttributionMethod::Unattributed);
+        database
+            .set_manual_attribution_overrides(&["account-request".into()], None, 10)
+            .unwrap();
+        apply_passive_attribution(&database, &mut facts, &AppSettings::default()).unwrap();
+        assert_eq!(facts[0].attribution_method, AttributionMethod::Manual);
+        assert_eq!(facts[0].attribution_source_id, None);
+    }
+
+    #[test]
+    fn deepseek_api_routes_require_matching_provider_scope_and_confirmed_time() {
+        let (_directory, database) = temp_db();
+        let mut settings = AppSettings::default();
+        settings.source_aware.sources = vec![source("relay-source", "https://relay.example/v1")];
+        harness_evidence(&_directory, "relay", "abcdef0123456789", "relay-request");
+        harness_evidence(&_directory, "other", "abcdef0123456789", "other-request");
+        harness_evidence(&_directory, "relay", "ffffffffffffffff", "other-home");
+        for key in ["relay-request", "other-request", "other-home"] {
+            set_harness_start(&_directory, key, 1_500);
+        }
+        let tool = "deepseek_harness::abcdef0123456789::relay";
+        let record = |time| PassiveAttributionSnapshot {
+            tool,
+            provider_id: "relay",
+            base_url: "https://relay.example/v1",
+            auth_mode: "api_key",
+            credential_id: "key-digest",
+            source_id: Some("relay-source"),
+            plan_type: None,
+            plan_is_confirmed: false,
+            observed_at_ms: time,
+        };
+        database
+            .record_passive_attribution_snapshot(record(1_000))
+            .unwrap();
+        database
+            .record_passive_attribution_snapshot(record(2_000))
+            .unwrap();
+        let mut facts = vec![
+            harness_fact("relay-request"),
+            harness_fact("other-request"),
+            harness_fact("other-home"),
+        ];
+        apply_passive_attribution(&database, &mut facts, &settings).unwrap();
+        assert_eq!(
+            facts[0].attribution_source_id.as_deref(),
+            Some("relay-source")
+        );
+        assert_eq!(facts[1].attribution_source_id, None);
+        assert_eq!(facts[2].attribution_source_id, None);
+        facts[0].timestamp_ms = 999;
+        set_harness_start(&_directory, "relay-request", 999);
+        apply_passive_attribution(&database, &mut facts, &settings).unwrap();
+        assert_eq!(facts[0].attribution_source_id, None);
+        database
+            .close_missing_deepseek_routes(&Default::default(), 2_500)
+            .unwrap();
+        database
+            .record_passive_attribution_snapshot(record(4_000))
+            .unwrap();
+        database
+            .record_passive_attribution_snapshot(record(5_000))
+            .unwrap();
+        facts[0].timestamp_ms = 3_000;
+        set_harness_start(&_directory, "relay-request", 3_000);
+        apply_passive_attribution(&database, &mut facts, &settings).unwrap();
+        assert_eq!(facts[0].attribution_source_id, None);
+        facts[0].timestamp_ms = 4_500;
+        set_harness_start(&_directory, "relay-request", 4_500);
+        apply_passive_attribution(&database, &mut facts, &settings).unwrap();
+        assert_eq!(
+            facts[0].attribution_source_id.as_deref(),
+            Some("relay-source")
+        );
+        settings.source_aware.sources.clear();
+        apply_passive_attribution(&database, &mut facts, &settings).unwrap();
+        assert_eq!(facts[0].attribution_source_id, None);
+        assert_eq!(facts[0].request_base_url, None);
+        assert!(crate::unified_usage::matches_source_filter(
+            &facts[0],
+            &SourceFilter::Unknown {
+                known_pairs: vec![]
+            }
+        ));
+    }
+
+    #[test]
+    fn deepseek_uses_request_start_when_configuration_changes_before_response() {
+        let (_directory, database) = temp_db();
+        let mut settings = AppSettings::default();
+        settings.source_aware.sources = vec![
+            source("old", "https://relay.example/v1"),
+            source("new", "https://relay.example/v1"),
+        ];
+        harness_evidence(&_directory, "relay", "abcdef0123456789", "spanning-request");
+        set_harness_start(&_directory, "spanning-request", 1_500);
+        for (time, source) in [
+            (1_000, "old"),
+            (2_000, "old"),
+            (3_000, "new"),
+            (5_000, "new"),
+        ] {
+            database
+                .record_passive_attribution_snapshot(PassiveAttributionSnapshot {
+                    tool: "deepseek_harness::abcdef0123456789::relay",
+                    provider_id: "relay",
+                    base_url: "https://relay.example/v1",
+                    auth_mode: "api_key",
+                    credential_id: source,
+                    source_id: Some(source),
+                    plan_type: None,
+                    plan_is_confirmed: false,
+                    observed_at_ms: time,
+                })
+                .unwrap();
+        }
+        harness_evidence(&_directory, "relay", "abcdef0123456789", "legacy-request");
+        let mut facts = vec![
+            harness_fact("spanning-request"),
+            harness_fact("legacy-request"),
+        ];
+        facts[0].timestamp_ms = 4_500;
+        apply_passive_attribution(&database, &mut facts, &settings).unwrap();
+        assert_eq!(facts[0].attribution_source_id.as_deref(), Some("old"));
+        assert_eq!(facts[1].attribution_source_id, None);
     }
 
     #[test]

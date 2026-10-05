@@ -20,7 +20,7 @@ impl LocalUsageDatabase {
 
     pub(super) fn migrate_schema(conn: &Connection) -> Result<(), String> {
         let schema_version = Self::load_schema_version(conn)?;
-        if schema_version >= 37 {
+        if schema_version >= 38 {
             return Ok(());
         }
         let mut cleared_runtime_caches = false;
@@ -1195,6 +1195,23 @@ impl LocalUsageDatabase {
             Self::upsert_sync_state(&tx, "schema_version", "37", chrono::Utc::now().timestamp())?;
             tx.commit()
                 .map_err(|e| format!("Failed to commit v37 migration: {e}"))?;
+            cleared_runtime_caches = true;
+        }
+
+        if schema_version < 38 {
+            let tx = conn
+                .unchecked_transaction()
+                .map_err(|_| "ERR_DEEPSEEK_ATTRIBUTION_MIGRATION".to_string())?;
+            Self::add_column_if_missing(&tx, "local_request_facts", "provider_evidence", "TEXT")?;
+            tx.execute(
+                "UPDATE local_source_files SET fingerprint = '' WHERE tool = 'deepseek_harness'",
+                [],
+            )
+            .map_err(|_| "ERR_DEEPSEEK_ATTRIBUTION_MIGRATION".to_string())?;
+            Self::clear_unified_materialization_tx(&tx, chrono::Utc::now().timestamp())?;
+            Self::upsert_sync_state(&tx, "schema_version", "38", chrono::Utc::now().timestamp())?;
+            tx.commit()
+                .map_err(|_| "ERR_DEEPSEEK_ATTRIBUTION_MIGRATION".to_string())?;
             cleared_runtime_caches = true;
         }
 

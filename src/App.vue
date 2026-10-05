@@ -248,7 +248,8 @@ onMounted(async () => {
     requestWindowRefresh()
   })
   // 初次扫描在后台完成；完成后刷新快照，避免启动时只显示旧缓存或空数据。
-  unlistenLocalUsageSynced = await listen('local_usage_synced', () => {
+  unlistenLocalUsageSynced = await listen('local_usage_synced', async () => {
+    try { await store.refreshSources() } catch { console.warn('[App] Failed to refresh sources') }
     requestWindowRefresh()
   })
 

@@ -1,7 +1,7 @@
 //! Read-only DeepSeek Harness session usage. Never persist message bodies or credentials.
 
 use super::constants::TOOL_DEEPSEEK_HARNESS;
-use super::meta::{LocalRequestRecord, SessionFile, SessionMeta};
+use super::meta::{LocalProviderEvidence, LocalRequestRecord, SessionFile, SessionMeta};
 use super::shared::extract_project_name;
 use super::source::{ParsedSessionData, SessionSource, SourceSnapshot, SourceUpdateMode};
 use serde_json::Value;
@@ -84,7 +84,7 @@ fn empty_snapshot() -> SourceSnapshot {
     }
 }
 
-fn session_root() -> Result<Option<PathBuf>, String> {
+pub(crate) fn session_root() -> Result<Option<PathBuf>, String> {
     let configured_root = crate::settings::persisted_deepseek_harness_session_root()?;
     let explicit_home = std::env::var_os("DSH_HOME").filter(|value| !value.is_empty());
     let root = if let Some(path) = configured_root.as_ref().filter(|path| !path.is_empty()) {
@@ -237,6 +237,8 @@ fn scan_root(root: &Path) -> Result<SourceSnapshot, String> {
                 .unwrap_or(0);
             let path_text = path.to_string_lossy().to_string();
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            // Invalidate fingerprints written by readers that omitted provider evidence.
+            1_u8.hash(&mut hasher);
             path_text.hash(&mut hasher);
             metadata.len().hash(&mut hasher);
             modified.hash(&mut hasher);
@@ -271,7 +273,7 @@ fn scan_root(root: &Path) -> Result<SourceSnapshot, String> {
     })
 }
 
-fn root_tag(root: &Path) -> String {
+pub(crate) fn root_tag(root: &Path) -> String {
     let digest = Sha256::digest(root.to_string_lossy().as_bytes());
     format!("{digest:x}")[..16].to_string()
 }
@@ -529,6 +531,8 @@ fn parse_session(session: &SessionFile) -> Result<ParsedSessionData, String> {
     let mut requests = Vec::new();
     let mut request_seqs = Vec::new();
     let mut current_model = String::from("unknown");
+    let mut current_provider = None;
+    let mut request_started_at_ms = None;
     let mut last_slot: Option<(u64, u64, usize)> = None;
     let mut seed_marker = None;
     let mut previous_seq: Option<u64> = None;
@@ -577,11 +581,31 @@ fn parse_session(session: &SessionFile) -> Result<ParsedSessionData, String> {
                     seed_marker = Some(seq);
                 }
             }
+            Some("step/start") => {
+                request_started_at_ms = event.get("time").and_then(Value::as_i64);
+            }
+            Some("step/end" | "turn/end") => request_started_at_ms = None,
             Some("request/header") => {
+                if let Some(start) = request_started_at_ms {
+                    request_started_at_ms = event
+                        .get("time")
+                        .and_then(Value::as_i64)
+                        .map(|time| time.max(start));
+                }
+                current_provider = event
+                    .pointer("/data/header/config/provider")
+                    .and_then(Value::as_str)
+                    .filter(|provider| {
+                        super::deepseek_harness_attribution::valid_provider_id(provider)
+                    })
+                    .map(str::to_string);
                 current_model = normalize_model(event.pointer("/data/header/config/model"))
                     .unwrap_or_else(|| "unknown".to_string());
             }
-            Some("llm/retry-started") => last_slot = None,
+            Some("llm/retry-started") => {
+                last_slot = None;
+                request_started_at_ms = event.get("time").and_then(Value::as_i64);
+            }
             Some("assistant/message" | "message/assistant") => {
                 let Some(usage) = event_usage(&event) else {
                     continue;
@@ -610,6 +634,18 @@ fn parse_session(session: &SessionFile) -> Result<ParsedSessionData, String> {
                 .unwrap_or_else(|| current_model.clone());
                 let message_id = format!("{}:{seq}", session.session_id);
                 let record = LocalRequestRecord {
+                    provider_evidence: current_provider.as_ref().map(|provider| {
+                        LocalProviderEvidence {
+                            scope: root_tag(root),
+                            provider_id: provider.clone(),
+                            request_started_at_ms: request_started_at_ms.filter(|start| {
+                                event
+                                    .get("time")
+                                    .and_then(Value::as_i64)
+                                    .is_some_and(|time| *start <= time)
+                            }),
+                        }
+                    }),
                     session_id: session.session_id.clone(),
                     tool: TOOL_DEEPSEEK_HARNESS.to_string(),
                     timestamp,
@@ -989,6 +1025,101 @@ mod tests {
         assert_eq!(parsed.requests[0].reasoning_tokens, 2);
         assert_eq!(parsed.meta.message_count, 1);
         assert_eq!(parsed.meta.models, vec!["deepseek-test"]);
+    }
+
+    #[test]
+    fn tracks_each_step_start_when_the_provider_header_is_reused() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("--example--/session-1");
+        fs::create_dir_all(&directory).unwrap();
+        let rows = [
+            serde_json::json!({"type":"session","version":4,"id":"session-1","createdAt":1000,"isSeeded":false}),
+            serde_json::json!({"type":"step/start","seq":0,"time":1000,"data":{"turn":0,"step":0}}),
+            serde_json::json!({"type":"request/header","seq":1,"time":1100,"data":{"header":{"config":{"provider":"relay","model":"deepseek-flash"}}}}),
+            serde_json::json!({"type":"assistant/message","seq":2,"time":2000,"data":{"turn":0,"step":0,"usage":{"inputTokens":2,"outputTokens":3}}}),
+            serde_json::json!({"type":"step/end","seq":3,"time":2500,"data":{"turn":0,"step":0}}),
+            serde_json::json!({"type":"step/start","seq":4,"time":3000,"data":{"turn":0,"step":1}}),
+            serde_json::json!({"type":"assistant/message","seq":5,"time":4000,"data":{"turn":0,"step":1,"usage":{"inputTokens":2,"outputTokens":3}}}),
+        ];
+        fs::write(
+            directory.join("session.v4.jsonl"),
+            rows.iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        let snapshot = scan_root(temp.path()).unwrap();
+        let parsed = parse_session(&snapshot.sessions[0]).unwrap();
+        assert_eq!(
+            parsed.requests[0]
+                .provider_evidence
+                .as_ref()
+                .unwrap()
+                .request_started_at_ms,
+            Some(1100)
+        );
+        assert_eq!(
+            parsed.requests[1]
+                .provider_evidence
+                .as_ref()
+                .unwrap()
+                .request_started_at_ms,
+            Some(3000)
+        );
+    }
+
+    #[test]
+    fn tracks_request_provider_switches_and_clears_missing_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("--example--").join("session-1");
+        fs::create_dir_all(&directory).unwrap();
+        let mut rows = vec![
+            serde_json::json!({"type":"session","version":3,"id":"session-1","createdAt":1000,"isSeeded":false}),
+        ];
+        for (index, provider) in [Some("deepseek-account"), Some("relay"), None]
+            .iter()
+            .enumerate()
+        {
+            let mut config = serde_json::json!({"model":"deepseek-flash"});
+            if let Some(provider) = provider {
+                config["provider"] = Value::String(provider.to_string());
+            }
+            rows.push(serde_json::json!({"type":"request/header","seq":index*2,"time":1000+index*2000,"data":{"header":{"config":config}}}));
+            rows.push(serde_json::json!({"type":"assistant/message","seq":index*2+1,"time":2000+index*2000,"data":{"turn":0,"step":index,"usage":{"inputTokens":2,"outputTokens":3}}}));
+        }
+        let log = rows
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(directory.join("session.v3.jsonl"), log).unwrap();
+        let snapshot = scan_root(temp.path()).unwrap();
+        let parsed = parse_session(&snapshot.sessions[0]).unwrap();
+        assert_eq!(parsed.requests.len(), 3);
+        assert_eq!(
+            parsed.requests[0]
+                .provider_evidence
+                .as_ref()
+                .unwrap()
+                .provider_id,
+            "deepseek-account"
+        );
+        assert_eq!(
+            parsed.requests[1]
+                .provider_evidence
+                .as_ref()
+                .unwrap()
+                .provider_id,
+            "relay"
+        );
+        assert!(parsed.requests[2].provider_evidence.is_none());
+        assert_eq!(
+            parsed.requests[0].provider_evidence.as_ref().unwrap().scope,
+            root_tag(temp.path())
+        );
     }
 
     #[test]

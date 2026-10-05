@@ -373,6 +373,7 @@ pub(super) fn parse_pi_session_file(session: &SessionFile) -> ParsedSessionData 
                     meta.total_cache_create_tokens += cache_create;
                     meta.message_ids.push(message_id.clone());
                     requests.push(LocalRequestRecord {
+                        provider_evidence: None,
                         session_id: session.session_id.clone(),
                         tool: TOOL_PI.to_string(),
                         timestamp,

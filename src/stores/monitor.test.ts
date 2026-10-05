@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import type { OverviewDeferredBundle, UsageRefreshBundle } from '../types'
+import type { AppSettings, OverviewDeferredBundle, UsageRefreshBundle } from '../types'
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }))
 
@@ -196,5 +196,36 @@ describe('monitor store refreshUsage timeout & auto-refresh guard', () => {
 
     await vi.advanceTimersByTimeAsync(1 + 400)
     expect(callsFor('refresh_usage_bundle')).toBe(1)
+  })
+})
+
+describe('newly discovered source selection', () => {
+  it('loads authoritative sources before querying an unknown source filter', async () => {
+    setActivePinia(createPinia())
+    vi.useFakeTimers()
+    const source = {
+      id: 'harness-relay', displayName: 'Harness relay', baseUrl: 'https://relay.example/v1',
+      apiKeyPrefixes: ['test-prefix'], apiKeyNotes: {}, color: '#4D6BFE', autoDetected: true,
+      firstSeenMs: 0, lastSeenMs: 0,
+    }
+    invokeMock.mockImplementation((command: string, args?: { settings?: AppSettings }) => {
+      if (command === 'get_api_sources') return Promise.resolve([source])
+      if (command === 'refresh_usage_bundle') {
+        expect(args?.settings?.sourceAware.sources).toContainEqual(source)
+        expect(args?.settings?.sourceAware.activeSourceFilter).toBe(source.id)
+        return Promise.resolve(BUNDLE)
+      }
+      if (command === 'get_overview_deferred_bundle') return Promise.resolve(DEFERRED_BUNDLE)
+      return Promise.resolve(undefined)
+    })
+    const store = useMonitorStore()
+    const selection = store.setActiveSourceFilter(source.id)
+    await vi.runAllTimersAsync()
+    await selection
+    expect(invokeMock.mock.calls.findIndex(([command]) => command === 'get_api_sources'))
+      .toBeLessThan(invokeMock.mock.calls.findIndex(([command]) => command === 'refresh_usage_bundle'))
+    expect(store.settings.sourceAware.sources).toContainEqual(source)
+    invokeMock.mockReset()
+    vi.useRealTimers()
   })
 })

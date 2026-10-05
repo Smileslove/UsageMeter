@@ -437,6 +437,7 @@ fn parse_qoder_session(
         total_cache_read_tokens += cache_read_tokens;
 
         requests.push(LocalRequestRecord {
+            provider_evidence: None,
             session_id: canonical_session_id.clone(),
             tool: tool_id.to_string(),
             timestamp,

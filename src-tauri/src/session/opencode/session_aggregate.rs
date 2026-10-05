@@ -173,6 +173,7 @@ fn build_single_session_data(
         };
 
         requests.push(LocalRequestRecord {
+            provider_evidence: None,
             session_id: canonical_session_id.to_string(),
             tool: TOOL_OPENCODE.to_string(),
             timestamp: snapshot.timestamp_sec,

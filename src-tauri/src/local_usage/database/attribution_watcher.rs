@@ -27,7 +27,7 @@ fn watched_config_paths() -> Vec<PathBuf> {
         })
         .join("opencode")
         .join("auth.json");
-    vec![
+    let mut paths = vec![
         codex.config_path().clone(),
         codex.auth_path().clone(),
         claude.settings_path().clone(),
@@ -36,7 +36,9 @@ fn watched_config_paths() -> Vec<PathBuf> {
         GeminiSubscriptionProvider::oauth_credentials_path(),
         opencode.config_path().clone(),
         opencode_auth,
-    ]
+    ];
+    paths.extend(crate::session::deepseek_harness_attribution::config_paths());
+    paths
 }
 
 fn event_touches_config(event_paths: &[PathBuf], config_paths: &[PathBuf]) -> bool {
@@ -100,7 +102,7 @@ fn run_watcher(config_paths: Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
-/// Starts one native filesystem watcher for direct Codex, Claude, Gemini, and OpenCode configuration files.
+/// Watches direct Codex, Claude, Gemini, OpenCode, and discovered Harness configuration files.
 /// Scanner-based observation remains as a fallback for tools whose config directories do not
 /// exist yet at startup.
 pub fn start_passive_attribution_watcher() {

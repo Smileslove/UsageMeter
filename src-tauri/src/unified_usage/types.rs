@@ -236,6 +236,7 @@ fn proxy_observation_id(record: &UsageRecord) -> Option<String> {
 pub enum AttributionMethod {
     Unattributed,
     ConfigInferred,
+    ProviderReported,
     Manual,
 }
 
@@ -244,6 +245,7 @@ impl AttributionMethod {
         match self {
             Self::Unattributed => "unattributed",
             Self::ConfigInferred => "config_inferred",
+            Self::ProviderReported => "provider_reported",
             Self::Manual => "manual",
         }
     }
@@ -1225,6 +1227,10 @@ pub(crate) fn normalize_model_bucket(tool: &str, model: &str) -> String {
 pub(crate) fn matches_source_filter(fact: &MergedRequestFact, filter: &SourceFilter) -> bool {
     match filter {
         SourceFilter::All => true,
+        SourceFilter::DeepSeekHarnessAccount => {
+            fact.attribution_source_id.as_deref()
+                == Some(crate::models::DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID)
+        }
         SourceFilter::OfficialOpenAiOAuth => {
             fact.attribution_source_id.as_deref()
                 == Some(crate::models::OFFICIAL_OPENAI_OAUTH_SOURCE_ID)

@@ -3,6 +3,7 @@ import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { useMonitorStore } from '../stores/monitor'
 import { sourceLabel, t } from '../i18n'
 import {
+  DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID,
   OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID,
   OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
   OFFICIAL_OPENAI_OAUTH_SOURCE_ID
@@ -17,10 +18,11 @@ const dropdownRef = ref<HTMLElement | null>(null)
 const iconFailed = ref(false)
 
 const activeFilter = computed(() => store.settings.sourceAware.activeSourceFilter)
+const hasHarness = computed(() => store.settings.clientTools.profiles.some(profile => profile.tool === 'deepseek_harness' && profile.enabled))
 const sources = computed(() => store.settings.sourceAware.sources)
 
 const showSelector = computed(() => {
-  return sources.value.length > 0
+  return hasHarness.value || activeFilter.value === DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID || sources.value.length > 0
     || store.hasChatGptOAuth
     || store.hasGeminiOAuth
     || store.hasClaudeOAuth
@@ -47,6 +49,7 @@ const currentSource = computed(() => {
 })
 
 const currentColor = computed(() => {
+  if (activeFilter.value === DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID) return '#4D6BFE'
   if (activeFilter.value === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return '#10A37F'
   if (activeFilter.value === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) return '#4285F4'
   if (activeFilter.value === OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID) return '#D97757'
@@ -59,6 +62,7 @@ const currentIcon = computed(() => currentSource.value?.icon || null)
 const currentLabel = computed(() => {
   if (!activeFilter.value) return t(store.settings.locale, 'sources.all')
   if (activeFilter.value === '__unknown__') return t(store.settings.locale, 'sources.unknown')
+  if (activeFilter.value === DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID) return sourceLabel(store.settings.locale, activeFilter.value)
   if (activeFilter.value === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) {
     return sourceLabel(store.settings.locale, OFFICIAL_OPENAI_OAUTH_SOURCE_ID)
   }
@@ -81,6 +85,9 @@ const selectSource = async (sourceId: string | null) => {
 
 const toggleDropdown = () => {
   isOpen.value = !isOpen.value
+  if (isOpen.value) {
+    void store.refreshSources().catch(() => console.warn('[SourceSelector] Failed to refresh sources'))
+  }
 }
 
 const handleClickOutside = (event: MouseEvent) => {
@@ -190,6 +197,15 @@ onUnmounted(() => {
             <span class="truncate">{{ sourceLabel(store.settings.locale, OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) }}</span>
           </button>
         </div>
+
+        <button
+          v-if="hasHarness || activeFilter === DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID"
+          @click="selectSource(DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID)"
+          :class="['w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left hover:bg-gray-50 dark:hover:bg-neutral-800 transition-colors', activeFilter === DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID ? 'text-blue-600 dark:text-blue-400 font-medium' : 'text-gray-700 dark:text-gray-200']"
+        >
+          <LobeIcon slug="deepseek" :size="12" class="shrink-0" />
+          <span class="truncate">{{ sourceLabel(store.settings.locale, DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID) }}</span>
+        </button>
 
         <div v-if="sources.length > 0" class="border-t border-gray-50 dark:border-neutral-800">
           <button

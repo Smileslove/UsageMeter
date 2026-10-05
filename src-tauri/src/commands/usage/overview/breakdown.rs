@@ -116,7 +116,8 @@ fn source_meta_for_fact(settings: &AppSettings, fact: &MergedRequestFact) -> Bre
     if let Some(source_id) = fact.attribution_source_id.as_deref() {
         if matches!(
             source_id,
-            OFFICIAL_OPENAI_OAUTH_SOURCE_ID
+            crate::models::DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID
+                | OFFICIAL_OPENAI_OAUTH_SOURCE_ID
                 | OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID
                 | OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID
         ) {
@@ -130,7 +131,9 @@ fn source_meta_for_fact(settings: &AppSettings, fact: &MergedRequestFact) -> Bre
                 label,
                 kind: "source".to_string(),
                 color: Some(
-                    if source_id == OFFICIAL_OPENAI_OAUTH_SOURCE_ID {
+                    if source_id == crate::models::DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID {
+                        "#4D6BFE"
+                    } else if source_id == OFFICIAL_OPENAI_OAUTH_SOURCE_ID {
                         "#10A37F"
                     } else if source_id == OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID {
                         "#4285F4"

@@ -12,6 +12,7 @@ const { listenMock, unlistenRefresh, unlistenLocalUsageSynced, store, nav } = vi
     startAutoRefresh: vi.fn(),
     stopAutoRefresh: vi.fn(),
     refreshUsageAndSessionViews: vi.fn(),
+    refreshSources: vi.fn().mockResolvedValue(undefined),
   },
   nav: {
     currentPage: 'overview',
@@ -69,6 +70,7 @@ describe('desktop window refresh', () => {
 
     syncListener({ payload: null })
     await flushPromises()
+    expect(store.refreshSources).toHaveBeenCalledOnce()
     expect(store.refreshUsageAndSessionViews).toHaveBeenCalledOnce()
     wrapper.unmount()
   })

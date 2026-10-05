@@ -8,6 +8,7 @@ pub(super) fn normalized_day_boundary_mode(settings: &AppSettings) -> String {
 
 pub(super) fn cache_key_for_source_filter(filter: &SourceFilter) -> String {
     match filter {
+        SourceFilter::DeepSeekHarnessAccount => "deepseek_harness_account".to_string(),
         SourceFilter::All => "all".to_string(),
         SourceFilter::Unknown { known_pairs } => format!("unknown:{known_pairs:?}"),
         SourceFilter::OfficialOpenAiOAuth => "official_openai_oauth".to_string(),

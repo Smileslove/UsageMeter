@@ -385,6 +385,7 @@ fn parse_work_log_line(
     let message_id = format!("work_ln{}_ts{}_tok{}", line_idx, timestamp, total);
 
     Some(LocalRequestRecord {
+        provider_evidence: None,
         session_id: session_id.to_string(),
         tool: tool.to_string(),
         timestamp,
@@ -738,6 +739,7 @@ fn extract_qoder_work_cli_request_record(
         .unwrap_or_else(|| format!("qwcli_ln{}_ts{}", line_idx, timestamp));
 
     Some(LocalRequestRecord {
+        provider_evidence: None,
         session_id: session_id.to_string(),
         tool: tool.to_string(),
         timestamp,

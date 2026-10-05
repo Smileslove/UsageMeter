@@ -641,6 +641,7 @@ fn parse_copilot_store_session(session: &SessionFile) -> (SessionMeta, Vec<Local
         }
         let total_tokens = input + cache_read + cache_write + output;
         requests.push(LocalRequestRecord {
+            provider_evidence: None,
             session_id: session.session_id.clone(),
             tool: TOOL_COPILOT.to_string(),
             timestamp,
@@ -887,6 +888,7 @@ fn build_shutdown_summary_request(
     model.hash(&mut hasher);
     let message_id = format!("copilot_cli_summary_{:016x}", hasher.finish());
     LocalRequestRecord {
+        provider_evidence: None,
         session_id: session.session_id.clone(),
         tool: TOOL_COPILOT.to_string(),
         timestamp,
@@ -913,6 +915,7 @@ fn build_requests_from_assistant_events(
     assistant_events
         .iter()
         .map(|event| LocalRequestRecord {
+            provider_evidence: None,
             session_id: session.session_id.clone(),
             tool: TOOL_COPILOT.to_string(),
             timestamp: event.timestamp,

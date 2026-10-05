@@ -327,6 +327,7 @@ fn extract_cli_request_record(
     let model = extract_cli_model(json).unwrap_or_else(|| "unknown".to_string());
 
     Some(LocalRequestRecord {
+        provider_evidence: None,
         session_id: session.session_id.clone(),
         tool: super::constants::TOOL_QODER_CLI.to_string(),
         timestamp,

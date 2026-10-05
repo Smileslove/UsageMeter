@@ -896,10 +896,11 @@ impl LocalUsageDatabase {
                         request_key, model, input_tokens, output_tokens, reasoning_tokens,
                         cache_create_tokens, cache_read_tokens, total_tokens, request_count,
                         explicit_estimated_cost, source_offset, event_index, is_subagent,
-                        raw_event_kind, sync_version, created_at, source_file_path, source_file_present
+                        raw_event_kind, sync_version, created_at, source_file_path, source_file_present, provider_evidence
                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-                              ?16, ?17, NULL, ?18, ?19, 'request', 1, ?20, ?21, 1)
+                              ?16, ?17, NULL, ?18, ?19, 'request', 1, ?20, ?21, 1, ?22)
                     ON CONFLICT(tool, dedupe_key) DO UPDATE SET
+                        provider_evidence = excluded.provider_evidence,
                         session_id = excluded.session_id,
                         project_key = excluded.project_key,
                         timestamp = excluded.timestamp,
@@ -919,7 +920,8 @@ impl LocalUsageDatabase {
                         sync_version = sync_version + 1,
                         source_file_path = excluded.source_file_path,
                         source_file_present = 1
-                    WHERE local_request_facts.session_id != excluded.session_id
+                    WHERE local_request_facts.provider_evidence IS NOT excluded.provider_evidence
+                       OR local_request_facts.session_id != excluded.session_id
                        OR local_request_facts.project_key IS NOT excluded.project_key
                        OR local_request_facts.timestamp != excluded.timestamp
                        OR local_request_facts.message_id IS NOT excluded.message_id
@@ -958,7 +960,9 @@ impl LocalUsageDatabase {
                         idx as i64,
                         if request.is_subagent { 1 } else { 0 },
                         now,
-                        file_path.as_str()
+                        file_path.as_str(),
+                        request.provider_evidence.as_ref().map(serde_json::to_string).transpose()
+                            .map_err(|_| "ERR_DEEPSEEK_EVIDENCE_INVALID")?
                     ],
                 )
                 .map_err(|e| format!("Failed to upsert local request fact: {}", e))?;
@@ -1231,6 +1235,47 @@ mod tests {
     fn claude_facts(db: &LocalUsageDatabase) -> Vec<LocalRequestRecord> {
         db.get_request_records_in_range(0, i64::MAX, &ToolFilter::Tool("claude_code".to_string()))
             .expect("load claude facts")
+    }
+
+    #[test]
+    fn deepseek_scanner_persists_provider_evidence_without_exporting_it() {
+        let _guard = env_lock();
+        let (directory, database) = temp_db();
+        let root = directory.path().join("sessions");
+        let transcript = root.join("--example--/session-1/session.v3.jsonl");
+        fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        fs::write(&transcript, concat!(
+            "{\"type\":\"session\",\"version\":3,\"id\":\"session-1\",\"createdAt\":1000,\"isSeeded\":false}\n",
+            "{\"type\":\"request/header\",\"seq\":0,\"time\":1000,\"data\":{\"header\":{\"config\":{\"provider\":\"deepseek-account\",\"model\":\"deepseek-flash\"}}}}\n",
+            "{\"type\":\"assistant/message\",\"seq\":1,\"time\":2000,\"data\":{\"turn\":0,\"step\":0,\"usage\":{\"inputTokens\":2,\"outputTokens\":3}}}\n"
+        )).unwrap();
+        let id = format!(
+            "deepseek_harness::{}::session-1",
+            crate::session::deepseek_harness_reader::root_tag(&root)
+        );
+        let mut session = make_file_backed_session(&id, &transcript, 100, 111);
+        session.tool = "deepseek_harness".into();
+        database
+            .sync_file_backed_sessions(vec![session.clone()], &[])
+            .unwrap();
+        let records = database
+            .get_request_records_in_range(0, i64::MAX, &ToolFilter::Tool("deepseek_harness".into()))
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].total_tokens, 5);
+        let key = records[0].request_key.clone().unwrap();
+        let evidence = database
+            .local_provider_evidence(std::slice::from_ref(&key))
+            .unwrap();
+        assert_eq!(evidence[&key].provider_id, "deepseek-account");
+        assert!(!serde_json::to_string(&records[0])
+            .unwrap()
+            .contains("providerEvidence"));
+        database
+            .sync_file_backed_sessions(vec![session], &[])
+            .unwrap();
+        let evidence_again = database.local_provider_evidence(&[key]).unwrap();
+        assert_eq!(evidence_again, evidence);
     }
 
     #[test]

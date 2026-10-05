@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
+/// Account Provider explicitly recorded in Harness transcripts; not a claim about the endpoint.
+pub const DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID: &str = "__deepseek_harness_account__";
+
 /// Stable category for requests made through Codex's official ChatGPT OAuth flow.
 /// This is deliberately not a user-configurable API source.
 pub const OFFICIAL_OPENAI_OAUTH_SOURCE_ID: &str = "__openai_official_oauth__";
@@ -827,6 +830,8 @@ pub enum SourceFilter {
     OfficialGoogleGeminiOAuth,
     /// Requests resolved from Claude Code's official Anthropic OAuth credentials.
     OfficialAnthropicClaudeOAuth,
+    /// Account provider reported by Harness; does not assert an official endpoint.
+    DeepSeekHarnessAccount,
 }
 
 #[derive(Debug, Clone)]
@@ -852,6 +857,9 @@ impl SourceAwareSettings {
                     })
                     .collect();
                 SourceFilter::Unknown { known_pairs }
+            }
+            Some(filter) if filter == DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID => {
+                SourceFilter::DeepSeekHarnessAccount
             }
             Some(filter) if filter == OFFICIAL_OPENAI_OAUTH_SOURCE_ID => {
                 SourceFilter::OfficialOpenAiOAuth

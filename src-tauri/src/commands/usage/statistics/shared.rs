@@ -151,6 +151,9 @@ pub(super) fn fingerprint_pricings(pricings: &[crate::models::ModelPricingConfig
 
 pub(super) fn cache_key_for_source_filter(filter: &crate::models::SourceFilter) -> String {
     match filter {
+        crate::models::SourceFilter::DeepSeekHarnessAccount => {
+            "deepseek_harness_account".to_string()
+        }
         crate::models::SourceFilter::All => "all".to_string(),
         crate::models::SourceFilter::Unknown { known_pairs } => {
             format!("unknown:{known_pairs:?}")

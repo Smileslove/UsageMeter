@@ -1,3 +1,5 @@
+export const DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID = '__deepseek_harness_account__'
+
 export type AppLocale = 'zh-CN' | 'zh-TW' | 'en-US'
 
 /** Stable pseudo-source used for Codex requests authenticated by official ChatGPT OAuth. */
@@ -707,6 +709,7 @@ export type RequestCoverageOrigin =
 export type RequestAttributionMethod =
   | 'unattributed'
   | 'config_inferred'
+  | 'provider_reported'
   | 'manual'
 
 // 最近请求记录

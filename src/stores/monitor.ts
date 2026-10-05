@@ -39,6 +39,7 @@ import {
 } from './subscriptionQueries'
 import {
   addKeyPrefix,
+  getApiSources,
   deleteSource,
   mergeSource,
   setActiveSourceFilter,
@@ -379,10 +380,14 @@ export const useMonitorStore = defineStore('monitor', {
       ])
     },
     // === 来源管理 ===
-    /**
-     * 设置当前激活的来源过滤器
-     */
+    async refreshSources() {
+      this.settings.sourceAware.sources = await getApiSources()
+    },
+    /** 设置当前激活的来源过滤器，并补齐后台新注册的来源实体。 */
     async setActiveSourceFilter(sourceId: string | null) {
+      if (sourceId && !this.settings.sourceAware.sources.some(source => source.id === sourceId)) {
+        await this.refreshSources()
+      }
       this.settings.sourceAware.activeSourceFilter = sourceId
       await setActiveSourceFilter(sourceId)
       await this.refreshFilteredViews()

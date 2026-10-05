@@ -432,6 +432,7 @@ fn build_hermes_session(
     ));
 
     let requests = vec![LocalRequestRecord {
+        provider_evidence: None,
         session_id: canonical_session_id.to_string(),
         tool: super::constants::TOOL_HERMES.to_string(),
         timestamp: activity_time.max(0),

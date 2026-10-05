@@ -5,6 +5,7 @@ import { useDesktopNavigationStore } from '../stores/desktopNavigation'
 import { useMonitorStore } from '../../stores/monitor'
 import { sourceLabel, t } from '../../i18n'
 import {
+  DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID,
   OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID,
   OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID,
   OFFICIAL_OPENAI_OAUTH_SOURCE_ID
@@ -33,6 +34,7 @@ const sourceFilterLabel = computed(() => {
   if (!id || id === '__unknown__') {
     return t(locale.value, 'desktop.allSources')
   }
+  if (id === DEEPSEEK_HARNESS_ACCOUNT_SOURCE_ID) return sourceLabel(locale.value, id)
   if (id === OFFICIAL_OPENAI_OAUTH_SOURCE_ID) return sourceLabel(locale.value, id)
   if (id === OFFICIAL_GOOGLE_GEMINI_OAUTH_SOURCE_ID) return sourceLabel(locale.value, id)
   if (id === OFFICIAL_ANTHROPIC_CLAUDE_OAUTH_SOURCE_ID) return sourceLabel(locale.value, id)

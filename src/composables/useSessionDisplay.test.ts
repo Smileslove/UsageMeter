@@ -273,3 +273,16 @@ describe('formatTokens', () => {
     expect(formatTokens(1200)).toBe('1.20K')
   })
 })
+
+describe('DeepSeek Harness account attribution', () => {
+  it.each(['zh-CN', 'zh-TW', 'en-US'])('labels recorded provider evidence in %s', (locale) => {
+    const request = {
+      coverageOrigin: 'local_only',
+      attributionMethod: 'provider_reported',
+      sourceLabel: '__deepseek_harness_account__',
+    } as import('../types').RequestRecord
+    const display = useSessionDisplay(makeStore(locale))
+    expect(display.requestAttributionLabel(request)).toBe(t(locale, 'sessions.requestAttributionProvider'))
+    expect(display.requestSourceLabel(request)).toBe(t(locale, 'sources.deepseekHarnessAccount'))
+  })
+})

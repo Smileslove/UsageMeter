@@ -21,6 +21,7 @@ impl LocalUsageDatabase {
             let request_key: Option<String> = row.get(12)?;
             let source_file_present: Option<i64> = row.get(13)?;
             Ok(LocalRequestRecord {
+                provider_evidence: None,
                 session_id: row.get(0)?,
                 tool: row.get(1)?,
                 timestamp: row.get(2)?,

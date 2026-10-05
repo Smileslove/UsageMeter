@@ -402,6 +402,7 @@ impl LocalUsageDatabase {
                 ON local_session_tombstones(updated_at);
 
             CREATE TABLE IF NOT EXISTS local_request_facts (
+                provider_evidence TEXT,
                 request_id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
                 tool TEXT NOT NULL,

@@ -149,10 +149,29 @@ pub struct SessionMeta {
     pub estimated: bool,
 }
 
+/// Non-secret request-time provider identity. Scope isolates distinct session roots.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalProviderEvidence {
+    pub scope: String,
+    pub provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_started_at_ms: Option<i64>,
+}
+
+impl LocalProviderEvidence {
+    pub fn scoped_tool(&self) -> String {
+        format!("deepseek_harness::{}::{}", self.scope, self.provider_id)
+    }
+}
+
 /// 本地 transcript 中抽取出的单条请求事实
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalRequestRecord {
+    /// Local attribution evidence; never exported as a frontend or sync payload.
+    #[serde(skip)]
+    pub provider_evidence: Option<LocalProviderEvidence>,
     /// 所属会话 ID
     pub session_id: String,
     /// 客户端工具标识

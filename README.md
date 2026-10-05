@@ -91,6 +91,7 @@ Configured third-party relay sources can query quota or balance using supported 
 - Overview windows for **5 hours, 24 hours, today, 7 days, 30 days, and the current month**; when a window has no data, the app can show an available fallback window with an explicit notice.
 - Official quota windows, relay balances, and local consumption-rate signals. Local burn-rate projections describe recent activity; they are separate from provider-enforced limits.
 - Passive attribution of supported official OAuth usage and manual attribution controls for requests, sessions, or time ranges.
+- DeepSeek Harness account-provider attribution from request logs, plus inference for explicitly configured API-key routes within confirmed configuration intervals. The account bucket does not assert an official endpoint; historical API-key requests are never backfilled from current configuration.
 
 ### Analytics, Projects, and Requests
 

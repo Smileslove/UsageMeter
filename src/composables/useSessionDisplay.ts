@@ -100,6 +100,9 @@ export function useSessionDisplay(store: ReturnType<typeof useMonitorStore>) {
   )
 
   const requestAttributionLabel = (request: RequestRecord): string | null => {
+    if (request.attributionMethod === 'provider_reported') {
+      return t(store.settings.locale, 'sessions.requestAttributionProvider')
+    }
     if (request.attributionMethod === 'config_inferred') {
       return t(store.settings.locale, 'sessions.requestAttributionInferred')
     }
