@@ -49,7 +49,7 @@ pub(crate) fn scan_status() -> DeepSeekHarnessScanStatus {
     }
 }
 
-const MAX_FORMAT_VERSION: u32 = 3;
+const MAX_FORMAT_VERSION: u32 = 4;
 const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_LOG_BYTES: usize = 256 * 1024 * 1024;
 const MAX_EVENTS: usize = 1_000_000;
@@ -115,14 +115,21 @@ fn session_root() -> Result<Option<PathBuf>, String> {
 
 fn scan_root(root: &Path) -> Result<SourceSnapshot, String> {
     let mut sessions = Vec::new();
+    let mut first_error: Option<String> = None;
     let root_tag = root_tag(root);
     let projects = fs::read_dir(root).map_err(|_| "deepseek_harness_root_unreadable")?;
     for project in projects {
-        let project = project.map_err(|_| "deepseek_harness_root_unreadable")?;
+        let project = match project {
+            Ok(project) => project,
+            Err(_) => {
+                first_error.get_or_insert("deepseek_harness_root_unreadable".to_string());
+                continue;
+            }
+        };
         if !project
             .file_type()
-            .map_err(|_| "deepseek_harness_root_unreadable")?
-            .is_dir()
+            .map(|file_type| file_type.is_dir())
+            .unwrap_or(false)
         {
             continue;
         }
@@ -132,27 +139,50 @@ fn scan_root(root: &Path) -> Result<SourceSnapshot, String> {
         {
             continue;
         }
-        let entries =
-            fs::read_dir(project.path()).map_err(|_| "deepseek_harness_project_unreadable")?;
+        let entries = match fs::read_dir(project.path()) {
+            Ok(entries) => entries,
+            Err(_) => {
+                first_error.get_or_insert("deepseek_harness_project_unreadable".to_string());
+                continue;
+            }
+        };
         for entry in entries {
-            let entry = entry.map_err(|_| "deepseek_harness_project_unreadable")?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => {
+                    first_error.get_or_insert("deepseek_harness_project_unreadable".to_string());
+                    continue;
+                }
+            };
             if !entry
                 .file_type()
-                .map_err(|_| "deepseek_harness_project_unreadable")?
-                .is_dir()
+                .map(|file_type| file_type.is_dir())
+                .unwrap_or(false)
             {
                 continue;
             }
             let session_dir = entry.path();
+            let artifacts = match fs::read_dir(&session_dir) {
+                Ok(artifacts) => artifacts,
+                Err(_) => {
+                    first_error.get_or_insert("deepseek_harness_session_unreadable".to_string());
+                    continue;
+                }
+            };
             let mut candidates = Vec::new();
-            for artifact in
-                fs::read_dir(&session_dir).map_err(|_| "deepseek_harness_session_unreadable")?
-            {
-                let artifact = artifact.map_err(|_| "deepseek_harness_session_unreadable")?;
+            for artifact in artifacts {
+                let artifact = match artifact {
+                    Ok(artifact) => artifact,
+                    Err(_) => {
+                        first_error
+                            .get_or_insert("deepseek_harness_session_unreadable".to_string());
+                        continue;
+                    }
+                };
                 if !artifact
                     .file_type()
-                    .map_err(|_| "deepseek_harness_session_unreadable")?
-                    .is_file()
+                    .map(|file_type| file_type.is_file())
+                    .unwrap_or(false)
                 {
                     continue;
                 }
@@ -162,12 +192,17 @@ fn scan_root(root: &Path) -> Result<SourceSnapshot, String> {
                 else {
                     continue;
                 };
-                let metadata = artifact
-                    .metadata()
-                    .map_err(|_| "deepseek_harness_session_unreadable")?;
+                let metadata = match artifact.metadata() {
+                    Ok(metadata) => metadata,
+                    Err(_) => {
+                        first_error
+                            .get_or_insert("deepseek_harness_session_unreadable".to_string());
+                        continue;
+                    }
+                };
                 candidates.push((
-                    version,
                     metadata.modified().ok(),
+                    version,
                     compressed,
                     artifact.path(),
                     metadata,
@@ -177,19 +212,26 @@ fn scan_root(root: &Path) -> Result<SourceSnapshot, String> {
                 continue;
             }
             candidates.sort_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)));
-            let (version, _, _, path, metadata) = candidates.pop().expect("nonempty candidates");
+            let (modified, version, _, path, metadata) =
+                candidates.pop().expect("nonempty candidates");
             if version > MAX_FORMAT_VERSION {
-                return Err("deepseek_harness_format_unsupported".to_string());
+                first_error.get_or_insert("deepseek_harness_format_unsupported".to_string());
+                continue;
             }
-            let header = read_header(&path, version)?;
+            let header = match read_header(&path, version) {
+                Ok(header) => header,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };
             let encoded_id = entry.file_name().to_string_lossy().to_string();
             if encode_segment(&header.id) != encoded_id {
-                return Err("deepseek_harness_header_mismatch".to_string());
+                first_error.get_or_insert("deepseek_harness_header_mismatch".to_string());
+                continue;
             }
             let session_id = format!("{TOOL_DEEPSEEK_HARNESS}::{root_tag}::{}", header.id);
-            let modified = metadata
-                .modified()
-                .ok()
+            let modified = modified
                 .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
                 .map(|duration| duration.as_secs() as i64)
                 .unwrap_or(0);
@@ -208,6 +250,11 @@ fn scan_root(root: &Path) -> Result<SourceSnapshot, String> {
                 last_modified: modified,
                 fingerprint: hasher.finish(),
             });
+        }
+    }
+    if sessions.is_empty() {
+        if let Some(error) = first_error {
+            return Err(error);
         }
     }
     sessions.sort_by(|a, b| a.session_id.cmp(&b.session_id));
@@ -335,23 +382,32 @@ fn read_bounded_line<R: BufRead>(
 fn header_from_line(line: &[u8], version: u32) -> Result<Header, String> {
     let value: Value =
         serde_json::from_slice(line).map_err(|_| "deepseek_harness_header_invalid")?;
-    if value.get("type").and_then(Value::as_str) != Some("session")
-        || value.get("version").and_then(Value::as_u64) != Some(u64::from(version))
+    let event_type = value.get("type").and_then(Value::as_str);
+    if !matches!(event_type, Some("session" | "session/start"))
+        || (value.get("version").is_some()
+            && value.get("version").and_then(Value::as_u64) != Some(u64::from(version)))
     {
         return Err("deepseek_harness_header_mismatch".to_string());
     }
     let id = value
         .get("id")
+        .or_else(|| value.pointer("/data/id"))
+        .or_else(|| value.pointer("/data/sessionId"))
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
         .ok_or("deepseek_harness_header_invalid")?
         .to_string();
     let created_at = value
         .get("createdAt")
+        .or_else(|| value.pointer("/data/createdAt"))
         .and_then(Value::as_i64)
-        .ok_or("deepseek_harness_header_invalid")?
+        .unwrap_or(0)
         / 1000;
-    let cwd = value.get("cwd").and_then(Value::as_str).map(str::to_string);
+    let cwd = value
+        .get("cwd")
+        .or_else(|| value.pointer("/data/cwd"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let subagent = value.get("origin").and_then(Value::as_str) == Some("subagent")
         || value
             .get("delegationDepth")
@@ -361,8 +417,9 @@ fn header_from_line(line: &[u8], version: u32) -> Result<Header, String> {
     let is_seeded = if version >= 2 {
         value
             .get("isSeeded")
+            .or_else(|| value.pointer("/data/isSeeded"))
             .and_then(Value::as_bool)
-            .ok_or("deepseek_harness_header_invalid")?
+            .unwrap_or(false)
     } else {
         false
     };
@@ -413,7 +470,15 @@ fn parse_usage(value: &Value) -> Option<Usage> {
         cache_write: optional("cacheWriteTokens")?,
         reasoning: optional("reasoningTokens")?,
     };
-    (usage.reasoning <= usage.output).then_some(usage)
+    Some(usage)
+}
+
+fn normalize_model(value: Option<&Value>) -> Option<String> {
+    let value = value.and_then(Value::as_str)?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some(value.rsplit('/').next().unwrap_or(value).to_string())
 }
 
 fn event_usage(event: &Value) -> Option<Usage> {
@@ -421,10 +486,8 @@ fn event_usage(event: &Value) -> Option<Usage> {
     if event.get("type").and_then(Value::as_str) == Some("compaction/summary") {
         return data.get("usage").and_then(parse_usage);
     }
-    if event.get("type").and_then(Value::as_str) == Some("assistant/message") {
-        if let Some(usage) = data.get("usage").and_then(parse_usage) {
-            return Some(usage);
-        }
+    if let Some(usage) = data.get("usage").and_then(parse_usage) {
+        return Some(usage);
     }
     data.get("stream")?
         .as_array()?
@@ -436,13 +499,6 @@ fn event_usage(event: &Value) -> Option<Usage> {
             .then(|| chunk.pointer("/chunk/usage").and_then(parse_usage))
             .flatten()
         })
-}
-
-fn non_empty_string(value: &Value) -> Option<&str> {
-    value
-        .as_str()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
 }
 
 fn parse_session(session: &SessionFile) -> Result<ParsedSessionData, String> {
@@ -486,6 +542,12 @@ fn parse_session(session: &SessionFile) -> Result<ParsedSessionData, String> {
         }
         let event: Value =
             serde_json::from_slice(&line).map_err(|_| "deepseek_harness_event_invalid")?;
+        if matches!(
+            event.get("type").and_then(Value::as_str),
+            Some("session" | "session/start")
+        ) {
+            continue;
+        }
         if let Some((last_seq, count)) = packed_last_seq(&event, version, previous_seq)? {
             event_count = event_count.saturating_add(count - 1);
             if event_count > MAX_EVENTS {
@@ -516,50 +578,36 @@ fn parse_session(session: &SessionFile) -> Result<ParsedSessionData, String> {
                 }
             }
             Some("request/header") => {
-                current_model = event
-                    .pointer("/data/header/config/model")
-                    .and_then(Value::as_str)
-                    .filter(|model| !model.is_empty())
-                    .unwrap_or("unknown")
-                    .to_string();
+                current_model = normalize_model(event.pointer("/data/header/config/model"))
+                    .unwrap_or_else(|| "unknown".to_string());
             }
             Some("llm/retry-started") => last_slot = None,
-            Some("assistant/message" | "assistant/attempt" | "compaction/summary") => {
+            Some("assistant/message" | "message/assistant") => {
                 let Some(usage) = event_usage(&event) else {
                     continue;
                 };
                 let data = event.get("data").ok_or("deepseek_harness_event_invalid")?;
-                let is_summary =
-                    event.get("type").and_then(Value::as_str) == Some("compaction/summary");
-                let slot = if is_summary {
-                    None
-                } else {
-                    Some((
-                        data.get("turn")
-                            .and_then(Value::as_u64)
-                            .ok_or("deepseek_harness_event_invalid")?,
-                        data.get("step")
-                            .and_then(Value::as_u64)
-                            .ok_or("deepseek_harness_event_invalid")?,
-                    ))
-                };
+                let slot = Some((
+                    data.get("turn").and_then(Value::as_u64).unwrap_or(0),
+                    data.get("step").and_then(Value::as_u64).unwrap_or(0),
+                ));
+                let output_tokens = usage
+                    .output
+                    .checked_add(usage.reasoning)
+                    .ok_or("deepseek_harness_usage_overflow")?;
                 let total_tokens = usage
                     .input
-                    .checked_add(usage.output)
+                    .checked_add(output_tokens)
                     .and_then(|sum| sum.checked_add(usage.cache_read))
                     .and_then(|sum| sum.checked_add(usage.cache_write))
                     .ok_or("deepseek_harness_usage_overflow")?;
                 let source = data.pointer("/message/source");
-                let model = source
-                    .and_then(|source| source.pointer("/replayState/response/responseModel"))
-                    .and_then(non_empty_string)
-                    .or_else(|| {
-                        source
-                            .and_then(|source| source.get("model"))
-                            .and_then(non_empty_string)
-                    })
-                    .unwrap_or(&current_model)
-                    .to_string();
+                let model = normalize_model(
+                    source.and_then(|source| source.pointer("/replayState/response/responseModel")),
+                )
+                .or_else(|| normalize_model(source.and_then(|source| source.get("model"))))
+                .or_else(|| normalize_model(data.get("model")))
+                .unwrap_or_else(|| current_model.clone());
                 let message_id = format!("{}:{seq}", session.session_id);
                 let record = LocalRequestRecord {
                     session_id: session.session_id.clone(),
@@ -567,7 +615,7 @@ fn parse_session(session: &SessionFile) -> Result<ParsedSessionData, String> {
                     timestamp,
                     message_id: message_id.clone(),
                     input_tokens: usage.input,
-                    output_tokens: usage.output,
+                    output_tokens,
                     reasoning_tokens: usage.reasoning,
                     cache_create_tokens: usage.cache_write,
                     cache_read_tokens: usage.cache_read,
@@ -706,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_v0_through_v3_with_plain_and_zstd_encoding() {
+    fn reads_v0_through_v4_with_plain_and_zstd_encoding() {
         for version in 0..=MAX_FORMAT_VERSION {
             for compressed in [false, true] {
                 let temp = tempfile::tempdir().unwrap();
@@ -762,7 +810,150 @@ mod tests {
     }
 
     #[test]
-    fn scans_one_generation_and_folds_attempt_usage() {
+    fn accepts_reference_session_start_and_message_assistant_protocol() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("--example--").join("session-1");
+        fs::create_dir_all(&directory).unwrap();
+        let rows = [
+            serde_json::json!({
+                "type": "session/start",
+                "id": "session-1",
+                "createdAt": 1000,
+                "cwd": "/example"
+            }),
+            serde_json::json!({
+                "type": "request/header",
+                "seq": 0,
+                "time": 1000,
+                "data": {"header": {"config": {"model": "deepseek/deepseek-v4-pro"}}}
+            }),
+            serde_json::json!({
+                "type": "message/assistant",
+                "seq": 1,
+                "time": 2000,
+                "data": {
+                    "model": "deepseek/deepseek-v4-flash",
+                    "usage": {
+                        "inputTokens": 100,
+                        "outputTokens": 40,
+                        "cacheReadTokens": 50,
+                        "cacheWriteTokens": 10,
+                        "reasoningTokens": 20
+                    }
+                }
+            }),
+        ];
+        let mut log = rows
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        log.push('\n');
+        fs::write(directory.join("session.v3.jsonl"), log).unwrap();
+
+        let snapshot = scan_root(temp.path()).unwrap();
+        let parsed = parse_session(&snapshot.sessions[0]).unwrap();
+        assert_eq!(parsed.requests.len(), 1);
+        assert_eq!(parsed.requests[0].model, "deepseek-v4-flash");
+        assert_eq!(parsed.requests[0].output_tokens, 60);
+        assert_eq!(parsed.requests[0].total_tokens, 220);
+        assert_eq!(parsed.requests[0].reasoning_tokens, 20);
+    }
+
+    #[test]
+    fn parses_v4_zstd_usage_from_real_event_shapes() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join("--example--").join("session-v4");
+        fs::create_dir_all(&directory).unwrap();
+        let rows = [
+            serde_json::json!({
+                "type": "session",
+                "version": 4,
+                "id": "session-v4",
+                "createdAt": 1789230519472i64,
+                "cwd": "/example",
+                "isSeeded": false,
+                "delegationDepth": 0
+            }),
+            serde_json::json!({
+                "type": "request/header",
+                "seq": 0,
+                "time": 1789230519472i64,
+                "data": {"header": {"config": {"model": "deepseek-flash"}}}
+            }),
+            serde_json::json!({
+                "type": "request/context",
+                "seq": 1,
+                "time": 1789230519473i64,
+                "data": {"model": "deepseek-flash"}
+            }),
+            serde_json::json!({
+                "type": "assistant/message",
+                "seq": 2,
+                "time": 1789230519474i64,
+                "data": {
+                    "turn": 1,
+                    "step": 1,
+                    "message": {"source": {"model": "deepseek-flash"}},
+                    "usage": {
+                        "inputTokens": 9432,
+                        "outputTokens": 96,
+                        "totalTokens": 10808,
+                        "cacheReadTokens": 1280
+                    }
+                }
+            }),
+        ];
+        let log = rows
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let path = directory.join("session.v4.jsonl.zstd");
+        let mut encoder = zstd::Encoder::new(File::create(path).unwrap(), 0).unwrap();
+        encoder.write_all(log.as_bytes()).unwrap();
+        encoder.finish().unwrap();
+
+        let snapshot = scan_root(temp.path()).unwrap();
+        let parsed = parse_session(&snapshot.sessions[0]).unwrap();
+        assert_eq!(parsed.requests.len(), 1);
+        assert_eq!(parsed.requests[0].model, "deepseek-flash");
+        assert_eq!(parsed.requests[0].input_tokens, 9432);
+        assert_eq!(parsed.requests[0].output_tokens, 96);
+        assert_eq!(parsed.requests[0].cache_read_tokens, 1280);
+        assert_eq!(parsed.requests[0].total_tokens, 10808);
+    }
+
+    #[test]
+    fn skips_bad_session_without_discarding_healthy_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("--example--");
+        let healthy = project.join("healthy");
+        let broken = project.join("broken");
+        fs::create_dir_all(&healthy).unwrap();
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(
+            healthy.join("session.v3.jsonl"),
+            concat!(
+                "{\"type\":\"session\",\"version\":3,\"id\":\"healthy\",\"createdAt\":1000,\"isSeeded\":false}\n",
+                "{\"type\":\"message/assistant\",\"seq\":0,\"time\":2000,\"data\":{\"usage\":{\"inputTokens\":1,\"outputTokens\":2}}}\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            broken.join("session.v99.jsonl"),
+            b"{\"type\":\"session\",\"version\":99,\"id\":\"broken\"}\n",
+        )
+        .unwrap();
+
+        let snapshot = scan_root(temp.path()).unwrap();
+        assert_eq!(snapshot.sessions.len(), 1);
+        assert!(snapshot.sessions[0].session_id.ends_with("::healthy"));
+    }
+
+    #[test]
+    fn scans_one_generation_and_ignores_attempt_usage() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("sessions");
         let directory = root.join("--example--").join("session-1");
@@ -793,11 +984,10 @@ mod tests {
             .file_path
             .ends_with("session.v3.jsonl.zstd"));
         let parsed = parse_session(&snapshot.sessions[0]).unwrap();
-        assert_eq!(parsed.requests.len(), 2);
-        assert_eq!(parsed.requests[0].total_tokens, 15);
+        assert_eq!(parsed.requests.len(), 1);
+        assert_eq!(parsed.requests[0].total_tokens, 17);
         assert_eq!(parsed.requests[0].reasoning_tokens, 2);
-        assert_eq!(parsed.requests[1].total_tokens, 2);
-        assert_eq!(parsed.meta.message_count, 2);
+        assert_eq!(parsed.meta.message_count, 1);
         assert_eq!(parsed.meta.models, vec!["deepseek-test"]);
     }
 
@@ -806,7 +996,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let directory = temp.path().join("--example--").join("session-1");
         fs::create_dir_all(&directory).unwrap();
-        fs::write(directory.join("session.v4.jsonl"), b"future\n").unwrap();
+        fs::write(directory.join("session.v5.jsonl"), b"future\n").unwrap();
         assert_eq!(
             scan_root(temp.path()).err().unwrap(),
             "deepseek_harness_format_unsupported"
@@ -864,7 +1054,7 @@ mod tests {
     }
 
     #[test]
-    fn counts_compaction_usage_and_attributes_the_served_model() {
+    fn ignores_compaction_usage_and_attributes_the_served_model() {
         let temp = tempfile::tempdir().unwrap();
         let directory = temp.path().join("--example--").join("session-1");
         fs::create_dir_all(&directory).unwrap();
@@ -885,14 +1075,14 @@ mod tests {
 
         let snapshot = scan_root(temp.path()).unwrap();
         let parsed = parse_session(&snapshot.sessions[0]).unwrap();
-        assert_eq!(parsed.requests.len(), 3);
+        assert_eq!(parsed.requests.len(), 2);
         assert_eq!(
             parsed
                 .requests
                 .iter()
                 .map(|request| request.total_tokens)
                 .collect::<Vec<_>>(),
-            [5, 23, 30]
+            [5, 30]
         );
         assert_eq!(
             parsed
@@ -900,9 +1090,9 @@ mod tests {
                 .iter()
                 .map(|request| request.model.as_str())
                 .collect::<Vec<_>>(),
-            ["served-model", "summary-model", "configured-model"]
+            ["served-model", "configured-model"]
         );
-        assert_eq!(parsed.meta.message_count, 3);
+        assert_eq!(parsed.meta.message_count, 2);
     }
 
     #[test]
