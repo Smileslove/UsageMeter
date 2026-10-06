@@ -55,7 +55,7 @@ fn show_main_window(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
         let _ = window.set_always_on_top(true);
 
         #[cfg(target_os = "linux")]
-        let _ = window.set_always_on_top(std::env::var_os("WAYLAND_DISPLAY").is_none());
+        let _ = window.set_always_on_top(linux_window_uses_x11_backend());
 
         if let Some(rect) = tray_rect.as_ref() {
             let rect_position = match rect.position {
@@ -136,16 +136,8 @@ fn show_main_window(app: &tauri::AppHandle, tray_rect: Option<Rect>) {
 
         #[cfg(target_os = "linux")]
         if tray_rect.is_none() {
-            if let Ok(Some(monitor)) = app.primary_monitor() {
-                let work_area = monitor.work_area();
-                let size = window
-                    .outer_size()
-                    .unwrap_or_else(|_| PhysicalSize::new(420, 560));
-                let x = work_area.position.x
-                    + ((work_area.size.width as i32 - size.width as i32) / 2).max(0);
-                let y = work_area.position.y
-                    + ((work_area.size.height as i32 - size.height as i32) / 2).max(0);
-                let _ = window.set_position(Position::Physical(PhysicalPosition::new(x, y)));
+            if let Some(position) = position_linux_tray_fallback(app, &window) {
+                let _ = window.set_position(Position::Physical(position));
             }
         }
 
@@ -235,6 +227,43 @@ fn make_window_rounded(window: &tauri::WebviewWindow) {
         let _: () = msg_send![window, setAnimationBehavior: 0];
     }
     let _ = window.set_shadow(true);
+}
+
+#[cfg(target_os = "linux")]
+fn position_linux_tray_fallback(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+) -> Option<PhysicalPosition<i32>> {
+    let monitor = app.primary_monitor().ok()??;
+    let work_area = monitor.work_area();
+    let window_size = window
+        .outer_size()
+        .unwrap_or_else(|_| PhysicalSize::new(420, 560));
+
+    let work_right = work_area.position.x + work_area.size.width as i32;
+
+    // GTK/AppIndicator does not expose the tray icon rectangle on Linux. Ubuntu
+    // places its system panel at the top, so anchor the quick panel there rather
+    // than guessing from the bottom dock's work-area gap.
+    const MARGIN: i32 = 4;
+    let min_x = work_area.position.x + MARGIN;
+    let max_x = (work_right - window_size.width as i32 - MARGIN).max(min_x);
+    // The menu callback runs after the user clicks a menu item, so the pointer
+    // is no longer on the tray icon. Using it as an anchor makes the panel jump
+    // on every invocation. Keep a deterministic right-edge anchor instead.
+    let x = max_x;
+    let y = work_area.position.y + MARGIN;
+
+    Some(PhysicalPosition::new(x, y))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_window_uses_x11_backend() -> bool {
+    let backend = std::env::var("GDK_BACKEND").unwrap_or_default();
+    backend
+        .split(',')
+        .any(|value| value.trim().eq_ignore_ascii_case("x11"))
+        || std::env::var_os("WAYLAND_DISPLAY").is_none()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
